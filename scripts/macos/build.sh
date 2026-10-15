@@ -38,7 +38,7 @@ inputs = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for pattern in patt
 pathlib.Path(sys.argv[1]).write_text(json.dumps([patterns, inputs]))
 PY
 bun run typecheck
-MAGIC_SIGN_IDENTITY="$IDENTITY" bash scripts/macos/build-helper.sh "$TEMP/magic-runtime"
+MAGIC_SIGN_IDENTITY="$IDENTITY" bash scripts/macos/build-components.sh "$TEMP/components"
 DEVELOPER_DIR="$DEVELOPER" xcodebuild -project apps/macos/MagicCode.xcodeproj -scheme MagicCode \
   -configuration "$CONFIGURATION" -derivedDataPath "$OUTPUT/DerivedData" -destination 'platform=macOS,arch=arm64' \
   build CODE_SIGNING_ALLOWED=NO MARKETING_VERSION="$VERSION" > "$TEMP/xcode-build.log" 2>&1 || { tail -80 "$TEMP/xcode-build.log"; exit 1; }
@@ -49,7 +49,8 @@ rm -f "$DMG"
 ASSEMBLED=true
 ditto "$OUTPUT/DerivedData/Build/Products/$CONFIGURATION/$NAME.app" "$APP"
 mkdir -p "$APP/Contents/Helpers"
-cp "$TEMP/magic-runtime" "$APP/Contents/Helpers/magic-runtime"
+cp "$TEMP/components/magic-cli" "$TEMP/components/magic-engine" "$APP/Contents/Helpers/"
+bun scripts/macos/build-settings-data.ts "$APP/Contents/Resources/settings-data.json"
 /usr/libexec/PlistBuddy -c "Set :MagicProtocolVersion $PROTOCOL" "$APP/Contents/Info.plist"
 codesign --force --options runtime --timestamp=none --sign "$IDENTITY" "$APP"
 python3 - "$TEMP/inputs.json" <<'PY'

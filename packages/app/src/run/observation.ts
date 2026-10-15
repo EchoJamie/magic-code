@@ -34,7 +34,7 @@ import { statSync } from 'node:fs'
 import { join } from 'node:path'
 import { resolveModelChoice } from '../agent-models.ts'
 import { cacheAccessFor } from '../cache-access.ts'
-import { ConfigError, loadConfig, type LoadedConfig } from '../config.ts'
+import { ConfigError, loadConfig, type LoadedConfig } from '@magic/config'
 import { loadGrants } from '../grants-file.ts'
 import { createFileModelInfoCache } from '../model-cache.ts'
 

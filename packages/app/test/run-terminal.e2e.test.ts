@@ -45,7 +45,7 @@ async function straysIn(sandbox: Sandbox): Promise<{ managers: string[]; executo
     .map((line) => line.replace(/--token \S+/gu, '--token [test-token]'))
 
   return {
-    managers: lines.filter((line) => line.includes('internal-engine')),
+    managers: lines.filter((line) => line.includes('engine.ts serve') || line.includes('magic-engine serve')),
     executors: lines.filter((line) => line.includes('internal-executor')),
   }
 }

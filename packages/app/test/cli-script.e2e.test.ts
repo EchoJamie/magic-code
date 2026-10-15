@@ -1,14 +1,17 @@
-/** --script 也是 App 客户端：真核心由专用 stdin 宿主持有，不在 CLI 内另装配内核。 */
+/** --script 使用独立 Engine，CLI 内不装配执行内核。 */
 import { describe, expect, test } from 'bun:test'
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createSandbox, startFixture } from './ui/index.ts'
 import { startResidentHost } from './resident-host-fixture.ts'
 import { readDatabase } from './support.ts'
+import { controlService } from '../src/run/engine-service.ts'
+import { hostDiscoveryPath } from '../src/run/host-discovery.ts'
+import { readEngineState } from '../src/run/engine-state.ts'
 
 const CLI = join(import.meta.dir, '../src/cli.ts')
 
-describe('App 连接上的脚本入口', () => {
+describe('Engine 连接上的脚本入口', () => {
   test('空脚本不建工作，真实输入与中途换模型均交给宿主管理者；CLI退出宿主仍在', async () => {
     const fixture = startFixture({ turns: [{ kind: 'text', text: '第一答' }, { kind: 'text', text: '第二答' }] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
@@ -42,20 +45,27 @@ describe('App 连接上的脚本入口', () => {
     } finally { await host.close(); await fixture.stop(); await sandbox.dispose() }
   }, 30_000)
 
-  test('源码脚本无App宿主具体失败，不绕过宿主直接执行', async () => {
-    const fixture = startFixture({ turns: [{ kind: 'text', text: '不该请求' }] })
+  test('没有 App 时脚本显式工作入口启动独立 Engine，客户端退出保留实例', async () => {
+    const fixture = startFixture({ turns: [{ kind: 'text', text: 'independent-engine-script-result' }] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
     try {
       const script = join(sandbox.root, 'script.json')
-      writeFileSync(script, JSON.stringify({ inputs: ['不可独立执行'], timeoutMs: 300 }))
+      writeFileSync(script, JSON.stringify({ inputs: ['独立执行'], timeoutMs: 5000 }))
       const child = Bun.spawn([process.execPath, CLI, '--script', script], { cwd: sandbox.workspace, env: sandbox.env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
-      const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()])
-      expect(code).toBe(1)
-      expect(stderr).toContain('源码入口须明确指定同来源的原生包')
-      expect(fixture.requests()).toHaveLength(0)
-      expect(existsSync(join(sandbox.dataDir, 'records.db'))).toBe(false)
-    } finally { await fixture.stop(); await sandbox.dispose() }
-  }, 10_000)
+      const [code, output, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+      expect({ code, stderr }, stderr).toEqual({ code: 0, stderr: '' })
+      expect(output).toContain('independent-engine-script-result')
+      expect(fixture.requests()).toHaveLength(1)
+      const record = readEngineState(hostDiscoveryPath(sandbox.home))!
+      expect(record.state).toBe('ready'); expect(record.source).toEndWith('/src/engine.ts')
+      expect(process.kill(record.pid!, 0)).toBe(true)
+      expect(record).not.toHaveProperty('app')
+    } finally {
+      expect((await controlService('remove', { home: sandbox.home })).state).toBe('stopped')
+      await fixture.stop(); await sandbox.dispose()
+    }
+  }, 15000)
+
 })
 
 test('真脚本等待两次工具中间轮之后的最终turn.end；审批答复、工具回填和最终正文完整落账', async () => {

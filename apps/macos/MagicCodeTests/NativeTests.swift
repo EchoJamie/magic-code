@@ -4,6 +4,22 @@ import SwiftUI
 import UserNotifications
 
 final class NativeTests: XCTestCase {
+    func testNativeSettingsReadFailureNeverReplaysSuccessfulWrite() async {
+        for failures in [1, 2] {
+            var reads = 0, writes = 0
+            let request = SettingsValue.object(["request": .string("write"), "home": .string("/fixture"), "base": .string("/fixture"), "configPath": .string("/fixture/config.json"),
+                "stamp": .null, "action": .object(["type": .string("prefs.set"), "reducedMotion": .bool(true)])])
+            let result = await SettingsCall.perform(request: request, apply: { _, _ in writes += 1; return "已保存" }, read: {
+                reads += 1
+                if reads <= failures { throw WireError.invalid("本次快照不可读") }
+                return self.u126Snapshot()
+            })
+            XCTAssertEqual(writes, 1); XCTAssertEqual(reads, 2); XCTAssertTrue(result.saved)
+            XCTAssertEqual(result.note, "已保存"); XCTAssertEqual(result.error != nil, failures == 2)
+            XCTAssertEqual(result.snapshot != nil, failures == 1)
+        }
+    }
+
     private func u126Snapshot() -> SettingsSnapshot {
         SettingsSnapshot(preview: .object([:]), configPath: "/fixture/config.json", base: "/fixture", stamp: "before",
             configuration: .object([
@@ -149,53 +165,6 @@ final class NativeTests: XCTestCase {
         XCTAssertFalse(model.settingsBusy); XCTAssertNil(model.settingsError)
     }
 
-    func testPlatformLifecycleSerializesStartsAndPreservesSwitchResult() throws {
-        let room = try temp(), fixture = try EnginePlatformFixture(root: room)
-        let arguments = ["start", "--validation-root", room.path]
-        let finished = expectation(description: "concurrent starts"); finished.expectedFulfillmentCount = 2
-        for _ in 0..<2 {
-            DispatchQueue.global().async {
-                do {
-                    let result = try EngineControl.perform(arguments, bundle: fixture.bundle, execute: fixture.execute)
-                    XCTAssertEqual(result.state, "ready")
-                } catch { XCTFail(String(describing: error)) }
-                finished.fulfill()
-            }
-        }
-        wait(for: [finished], timeout: 5)
-        XCTAssertEqual(fixture.bootstraps, 1)
-        let plist = try XCTUnwrap(fixture.definition)
-        XCTAssertEqual(plist["Label"] as? String, "com.magiccode.platformtest.engine")
-        XCTAssertEqual((plist["KeepAlive"] as? [String: Bool])?["SuccessfulExit"], false)
-        XCTAssertEqual(plist["RunAtLoad"] as? Bool, true)
-        XCTAssertEqual(plist["WorkingDirectory"] as? String, room.path)
-        XCTAssertNil(plist["EnvironmentVariables"])
-        let program = try XCTUnwrap(plist["ProgramArguments"] as? [String])
-        XCTAssertEqual(program[1], "--internal-engine")
-        XCTAssertTrue(program.contains("--lifecycle"))
-
-        let next = room.appendingPathComponent("next")
-        fixture.busy = true
-        let blocked = try EngineControl.perform(["switch", "--parent", next.path, "--validation-root", room.path], bundle: fixture.bundle, execute: fixture.execute)
-        XCTAssertEqual(blocked.state, "failed"); XCTAssertEqual(blocked.base, room.appendingPathComponent(".magic").path)
-        XCTAssertEqual(fixture.bootstraps, 1)
-        fixture.busy = false; fixture.failBootstrap = true
-        let failed = try EngineControl.perform(["switch", "--parent", next.path, "--validation-root", room.path], bundle: fixture.bundle, execute: fixture.execute)
-        XCTAssertEqual(failed.state, "failed"); XCTAssertEqual(failed.base, next.appendingPathComponent(".magic").path)
-        let queried = try EngineControl.perform(["status", "--validation-root", room.path], bundle: fixture.bundle, execute: fixture.execute)
-        XCTAssertEqual(queried.base, failed.base); XCTAssertEqual(fixture.bootstraps, 2)
-        fixture.failBootstrap = false
-        let restarted = try EngineControl.perform(arguments, bundle: fixture.bundle, execute: fixture.execute)
-        XCTAssertEqual(restarted.state, "ready"); XCTAssertEqual(restarted.base, failed.base)
-        let stopped = try EngineControl.perform(["stop", "--validation-root", room.path], bundle: fixture.bundle, execute: fixture.execute)
-        XCTAssertEqual(stopped.state, "stopped")
-        let last = room.appendingPathComponent("last")
-        let offline = try EngineControl.perform(["switch", "--parent", last.path, "--validation-root", room.path], bundle: fixture.bundle, execute: fixture.execute)
-        XCTAssertEqual(offline.state, "stopped"); XCTAssertEqual(fixture.bootstraps, 3)
-        XCTAssertThrowsError(try EngineControl.perform(["start", "--base", room.appendingPathComponent(".magic").path, "--validation-root", room.path], bundle: fixture.bundle, execute: fixture.execute))
-        XCTAssertEqual(fixture.bootstraps, 3)
-    }
-
     func testDiagnosticsArgumentsAndWireAreIndependentOfBuildMode() throws {
         XCTAssertEqual(try Diagnostics.arguments(["--debug", "--log-level", "trace"]), ["--debug", "--log-level", "trace"])
         XCTAssertThrowsError(try Diagnostics.arguments(["--debug", "--no-debug"]))
@@ -236,7 +205,7 @@ final class NativeTests: XCTestCase {
     private var helperApp: URL { ProcessInfo.processInfo.environment["MAGIC_NATIVE_TEST_APP"].map { URL(fileURLWithPath: $0) } ?? root.appendingPathComponent(".artifacts/macos/Magic Code.app") }
     private var root: URL { URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() }
     private func temp() throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("native-test-\(UUID().uuidString)")
+        let url = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("native-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
         return url
@@ -382,24 +351,15 @@ final class NativeTests: XCTestCase {
             workspace: URL(fileURLWithPath: "/Users/example/project"), base: URL(fileURLWithPath: "/Users/example"), session: "session-one")
         XCTAssertEqual(command, "cd -- '/Users/example/project' && MAGIC_HOME='/Users/example' '/Users/example/.local/bin/magic' resume 'session-one'")
     }
-    func testCLIConflictAndOwnedRemoval() throws {
-        let root = try temp(); let helper = root.appendingPathComponent("App.app/Contents/Helpers/magic-runtime"); let link = root.appendingPathComponent("bin/magic")
-        try CLIInstallation.install(helper: helper, at: link, app: root.appendingPathComponent("App.app"))
-        try CLIInstallation.install(helper: helper, at: link, app: root.appendingPathComponent("App.app"))
-        XCTAssertThrowsError(try CLIInstallation.install(helper: root.appendingPathComponent("other"), at: link, app: root.appendingPathComponent("Other.app")))
-        try CLIInstallation.remove(link: link, helper: root.appendingPathComponent("other")); XCTAssertTrue(try CLIInstallation.belongs(link, helper: helper))
-        try CLIInstallation.remove(link: link, helper: helper); XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: link.path))
-        XCTAssertThrowsError(try CLIInstallation.install(helper: helper, at: link, app: URL(fileURLWithPath: "/Volumes/Magic Code/App.app")))
-    }
     @MainActor func testSignedHelperNativeHandshakeInspectAndShutdown() async throws { try await hostRoundTrip() }
     @MainActor private func controlledModel(options: [String: Any], notifications: NotificationCoordinator? = nil) throws -> (AppModel, URL) {
         let room = try temp(); let app = room.appendingPathComponent("Controlled.app")
-        let helper = app.appendingPathComponent("Contents/Helpers/magic-runtime")
+        let helper = room.appendingPathComponent("components/magic-engine")
         try PrivateFiles.write(Data(contentsOf: root.appendingPathComponent("apps/macos/MagicCodeTests/Fixtures/controlled-helper.py")), to: helper, mode: 0o700)
-        let controller = app.appendingPathComponent("Contents/MacOS/control")
-        try PrivateFiles.write(Data(contentsOf: helper), to: controller, mode: 0o700)
+        try registerFixtureComponents(helper, home: room)
+        try FileManager.default.createDirectory(at: app.appendingPathComponent("Contents"), withIntermediateDirectories: true)
         addTeardownBlock {
-            _ = try? EngineControl.execute(controller, ["--internal-engine-control", "stop", "--validation-root", room.path, "--request", UUID().uuidString])
+            _ = try? EngineControl.execute(helper, ["service", "stop", "--home", room.path, "--request", UUID().uuidString])
         }
         let plist: [String: Any] = ["CFBundleIdentifier": "com.magiccode.controlled.dev", "CFBundleShortVersionString": "0.0.0", "CFBundleExecutable": "control", "CFBundlePackageType": "APPL", "MagicProtocolVersion": 1]
         try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: app.appendingPathComponent("Contents/Info.plist"))
@@ -407,6 +367,12 @@ final class NativeTests: XCTestCase {
         let model = AppModel(appURL: app, validationRoot: room, notificationPort: notifications ?? NotificationCoordinator(send: { _ in XCTFail("不得发系统通知") }))
         model.copyText = { _ in }
         return (model, room)
+    }
+    private func registerFixtureComponents(_ engine: URL, home: URL) throws {
+        let cli = home.appendingPathComponent("components/magic-cli")
+        try PrivateFiles.write(Data("#!/bin/sh\nexit 0\n".utf8), to: cli, mode: 0o700)
+        let components = InstalledComponents(engine: engine.path, cli: cli.path, command: nil)
+        try PrivateFiles.write(JSONEncoder().encode(components), to: ComponentInstallation.directory(home).appendingPathComponent("components.json"))
     }
     @MainActor private func eventually(_ condition: () -> Bool, seconds: Double = 5, file: StaticString = #filePath, line: UInt = #line) async throws {
         let deadline = Date().addingTimeInterval(seconds)
@@ -466,25 +432,18 @@ final class NativeTests: XCTestCase {
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
-    @MainActor func testConfirmedHostExitRetriesOnlyFailedIntegrationRemoval() async throws {
+    @MainActor func testRemovingAppIntegrationPreservesIndependentComponentsAndEngine() async throws {
         let (model, room) = try controlledModel(options: [:])
-        let link = URL(fileURLWithPath: model.cliDirectory).appendingPathComponent("magic")
-        try CLIInstallation.install(helper: model.helperURL, at: link, app: model.appURL)
-        var attempts = 0; var finished = 0
-        model.removeCLILink = { owned, helper in
-            attempts += 1; print("integration-removal-attempt=\(attempts)")
-            XCTAssertEqual(owned, link); XCTAssertEqual(helper, model.helperURL)
-            if attempts == 1 { throw CocoaError(.fileWriteNoPermission) }
-            try CLIInstallation.remove(link: owned, helper: helper)
-        }
         model.start(); try await eventually { model.isCurrent }
-        model.uninstallIntegration(onQuitRequest: { model.requestQuit { finished += 1 } })
-        try await eventually { if case .fault(let text) = model.phase { return text.contains("系统集成移除失败") }; return false }
-        XCTAssertEqual(attempts, 1); XCTAssertEqual(finished, 0); XCTAssertTrue(try CLIInstallation.belongs(link, helper: model.helperURL))
-        model.retry(); try await eventually { finished == 1 }; XCTAssertEqual(attempts, 2); XCTAssertEqual(finished, 1)
-        XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: link.path))
-        XCTAssertEqual(traces(room).filter { $0["event"] as? String == "started" }.count, 1)
-        XCTAssertEqual(traces(room).filter { $0["event"] as? String == "shutdown" }.count, 1)
+        let identity = model.identity, cli = try model.cliURL, engine = try model.engineURL
+        var finished = false
+        model.uninstallIntegration(onQuitRequest: { model.requestQuit { finished = true } })
+        try await eventually { finished }
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: cli.path))
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: engine.path))
+        let status = try await EngineControl.run(engine: engine, action: "status", home: room)
+        XCTAssertEqual(status.record?.identity, identity); XCTAssertEqual(status.state, "ready")
+        XCTAssertFalse(traces(room).contains { $0["event"] as? String == "shutdown" })
     }
     @MainActor func testAppExitLeavesEngineAndNewAppReusesIt() async throws {
         let (model, room) = try controlledModel(options: [:])
@@ -492,7 +451,7 @@ final class NativeTests: XCTestCase {
         let identity = model.identity
         var finished = false
         model.requestQuit { finished = true }; try await eventually { finished }
-        let result = try await EngineControl.run(app: model.appURL, action: "status", home: room)
+        let result = try await EngineControl.run(engine: try model.engineURL, action: "status", home: room)
         XCTAssertEqual(result.state, "ready"); XCTAssertEqual(result.record?.identity, identity)
         XCTAssertFalse(traces(room).contains { $0["event"] as? String == "shutdown" })
         let second = AppModel(appURL: model.appURL, validationRoot: room, notificationPort: NotificationCoordinator(send: { _ in }))
@@ -529,7 +488,7 @@ final class NativeTests: XCTestCase {
     @MainActor func testPassiveRefreshDoesNotRestartStoppedEngine() async throws {
         let (model, room) = try controlledModel(options: [:])
         model.start(); try await eventually { model.isCurrent }
-        _ = try await EngineControl.run(app: model.appURL, action: "stop", home: room)
+        _ = try await EngineControl.run(engine: try model.engineURL, action: "stop", home: room)
         model.refreshAfterWake(); try await eventually { model.phase == .stopped }
         XCTAssertEqual(traces(room).filter { $0["event"] as? String == "started" }.count, 1)
         model.requestQuit {}
@@ -543,18 +502,21 @@ final class NativeTests: XCTestCase {
         let item = try changed(XCTUnwrap(model.works.first), ["workspace": [room.appendingPathComponent("中文 空格 ' \" $()").path]])
         model.inspect(item)
         for _ in 0..<2 { model.copyCommand(item) }
-        let command = model.resumeCommand(item)
+        let command = try model.resumeCommand(item)
         XCTAssertEqual(copies, [command, command]); XCTAssertEqual(model.actionMessage, "已复制")
         XCTAssertTrue(command.contains(" resume 'session-completed'"))
         XCTAssertTrue(command.contains(TerminalCommand.quote(item.workspace[0])))
         XCTAssertTrue(command.contains("MAGIC_HOME=\(TerminalCommand.quote(room.path))"))
         XCTAssertFalse(command.contains("--open-request"))
         XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.inspect" })
-        let link = URL(fileURLWithPath: model.cliDirectory).appendingPathComponent("magic")
-        try CLIInstallation.install(helper: model.helperURL, at: link, app: model.appURL)
-        let installed = model.resumeCommand(item)
-        XCTAssertTrue(installed.contains("\(TerminalCommand.quote(link.path)) resume "))
-        XCTAssertFalse(installed.contains("Contents/Helpers/magic-runtime"))
+        XCTAssertTrue(command.contains(TerminalCommand.quote(try model.cliURL.path)))
+        XCTAssertFalse(command.contains(".app/"))
+        try FileManager.default.removeItem(at: model.cliURL)
+        model.copyCommand(item)
+        XCTAssertEqual(copies.count, 2)
+        XCTAssertTrue(model.actionMessage?.contains("缺少终端组件") == true)
+        XCTAssertTrue(model.isCurrent)
+
     }
 
     @MainActor func testStatusPanelNaturalWindowKeepsUnreadResultVisible() async throws {
@@ -797,12 +759,12 @@ final class NativeTests: XCTestCase {
         }
         let bundle = "com.magiccode.validation." + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased() + ".dev"
         let app = room.appendingPathComponent("Magic Code 系统验收.app")
-        let helper = app.appendingPathComponent("Contents/Helpers/magic-runtime")
+        let helper = room.appendingPathComponent("components/magic-engine")
         try PrivateFiles.write(Data(contentsOf: root.appendingPathComponent("apps/macos/MagicCodeTests/Fixtures/controlled-helper.py")), to: helper, mode: 0o700)
-        let controller = app.appendingPathComponent("Contents/MacOS/control")
-        try PrivateFiles.write(Data(contentsOf: helper), to: controller, mode: 0o700)
+        try registerFixtureComponents(helper, home: room)
+        try FileManager.default.createDirectory(at: app.appendingPathComponent("Contents"), withIntermediateDirectories: true)
         addTeardownBlock {
-            _ = try? EngineControl.execute(controller, ["--internal-engine-control", "stop", "--validation-root", room.path, "--request", UUID().uuidString])
+            _ = try? EngineControl.execute(helper, ["service", "stop", "--home", room.path, "--request", UUID().uuidString])
         }
         let plist: [String: Any] = ["CFBundleIdentifier": bundle, "CFBundleShortVersionString": "0.0.0", "CFBundleExecutable": "control",
                                     "CFBundlePackageType": "APPL", "MagicProtocolVersion": 1, "MagicSystemTestRoot": room.path]
@@ -827,7 +789,7 @@ final class NativeTests: XCTestCase {
     }
 
     @MainActor private func pushWorks(_ works: [NativeWork], to room: URL) throws {
-        let helper = room.appendingPathComponent("Magic Code 系统验收.app/Contents/Helpers/magic-runtime")
+        let helper = room.appendingPathComponent("components/magic-engine")
         let raw = try works.map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
         try JSONSerialization.data(withJSONObject: ["systemTest": true, "source": helper.path, "works": raw]).write(to: room.appendingPathComponent("control.json"))
     }
@@ -1052,31 +1014,34 @@ final class NativeTests: XCTestCase {
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
-    @MainActor func testCLIInstallationCommitsCandidateOnlyAfterSuccess() throws {
+    @MainActor func testCLIInstallationCommitsCandidateOnlyAfterSuccess() async throws {
         let room = try temp()
         let model = AppModel(appURL: helperApp, validationRoot: room, notificationPort: NotificationCoordinator(send: { _ in XCTFail("安装命令不得发送通知") }))
         defer { model.requestQuit {} }
         let preferences = try XCTUnwrap(UserDefaults(suiteName: "\(room.path)/MagicCode.Validation"))
         let original = model.cliDirectory
         model.installCLI()
+        try await eventually { !model.engineBusy }
         XCTAssertEqual(preferences.string(forKey: "cliDirectory"), original)
-        XCTAssertTrue(try CLIInstallation.belongs(URL(fileURLWithPath: original).appendingPathComponent("magic"), helper: model.helperURL))
+        XCTAssertEqual(URL(fileURLWithPath: original).appendingPathComponent("magic").resolvingSymlinksInPath(), try model.cliURL)
 
         let blocked = room.appendingPathComponent("occupied-bin")
         let sentinel = Data("user-owned command".utf8)
         try PrivateFiles.write(sentinel, to: blocked.appendingPathComponent("magic"), mode: 0o600)
         model.installCLI(at: blocked.path)
+        try await eventually { !model.engineBusy }
         XCTAssertEqual(model.cliDirectory, original, "安装失败不能替换当前目录")
         XCTAssertEqual(preferences.string(forKey: "cliDirectory"), original, "安装失败不能持久化候选目录")
-        XCTAssertTrue(model.actionMessage?.contains("已被占用") == true)
+        XCTAssertTrue(model.actionMessage?.contains("已被其他文件占用") == true)
         XCTAssertEqual(try Data(contentsOf: blocked.appendingPathComponent("magic")), sentinel)
-        XCTAssertTrue(try CLIInstallation.belongs(URL(fileURLWithPath: model.cliDirectory).appendingPathComponent("magic"), helper: model.helperURL))
+        XCTAssertEqual(URL(fileURLWithPath: model.cliDirectory).appendingPathComponent("magic").resolvingSymlinksInPath(), try model.cliURL)
 
         let candidate = room.appendingPathComponent("new-bin")
         model.installCLI(at: candidate.path)
+        try await eventually { !model.engineBusy }
         XCTAssertEqual(model.cliDirectory, candidate.path)
         XCTAssertEqual(preferences.string(forKey: "cliDirectory"), candidate.path)
-        XCTAssertTrue(try CLIInstallation.belongs(candidate.appendingPathComponent("magic"), helper: model.helperURL))
+        XCTAssertEqual(candidate.appendingPathComponent("magic").resolvingSymlinksInPath(), try model.cliURL)
     }
 
     @MainActor func testSettingsWriteReceiptsSurviveQueuedReadsAndConflictRecovery() async throws {
@@ -1255,7 +1220,7 @@ final class NativeTests: XCTestCase {
 
     @MainActor private func hostRoundTrip() async throws {
         let app = helperApp
-        let helper = app.appendingPathComponent("Contents/Helpers/magic-runtime")
+        let helper = app.appendingPathComponent("Contents/Helpers/magic-engine")
         // 与 Engine 的 realpath 身份一致；Foundation 会把 /private/var 缩回 /var。
         let sourcePath = try XCTUnwrap(realpath(helper.path, nil)); defer { free(sourcePath) }
         let source = String(cString: sourcePath)
@@ -1265,7 +1230,7 @@ final class NativeTests: XCTestCase {
         try PrivateFiles.write(Data(), to: errors)
         let errorLog = try FileHandle(forWritingTo: errors); defer { try? errorLog.close() }
         let process = Process(); process.executableURL = helper
-        process.arguments = ["--internal-engine", "--home", room.path, "--parent", room.path, "--source", source, "--app", app.path, "--discovery", discovery.path, "--lifecycle", UUID().uuidString]
+        process.arguments = ["serve", "--home", room.path, "--parent", room.path, "--source", source, "--discovery", discovery.path, "--lifecycle", UUID().uuidString]
         process.environment = ["HOME": room.path, "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"]
         process.standardInput = FileHandle.nullDevice; process.standardOutput = FileHandle.nullDevice; process.standardError = errorLog
         try process.run()
@@ -1403,7 +1368,7 @@ final class NativeTests: XCTestCase {
         window.close()
         try await appKitEventually { !window.isVisible && !window.isKeyWindow && spy.log.last == .accessory }
         XCTAssertEqual(policy.presentCount, 0)
-        let status = try await EngineControl.run(app: model.appURL, action: "status", home: room)
+        let status = try await EngineControl.run(engine: try model.engineURL, action: "status", home: room)
         XCTAssertEqual(status.state, "ready")
         XCTAssertEqual(status.record?.identity, identity, "关闭主窗口保留同一 Engine 实例")
         XCTAssertFalse(traces(room).contains { $0["event"] as? String == "shutdown" })
@@ -1511,55 +1476,6 @@ final class NativeTests: XCTestCase {
 }
 
 /// 只替换短进程边界；平台锁、plist、实例选择与失败提交走正式实现。
-private final class EnginePlatformFixture: @unchecked Sendable {
-    let bundle: Bundle
-    var busy = false
-    var failBootstrap = false
-    var bootstraps = 0
-    var definition: [String: Any]?
-    private var states: [String: String] = [:]
-    private var parent = ""
-    init(root: URL) throws {
-        let app = root.appendingPathComponent("Platform.app"), contents = app.appendingPathComponent("Contents")
-        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
-        let info = ["CFBundleIdentifier": "com.magiccode.platformtest", "CFBundlePackageType": "APPL", "CFBundleExecutable": "control"]
-        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: contents.appendingPathComponent("Info.plist"))
-        bundle = try XCTUnwrap(Bundle(url: app))
-    }
-    func execute(_ executable: URL, _ arguments: [String], _ input: Data?) throws -> (Int32, Data) {
-        if executable.path == "/bin/launchctl" {
-            if arguments[0] == "bootout" {
-                XCTAssertEqual(arguments[1], "gui/\(getuid())/com.magiccode.platformtest.engine")
-                return (ESRCH, Data())
-            }
-            XCTAssertEqual(arguments[0], "bootstrap"); XCTAssertEqual(arguments[1], "gui/\(getuid())")
-            bootstraps += 1
-            definition = try PropertyListSerialization.propertyList(from: Data(contentsOf: URL(fileURLWithPath: arguments[2])), format: nil) as? [String: Any]
-            if failBootstrap { return (5, Data()) }
-            states[parent] = "ready"; return (0, Data())
-        }
-        XCTAssertEqual(executable.lastPathComponent, "magic-runtime")
-        XCTAssertEqual(arguments, ["--internal-engine-call"])
-        let request = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(input)) as? [String: Any])
-        parent = try XCTUnwrap(request["parent"] as? String)
-        let action = try XCTUnwrap(request["action"] as? String)
-        switch action {
-        case "prepare": states[parent] = "starting"
-        case "stop":
-            if busy && request["idleOnly"] as? Bool == true {
-                return (0, try JSONEncoder().encode(EngineControlResult(state: "failed", base: parent + "/.magic", alive: true, record: nil, error: "仍有工作")))
-            }
-            states[parent] = "stopped"
-        case "fail-start": states[parent] = "failed"
-        case "status": break
-        default: XCTFail("unexpected \(action)")
-        }
-        let state = states[parent] ?? "stopped"
-        let record = HostDiscovery(protocol: 1, version: "0.1.0", source: executable.path, serviceInstance: "test-generation", socket: parent + "/test.sock", base: parent + "/.magic", app: bundle.bundleURL.path, lifecycle: "test-lifecycle", pid: nil, startedAt: nil, state: state, request: nil, error: nil)
-        return (0, try JSONEncoder().encode(EngineControlResult(state: state, base: record.base, alive: state == "ready", record: record, error: nil)))
-    }
-}
-
 private final class NativeMessages {
     var requests: [NativeRequest] = []
     var catalog: String? { requests.reversed().compactMap { if case .sessions(let request, _, _, _) = $0 { return request }; return nil }.first }

@@ -941,6 +941,10 @@ describe('D57 · 命令退出与进程组寿命分离', () => {
     reader.releaseLock()
     child.process.stdin.end()
     await child.process.exited
+    // 整组 KILL 后，exited 只确认组长已被回收；后代的系统回收可稍后完成。
+    // 只观察整组消失，不补发信号或重复关闭控制通道。
+    const deadline = Date.now() + 1000
+    while (groupAlive(child.process.pid) && Date.now() < deadline) await Bun.sleep(10)
     expect(groupAlive(child.process.pid)).toBe(false)
   })
 

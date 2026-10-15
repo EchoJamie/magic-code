@@ -268,9 +268,12 @@ private struct WorkDetail: View {
                 }
                 SettingsCard(title: "接回对话") {
                     Text("复制后，在你的终端执行以下命令。").font(.caption).foregroundStyle(.secondary)
-                    Text(model.resumeCommand(work)).font(.system(.caption, design: .monospaced))
-                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                        .accessibilityIdentifier("work-resume-command")
+                    if let command = try? model.resumeCommand(work) {
+                        Text(command).font(.system(.caption, design: .monospaced)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled).accessibilityIdentifier("work-resume-command")
+                    } else {
+                        Text("终端组件缺失，请先修复安装。").foregroundStyle(.secondary)
+                        Button("修复终端组件") { model.installCLI() }
+                    }
                     Button("复制接回命令", systemImage: "doc.on.doc") { model.copyCommand(work) }.buttonStyle(.borderedProminent)
                         .accessibilityIdentifier("copy-work-resume-command")
                 }

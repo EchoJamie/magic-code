@@ -351,7 +351,9 @@ test('原生停止绑定当前输入代次，旧菜单不误停下一轮，同�
     ]
     for (const entry of entries) expected.push({ ...entry, id: records.appendEntry(entry) })
   }
-  store.attention.put({ id: 'history-done', session: 'history-session', kind: 'done', at: 100, fact: 'finished', unread: true, delivered: false })
+  const finished: import('@magic/contracts').KernelEvent = { id: records.nextId(), session: 'history-session', turn: null, at: 100, kind: 'turn.end', data: { reason: 'settled' } }
+  store.appendEvent(finished)
+  store.attention.put({ id: 'history-done', session: 'history-session', kind: 'done', at: 100, fact: String(finished.id), source: { session: 'history-session', event: finished.id }, unread: true, delivered: false })
   let spawns = 0
   const started = await startManager({ ...g, launch: { spawn() { spawns++; throw new Error('只读回放不得执行') } } })
   if (started.role !== 'manager') throw new Error('启动失败')

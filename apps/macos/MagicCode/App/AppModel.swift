@@ -55,13 +55,12 @@ import ServiceManagement
     @Published private(set) var selectedBase: URL?
     var effectiveBase: URL { selectedBase ?? userHome }
     let appURL: URL
-    let helperURL: URL
+    var engineURL: URL { get throws { try ComponentInstallation.engine(userHome) } }
+    var cliURL: URL { get throws { try ComponentInstallation.cli(userHome) } }
     let userHome: URL
     let isValidation: Bool
-    let publication: HostPublication
     var copyText: (String) -> Void = { text in NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
     let notifications: NotificationCoordinator
-    var removeCLILink: (URL, URL) throws -> Void = { try CLIInstallation.remove(link: $0, helper: $1) }
     private let defaults: UserDefaults
     @Published private(set) var engineBusy = false
     @Published var showEngineStopConfirmation = false
@@ -92,7 +91,6 @@ import ServiceManagement
         let bundle = Bundle(url: appURL) ?? Bundle.main
         expectedVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
         expectedProtocol = bundle.object(forInfoDictionaryKey: "MagicProtocolVersion") as? Int ?? 1
-        helperURL = appURL.appendingPathComponent("Contents/Helpers/magic-runtime").resolvingSymlinksInPath()
         isValidation = validationRoot != nil
         userHome = validationRoot ?? FileManager.default.homeDirectoryForCurrentUser
         // **验证身份的偏好必须落在它自己的临时根里。** `UserDefaults(suiteName:)` 的名字里带路径时，
@@ -100,28 +98,22 @@ import ServiceManagement
         // `~/Library/Preferences/`；而 cfprefsd 是**异步**刷盘的，测试 teardown 删完它还会再刷回来
         // ——U106 实测：跑一次 `check.sh` 漏 3 条，两侧读数 0 → 3。
         defaults = validationRoot.map { UserDefaults(suiteName: "\($0.path)/MagicCode.Validation")! } ?? .standard
-        // **验证身份仍然先走它自己的固定根** —— 测试副本的隔离靠的是**这一支**（外加
-        // 独立 validation 身份与 capability 文件），**不靠**原先那个按 bundle 后缀认的
-        // 旧身份。U109 起只有一个身份（`com.magiccode.app`），没有那套单独落点，故这里不再分叉。
-        if let validationRoot { selectedBase = validationRoot }
-        else { selectedBase = defaults.string(forKey: "baseDirectory").map { URL(fileURLWithPath: $0) } }
+        selectedBase = try? ComponentInstallation.selectedParent(userHome, legacyParent: defaults.string(forKey: "baseDirectory"))
         settingsCategory = defaults.string(forKey: "settingsCategory") ?? "models"
         cliDirectory = defaults.string(forKey: "cliDirectory") ?? userHome.appendingPathComponent(".local/bin").path
         // 「提醒我」默认开：没说不要，就是要（关掉它＝让 Magic 闭嘴）。
         notificationsEnabled = defaults.object(forKey: "notificationsEnabled") as? Bool ?? true
-        let support = userHome.appendingPathComponent("Library/Application Support/Magic Code/runtime")
-        publication = HostPublication(directory: support)
         notifications = notificationPort ?? NotificationCoordinator()
         fileLog.changed = { [weak self] problem in self?.logProblem = problem }
         notifications.preference = notificationsEnabled
         sessions.send = { [weak self] request in self?.observer?.send(request) }
         sessions.copy = { [weak self] session in
             guard let self else { return }
-            let link = URL(fileURLWithPath: self.cliDirectory).appendingPathComponent("magic")
-            let executable = (try? CLIInstallation.belongs(link, helper: self.helperURL)) == true ? link : self.helperURL
-            self.copyText(TerminalCommand.make(helper: executable,
-                workspace: session.workspace?.first.map { URL(fileURLWithPath: $0) } ?? self.userHome,
-                base: self.effectiveBase, session: session.id))
+            do {
+                self.copyText(TerminalCommand.make(helper: try self.cliURL,
+                    workspace: session.workspace?.first.map { URL(fileURLWithPath: $0) } ?? self.userHome,
+                    base: self.effectiveBase, session: session.id))
+            } catch { self.actionMessage = error.localizedDescription }
         }
         notifications.userLooking = { [weak self] session, id in self?.sessions.isPresenting(session: session, notice: id) == true }
         notifications.currentWorks = { [weak self] sessions in await self?.currentNoticeWorks(sessions) ?? [] }
@@ -168,8 +160,17 @@ import ServiceManagement
     }
 
     func start() {
-        engine(CommandLine.arguments.contains("--settings") ? "status" : "start")
-        readSettings()
+        Task {
+            do {
+                if FileManager.default.isExecutableFile(atPath: appURL.appendingPathComponent("Contents/Helpers/magic-engine").path) {
+                    let installed = try await ComponentInstallation.install(app: appURL, home: userHome, legacyParent: defaults.string(forKey: "baseDirectory"))
+                    if let command = installed.command { cliDirectory = URL(fileURLWithPath: command).deletingLastPathComponent().path }
+                    defaults.removeObject(forKey: "baseDirectory")
+                }
+            } catch { actionMessage = error.localizedDescription }
+            engine(CommandLine.arguments.contains("--settings") ? "status" : "start")
+            readSettings()
+        }
             if !isValidation {
                 refreshLogin()
                 tokens.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -199,13 +200,13 @@ import ServiceManagement
         Task {
             defer { engineBusy = false }
             do {
-                let result = try await EngineControl.run(app: appURL, action: action, home: isValidation ? userHome : nil,
+                let result = try await EngineControl.run(engine: try engineURL, action: action, home: userHome,
                                                          parent: parent, expected: target, request: request)
                 if action == "switch", let parent, result.base.map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath() }) == parent.appendingPathComponent(".magic").resolvingSymlinksInPath() { selectedBase = parent; settingsSnapshot = nil; settingsError = nil; readSettings() }
                 if let base = result.base { runtimeBase = base; configPath = URL(fileURLWithPath: base).appendingPathComponent("config.json").path }
                 if let found = result.record {
                     guard found.identity.protocol == expectedProtocol, found.version == expectedVersion,
-                          URL(fileURLWithPath: found.source).resolvingSymlinksInPath() == helperURL else { throw WireError.invalid("Engine 来源或版本不匹配") }
+                          URL(fileURLWithPath: found.source).resolvingSymlinksInPath() == (try engineURL) else { throw WireError.invalid("Engine 来源或版本不匹配") }
                     identity = found.identity
                 }
                 if action == "switch", result.state == "failed", let found = result.record, found.state == "ready" {
@@ -305,13 +306,19 @@ import ServiceManagement
         }
     }
     func rememberSettingsCategory(_ category: String) { settingsCategory = category; defaults.set(category, forKey: "settingsCategory") }
+    private func refreshSelection() throws {
+        let parent = try ComponentInstallation.selectedParent(userHome, legacyParent: defaults.string(forKey: "baseDirectory"))
+        if parent.resolvingSymlinksInPath() != effectiveBase.resolvingSymlinksInPath() { selectedBase = parent; settingsSnapshot = nil }
+    }
     func readSettings(preview: SettingsValue? = nil) {
+        do { try refreshSelection() } catch { settingsError = error.localizedDescription; return }
         if settingsBusy { queuedSettingsRead = true; if let preview { queuedSettingsPreview = preview }; return }
         callSettings(action: nil, stamp: nil, key: nil, preview: preview)
         readRuntimeSettings()
     }
     func applySettings(_ action: SettingsValue, stamp: String?, key: String) {
         guard !settingsBusy else { return }
+        do { try refreshSelection() } catch { settingsError = error.localizedDescription; return }
         settingsError = nil; settingsErrorFromWrite = false; settingsNote = nil; settingsSavedKey = nil
         guard let snapshot = settingsSnapshot,
               URL(fileURLWithPath: snapshot.base).resolvingSymlinksInPath() == effectiveBase.appendingPathComponent(".magic").resolvingSymlinksInPath() else {
@@ -339,7 +346,7 @@ import ServiceManagement
                 }
             }
             do {
-                let result = try await SettingsCall.run(helper: helperURL, request: .object(fields), environment: environment)
+                let result = try await SettingsCall.run(metadataURL: appURL.appendingPathComponent("Contents/Resources/settings-data.json"), request: .object(fields), environment: environment)
                 guard result.request == request, result.base == base, result.configPath == path else { throw WireError.invalid(result.error ?? "设置返回的目标不一致") }
                 guard effectiveBase.appendingPathComponent(".magic").path == base else { throw WireError.invalid("所选数据位置已改变；原位置的结果未应用到新页面，请重新读取") }
                 // 刷新可修复读失败，但不能覆盖尚需用户处理的写失败或保存回执。
@@ -492,15 +499,13 @@ import ServiceManagement
         let request = UUID().uuidString
         sessions.manage([SessionManagement(session: work.session, action: "archive")], request: request)
     }
-    func resumeCommand(_ work: NativeWork) -> String {
-        let link = URL(fileURLWithPath: cliDirectory).appendingPathComponent("magic")
-        let executable = (try? CLIInstallation.belongs(link, helper: helperURL)) == true ? link : helperURL
-        return TerminalCommand.make(helper: executable, workspace: work.workspace.first.map { URL(fileURLWithPath: $0) } ?? userHome,
-                                    base: effectiveBase, session: work.session)
+    func resumeCommand(_ work: NativeWork) throws -> String {
+        TerminalCommand.make(helper: try cliURL, workspace: work.workspace.first.map { URL(fileURLWithPath: $0) } ?? userHome,
+                             base: effectiveBase, session: work.session)
     }
     func copyCommand(_ work: NativeWork) {
-        copyText(resumeCommand(work))
-        actionMessage = "已复制"
+        do { copyText(try resumeCommand(work)); actionMessage = "已复制" }
+        catch { actionMessage = error.localizedDescription }
     }
     func openNotification(_ route: NoticeRoute) {
         sessions.open(route: route); mainPage = .sessions; showMainWindow?()
@@ -551,36 +556,36 @@ import ServiceManagement
         do { if value { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }; refreshLogin() }
         catch { actionMessage = error.localizedDescription; refreshLogin() }
     }
-    func installCLI(at directory: String? = nil) {
-        let candidate = directory ?? cliDirectory
-        do {
-            try CLIInstallation.install(helper: helperURL, at: URL(fileURLWithPath: candidate).appendingPathComponent("magic"), app: appURL)
-            cliDirectory = candidate
-            defaults.set(cliDirectory, forKey: "cliDirectory"); actionMessage = "终端命令已安装：\(cliDirectory)/magic"
-        } catch { actionMessage = error.localizedDescription }
-    }
-    func uninstallIntegration(onQuitRequest: @escaping @MainActor () -> Void = { NSApp.terminate(nil) }) {
+    func installCLI(at directory: String? = nil, upgrade: Bool = false) {
         guard !engineBusy else { return }
+        let candidate = directory ?? cliDirectory
         engineBusy = true
         Task {
             defer { engineBusy = false }
             do {
-                let result = try await EngineControl.run(app: appURL, action: "remove", home: isValidation ? userHome : nil, expected: identity)
-                guard result.state == "stopped" else { throw WireError.invalid(result.error ?? "Engine 停止尚未确认") }
-                removingIntegration = true; onQuitRequest()
+                let installed = try await ComponentInstallation.install(app: appURL, home: userHome, bin: candidate,
+                    legacyParent: defaults.string(forKey: "baseDirectory"), upgrade: upgrade)
+                guard let command = installed.command else { throw WireError.invalid("终端组件安装未完成") }
+                cliDirectory = URL(fileURLWithPath: command).deletingLastPathComponent().path
+                defaults.set(cliDirectory, forKey: "cliDirectory"); defaults.removeObject(forKey: "baseDirectory")
+                actionMessage = "组件安装已完成：\(command)"
+                readSettings()
             } catch { actionMessage = error.localizedDescription }
         }
+    }
+    func uninstallIntegration(onQuitRequest: @escaping @MainActor () -> Void = { NSApp.terminate(nil) }) {
+        removingIntegration = true
+        onQuitRequest()
     }
     private func finishQuit() {
         do {
             if removingIntegration {
                 if !isValidation, [.enabled, .requiresApproval].contains(SMAppService.mainApp.status) { try SMAppService.mainApp.unregister() }
-                try removeCLILink(URL(fileURLWithPath: cliDirectory).appendingPathComponent("magic"), helperURL)
             }
             validationEvent("app.clean-exit", detail: "")
             fileLog.write(.info, "app.stopped")
             fileLog.close { [weak self] in self?.cleanExit?() }
-        } catch { phase = .fault("工作已停止，但系统集成移除失败：\(error.localizedDescription)"); onUnconfirmedShutdown?() }
+        } catch { phase = .fault("App 系统集成移除失败：\(error.localizedDescription)"); onUnconfirmedShutdown?() }
     }
     private func recordDiagnostic(_ text: String) {
         // stderr may be routine output and may contain credentials. Keep only its occurrence.

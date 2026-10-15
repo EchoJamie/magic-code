@@ -4,11 +4,10 @@
   "message": {
     "protocol": 1,
     "version": "0.0.0",
-    "source": "/Applications/Magic Code.app/Contents/Helpers/magic-runtime",
+    "source": "/Users/example/Library/Application Support/Magic Code/components/magic-engine",
     "serviceInstance": "service-one",
     "socket": "/tmp/native-fixture/m.sock",
     "base": "/tmp/native-fixture/.magic",
-    "app": "/Applications/Magic Code.app",
     "lifecycle": "lifecycle-one",
     "state": "ready"
   }

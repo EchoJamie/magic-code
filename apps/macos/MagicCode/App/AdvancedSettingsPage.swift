@@ -66,7 +66,7 @@ struct AdvancedSettingsPage: View {
                     MagicIcon(name: "exclamationmark.triangle")
                     VStack(alignment: .leading, spacing: 5) {
                         Text("移除系统集成并退出").font(.headline)
-                        Text("撤销登录项与属于本 App 的终端链接，保留记录和配置。").font(.caption).foregroundStyle(.secondary)
+                        Text("撤销 App 登录项并退出，CLI、Engine、记录和配置保留。").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("移除…", role: .destructive) { editing = .integration }.accessibilityIdentifier("remove-integration")
@@ -87,7 +87,7 @@ struct AdvancedSettingsPage: View {
                 DiagnosticsEditor(model: model, snapshot: snapshot, drafts: drafts, draft: drafts.draft("diagnostics", .object(["type": .string("diagnostics.set"), "debugMode": .bool(model.diagnostics.debugMode), "logLevel": .string(model.diagnostics.logLevel.rawValue)]), stamp: snapshot.stamp)) { editing = nil }
             case .integration:
                 SettingsSheet(title: "移除系统集成并退出", subtitle: "作用于这台 Mac 上属于本 App 的系统集成", icon: "exclamationmark.triangle", preferredHeight: 280) {
-                    Text("撤销登录项并移除属于本 App 的 magic 终端链接。操作完成后退出 Magic Code；记录和配置保留，之后可在 Finder 删除 App。")
+                    Text("撤销 App 登录项并退出 Magic Code，之后可在 Finder 删除 App。CLI 与 Engine 继续可用，运行中的工作、记录和配置保留。")
                 } footer: {
                     VStack(alignment: .leading, spacing: 12) {
                         Divider()

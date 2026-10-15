@@ -2,7 +2,7 @@ import { NATIVE_PROTOCOL, SOFTWARE_VERSION, resolveMagicHome, type HostDiscovery
 import { startTimeOf } from '@magic/execution'
 import { tmpdir } from 'node:os'
 import { isAbsolute } from 'node:path'
-import { loadConfig } from '../config.ts'
+import { loadConfig } from '@magic/config'
 import { runPathsOf } from './paths.ts'
 import { createAgentLauncher } from './launch.ts'
 import { startManager } from './manager.ts'
@@ -16,13 +16,13 @@ export async function runEngine(argv: readonly string[]): Promise<number> {
     if (!found) throw new Error(`缺少启动参数 ${name}`)
     return found
   }
-  const home = value('--home'), parent = value('--parent'), app = value('--app'), discovery = value('--discovery'), source = value('--source'), lifecycle = value('--lifecycle')
-  if (![home, parent, app, discovery, source].every(isAbsolute) || source !== softwareSource()) throw new Error('Engine 启动身份不匹配')
+  const home = value('--home'), parent = value('--parent'), discovery = value('--discovery'), source = value('--source'), lifecycle = value('--lifecycle')
+  if (![home, parent, discovery, source].every(isAbsolute) || source !== softwareSource()) throw new Error('Engine 启动身份不匹配')
   const magic = resolveMagicHome({ MAGIC_HOME: parent }, home)
   const paths = runPathsOf(magic, tmpdir())
   let state: HostDiscovery = {
     protocol: NATIVE_PROTOCOL, version: SOFTWARE_VERSION, source, serviceInstance: crypto.randomUUID(),
-    base: magic.base, socket: paths.socket, app, lifecycle, state: 'starting', pid: process.pid, startedAt: await startTimeOf(process.pid),
+    base: magic.base, socket: paths.socket, lifecycle, state: 'starting', pid: process.pid, startedAt: await startTimeOf(process.pid),
   }
   const publish = () => writeEngineState(discovery, state)
   publish()

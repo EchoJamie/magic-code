@@ -1,20 +1,20 @@
 import { diagnosticsOf, type MagicHome } from '@magic/contracts'
 import { saveDiagnostics } from './diagnostics.ts'
-import { statusLinePreview } from '@magic/tui'
 /** 原生设置的应用动作；复用配置解析、保存、缓存和授权，不装配工作。 */
 import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
-import type { SettingsAction, SettingsSnapshot, SettingsPreview, ModelSelectionRef, ModelSwitchRequest } from '@magic/contracts'
+import type { SettingsAction, SettingsSnapshot, ModelSelectionRef, ModelSwitchRequest } from '@magic/contracts'
 import { expandHome, GRANTS_FILE_NAME, apiKeyEnvVarOf } from '@magic/contracts'
 import { createWorkspaceService } from '@magic/execution'
 import { parseRules } from '@magic/permission'
 import type { FetchLike, ModelInfoService } from '@magic/model'
 import { createModelInfoService, resolveConnection, selectModel, vendorCatalog } from '@magic/model'
-import { loadConfig, parseConfig, type LoadedConfig } from './config.ts'
-import { editConfigFile, saveProvider, removeProvider, configureModel, setPrefs } from './config-save.ts'
+import { loadConfig, parseConfig, type LoadedConfig } from '@magic/config'
+import { editConfigFile, saveProvider, removeProvider, configureModel, setPrefs } from '@magic/config'
 import { commitGrants, loadGrants } from './grants-file.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
-import { cacheAccessFor, connectionScopeChanged, configStamp } from './cache-access.ts'
+import { configStamp } from '@magic/config'
+import { cacheAccessFor, connectionScopeChanged } from './cache-access.ts'
 import { resolveModelChoice } from './agent-models.ts'
 import { providerCatalog, readModelCatalog } from './run/observation.ts'
 export type SettingsContext = {
@@ -44,7 +44,7 @@ export function createSettings(context: SettingsContext) {
     }
     return info
   }
-  async function read(preview?: SettingsPreview): Promise<SettingsSnapshot> {
+  async function read(): Promise<Omit<SettingsSnapshot, 'preview'>> {
     const stamp = configStamp(configPath)
     const loaded = loadConfig({ magic: context.magic, path: configPath })
     const config = loaded.config
@@ -81,7 +81,6 @@ export function createSettings(context: SettingsContext) {
     if (configStamp(grantPath) !== grantStamp) throw new Error('授权在读取期间已改变，请重新读取')
     if (configStamp(configPath) !== stamp) throw new Error('配置在读取期间已改变，请重新读取')
     return {
-      preview: statusLinePreview(preview?.statusLine ?? config.statusLine ?? { cells: ['session', 'context'] }, preview?.columns ?? 80, preview?.reducedMotion ?? config.motion?.reduced === true),
       configPath, base: context.magic.base, stamp, configuration, catalog,
       vendors: vendorCatalog(), sources,
       grants: Object.entries(grants.file.workspaces).map(([workspace, entries]) => ({ workspace, entries })),
@@ -195,7 +194,9 @@ export function createSettings(context: SettingsContext) {
     const modelCache = createFileModelInfoCache(context.magic.base)
     for (const { provider, config, snapshot } of snapshots) {
       if (snapshot !== undefined && !connectionScopeChanged(config, reloaded.config.providers[provider])) {
-        await modelCache.replace(snapshot, cacheAccessFor({ provider, configPath, apiKey: reloaded.config.providers[provider]?.apiKey, processToken }))
+        const access = cacheAccessFor({ provider, configPath, apiKey: reloaded.config.providers[provider]?.apiKey, processToken })
+        if (configStamp(configPath) !== reloaded.stamp) throw new Error('配置在读取期间已改变，请重新刷新列表')
+        await modelCache.replace(snapshot, access)
       }
     }
     modelInfo(reloaded)

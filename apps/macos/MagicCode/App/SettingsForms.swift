@@ -195,10 +195,11 @@ struct SettingsPath: View {
 struct AppSettingsPage: View {
     @ObservedObject var model: AppModel
     @State private var editingCLI = false
+    @State private var upgrading = false
     @State private var cliDraft = ""
     private var cliStatus: String {
         let path = URL(fileURLWithPath: model.cliDirectory).appendingPathComponent("magic")
-        if (try? CLIInstallation.belongs(path, helper: model.helperURL)) == true { return "magic 命令已连接本 App" }
+        if let cli = try? model.cliURL, path.resolvingSymlinksInPath() == cli { return "magic 命令已连接独立 CLI" }
         return FileManager.default.fileExists(atPath: path.path) ? "安装位置已被其他文件占用" : "此目录尚未安装 magic 命令"
     }
     var body: some View {
@@ -235,11 +236,17 @@ struct AppSettingsPage: View {
             }.id("cli")
             if let message = model.actionMessage { Text(message).foregroundStyle(.secondary).textSelection(.enabled) }
         }.toggleStyle(.switch)
+        .confirmationDialog("升级 CLI 与 Engine 到 App 所带版本 \(model.appVersion)？", isPresented: $upgrading, titleVisibility: .visible) {
+            Button("停止 Engine 并升级组件") { model.installCLI(at: cliDraft, upgrade: true) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("此次明确替换 CLI 和 Engine。Engine 将先停止并完成工作资源收尾；配置和记录保留，升级后需要明确启动 Engine。")
+        }
         .sheet(isPresented: $editingCLI) {
             SettingsSheet(title: "管理终端命令", subtitle: "安装后，在终端输入 magic 即可开始工作。", icon: "terminal") {
                 SettingsCard(title: "安装位置") {
                     SettingText(title: "目录", value: $cliDraft, multiline: true).accessibilityIdentifier("cli-directory")
-                    Text("将创建指向本 App 内置 CLI 的 magic 链接。已有其他文件不会被覆盖；移动 App 后可在这里重新安装。").font(.callout).foregroundStyle(.secondary)
+                    Text("补齐独立 CLI 与 Engine，并创建 magic 命令。已有同版组件会复用；移动或删除 App 不影响终端使用。").font(.callout).foregroundStyle(.secondary)
                     Text(URL(fileURLWithPath: cliDraft).appendingPathComponent("magic").path).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
                 }
                 SettingsCard(title: "让终端找到命令") {
@@ -253,8 +260,9 @@ struct AppSettingsPage: View {
                 HStack {
                     Button("关闭") { editingCLI = false }.keyboardShortcut(.cancelAction)
                     Spacer()
-                    Button("安装 magic 命令") { model.installCLI(at: cliDraft) }
-                        .buttonStyle(.borderedProminent).disabled(cliDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("升级 CLI 与 Engine…") { upgrading = true }.disabled(model.engineBusy)
+                    Button("安装或修复命令") { model.installCLI(at: cliDraft) }
+                        .buttonStyle(.borderedProminent).disabled(model.engineBusy || cliDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }.controlSize(.large)
             }
         }

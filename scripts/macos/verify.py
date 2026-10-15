@@ -80,7 +80,10 @@ def environment(room):
 def stop_engine(app, room):
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     assert info['CFBundleIdentifier'].startswith('com.magiccode.validation.') and info['MagicSystemTestRoot'] == str(room)
-    result = subprocess.run([str(app / 'Contents/MacOS/MagicCode'), '--internal-engine-control', 'stop', '--validation-root', str(room)],
+    registry = room / 'Library/Application Support/Magic Code/components.json'
+    if not registry.exists(): return
+    engine = json.loads(registry.read_text())['engine']
+    result = subprocess.run([engine, 'service', 'remove', '--home', str(room)],
                             env=environment(room), cwd=room, capture_output=True, text=True, timeout=40)
     assert result.returncode == 0 and json.loads(result.stdout)['state'] == 'stopped', result.stdout + result.stderr
 
@@ -99,7 +102,8 @@ def verify(source):
                     discovery_path = Path(event['host'])
                     discovery = json.loads(discovery_path.read_text())
                     engine = discovery['pid']
-                    assert running(engine) and discovery['app'] == str(app)
+                    assert running(engine) and '.app/' not in discovery['source']
+                    assert 'app' not in discovery
                     assert discovery['base'].startswith(str(room) + '/')
                     assert discovery_path.stat().st_mode & 0o777 == 0o600
                     if scenario == 'force-kill': process.kill()

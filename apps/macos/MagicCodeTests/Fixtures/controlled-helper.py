@@ -11,17 +11,17 @@ import time
 import subprocess
 import uuid
 
-base = Path(sys.argv[sys.argv.index('--validation-root') + 1])
+base = Path(sys.argv[sys.argv.index('--home') + 1])
 options = json.loads((base / 'control.json').read_text())
 state_file = base / 'engine.json'
-if sys.argv[1] == '--internal-engine-control':
+if sys.argv[1] == 'service':
     action = sys.argv[2]
     def status():
         return json.loads(state_file.read_text()) if state_file.exists() else {'state': 'stopped', 'base': str(base / '.magic'), 'alive': False}
     current = status()
     if action == 'start' and current['state'] == 'stopped':
         (base / 'stop-request').unlink(missing_ok=True)
-        subprocess.Popen([sys.executable, sys.argv[0], '--serve', '--validation-root', str(base)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        subprocess.Popen([sys.executable, sys.argv[0], '--serve', '--home', str(base)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         deadline = time.monotonic() + 5
         while current['state'] != 'ready' and time.monotonic() < deadline:
             time.sleep(.01); current = status()
@@ -40,11 +40,10 @@ if sys.argv[1] == '--internal-engine-control':
                 time.sleep(.01); current = status()
     print(json.dumps(current)); sys.exit(0)
 host = str(uuid.uuid4())
-app = Path(sys.argv[0]).resolve().parents[2]
-identity = {'protocol': 1, 'version': options.get('version', '0.0.0'), 'source': options.get('source', str(app / 'Contents/Helpers/magic-runtime')),
+identity = {'protocol': 1, 'version': options.get('version', '0.0.0'), 'source': options.get('source', str(Path(sys.argv[0]).resolve())),
             'serviceInstance': 'controlled-' + host, 'base': str(base / '.magic')}
 endpoint = '/tmp/magic-native-' + host[:12] + '.sock'
-record = {**identity, 'socket': endpoint, 'app': str(app), 'lifecycle': host, 'state': 'ready', 'pid': os.getpid()}
+record = {**identity, 'socket': endpoint, 'lifecycle': host, 'state': 'ready', 'pid': os.getpid()}
 def publish(state):
     value = {'state': state, 'base': identity['base'], 'alive': state != 'stopped', 'record': {**record, 'state': state}}
     temporary = base / 'engine.tmp'; temporary.write_text(json.dumps(value)); os.replace(temporary, state_file)

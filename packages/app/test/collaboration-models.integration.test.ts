@@ -6,7 +6,7 @@ import type { AgentModelConfig, AgentRoleConfig, CollaborationReply, ModelInfoSn
 import { createRecordsStore } from '@magic/records'
 import { assemble } from '../src/assembly.ts'
 import { resolveManagedModel } from '../src/agent-models.ts'
-import { loadConfig } from '../src/config.ts'
+import { loadConfig } from '@magic/config'
 import { cacheAccessFor } from '../src/cache-access.ts'
 import { createFileModelInfoCache } from '../src/model-cache.ts'
 import { attachShell } from '../src/shell.ts'

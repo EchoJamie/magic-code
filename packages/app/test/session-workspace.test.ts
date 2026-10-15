@@ -7,14 +7,14 @@
  * ③ **外壳那一跳**——同样的工作区进 `runTui`（列表按工作区分组要用它比「哪个是别的项目」）。
  *
  * ⚠️ **判据取件、不复述**（缺陷 D16 那笔账）：接线只有装配里那两行，用例若自己
- * 「照同样方式接一遍」，倒回那两行照样绿。故 ③ 从 `tuiOptions` **取件**；
+ * 「照同样方式接一遍」，倒回那两行照样绿。故 ③ 从 `assemblyTuiOptions` **取件**；
  * ①② 直读库表（不经 API 回读闭环）。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { realpathSync } from 'node:fs'
 import { attachShell } from '../src/index.ts'
-import { tuiOptions } from '../src/cli.ts'
+import { assemblyTuiOptions } from './support.ts'
 import { makeStage, readDatabase } from './support.ts'
 import { removeDir, tempDir } from './tmp.ts'
 
@@ -76,14 +76,14 @@ describe('建立时锚定——本进程的工作区进记录域', () => {
 })
 
 describe('外壳那一跳——同样的工作区进 `runTui`', () => {
-  test('`tuiOptions` 带着工作区（列表按工作区分组要用它认「别的项目」）', async () => {
+  test('`assemblyTuiOptions` 带着工作区（列表按工作区分组要用它认「别的项目」）', async () => {
     const stage = makeStage()
 
     try {
       const assembly = stage.assemble({ turns: [{ text: '好' }] })
 
-      expect((await tuiOptions(assembly)).workspaceRoots).toEqual(assembly.workspaceRoots)
-      expect((await tuiOptions(assembly)).workspaceRoots).toEqual([realpathSync(stage.workspace)])
+      expect((await assemblyTuiOptions(assembly)).workspaceRoots).toEqual(assembly.workspaceRoots)
+      expect((await assemblyTuiOptions(assembly)).workspaceRoots).toEqual([realpathSync(stage.workspace)])
 
       assembly.close()
     } finally {

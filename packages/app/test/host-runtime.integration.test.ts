@@ -16,10 +16,10 @@ import { readEngineState } from '../src/run/engine-state.ts'
 async function fixture(config = '{}', prepare?: (home: string) => Promise<void>) {
   const home = mkdtempSync(join(tmpdir(), 'magic-engine-')), source = softwareSource(), discovery = join(home, 'runtime/host.json')
   mkdirSync(join(home, '.magic')); writeFileSync(join(home, '.magic/config.json'), config)
-  const input: EngineCall = { action: 'status', home, parent: home, source, app: '/tmp/Isolated.app', discovery }
+  const input: EngineCall = { action: 'status', home, parent: home, source, discovery }
   await prepare?.(home)
-  const child = Bun.spawn([process.execPath, source, '--internal-engine', '--home', home, '--parent', home, '--source', source,
-    '--app', input.app, '--discovery', discovery, '--lifecycle', crypto.randomUUID()], {
+  const child = Bun.spawn([process.execPath, source, 'serve', '--home', home, '--parent', home, '--source', source,
+    '--discovery', discovery, '--lifecycle', crypto.randomUUID()], {
       cwd: home, env: { PATH: '/usr/bin:/bin', HOME: home }, stdin: 'pipe', stdout: 'ignore', stderr: 'pipe',
     })
   const errors = new Response(child.stderr).text()

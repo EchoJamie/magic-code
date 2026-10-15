@@ -8,7 +8,7 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadConfig } from '../src/index.ts'
-import { removeProvider, saveProvider, configureModel } from '../src/config-save.ts'
+import { removeProvider, saveProvider, configureModel } from '@magic/config'
 import { magicAt, removeDir, tempDir, writeConfig } from './tmp.ts'
 
 const READ = (path: string): Record<string, unknown> =>

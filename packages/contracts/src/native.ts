@@ -92,7 +92,6 @@ export type NativeResponse =
 export type EnginePhase = 'starting' | 'ready' | 'stopping' | 'stopped' | 'unreachable' | 'failed'
 export type HostDiscovery = ServiceIdentity & {
   readonly socket: string
-  readonly app: string
   readonly lifecycle: string
   readonly pid?: number
   readonly startedAt?: number

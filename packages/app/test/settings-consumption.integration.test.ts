@@ -1,4 +1,4 @@
-import { runSettingsCall } from '../src/settings-call.ts'
+import { runNativeSettings } from './native-settings-fixture.ts'
 import { expect, test } from 'bun:test'
 import { writeFileSync } from 'node:fs'
 import type { NativeResponse, SettingsAction } from '@magic/contracts'
@@ -21,7 +21,7 @@ test('原生保存后新成员采用新档位与独立思考，入口和已有�
   let stamp: string | null = null
   async function request(action?: SettingsAction) {
     const request = crypto.randomUUID()
-    const result = await runSettingsCall({ request, home: f.root, base: identity.base, configPath: identity.base + '/config.json', ...(action ? { stamp, action } : {}) }, {})
+    const result = await runNativeSettings({ request, home: f.root, base: identity.base, configPath: identity.base + '/config.json', ...(action ? { stamp, action } : {}) }, {})
     if (result.snapshot) stamp = result.snapshot.stamp
     return result
   }

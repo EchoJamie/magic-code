@@ -2,7 +2,7 @@ import type { GrantRow } from '@magic/contracts'
 import type { GrantEdit, GrantHit, PermissionRule } from '@magic/permission'
 import { createGrantLedger } from '@magic/permission'
 import { statSync } from 'node:fs'
-import { configStamp as configStampOf } from '../cache-access.ts'
+import { configStamp as configStampOf } from '@magic/config'
 import { commitGrants, loadGrants } from '../grants-file.ts'
 import { grantsTrouble } from '../run/observation.ts'
 

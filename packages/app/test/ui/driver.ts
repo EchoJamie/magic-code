@@ -37,7 +37,7 @@
  */
 
 import { mkdirSync, readFileSync, copyFileSync, existsSync, readdirSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { createArtifacts } from './artifacts.ts'
 import type { Artifacts, FrameRecord } from './artifacts.ts'
 import { startFixture } from './fixture.ts'
@@ -488,7 +488,7 @@ async function useHost(sandbox: Sandbox, evidence: string, cli: string, ownedByD
   let shared = hosts.get(sandbox.home)
   if (shared === undefined) {
     if (existsSync(hostDiscoveryPath(sandbox.home))) return null
-    shared = { ready: startResidentHost(sandbox, evidence, cli), users: 0 }
+    shared = { ready: startResidentHost(sandbox, evidence, join(dirname(cli), 'engine.ts')), users: 0 }
     hosts.set(sandbox.home, shared)
     if (!ownedByDriver) {
       // 外借的：宿主归沙地的主人 ⇒ **主人 dispose 时才核销**（顺手把那一格删掉）。

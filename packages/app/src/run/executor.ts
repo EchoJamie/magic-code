@@ -14,7 +14,7 @@ import type {
 } from '@magic/contracts'
 import { assemble } from '../assembly.ts'
 import type { Assembly } from '../assembly.ts'
-import { loadConfig } from '../config.ts'
+import { loadConfig } from '@magic/config'
 import { isProgress, progressOf, tailOf } from './facts.ts'
 import type { ExecutorToManager, Link, ManagerToExecutor } from './wire.ts'
 

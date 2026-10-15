@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { diagnosticsOf } from '@magic/contracts'
-import { loadConfig } from '../src/config.ts'
+import { loadConfig } from '@magic/config'
 
 import { cliGround } from './resident-cli-fixture.ts'
 const cleanups: (() => void)[] = []

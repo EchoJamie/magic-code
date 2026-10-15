@@ -620,7 +620,7 @@ describe('U48-S4 · 收缩与异常', () => {
 test('在途执行者动态调整诊断等级，代次与审批保持；错误等级不继续记 trace', async () => {
   const { applyHostDiagnostics } = await import('../src/run/diagnostics-client.ts')
   const { readdirSync } = await import('node:fs')
-  const { configStamp } = await import('../src/cache-access.ts')
+  const { configStamp } = await import('@magic/config')
   const g = ground('live-diagnostics'), manager = await standUp(g), client = await open(g, manager, 'diagnostics')
   const discovery = { ...manager.identity, app: '/test.app', base: g.magic.base, socket: manager.socketPath }
   const observer = linkOf<NativeResponse>(await Bun.connect({ unix: manager.socketPath, socket: socketHandlers() }) as never)
@@ -656,7 +656,7 @@ test('配置文件争锁与大输出期间仍能查询并独立停止另一工�
     { kind: 'text', text: '后台输出继续' },
     { kind: 'tool', name: 'exec', args: { cmd: 'sleep 30' } },
   ])
-  const { acquireFileLock } = await import('../src/grants-file.ts')
+  const { acquireFileLock } = await import('@magic/config')
   const manager = await standUp(g)
   const a = (await connectManager(manager.socketPath, { cwd: g.ws, environment: g.environment, allowAll: true }))!
   const b = (await connectManager(manager.socketPath, { cwd: g.ws, environment: g.environment, allowAll: true }))!

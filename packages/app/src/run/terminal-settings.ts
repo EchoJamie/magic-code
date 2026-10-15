@@ -1,13 +1,13 @@
 import type { Command, ControlTransport, EventDataOf, EventKind, KernelEvent, MagicHome, ModelSelectionRef, ModelSwitchRequest, SettingsAction, WorkspaceService } from '@magic/contracts'
 import { createSettings } from '../settings.ts'
 import { createWorkEnvironment } from '../work-environment.ts'
-import { configStamp } from '../cache-access.ts'
-import { loadConfig } from '../config.ts'
+import { configStamp } from '@magic/config'
+import { loadConfig } from '@magic/config'
 import { createWorkspaceService } from '@magic/execution'
 import { modelCatalog, providerCatalog, readGrantView, grantsTrouble } from './observation.ts'
 
 /** 文件动作在 TUI 执行；运行命令继续使用原连接。 */
-export function terminalSettings(transport: ControlTransport, magic: MagicHome, workspace: WorkspaceService, initial?: ModelSwitchRequest): ControlTransport {
+export function terminalSettings(transport: ControlTransport, magic: MagicHome, workspace: WorkspaceService, initial?: ModelSwitchRequest, settingsOnly = false): ControlTransport {
   const listeners = new Set<(event: KernelEvent) => void>()
   const environment = Object.freeze({ ...process.env })
   let selection: ModelSelectionRef | undefined
@@ -45,7 +45,14 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
     for (const listener of listeners) listener(event)
   }
   const local = new Set<Command['type']>(['model.list', 'provider.list', 'provider.save', 'provider.remove', 'model.configure', 'model.override', 'model.refresh', 'prefs.set', 'grants.list', 'grants.revoke'])
+  if (settingsOnly) local.add('mcp.list')
   async function handle(command: Command) {
+    if (command.type === 'mcp.list') {
+      const config = loadConfig({ magic }).config
+      emit('mcp.catalog', { servers: Object.entries(config.mcp?.servers ?? {}).map(([server, config]) => ({ server,
+        transport: 'url' in config ? 'http' : 'stdio', state: { status: 'idle' }, tools: [], rejected: [] })), note: '本地配置；未连接 Engine 或外部服务器' })
+      return
+    }
     const network = createWorkEnvironment(environment)
     const settings = createSettings({ magic, environment: network.env, fetch: network.fetch })
     let note: string | undefined
@@ -100,7 +107,7 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
     offlineCommands: [...local],
     send(command) {
       if (!local.has(command.type)) { transport.send(command); return }
-      if (command.type === 'grants.list') transport.send(command)
+      if (command.type === 'grants.list' && !settingsOnly) transport.send(command)
       queue = queue.then(() => handle(command)).catch(error => emit('provider.catalog', { entries: [], vendors: [], note: String(error) }))
     },
     subscribe(listener) {

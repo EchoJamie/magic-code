@@ -6,20 +6,20 @@
 
 ## macOS App
 
-开发目标为 macOS 26 / arm64、Xcode 与 Bun。同版 App、内置 helper、CLI 和协议一起构建：
+开发目标为 macOS 26 / arm64、Xcode 与 Bun。分别构建 `magic-cli`、`magic-engine` 和 Swift App，组件保持软件同版、协议一致：
 
 ```sh
 bun install
-bun run build:macos
-open '.artifacts/macos/Magic Code.app'
-'.artifacts/macos/Magic Code.app/Contents/Helpers/magic-runtime'
+bun run build:macos              # App 完整包与 Release DMG
+bun run build:terminal           # CLI＋Engine 安装包
+bun run build:engine             # 仅 Engine 安装包
 ```
 
-测试副本使用独立 bundle 身份、发现目录与隔离数据目录（按固定验证根隔离）。源码 CLI 只连接同源测试宿主；日常使用 App 内置的命令，在设置里选择安装目录后安装 `magic` 链接。登录时打开与系统通知默认关闭，通知权限仅由设置里的明确启用动作申请。
+终端或 Engine 安装包解压后运行 `./install.sh`；App 完整安装在首次打开时通过同一安装入口补齐 CLI 与 Engine。组件独立安装到 `~/Library/Application Support/Magic Code/components/`，`~/.local/bin/magic` 指向独立 CLI，删除 App 不影响终端与 Engine。已有同版组件直接复用，外来文件不覆盖，Engine 升级需明确选择并先安全停止。详细路径、修复、升级和按组件卸载见 [macOS 说明](apps/macos/README.md)。
 
-所选基础路径下的 `.magic` 共同保存配置、记录、blob、授权、日志、缓存与 Magic 用户技能；已选实例由 App 发布。旧 `dataDir` 键作为未知配置忽略，不迁移或删除旧数据。显式 `MAGIC_HOME` 与当前实例不一致会拒绝连接，切换须在 App 无在途责任时完成。握手、状态汇总与历史查看均不标读、不起执行者。
+所选基础路径下的 `.magic` 共同保存配置、记录、blob、授权、日志、缓存与 Magic 用户技能；Engine 自有的 `engine.json` 保存默认目标。显式 `MAGIC_HOME` 与当前运行实例不一致会拒绝连接，切换须核实原实例无在途责任。握手、状态汇总与历史查看均不标读、不起执行者。App 原生直接读写配置；CLI 与 Engine 共用 `@magic/config`。`magic --settings` 可在 Engine 未安装或停止时打开本地设置。
 
-`bun run check` 执行类型检查与全部 TS 测试；`bun run check:macos` 重建签名开发包、运行 Swift 测试与隔离 App 联验；`bun run check:all` 执行两侧检查。默认测试不弹系统通知、不启用登录项、不安装用户命令链接。开发构建采用本机 ad-hoc 签名；公开 Release 需显式 Developer ID 与公证配置，参见 `scripts/macos/build.sh`。
+测试副本使用独立 bundle 身份、发现目录与隔离数据目录，不进入用户实例。`bun run check` 执行类型检查与全部 TS 测试；`bun run check:macos` 重建签名包、运行 Swift 测试及编译组件的隔离模型／工具检查；`bun run check:all` 执行两侧检查。默认检查不弹系统通知、不启用登录项、不安装用户命令链接。构建使用 Apple Development 签名；Developer ID 公证发行是另一个交付边界。
 
 ## 调试模式与日志
 
@@ -49,6 +49,7 @@ Bun workspaces 分包：**一域一包**，外加契约包、外壳、装配根�
 
 | 包 | 职责 |
 | --- | --- |
+| `packages/config` | 共享配置解析、校验、锁、指纹、原子保存与监听；仅依赖契约 |
 | `packages/contracts` | 共享语言、跨域端口与原生 wire 编解码；零外部运行时依赖 |
 | `packages/records` | 记录域——库 · blob（**写权唯一**） |
 | `packages/model` | 模型域——供应商适配（AI SDK 封在域内） |
@@ -59,8 +60,8 @@ Bun workspaces 分包：**一域一包**，外加契约包、外壳、装配根�
 | `packages/control` | 控制域——命令通道 · 事件订阅 · 可序列化 |
 | `packages/faux` | **测试层 · 非域**——Faux Provider ＋ 共享测试替身（任何域的测试皆可安全取用） |
 | `packages/tui` | 外壳——显示组件自持；只认控制面 |
-| `packages/app` | 装配根 ＋ 入口——可执行名 `magic` |
-| `apps/macos` | SwiftUI/AppKit 宿主、状态栏、通知、Terminal 与设置 |
+| `packages/app` | 装配根 ＋ 独立入口——`magic-cli` 与 `magic-engine` |
+| `apps/macos` | SwiftUI/AppKit 客户端、状态栏、通知、Terminal 与设置 |
 
 ## 常用命令
 
@@ -68,14 +69,16 @@ Bun workspaces 分包：**一域一包**，外加契约包、外壳、装配根�
 bun install                     # 装依赖（prepare 顺带配置 git 钩子）
 
 # 产品路径
-magic                           # 连接所属 App，打开交互界面
+magic                           # 连接选定 Engine，打开交互界面
+magic --settings                # 只打开本地设置，不启动 Engine
+magic engine status|start|stop   # 查询、启动或明确停止 Engine
 magic -h                        # 显示帮助（也可用 magic --help 或 magic help）
 magic resume <id>            # 只读接回已有会话（id 见 /resume），明确输入后继续
 magic --model <选择>             # default / cantrip / spell / arcane
 
 # 下面两条不是日常用法
 magic --check                   # 离线只读检查配置与路径，不启动 App、模型或工具
-magic --script <文件>           # 连接同一 App 跑脚本，打印事件轨迹（JSONL）与摘要
+magic --script <文件>           # 连接同一 Engine 跑脚本，打印事件轨迹（JSONL）与摘要
 
 # 开发
 bun run check:commit            # 提交门禁：typecheck + 快速回归
@@ -195,7 +198,7 @@ Magic 能连**你自己配置**的本地 MCP 服务器，把它们的工具交�
 - **拒绝＝一次都不发出去**；超时或连接断了时说「未收到结果，远端可能已执行」，**不自动重试**；
   中断只报已停止等待，**不声称远端撤销**。
 - 退出时 Magic 收掉**自己拉起的**那些服务器进程——你自己起的服务不受影响。
-- App 服务启动时预检配置的外部工具并释放探针；目录查询读取已有结果。`magic --check` 保持离线，不连接外部服务器。
+- Engine 启动时预检配置的外部工具并释放探针；目录查询读取已有结果。`magic --check` 保持离线，不连接外部服务器。
 
 `env` 里的密钥只传给那个子进程——不进日志、不进记录、不进模型请求。需要登录（OAuth）的服务器
 与 HTTP 接入本版还不支持。

@@ -1,7 +1,7 @@
 import { watch } from 'node:fs'
 import { basename, dirname } from 'node:path'
 import type { LoadedConfig } from './config.ts'
-import { configStamp } from './cache-access.ts'
+import { configStamp } from './fingerprint.ts'
 
 /** 监听父目录以覆盖原子替换；关键业务入口仍各自读取权威配置。 */
 export function watchConfig(path: string, load: () => LoadedConfig, apply: (config: LoadedConfig) => Promise<void>, failed: (error: unknown) => void): () => Promise<void> {

@@ -33,7 +33,7 @@ export function cliGround() {
     protocol: NATIVE_PROTOCOL, version: SOFTWARE_VERSION, source: softwareSource(),
     serviceInstance: 'service-one', base,
   }
-  const discovery: HostDiscovery = { ...identity, state: 'ready', lifecycle: 'life-one', app, base, socket: join(root, 's.sock') }
+  const discovery: HostDiscovery = { ...identity, state: 'ready', lifecycle: 'life-one', base, socket: join(root, 's.sock') }
   return {
     root, home, base, dataDir, app, discoveryPath, discovery, identity,
     publish(value: unknown = discovery, path = discoveryPath) {

@@ -41,7 +41,7 @@ import { mcpNoticesOf, noModelAdvice, workspaceOf } from './observation.ts'
 import { cacheAccessFor } from '../cache-access.ts'
 import { createFileModelInfoCache } from '../model-cache.ts'
 import { resolveModelChoice } from '../agent-models.ts'
-import type { LoadedConfig } from '../config.ts'
+import type { LoadedConfig } from '@magic/config'
 
 /** 这一层要的那几件——**都是「从外面拿的值」**，判断一件都不在这儿。 */
 export type TerminalInputs = {

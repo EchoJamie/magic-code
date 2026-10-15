@@ -32,6 +32,7 @@ const PACKAGES_DIR = join(ROOT, 'packages')
  */
 const PACKAGE_TABLE: Record<string, readonly string[]> = {
   '@magic/contracts': [],
+  '@magic/config': ['@magic/contracts'],
   // **应用层**（U25）——「域之上」那一层：编排跨域的几步。与各域同一条纪律：
   // **只依赖契约**（它拿到的是一组端口，由装配根注入）。
   '@magic/actions': ['@magic/contracts'],
@@ -47,6 +48,7 @@ const PACKAGE_TABLE: Record<string, readonly string[]> = {
   '@magic/tui': ['@magic/contracts'],
   '@magic/faux': ['@magic/contracts'],
   '@magic/app': [
+    '@magic/config',
     '@magic/contracts',
     '@magic/actions',
     '@magic/conversation',
@@ -144,7 +146,7 @@ const FS_ALLOWED_PACKAGES = ['@magic/records', '@magic/execution']
  * `技术方案.md`·代码治理·边界纪律（扫描面＝域包）。**白名单断言不动**——它钉的是
  * 「域包里谁可以碰 fs」，与扫描面是两件事。
  */
-const NON_KERNEL_PACKAGES = [...SHELL_PACKAGES, '@magic/faux']
+const NON_KERNEL_PACKAGES = [...SHELL_PACKAGES, '@magic/config', '@magic/faux']
 
 /** fs 模块族——import 即触达文件系统。 */
 const FS_MODULES = [
@@ -807,7 +809,7 @@ describe('fs 触达提取（反向用例）', () => {
   })
 
   test('非内核包清单——外壳 · 装配根 · 测试层（扫描面收窄的锚）', () => {
-    expect(NON_KERNEL_PACKAGES).toEqual(['@magic/tui', '@magic/app', '@magic/faux'])
+    expect(NON_KERNEL_PACKAGES).toEqual(['@magic/tui', '@magic/app', '@magic/config', '@magic/faux'])
   })
 })
 

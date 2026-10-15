@@ -18,7 +18,7 @@
  * **真外壳**——只有端点换成假的。域内那半（怎么判定、怎么装表）钉在 `@magic/model` 的用例里。
  *
  * **两条接线**，别混：
- * - 前两组从 `tuiOptions` **取件**递进 `createShell`（照 `readouts.test.ts` 的先例：
+ * - 前两组从 `assemblyTuiOptions` **取件**递进 `createShell`（照 `readouts.test.ts` 的先例：
  *   自己照接一遍就只咬住半边）；
  * - 末一组走**真 `runTui`**（产品那条路本身）——屏上的字从 `runTui` 写出的**字节**里读，
  *   不是「同表达式手工接一遍」。
@@ -34,9 +34,9 @@ import { createShell, usageLabel } from '@magic/tui'
 import { assemble, attachShell, loadConfig } from '../src/index.ts'
 import type { Assembly } from '../src/index.ts'
 // 接线取件（照 `readouts.test.ts` 的先例）——不是写着同样内容的字面量
-import { tuiOptions } from '../src/cli.ts'
+import { assemblyTuiOptions } from './support.ts'
 import { readDatabase } from './support.ts'
-import { configureModel } from '../src/config-save.ts'
+import { configureModel } from '@magic/config'
 import { magicAt, removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -118,7 +118,7 @@ function stage(): {
 }
 
 /**
- * 起一个**真外壳**（`createShell`）——入参**从 `tuiOptions` 取件**（照 `readouts.test.ts`
+ * 起一个**真外壳**（`createShell`）——入参**从 `assemblyTuiOptions` 取件**（照 `readouts.test.ts`
  * 那条判据的姿势：别自己照接一遍，那样倒回接线照样绿）。
  *
  * ⚠️ **U41 返修起不再传窗长表**：旧 `registry.windowTable → 装配 → 外壳` 那条链已撤，
@@ -126,7 +126,7 @@ function stage(): {
  * `contextWindow` 同一份解析，见 `ModelRegistry.capacityOf`）。
  */
 async function shellOf(assembly: Assembly) {
-  const options = (await tuiOptions(assembly))
+  const options = (await assemblyTuiOptions(assembly))
   // ⚠️ **旧链已撤**（U41 返修 · 本轮）：外壳不再拿窗长表自己查「换过模型之后」的分母
   // ——那是事件自带的 `inputBudget`（`model.switched` / `model.call.start`，
   // 与 `Assembly.contextWindow` / `model.catalog.currentInputBudget` 同源）。
@@ -160,7 +160,7 @@ describe('U30 · 开机那一格的分母', () => {
     try {
       const assembly = land.assemble()
       // 这份配置只写了 endpoint / key / 模型名——窗长是我们已知的客观属性
-      expect((await tuiOptions(assembly)).contextWindow).toBe(1_000_000 - RESERVED_OUTPUT)
+      expect((await assemblyTuiOptions(assembly)).contextWindow).toBe(1_000_000 - RESERVED_OUTPUT)
 
       assembly.close()
     } finally {
@@ -175,7 +175,7 @@ describe('U30 · 开机那一格的分母', () => {
       const assembly = land.assemble()
       expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
 
-      expect((await tuiOptions(assembly)).contextWindow).toBe(32_768 - RESERVED_OUTPUT)
+      expect((await assemblyTuiOptions(assembly)).contextWindow).toBe(32_768 - RESERVED_OUTPUT)
 
       assembly.close()
     } finally {
@@ -190,7 +190,7 @@ describe('U30 · 开机那一格的分母', () => {
       const assembly = land.assemble()
       expect(assembly.switchModel({ choice: 'spell' }).ok).toBe(true)
 
-      expect((await tuiOptions(assembly)).contextWindow).toBeNull()
+      expect((await assemblyTuiOptions(assembly)).contextWindow).toBeNull()
 
       assembly.close()
     } finally {
@@ -216,10 +216,10 @@ describe('U30 · 开机那一格的分母', () => {
 
       // 声明的那条：用它声明的数；同名模型的另一条：内置表那个数
       expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
-      expect((await tuiOptions(assembly)).contextWindow).toBe(32_768 - RESERVED_OUTPUT)
+      expect((await assemblyTuiOptions(assembly)).contextWindow).toBe(32_768 - RESERVED_OUTPUT)
 
       expect(assembly.switchModel({ choice: 'arcane' }).ok).toBe(true)
-      expect((await tuiOptions(assembly)).contextWindow).toBe(204_800 - RESERVED_OUTPUT)
+      expect((await assemblyTuiOptions(assembly)).contextWindow).toBe(204_800 - RESERVED_OUTPUT)
 
       assembly.close()
     } finally {
@@ -235,7 +235,7 @@ describe('U30 · 开机那一格的分母', () => {
         modelGateway: (stamper) => createFauxGateway({ stamper, turns: [] }),
       })
 
-      expect((await tuiOptions(assembly)).contextWindow).toBeNull()
+      expect((await assemblyTuiOptions(assembly)).contextWindow).toBeNull()
 
       assembly.close()
     } finally {
@@ -459,7 +459,7 @@ describe('U30 · 换过模型之后的分母', () => {
 //
 // 前三组是「取件 + 递进 `createShell`」：能钉住**给的值对不对**，钉不住
 // **`runTui` 那一跳把值传下去了没有**（那是产品真走的一行）。这一组走真 `runTui`：
-// 真装配 → `tuiOptions` → `runTui` → 外壳 → Ink 写出字节 → 从字节里剥出屏上的字。
+// 真装配 → `assemblyTuiOptions` → `runTui` → 外壳 → Ink 写出字节 → 从字节里剥出屏上的字。
 //
 // ⚠️ 剥 ANSI 是本文件里的**最小**一份（取景层那一套在 tui 侧；跨包相对引用会被
 // 结构守护拦下——`test/scaffold.test.ts`「各包源码的引用不越出包边界」）。
@@ -579,7 +579,7 @@ describe('U30 · 真 `runTui` 那条路（接线在不在）', () => {
       const { runTui } = await import('@magic/tui')
 
       const handle = await runTui({
-        ...(await tuiOptions(assembly)),
+        ...(await assemblyTuiOptions(assembly)),
         stdin: stdin as unknown as NodeJS.ReadStream,
         stdout: tty as unknown as NodeJS.WriteStream,
       })

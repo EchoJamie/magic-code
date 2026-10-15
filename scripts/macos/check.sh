@@ -4,8 +4,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 OUTPUT="$ROOT/.artifacts/macos"
 mkdir -p "$OUTPUT"
-# Native contract and true Process tests require the signed embedded helper.
-if [[ ! -x "$OUTPUT/Magic Code.app/Contents/Helpers/magic-runtime" ]]; then bash scripts/macos/build.sh; fi
+# Native contract and true Process tests require the signed component payloads.
+if [[ ! -x "$OUTPUT/Magic Code.app/Contents/Helpers/magic-engine" ]]; then bash scripts/macos/build.sh; fi
 TEMP="$(mktemp -d "$OUTPUT/native-check.XXXXXX")"
 PASSED=false
 trap 'if [[ "$PASSED" == true ]]; then rm -rf "$TEMP"; else printf "原生检查失败，诊断保留于 %s\n" "$TEMP"; fi' EXIT

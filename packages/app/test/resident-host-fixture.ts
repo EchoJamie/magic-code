@@ -7,13 +7,13 @@ import { readEngineState } from '../src/run/engine-state.ts'
 import { softwareSource } from '../src/run/runtime-launch.ts'
 import type { Sandbox } from './ui/sandbox.ts'
 
-export async function startResidentHost(sandbox: Sandbox, evidence = join(sandbox.root, `engine-check-${crypto.randomUUID()}`), cli = join(import.meta.dir, '../src/cli.ts')) {
-  const app = join(sandbox.root, 'Test Engine.app'), discoveryPath = hostDiscoveryPath(sandbox.home)
-  mkdirSync(app, { recursive: true }); mkdirSync(evidence, { recursive: true })
+export async function startResidentHost(sandbox: Sandbox, evidence = join(sandbox.root, `engine-check-${crypto.randomUUID()}`), cli = join(import.meta.dir, '../src/engine.ts')) {
+  const discoveryPath = hostDiscoveryPath(sandbox.home)
+  mkdirSync(evidence, { recursive: true })
   const input: EngineCall = { action: 'status', home: sandbox.home, parent: sandbox.env.MAGIC_HOME ?? sandbox.home,
-    source: softwareSource(), app, discovery: discoveryPath }
-  const child = Bun.spawn([process.execPath, cli, '--internal-engine', '--home', input.home, '--parent', input.parent,
-    '--source', input.source, '--app', app, '--discovery', discoveryPath, '--lifecycle', crypto.randomUUID()], {
+    source: softwareSource(), discovery: discoveryPath }
+  const child = Bun.spawn([process.execPath, cli, 'serve', '--home', input.home, '--parent', input.parent,
+    '--source', input.source, '--discovery', discoveryPath, '--lifecycle', crypto.randomUUID()], {
       cwd: sandbox.workspace, env: sandbox.env, stdin: 'ignore', stdout: 'ignore', stderr: 'pipe',
     })
   const errors = new Response(child.stderr).text()

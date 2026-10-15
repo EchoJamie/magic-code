@@ -10,7 +10,7 @@ import { createAgentLauncher, type ExecutorLauncher } from '../src/run/launch.ts
 import { startManager } from '../src/run/manager.ts'
 import { runPathsOf } from '../src/run/paths.ts'
 import { terminalOptions } from '../src/run/terminal.ts'
-import { loadConfig } from '../src/config.ts'
+import { loadConfig } from '@magic/config'
 import { magicAt, removeDir, tempDir } from './tmp.ts'
 
 export type ModelReply = ({ readonly text: string } | { readonly tool: string; readonly args: Record<string, unknown> } | { readonly tools: readonly { readonly tool: string; readonly args: Record<string, unknown> }[] }) & { readonly finish?: string; readonly usage?: Record<string, number>; readonly httpStatus?: number; readonly malformed?: true }

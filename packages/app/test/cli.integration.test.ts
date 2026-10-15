@@ -45,7 +45,7 @@ describe('resident-cli 短路径与终端接回参数', () => {
       expect(first.magic.base).toBe(aliasBase)
       first.client.close()
       const again = await reopenApp({
-        home: g.home, env: {}, appPath: g.app,
+        home: g.home, env: {}, enginePath: g.identity.source,
         expectedInstance: { base: first.magic.base },
         connect: { session: 'session-existing' },
         control: async action => { opened.push(action); return { state: 'ready', base: g.base, record: g.discovery } },
@@ -54,7 +54,7 @@ describe('resident-cli 短路径与终端接回参数', () => {
       // 反向写法与数据目录软链接也按相同规则归一，不维护另一套比较分支。
       g.publish()
       const canonical = await reopenApp({
-        home: g.home, env: {}, appPath: g.app,
+        home: g.home, env: {}, enginePath: g.identity.source,
         expectedInstance: { base: aliasBase },
         connect: { session: 'session-existing' },
         control: async action => { opened.push(action); return { state: 'ready', base: g.base, record: g.discovery } },
@@ -81,7 +81,7 @@ describe('resident-cli 短路径与终端接回参数', () => {
         { base: otherData },
       ]) {
         await expect(reopenApp({
-          home: g.home, env: {}, appPath: g.app, expectedInstance,
+          home: g.home, env: {}, enginePath: g.identity.source, expectedInstance,
           connect: { session: 'session-existing' },
           control: async action => { opened.push(action); return { state: 'ready', base: g.base, record: g.discovery } },
         })).rejects.toThrow('数据实例已改变')

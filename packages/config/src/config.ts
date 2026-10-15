@@ -2,7 +2,7 @@ import { isLogLevel } from '@magic/contracts'
 
 
 import { readFileSync } from 'node:fs'
-import { configStamp } from './cache-access.ts'
+import { configStamp } from './fingerprint.ts'
 import { dirname, resolve } from 'node:path'
 import type {
   AgentRoleConfig,

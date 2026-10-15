@@ -17,7 +17,7 @@
  * ⚠️ **为什么帧在这一侧（app）出**：要的那一屏是「装配跑起来之后外壳画什么」——
  * 对话域与装配都在这一侧；`.claude/rules` 那条链过去，本包的用例**不得**相对引用
  * `@magic/tui` 的内部件（`test/scaffold.test.ts` 那条结构守护），故只用它的**公开面**
- * （`runTui` / `createShell`）与 `cli.ts` 的 `tuiOptions`（照 `window.test.ts` 的先例）。
+ * （`runTui` / `createShell`）与 进程内装配测试的 `assemblyTuiOptions`（照 `window.test.ts` 的先例）。
  *
  * ## 跑法
  *
@@ -43,7 +43,7 @@ import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { attachShell } from '../src/index.ts'
 import type { Assembly } from '../src/index.ts'
-import { tuiOptions } from '../src/cli.ts'
+import { assemblyTuiOptions } from './support.ts'
 import { makeStage } from './support.ts'
 import type { StageAssembleOptions } from './support.ts'
 import { removeDir, tempDir, validConfig } from './tmp.ts'
@@ -140,7 +140,7 @@ async function shoot(
   const { runTui } = await import('@magic/tui')
 
   const handle = await runTui({
-    ...(await tuiOptions(assembly)),
+    ...(await assemblyTuiOptions(assembly)),
     stdin: stdin as unknown as NodeJS.ReadStream,
     stdout: tty as unknown as NodeJS.WriteStream,
   })

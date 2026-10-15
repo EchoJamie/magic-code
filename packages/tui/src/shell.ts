@@ -251,6 +251,7 @@ function shellQuote(text: string): string {
 }
 
 export type ShellOptions = {
+  readonly settingsOnly?: boolean
   readonly copyText?: ((text: string) => Promise<void>) | undefined
   readonly detached?: ((listener: (why: string) => void) => void) | undefined
   readonly reopen?: (() => Promise<void>) | undefined
@@ -422,10 +423,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   let disposed = false
   /** 「放开输入」了没有——`boot` 完成那一下翻真（见 `Shell.releaseInput`）。 */
   let ready = !booting
-  let connected = true
+  let connected = options.settingsOnly !== true
+  const disconnectedHint = options.settingsOnly ? '本地设置 · /model · /config · ctrl+c 退出' : HINT_LOST
   let reopening = false
   // 启动中：右位说清楚「为什么回车没反应」（不然就是「按了没反应」——最难查的那种）
   if (booting) view = { ...view, status: { ...view.status, hint: HINT_BOOTING } }
+  if (options.settingsOnly) view = { ...view, status: { ...view.status, hint: disconnectedHint } }
 
   /**
    * **输入历史**（`↑` 取上一条）——**整份草稿**：正文 ＋ 它里面的引用（位置与身份）。
@@ -755,7 +758,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // 任何一条都会把「启动中」抹掉，而**回车那时仍是不受理的** ⇒ 屏上就变成
     // 「看着闲着、按了却没反应」（原型 · 交互逻辑最不想要的那种）。
     const next = !connected
-      ? { ...input, status: { ...input.status, hint: reopening ? '正在重新打开 Magic Code' : HINT_LOST } }
+      ? { ...input, status: { ...input.status, hint: reopening ? '正在重新打开 Magic Code' : disconnectedHint } }
       : ready ? input : { ...input, status: { ...input.status, hint: HINT_BOOTING } }
 
     if (next.dock.kind === 'input' && editingPending===null) layers = []
@@ -832,7 +835,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   }
 
   const askSkills = (from: ShellView): void => {
-    if (skillsAsked || !ready) return
+    if (skillsAsked || !ready || !connected) return
 
     const word = activeWordOf(from.draft, from.caret)?.word
     if (word === undefined || !word.startsWith('/')) return
@@ -913,7 +916,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   // —— 事件 ——
 
   const onEvent = (event: KernelEvent): void => {
-    if (disposed || (!connected && !reopening && !['model.catalog', 'provider.catalog', 'prefs.state', 'grants.catalog'].includes(event.kind))) return
+    if (disposed || (!connected && !reopening && !['model.catalog', 'provider.catalog', 'prefs.state', 'grants.catalog', ...(options.settingsOnly ? ['mcp.catalog'] : [])].includes(event.kind))) return
 
     for (const [ref, batch] of submittedBatches) {
       if (!batch.replies?.has(event.kind)) continue
@@ -2509,7 +2512,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       return reconnect()
     }
     if (!connected && input.kind === 'enter' && view.dock.kind === 'input' && !view.draft.trim().startsWith('/')) {
-      commit({ ...view, flash: '连接已断开，草稿未发送。输入 /connect 或按 Ctrl+R 重连。' })
+      commit({ ...view, flash: options.settingsOnly ? '本地设置不发送任务，草稿已保留；退出后运行 magic 开始工作。' : '连接已断开，草稿未发送。输入 /connect 或按 Ctrl+R 重连。' })
       return NONE
     }
 

@@ -1,8 +1,8 @@
 import type { BackgroundView } from '@magic/contracts'
 import { diagnosticsOf, isTurnTimingEvent, type TurnTimingEvent } from '@magic/contracts'
-import { setPrefs } from '../config-save.ts'
-import { watchConfig } from '../config-watch.ts'
-import { loadConfig } from '../config.ts'
+import { setPrefs } from '@magic/config'
+import { watchConfig } from '@magic/config'
+import { loadConfig } from '@magic/config'
 import { DiagnosticLog } from '../diagnostic-log.ts'
 import { createWorkEnvironment, type WorkEnvironment } from '../work-environment.ts'
 import {

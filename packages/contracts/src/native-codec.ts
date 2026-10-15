@@ -13,7 +13,7 @@ function identity(v: unknown): boolean {
   return object(v) && integer(v.protocol) && string(v.version) && string(v.source) && string(v.serviceInstance) && string(v.base)
 }
 export function decodeHostDiscovery(value: unknown): HostDiscovery | undefined {
-  return object(value) && identity(value) && string(value.socket) && string(value.app) && string(value.lifecycle) &&
+  return object(value) && identity(value) && string(value.socket) && string(value.lifecycle) &&
     ['starting', 'ready', 'stopping', 'stopped', 'unreachable', 'failed'].includes(String(value.state)) &&
     optional(value.pid, integer) && optional(value.startedAt, number) && optional(value.request, string) && optional(value.error, string)
     ? value as HostDiscovery : undefined

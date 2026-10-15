@@ -3,7 +3,7 @@ import { apiKeyEnvVarOf, type MagicConfig } from '@magic/contracts'
 import type { AgentModelConfig, AgentRoleConfig, MagicHome, ModelSwitchRequest, ProviderConfig } from '@magic/contracts'
 import { createModelInfoService, createModelRegistry, createModelGateway, modelSpecOf, resolveConnection, resolveApiKey, selectModel } from '@magic/model'
 import type { ModelRegistry, ModelRegistryOptions, ModelSelection, ModelSwitchResult } from '@magic/model'
-import { loadConfig } from './config.ts'
+import { loadConfig } from '@magic/config'
 import { cacheAccessFor } from './cache-access.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
 

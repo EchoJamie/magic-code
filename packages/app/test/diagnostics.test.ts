@@ -2,11 +2,11 @@ import { afterEach, expect, test } from 'bun:test'
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { diagnosticsOf, decodeNativeMessage, settingsAction } from '@magic/contracts'
-import { loadConfig } from '../src/config.ts'
+import { loadConfig } from '@magic/config'
 import { parseArgs } from '../src/cli.ts'
 import { saveDiagnostics } from '../src/diagnostics.ts'
 import { DiagnosticLog } from '../src/diagnostic-log.ts'
-import { configStamp } from '../src/cache-access.ts'
+import { configStamp } from '@magic/config'
 import { cliGround } from './resident-cli-fixture.ts'
 const cleanups: (() => void)[] = []
 afterEach(() => { while (cleanups.length) cleanups.pop()!() })

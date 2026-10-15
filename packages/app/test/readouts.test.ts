@@ -23,10 +23,10 @@ import type { EventStamper, KernelEvent, ModelGateway } from '@magic/contracts'
 import { createFauxGateway } from '@magic/faux'
 import { assemble, attachShell, loadConfig } from '../src/index.ts'
 // 接线取件（照 `model-switch.test.ts` 取 `scriptOptions` 的先例）——不是写着同样内容的字面量
-import { tuiOptions } from '../src/cli.ts'
+import { assemblyTuiOptions } from './support.ts'
 import type { Assembly } from '../src/index.ts'
 import { readDatabase } from './support.ts'
-import { configureModel } from '../src/config-save.ts'
+import { configureModel } from '@magic/config'
 import { magicAt, removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -407,13 +407,13 @@ describe('读数 3 · 模型条目表', () => {
 // ═══════════════════════════════════════════════════════════════════════
 //
 // 上面那一组钉的是「分母**经事件**到外壳」；这一组钉的是**另一条来路**——
-// 用户还没跑过 `/model` 的时候，分母从**配置**直接进 `runTui`（`cli.ts` 的 `tuiOptions`）。
+// 用户还没跑过 `/model` 的时候，分母从**配置**直接进 `runTui`（进程内装配测试的 `assemblyTuiOptions`）。
 //
 // **为什么必须有这一条**：`model.catalog` 只有 `/model` 会触发，故开机那一刻 ④ 是个光杆
 // 分子（`3.1k`）。用户要的是 `3.1k/200k` 一开局就在。
 //
 // ⚠️ **判据取件、不复述**（缺陷 D16 那笔账）：接线只有 `cli.ts` 里那一跳，
-// 用例要是自己「照同样方式接一遍」，倒回那一跳照样绿。故从 `tuiOptions` **取件**。
+// 用例要是自己「照同样方式接一遍」，倒回那一跳照样绿。故从 `assemblyTuiOptions` **取件**。
 //
 // ⚠️ **不能改成「开机发一次 `model.list`」**：装配的 `listModels` 在没会话时会
 // `session.new`（要开一张空壳才盖得出信封），与 D5「空手打开不占存储」相抵——
@@ -427,7 +427,7 @@ describe('读数 1 · ④ 的分母在**开机**那一刻就有', () => {
       // 缺省＝alpha（夹具里它声明了 `contextWindow: 200_000`）
       const assembly = land.assemble({ modelFetch: endpoint() })
 
-      expect((await tuiOptions(assembly)).contextWindow).toBe(195_904)
+      expect((await assemblyTuiOptions(assembly)).contextWindow).toBe(195_904)
 
       assembly.close()
     } finally {
@@ -452,7 +452,7 @@ describe('读数 1 · ④ 的分母在**开机**那一刻就有', () => {
       const switched = assembly.switchModel({ choice: 'cantrip' })
       expect(switched.ok).toBe(true)
 
-      expect((await tuiOptions(assembly)).contextWindow).toBeNull()
+      expect((await assemblyTuiOptions(assembly)).contextWindow).toBeNull()
 
       assembly.close()
     } finally {
@@ -468,7 +468,7 @@ describe('读数 1 · ④ 的分母在**开机**那一刻就有', () => {
         modelGateway: (stamper) => createFauxGateway({ stamper, turns: [] }),
       })
 
-      expect((await tuiOptions(assembly)).contextWindow).toBeNull()
+      expect((await assemblyTuiOptions(assembly)).contextWindow).toBeNull()
 
       assembly.close()
     } finally {

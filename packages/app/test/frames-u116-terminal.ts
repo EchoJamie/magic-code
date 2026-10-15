@@ -1,4 +1,4 @@
-import { runSettingsCall } from '../src/settings-call.ts'
+import { runNativeSettings } from './native-settings-fixture.ts'
 import { strict as assert } from 'node:assert'
 import { writeFileSync } from 'node:fs'
 import type { NativeResponse, SettingsAction } from '@magic/contracts'
@@ -19,7 +19,7 @@ const responses:NativeResponse[]=[];link.onMessage(v=>responses.push(v))
 let stamp:string|null=null
 async function until(ok:()=>boolean){const end=Date.now()+10000;while(!ok()){if(Date.now()>end)throw new Error('原生偏好结果超时');await Bun.sleep(20)}}
 async function settings(action?: SettingsAction) {
- const result = await runSettingsCall({ request: crypto.randomUUID(), home: sandbox.home, base: identity.base, configPath: identity.base + '/config.json', ...(action ? { stamp, action } : {}) }, {})
+ const result = await runNativeSettings({ request: crypto.randomUUID(), home: sandbox.home, base: identity.base, configPath: identity.base + '/config.json', ...(action ? { stamp, action } : {}) }, {})
  assert(!result.error, result.error ?? '设置结果'); stamp = result.snapshot!.stamp; return result.snapshot!
 }
 

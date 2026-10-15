@@ -25,8 +25,8 @@ def write(path, value):
 def prepare(output):
     assert not (output / 'manifest.json').exists(), 'preserve the existing identity; choose another output'
     native = Path('.artifacts/macos/DerivedData/Build/Products/Debug/Magic Code.app').resolve()
-    helper = Path('.artifacts/macos/Magic Code.app/Contents/Helpers/magic-runtime').resolve()
-    assert native.exists() and helper.exists(), 'build the native Debug target and helper first'
+    metadata = Path('.artifacts/macos/Magic Code.app/Contents/Resources/settings-data.json').resolve()
+    assert native.exists() and metadata.exists(), 'build the native Debug target and helper first'
     root = Path(tempfile.mkdtemp(prefix='magic-system-test-', dir='/tmp')).resolve(); root.chmod(0o700)
     bundle = 'com.magiccode.validation.' + uuid.uuid4().hex + '.dev'
     # **显示名要可区分**：每轮都建一个新身份，全叫「Magic Code 系统验收」的话，
@@ -35,24 +35,29 @@ def prepare(output):
     display = 'Magic Code 系统验收 ' + bundle.split('.')[3][:4]
     app = output / ('Magic Code 系统验收.app')
     subprocess.run(['ditto', str(native), str(app)], check=True)
-    (app / 'Contents/Helpers').mkdir(exist_ok=True)
-    shutil.copy2(helper, app / 'Contents/Helpers/magic-runtime')
-    fixture = app / 'Contents/Resources/controlled-helper.py'
+    shutil.rmtree(app / 'Contents/Helpers', ignore_errors=True)
+    shutil.copy2(metadata, app / 'Contents/Resources/settings-data.json')
+    fixture = root / 'components/magic-engine'
+    fixture.parent.mkdir()
     shutil.copy2('apps/macos/MagicCodeTests/Fixtures/controlled-helper.py', fixture); fixture.chmod(0o700)
+    (app / 'Contents/Resources/controlled-helper.py').write_text('controlled fixture marker')
+    cli = root / 'components/magic-cli'
+    cli.write_text('#!/bin/sh\nexit 0\n'); cli.chmod(0o700)
+    write(root / 'Library/Application Support/Magic Code/components.json', {'engine': str(fixture), 'cli': str(cli)})
     plist = app / 'Contents/Info.plist'
     info = plistlib.loads(plist.read_bytes())
     info.update({'CFBundleIdentifier': bundle, 'CFBundleName': display,
                  'CFBundleDisplayName': display, 'MagicSystemTestRoot': str(root)})
     plist.write_bytes(plistlib.dumps(info))
     write(root / 'control.json', {'systemTest': True, 'version': info['CFBundleShortVersionString'],
-                                'source': str(app / 'Contents/Helpers/magic-runtime'), 'works': []})
+                                'source': str(fixture), 'works': []})
     with (output / 'signature.log').open('w') as log:
         subprocess.run(['codesign', '--force', '--options', 'runtime', '--timestamp=none', '--sign', os.environ.get('MAGIC_SIGN_IDENTITY', 'Apple Development: echojamieee@outlook.com (9JHY98AJMC)'), str(app)], stdout=log, stderr=log, check=True)
         subprocess.run(['codesign', '--verify', '--deep', '--strict', '--verbose=2', str(app)], stdout=log, stderr=log, check=True)
     write(output / 'manifest.json', {'app': str(app), 'bundle': bundle, 'root': str(root),
           'defaultCapabilities': [], 'realSystemActionsAuthorized': False, 'controlledHost': True,
           'nativeExecutableMtime': (native / 'Contents/MacOS/MagicCode').stat().st_mtime,
-          'helperMtime': helper.stat().st_mtime})
+          'metadataMtime': metadata.stat().st_mtime})
     print(output / 'manifest.json')
 
 

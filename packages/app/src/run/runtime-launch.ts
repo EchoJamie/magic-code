@@ -5,7 +5,7 @@ export function runtimeLaunch(entry?: string): readonly string[] {
   if (entry !== undefined) return [process.execPath, entry]
   return Bun.isStandaloneExecutable
     ? [realpathSync(process.execPath)]
-    : [process.execPath, new URL('../cli.ts', import.meta.url).pathname]
+    : [process.execPath, new URL('../engine.ts', import.meta.url).pathname]
 }
 
 export function softwareSource(): string {

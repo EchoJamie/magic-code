@@ -56,7 +56,7 @@ def probe(app):
         env = {'HOME': str(room), 'MAGIC_HOME': str(room), 'PATH': '/usr/bin:/bin', 'SHELL': '/bin/zsh', 'LANG': 'en_US.UTF-8'}
         client = None; reader = None; owned_pids = []
         try:
-            with isolated_host(app / 'Contents/Helpers/magic-runtime', room, env) as discovery:
+            with isolated_host(app / 'Contents/Helpers/magic-engine', room, env) as discovery:
                 client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 client.connect(discovery['socket'])
                 reader = client.makefile('rb')

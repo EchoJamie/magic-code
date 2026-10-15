@@ -26,7 +26,7 @@
 import { EventEmitter } from 'node:events'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { tuiOptions } from '../src/cli.ts'
+import { assemblyTuiOptions } from './support.ts'
 import { makeStage } from './support.ts'
 import { removeDir, tempDir, validConfig } from './tmp.ts'
 
@@ -157,7 +157,7 @@ if (import.meta.main) {
     const { runTui } = await import('@magic/tui')
 
     const handle = await runTui({
-      ...(await tuiOptions(assembly)),
+      ...(await assemblyTuiOptions(assembly)),
       stdin: stdin as unknown as NodeJS.ReadStream,
       stdout: tty as unknown as NodeJS.WriteStream,
     })

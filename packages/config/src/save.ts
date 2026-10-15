@@ -18,8 +18,8 @@
 
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { configStamp } from './cache-access.ts'
-import { acquireFileLock } from './grants-file.ts'
+import { configStamp } from './fingerprint.ts'
+import { acquireFileLock } from './file-lock.ts'
 import type {
   ModelConfigureRequest,
   PrefsSetRequest,

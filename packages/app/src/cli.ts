@@ -1,21 +1,18 @@
 #!/usr/bin/env bun
 import { parseDiagnosticsArgs } from './diagnostics.ts'
 import type { DiagnosticsChange } from '@magic/contracts'
-/** CLI：help/version/离线 check 是只读短路径；交互与脚本均连接所属 App。 */
+/** CLI：help/version/离线 check 是只读短路径；交互与脚本均连接选定 Engine。 */
 
 import { homedir } from 'node:os'
-import { writeClipboardText } from '@magic/execution'
 import type { KernelEvent, RulesLoad, ModelChoice, ModelSwitchRequest } from '@magic/contracts'
 import { resolve } from 'node:path'
-import { resolveMagicHome, SOFTWARE_VERSION } from '@magic/contracts'
-import type { ModelSwitchResult } from '@magic/model'
-import type { RunTuiOptions } from '@magic/tui'
-import type { Assembly } from './assembly.ts'
+import { resolveMagicHome, SOFTWARE_VERSION, NATIVE_PROTOCOL } from '@magic/contracts'
 import { resolveModelChoice } from './agent-models.ts'
-import { ConfigError, describeConfig } from './config.ts'
-import { workspaceOf } from './assembly.ts'
+import { ConfigError, describeConfig } from '@magic/config'
+import { workspaceOf } from './run/observation.ts'
 import type { AppConnection, AppConnectionOptions } from './run/spawn-manager.ts'
 import { attachShell } from './shell.ts'
+import { selectedParent } from './components.ts'
 import type { ShellScript } from './shell.ts'
 
 const USAGE = `magic —— 软件工程智能体
@@ -35,6 +32,7 @@ const USAGE = `magic —— 软件工程智能体
   --no-debug          保存并关闭调试模式
   --log-level <level> 保存日志等级：error / warn / info / debug / trace
   --check             离线检查配置与工作区
+  --settings          只打开本地设置，不连接或启动 Engine
   --script <file>     运行 JSON 脚本，输出 JSONL 事件与摘要
 
 模型选择：default / cantrip / spell / arcane
@@ -61,6 +59,7 @@ export type Args = {
   readonly openRequest?: string
   readonly help: boolean
   readonly check: boolean
+  readonly settings?: boolean
   readonly script?: string | undefined
   /**
    * **显式接续**那条会话（`magic resume <id>`）——不给＝新会话（D4：启动不接续）。
@@ -91,6 +90,7 @@ export function parseArgs(argv: readonly string[]): Args {
   const diagnostics = parseDiagnosticsArgs(argv)
   let script: string | undefined
   let check = false
+  let settings = false
   let model: ModelChoice | undefined
   let session: string | undefined
   let allowAll = false
@@ -123,6 +123,7 @@ export function parseArgs(argv: readonly string[]): Args {
       check = true
       continue
     }
+    if (arg === '--settings') { settings = true; continue }
     if (arg === '--script') {
       script = valueOf('--script', i)
       i += 1
@@ -149,6 +150,7 @@ export function parseArgs(argv: readonly string[]): Args {
   }
 
   if (check && diagnostics) throw new Error('--check 是只读检查，不能与诊断修改参数同时使用')
+  if (settings && (check || script !== undefined || session !== undefined || model !== undefined || allowAll || openRequest !== undefined || diagnostics)) throw new Error('--settings 仅用于离线配置，请单独使用')
   if (openRequest !== undefined && (check || script !== undefined)) throw new Error('--open-request 仅用于终端接回')
 
   return {
@@ -156,6 +158,7 @@ export function parseArgs(argv: readonly string[]): Args {
     ...(openRequest === undefined ? {} : { openRequest }),
     help: false,
     check,
+    ...(settings ? { settings: true } : {}),
     script,
     session,
     ...(allowAll ? { allowAll: true } : {}),
@@ -195,14 +198,37 @@ function isStep(value: unknown): boolean {
   return false
 }
 
+function localMagicHome() {
+  const home = homedir()
+  const selected = resolveMagicHome({ ...process.env, MAGIC_HOME: process.env.MAGIC_HOME?.trim() || selectedParent(home) }, home)
+  return { ...selected, base: resolve(selected.base) }
+}
+
+async function offlineSettings(): Promise<number> {
+  if (process.stdin.isTTY !== true) throw new Error('本地设置需要一个终端，请在终端里运行 magic --settings')
+  const { loadConfig } = await import('@magic/config')
+  const { terminalSettings } = await import('./run/terminal-settings.ts')
+  const { runTui } = await import('@magic/tui')
+  const { writeClipboardText } = await import('@magic/execution')
+  const magic = localMagicHome(), loaded = loadConfig({ magic }), workspace = workspaceOf(loaded, process.cwd())
+  const tui = await runTui({
+    settingsOnly: true,
+    transport: terminalSettings({ send() { throw new Error('离线设置不执行运行命令') }, subscribe() { return () => {} } }, magic, workspace, undefined, true),
+    copyText: writeClipboardText, magicBase: magic.base, dataDir: magic.base, home: magic.home, workspaceRoots: workspace.roots(),
+    statusLine: loaded.config.statusLine, reducedMotion: loaded.config.motion?.reduced === true,
+    turnDuration: loaded.config.turnDuration,
+    receipts: ['本地设置：/model 管理模型与连接，/config 查看配置，/grants 管理授权。保存不启动 Engine；退出后运行 magic 开始工作。'],
+  })
+  await tui.waitUntilExit(); return 0
+}
+
 async function offlineCheck(args: Args): Promise<number> {
-  const { loadConfig } = await import('./config.ts')
+  const { loadConfig } = await import('@magic/config')
   const { resolveApiKey } = await import('@magic/model')
   const { createSkills, createProjectRules } = await import('@magic/execution')
   const { skillsCatalog, readGrantView } = await import('./run/observation.ts')
   const { parseRules } = await import('@magic/permission')
-  const selected = resolveMagicHome(process.env, homedir())
-  const magic = { ...selected, base: resolve(selected.base) }
+  const magic = localMagicHome()
   const loaded = loadConfig({ magic })
   const workspace = workspaceOf(loaded, process.cwd())
   const roots = workspace.roots()
@@ -283,78 +309,7 @@ function describeProjectRules(load: RulesLoad): string {
   return lines.join('\n')
 }
 
-/**
- * **起外壳那一下的入参**——装配 → `runTui` 的全部接线就这一处。
- *
- * **导出是给用例锚的**（照 `scriptOptions` 的先例，缺陷 D16 那笔账）：状态行 ④ 的分母
- * （U20 留的位 · 本轮接的那一跳）落在**本文件的这一行**上，判据要是自己「照同样方式接一遍」
- * 就只咬住了装配那半边——**倒回这一行，用例照样绿**。故把这一处做成**可取件的接缝**：
- * 用例拿 `tuiOptions(assembly).contextWindow` 验，倒回 `contextWindow` 那一句当场红。
- *
- * 分母**从配置里读，不发命令**。⚠️ 别改成「开机发一次 `model.list`」：装配的 `listModels`
- * 会在没会话时 `session.new`（要开一张空壳才盖得出信封），与 D5「空手打开不占存储」相抵。
- * 条目没声明、内置表也不认得 ⇒ `null` ⇒ 屏上只报已用量——**不编**。
- */
-export async function tuiOptions(assembly: Assembly): Promise<RunTuiOptions> {
-  return {
-    transport: assembly.shell,
-    copyText: writeClipboardText,
-    boot: () => assembly.boot(),
-    // 开机那一刻的读数（外壳那时还不知道模型名）。**此后**每一次切换 / 调用的分母不走这儿
-    // ——由事件自带（`model.switched` / `model.call.start` 的 `inputBudget`，U41 返修：
-    // 产生处写位），外壳不再拿一张窗长表自己查（旧链已删）。
-    contextWindow: assembly.contextWindow,
-    // 工作区（U26）：列表按工作区分组要它认「别的项目」——与交给记录域的是**同一个值**
-    // （`workspace.roots()`：realpath 后的规范形 · 声明序），一头锚进记录、一头用于认路。
-    // `/config` 第 4 行那一格也读它（U71）。
-    workspaceRoots: assembly.workspaceRoots,
-    // **数据目录与家目录**（U71 · `/config` 第 4 行）——那一格报「配成什么样」，而这两件
-    // 是**启动那一刻定下的**（配置 ＋ `MAGIC_HOME`），没有任何命令问得到：故与工作区根
-    // 一样，从装配这一侧**递值**（窗口那一侧的同一条，见 `run/terminal.ts`）。
-    // 家目录只用来把屏上的路径缩成 `~/…`（省那一格的地方）——**不参与任何解析**。
-    dataDir: assembly.magic.base,
-    magicBase: assembly.magic.base,
-    home: assembly.magic.home,
-    // 启动那几句（U22 · 审计第 13 条）：解析从严（读不懂的规则 / 授权**不生效**）原先
-    // 只有 `--check` 会说，走 TUI 这条路**一声不响**。话由装配备好（`Assembly.notices`）、
-    // 外壳落成记录区的一行回执——**空数组＝启动一句多余的话都不说**。
-    receipts: await assembly.notices(),
-  }
-}
-
-/**
- * 脚本驱动接的那几件——**导出是给用例锚的**（缺陷 D16 的判据要咬住本文件这一行接线，
- * 而不是只咬住装配那半边）。
- *
- * `onSwitch` **走装配那一条产出路径**（`assembly.switchModel`）：与命令面同一处产
- * `model.switched`（**落库**）——本文件不另存一份状态、也不直调注册表。
- */
-export function scriptOptions(
-  assembly: Assembly,
-  onEvent: (event: KernelEvent) => void,
-  /** 换成功时那一行人读的痕迹（真跑给 `console.log`；用例给空实现，别往测试输出里漏）。 */
-  note: (line: string) => void = () => {},
-): {
-  readonly onEvent: (event: KernelEvent) => void
-  readonly onSwitch: (request: ModelSwitchRequest) => ModelSwitchResult
-  readonly boot: () => Promise<void>
-} {
-  return {
-    onEvent,
-    // **启动流转也接上**（U25）：给了 `resume <id>` 就走恢复那一趟。不接的话
-    // 「接续 + 恢复」这条链在无人值守里静默缺席——正是本单元要收掉的那种空白。
-    boot: () => assembly.boot(),
-    onSwitch: (request) => {
-      const result = assembly.switchModel(request)
-      if (result.ok) {
-        note(`—— 换模型：走 ${result.selection.provider}（${result.selection.model}）`)
-      }
-      return result
-    },
-  }
-}
-
-/** 脚本只是另一种客户端：订阅与裁决复用既有驱动，执行全部经 App 所属核心。 */
+/** 脚本只是另一种客户端：订阅与裁决复用既有驱动，执行全部经选定 Engine。 */
 export async function runAppScript(args: Args & { readonly script: string }, options: AppConnectionOptions = {}): Promise<void> {
   const script = await readScript(args.script)
   const { client } = await connectTerminal(args, options)
@@ -438,7 +393,7 @@ export async function runAppScript(args: Args & { readonly script: string }, opt
   }
 }
 
-/** 主动终端接入；测试可显式注入沙地发现/App 路径，产品不增加第二种后台模式。 */
+/** 主动终端接入；测试可显式注入沙地发现与 Engine 路径，产品不增加第二种后台模式。 */
 export async function connectTerminal(args: Args, options: AppConnectionOptions = {}): Promise<AppConnection> {
   const { connectApp } = await import('./run/spawn-manager.ts')
   return connectApp({
@@ -498,15 +453,6 @@ async function runTerminal(args: Args): Promise<number> {
   }
 }
 
-/** launchd 启动的 Engine 入口，生命周期独立于图形 App。 */
-async function runManagerMode(argv: readonly string[]): Promise<number | undefined> {
-  if (argv[0] !== '--internal-engine') return undefined
-
-  const { runEngine } = await import('./run/host-runtime.ts')
-  try { return await runEngine(argv.slice(1)) }
-  catch (error) { console.error(`Engine 启动失败：${String(error)}`); return 0 }
-}
-
 async function main(): Promise<number> {
   if (process.argv[2] === 'engine') {
     const action = process.argv[3]
@@ -518,29 +464,6 @@ async function main(): Promise<number> {
       return result.state === 'failed' || result.state === 'unreachable' ? 1 : 0
     } catch (error) { console.error(String(error)); return 1 }
   }
-  if (process.argv[2] === '--internal-engine-call') {
-    try {
-      const { engineCall } = await import('./run/engine-call.ts')
-      console.log(JSON.stringify(await engineCall(JSON.parse(await Bun.stdin.text()))))
-      return 0
-    } catch (error) { console.log(JSON.stringify({ state: 'failed', error: String(error) })); return 1 }
-  }
-  if (process.argv[2] === '--internal-settings') {
-    try {
-      const { runSettingsCall } = await import('./settings-call.ts')
-      const result = await runSettingsCall(JSON.parse(await Bun.stdin.text()), process.env)
-      process.stdout.write(`${JSON.stringify(result)}\n`)
-      return 0
-    } catch (error) {
-      process.stdout.write(`${JSON.stringify({ saved: false, error: error instanceof Error ? error.message : String(error) })}\n`)
-      return 1
-    }
-  }
-  // **内部那两支先走**（U48）——它们不认 `--help` 那一族，也不该被 `parseArgs` 拦下
-  const asManager = await runManagerMode(process.argv.slice(2))
-  if (asManager !== undefined) return asManager
-
-
   let args: Args
   try {
     args = parseArgs(process.argv.slice(2))
@@ -555,11 +478,12 @@ async function main(): Promise<number> {
   }
 
   if (args.version) {
-    console.log(`magic ${SOFTWARE_VERSION}`)
+    console.log(process.argv.includes('--json') ? JSON.stringify({ component: 'cli', version: SOFTWARE_VERSION, protocol: NATIVE_PROTOCOL }) : `magic ${SOFTWARE_VERSION}`)
     return 0
   }
   try {
     if (args.check) return await offlineCheck(args)
+    if (args.settings) return await offlineSettings()
     if (args.script === undefined) return await runTerminal(args)
   } catch (error) {
     console.error(`${error instanceof ConfigError ? '配置有问题：' : ''}${error instanceof Error ? error.message : String(error)}`)
@@ -575,6 +499,6 @@ async function main(): Promise<number> {
   }
 }
 
-// **只有被当作入口跑时才真的跑**——`scriptOptions` 导出给用例锚，import 本文件不该起外壳
+// 仅可执行入口启动客户端；导入参数解析或连接函数不启动外壳
 // （`bun src/cli.ts` / `bin` 都算「直接跑」，`import.meta.main` 为真）。
 if (import.meta.main) process.exit(await main())

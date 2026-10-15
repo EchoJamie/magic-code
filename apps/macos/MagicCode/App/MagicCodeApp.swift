@@ -2,25 +2,7 @@ import SwiftUI
 import AppKit
 import Combine
 
-@main enum MagicCodeEntry {
-    static func main() {
-        if CommandLine.arguments.dropFirst().first == "--internal-engine-control" {
-            signal(SIGPIPE, SIG_IGN)
-            do {
-                let result = try EngineControl.perform(Array(CommandLine.arguments.dropFirst(2)))
-                FileHandle.standardOutput.write(try JSONEncoder().encode(result) + Data([10]))
-                exit(result.state == "failed" ? 1 : 0)
-            } catch {
-                let result = EngineControlResult(state: "failed", base: nil, alive: nil, record: nil, error: error.localizedDescription)
-                if let data = try? JSONEncoder().encode(result) { FileHandle.standardOutput.write(data + Data([10])) }
-                exit(1)
-            }
-        }
-        MagicCodeApp.main()
-    }
-}
-
-struct MagicCodeApp: App {
+@main struct MagicCodeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model: AppModel
     init() {
@@ -95,7 +77,7 @@ struct MagicCodeApp: App {
             validation = model.$phase.sink { [weak self] phase in
                 // Test-only driver of the actual App lifecycle. No popup, login item or notification.
                 if phase == .ready {
-                    let info: [String: Any] = ["event": "app.ready", "host": model.publication.file.path]
+                    let info: [String: Any] = ["event": "app.ready", "host": ComponentInstallation.directory(model.userHome).appendingPathComponent("runtime/host.json").path]
                     if let data = try? JSONSerialization.data(withJSONObject: info) { FileHandle.standardOutput.write(data + Data([10])) }
                     if CommandLine.arguments.contains("--validation-quit") {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { NSApp.terminate(nil) }

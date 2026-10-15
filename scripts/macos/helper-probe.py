@@ -11,7 +11,7 @@ import threading
 from probe_host import isolated_host
 
 
-def probe(helper):
+def probe(cli, engine):
     requests = []
 
     class Model(http.server.BaseHTTPRequestHandler):
@@ -53,8 +53,8 @@ def probe(helper):
             script = base / 'probe.json'
             script.write_text(json.dumps({'inputs': ['Run the controlled native helper probe.'], 'decisions': []}))
             env = {'HOME': root, 'MAGIC_HOME': root, 'PATH': '/usr/bin:/bin', 'SHELL': '/bin/zsh', 'LANG': 'en_US.UTF-8'}
-            with isolated_host(helper, base, env):
-                result = subprocess.run([str(helper), '--script', str(script)], cwd=root, env=env,
+            with isolated_host(engine, base, env):
+                result = subprocess.run([str(cli), '--script', str(script)], cwd=root, env=env,
                                     text=True, capture_output=True, timeout=40)
             if result.returncode or len(requests) != 2 or 'native-helper-tool-ok' not in json.dumps(requests[-1]):
                 raise RuntimeError(f'helper probe failed ({result.returncode}, requests={len(requests)}):\n{result.stdout}\n{result.stderr}')
@@ -66,4 +66,4 @@ def probe(helper):
 
 
 if __name__ == '__main__':
-    probe(Path(sys.argv[1]).resolve())
+    probe(Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve())

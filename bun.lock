@@ -30,6 +30,7 @@
       },
       "dependencies": {
         "@magic/actions": "workspace:*",
+        "@magic/config": "workspace:*",
         "@magic/contracts": "workspace:*",
         "@magic/control": "workspace:*",
         "@magic/conversation": "workspace:*",
@@ -45,6 +46,13 @@
       "devDependencies": {
         "@magic/faux": "workspace:*",
         "@xterm/headless": "^6.0.0",
+      },
+    },
+    "packages/config": {
+      "name": "@magic/config",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
       },
     },
     "packages/contracts": {
@@ -173,6 +181,8 @@
     "@magic/actions": ["@magic/actions@workspace:packages/actions"],
 
     "@magic/app": ["@magic/app@workspace:packages/app"],
+
+    "@magic/config": ["@magic/config@workspace:packages/config"],
 
     "@magic/contracts": ["@magic/contracts@workspace:packages/contracts"],
 

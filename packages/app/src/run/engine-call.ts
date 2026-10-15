@@ -13,7 +13,7 @@ import { reclaim } from './reclaim.ts'
 
 export type EngineCall = {
   action: 'status' | 'prepare' | 'stop' | 'reclaim' | 'fail-start'
-  home: string; parent: string; app: string; source: string; discovery: string
+  home: string; parent: string; source: string; discovery: string
   error?: string; systemTaskRemoved?: boolean; request?: string; lifecycle?: string; expected?: ServiceIdentity; idleOnly?: boolean
 }
 export type EngineResult = { state: HostDiscovery['state']; base: string; alive?: boolean; record?: HostDiscovery; error?: string }
@@ -36,9 +36,9 @@ async function connect(found: HostDiscovery) {
   } catch { return undefined }
 }
 
-/** 同包平台短调用；配置选择已明确，操作不依赖任何图形进程。 */
-export async function engineCall(input: EngineCall): Promise<EngineResult> {
-  if (!['status', 'prepare', 'stop', 'reclaim', 'fail-start'].includes(input.action) || ![input.home, input.parent, input.app, input.source, input.discovery].every(value => typeof value === 'string' && isAbsolute(value)) || input.source !== softwareSource()) throw new Error('平台控制参数或软件来源无效')
+/** Engine 内部控制动作；配置选择已明确，操作不依赖任何图形进程。 */
+export async function engineCall(input: EngineCall, expectedSource = softwareSource()): Promise<EngineResult> {
+  if (!['status', 'prepare', 'stop', 'reclaim', 'fail-start'].includes(input.action) || ![input.home, input.parent, input.source, input.discovery].every(value => typeof value === 'string' && isAbsolute(value)) || input.source !== expectedSource) throw new Error('平台控制参数或软件来源无效')
   const magic = resolveMagicHome({ MAGIC_HOME: input.parent }, input.home)
   const found = readEngineState(input.discovery)
   if (input.action === 'fail-start') {
@@ -50,7 +50,7 @@ export async function engineCall(input: EngineCall): Promise<EngineResult> {
   if (input.action === 'prepare') {
     if (!input.lifecycle || !input.request) throw new Error('缺少启动代次')
     if (found && await engineAlive(found) !== false) throw new Error('旧 Engine 尚未确认停止')
-    const record: HostDiscovery = { protocol: NATIVE_PROTOCOL, version: SOFTWARE_VERSION, source: input.source, app: input.app,
+    const record: HostDiscovery = { protocol: NATIVE_PROTOCOL, version: SOFTWARE_VERSION, source: input.source,
       base: magic.base, serviceInstance: input.request, lifecycle: input.lifecycle, state: 'starting', socket: runPathsOf(magic, tmpdir()).socket }
     writeEngineState(input.discovery, record)
     return { state: 'starting', base: magic.base, record }

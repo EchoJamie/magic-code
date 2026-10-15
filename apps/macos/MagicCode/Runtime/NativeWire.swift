@@ -20,7 +20,6 @@ struct HostDiscovery: Codable, Equatable {
     let serviceInstance: String
     let socket: String
     let base: String
-    let app: String
     let lifecycle: String
     let pid: Int?
     let startedAt: Double?
@@ -39,7 +38,6 @@ extension HostDiscovery {
         serviceInstance = try c.decode(String.self, forKey: .serviceInstance)
         socket = try c.decode(String.self, forKey: .socket)
         base = try c.decode(String.self, forKey: .base)
-        app = try c.decode(String.self, forKey: .app)
         lifecycle = try c.decode(String.self, forKey: .lifecycle)
         pid = try c.decodeOptional(Int.self, forKey: .pid)
         startedAt = try c.decodeOptional(Double.self, forKey: .startedAt)

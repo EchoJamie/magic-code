@@ -5,7 +5,7 @@ import { locateHost, readHostDiscovery, selectedHostConfig } from '../src/run/ho
 import { connectApp } from '../src/run/spawn-manager.ts'
 import { cliGround } from './resident-cli-fixture.ts'
 
-describe('App 发现与显式打开', () => {
+describe('Engine 发现与显式打开', () => {
 
   test('发现是只读：缺席、坏 JSON、缺字段均不创建或修复文件', () => {
     const g = cliGround()
@@ -20,7 +20,7 @@ describe('App 发现与显式打开', () => {
     } finally { g.close() }
   })
 
-  test('未设 MAGIC_HOME 采用 App 已选 base；不再追加 .magic，也不读默认家的坏配置', () => {
+  test('未设 MAGIC_HOME 采用 Engine 已选 base；不再追加 .magic，也不读默认家的坏配置', () => {
     const g = cliGround()
     try {
       mkdirSync(join(g.home, '.magic'))
@@ -38,7 +38,7 @@ describe('App 发现与显式打开', () => {
       // **没变弱**：两条判据仍是「以那个理由拒绝」，且报出的正是**判据本身**——原来那两半里
       // 有一半（基础目录）根本不该参与比较。
       expect(() => selectedHostConfig(g.discovery, { home: g.home, cwd: g.root, env: { MAGIC_HOME: 'elsewhere' } })).toThrow('CLI 基础目录=')
-      expect(() => selectedHostConfig(g.discovery, { home: g.home, cwd: g.root, env: { MAGIC_HOME: 'elsewhere' } })).toThrow('App 基础目录=')
+      expect(() => selectedHostConfig(g.discovery, { home: g.home, cwd: g.root, env: { MAGIC_HOME: 'elsewhere' } })).toThrow('Engine 基础目录=')
     } finally { g.close() }
   })
   test('未发布发现记录时也先核终端显式实例，差异不启动 Engine', async () => {
@@ -48,7 +48,7 @@ describe('App 发现与显式打开', () => {
         actions.push(action); return { state: 'stopped', base: g.base }
       } })).rejects.toThrow('数据实例不匹配')
       expect(actions).toEqual(['status'])
-      await expect(connectApp({ home: g.home, intent: 'open', env: {} })).rejects.toThrow('须明确指定同来源的原生包')
+      expect(() => locateHost({ home: g.home, standalone: true })).toThrow('Engine 未安装')
     } finally { g.close() }
   })
 })

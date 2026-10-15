@@ -33,7 +33,7 @@ def wait_for(check, seconds=25):
 
 
 def active_work(app, room, control, cli, env):
-    helper = app / 'Contents/Helpers/magic-runtime'
+    helper = Path(json.loads((room / 'Library/Application Support/Magic Code/components.json').read_text())['cli'])
     marker = room / 'tool.pid'
     requests = []
     release = threading.Event()
@@ -55,7 +55,7 @@ def active_work(app, room, control, cli, env):
     control('switch', '--parent', str(room))
     (room / '.magic/config.json').write_text(json.dumps({'workspaceRoots': [str(room)],
         'models': {choice: {'provider': 'local', 'model': 'probe'} for choice in ['default', 'cantrip', 'spell', 'arcane']},
-        'providers': {'local': {'vendor': 'deepseek', 'apiKey': 'synthetic-only', 'baseURL': f'http://127.0.0.1:{server.server_port}/v1'}}}))
+        'providers': {'local': {'protocol': 'chat-completions', 'apiKey': 'synthetic-only', 'baseURL': f'http://127.0.0.1:{server.server_port}/v1'}}}))
     clients = []
     try:
         for round in range(2):
@@ -125,15 +125,18 @@ def run(room):
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     assert info['CFBundleIdentifier'].startswith('com.magiccode.validation.')
     assert info['MagicSystemTestRoot'] == str(room)
-    helper = app / 'Contents/Helpers/magic-runtime'
+    payload = app / 'Contents/Helpers'
+    installed = subprocess.run([str(payload / 'magic-engine'), 'install', '--profile', 'app', '--payload', str(payload), '--home', str(room)], capture_output=True, text=True, check=True)
+    components = json.loads(installed.stdout)['components']
+    helper, engine = Path(components['cli']), Path(components['engine'])
     native = app / 'Contents/MacOS/MagicCode'
     env = environment(room)
     # MAGIC_HOME is explicit only for the first default-instance checks.
     def control(action, *args):
-        result = subprocess.run([str(native), '--internal-engine-control', action, '--validation-root', str(room), *args],
+        result = subprocess.run([str(engine), 'service', action, '--home', str(room), *args],
             cwd=room, env=env, text=True, capture_output=True, timeout=60)
         value = json.loads(result.stdout)
-        assert result.returncode == (1 if value['state'] == 'failed' else 0), result.stdout + result.stderr
+        assert result.returncode == (1 if value['state'] in ['failed', 'unreachable'] else 0), result.stdout + result.stderr
         return value
     def cli(action):
         result = subprocess.run([str(helper), 'engine', action], cwd=room, env=env, text=True, capture_output=True, timeout=60)
@@ -174,9 +177,9 @@ def run(room):
         first = control('status'); assert first['state'] == 'ready'
         first = first['record']; assert first['base'] == str(room / '.magic')
         definition = plistlib.loads((room / 'Library/Application Support/Magic Code/runtime/engine.plist').read_bytes())
-        assert definition['Label'] == info['CFBundleIdentifier'] + '.engine'
+        assert definition['Label'].startswith('com.magiccode.engine.')
         assert definition['KeepAlive'] == {'SuccessfulExit': False}
-        assert definition['ProgramArguments'][0] == str(helper)
+        assert definition['ProgramArguments'][0] == str(engine)
         assert 'EnvironmentVariables' not in definition
         assert not (room / 'Library/LaunchAgents').exists()
         os.kill(first['pid'], signal.SIGKILL)
@@ -216,7 +219,7 @@ def run(room):
             def detached_control():
                 for row in subprocess.check_output(['ps', '-axo', 'pid=,pgid=,command='], text=True).splitlines():
                     fields = row.strip().split(None, 2)
-                    if len(fields) == 3 and fields[2].startswith(str(native) + ' --internal-engine-control stop '):
+                    if len(fields) == 3 and fields[2].startswith(str(engine) + ' service stop '):
                         assert int(fields[1]) != os.getpgid(caller.pid)
                         return int(fields[0])
             controller = wait_for(detached_control)

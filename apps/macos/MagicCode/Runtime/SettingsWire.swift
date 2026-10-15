@@ -1,6 +1,6 @@
 import Foundation
 
-struct SettingsCallResult: Decodable {
+struct SettingsCallResult: Codable {
     let request: String?
     let base: String?
     let configPath: String?
@@ -11,23 +11,27 @@ struct SettingsCallResult: Decodable {
 }
 
 enum SettingsCall {
-    static func run(helper: URL, request: SettingsValue, environment: [String: String]) async throws -> SettingsCallResult {
-        let data = try JSONEncoder().encode(request)
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    let process = Process(), input = Pipe(), output = Pipe()
-                    process.executableURL = helper; process.arguments = ["--internal-settings"]
-                    process.environment = environment
-                    process.standardInput = input; process.standardOutput = output; process.standardError = FileHandle.nullDevice
-                    try process.run()
-                    try input.fileHandleForReading.close(); try output.fileHandleForWriting.close()
-                    try input.fileHandleForWriting.write(contentsOf: data); try input.fileHandleForWriting.close()
-                    let result = output.fileHandleForReading.readDataToEndOfFile()
-                    process.waitUntilExit()
-                    continuation.resume(returning: try JSONDecoder().decode(SettingsCallResult.self, from: result))
-                } catch { continuation.resume(throwing: error) }
+    static func run(metadataURL: URL, request: SettingsValue, environment: [String: String]) async throws -> SettingsCallResult {
+        let metadata = try SettingsFile.read(metadataURL.path)
+        let settings = try NativeSettings(request: request, metadata: metadata, environment: environment)
+        return await perform(request: request, apply: settings.apply, read: { try settings.read(preview: request.object["preview"]) })
+    }
+    /// 保存只执行一次；后续读失败仍保留已保存事实。
+    static func perform(request: SettingsValue, apply: (SettingsValue, String?) async throws -> String,
+                        read: () throws -> SettingsSnapshot) async -> SettingsCallResult {
+        var saved = false, note: String?
+        do {
+            if let action = request.object["action"] {
+                note = try await apply(action, request["stamp"] == .null ? nil : request["stamp"].text)
+                saved = action["type"].text != "model.refresh"
             }
+            let snapshot: SettingsSnapshot
+            do { snapshot = try read() } catch { snapshot = try read() }
+            return SettingsCallResult(request: request["request"].text, base: request["base"].text, configPath: request["configPath"].text,
+                saved: saved, note: note, snapshot: snapshot, error: nil)
+        } catch {
+            return SettingsCallResult(request: request["request"].text, base: request["base"].text, configPath: request["configPath"].text,
+                saved: saved, note: note, snapshot: nil, error: error.localizedDescription)
         }
     }
 }

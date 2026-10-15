@@ -39,7 +39,7 @@ import { join } from 'node:path'
 import type { SkillRef, UserInput } from '@magic/contracts'
 import { attachShell } from '../src/index.ts'
 import type { Assembly, ShellHandle } from '../src/index.ts'
-import { tuiOptions } from '../src/cli.ts'
+import { assemblyTuiOptions } from './support.ts'
 import { makeStage } from './support.ts'
 import type { StageAssembleOptions } from './support.ts'
 import { removeDir, tempDir, validConfig } from './tmp.ts'
@@ -127,7 +127,7 @@ async function shoot(
   const { runTui } = await import('@magic/tui')
 
   const handle = await runTui({
-    ...(await tuiOptions(assembly)),
+    ...(await assemblyTuiOptions(assembly)),
     stdin: stdin as unknown as NodeJS.ReadStream,
     stdout: tty as unknown as NodeJS.WriteStream,
   })

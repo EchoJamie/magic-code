@@ -1,24 +1,22 @@
-import { readFileSync, realpathSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { isAbsolute, join, resolve } from 'node:path'
 import { NATIVE_PROTOCOL, SOFTWARE_VERSION, resolveMagicHome } from '@magic/contracts'
 import type { HostDiscovery, MagicHome, ServiceIdentity } from '@magic/contracts'
-import { loadConfig, type LoadedConfig } from '../config.ts'
+import { loadConfig, type LoadedConfig } from '@magic/config'
 import { normalizeDataDir } from './paths.ts'
 import { softwareSource } from './runtime-launch.ts'
+import { componentSource, readComponents } from '../components.ts'
 
 export type HostLocationOptions = {
   readonly home: string
-  readonly executable?: string
+  /** 显式选定 Engine；未给时读安装记录，源码开发使用 engine.ts。 */
+  readonly enginePath?: string
   readonly standalone?: boolean
-  /** 仅供源码开发与隔离测试显式指定；生产从 executable 反推所属 App。 */
-  readonly appPath?: string
   readonly discoveryPath?: string
 }
-
 export type HostLocation = {
   readonly home: string
   readonly source: string
-  readonly app?: string
   readonly discoveryPath: string
 }
 
@@ -31,32 +29,14 @@ export function hostDiscoveryPath(home: string): string {
   return join(home, 'Library/Application Support', 'Magic Code', 'runtime/host.json')
 }
 
-/** 先解 executable 的符号链接，禁止按 App 名称搜索或猜另一份安装。 */
+/** 客户端位置不参与 Engine 身份；只读取已登记或显式选定的目标。 */
 export function locateHost(options: HostLocationOptions): HostLocation {
-  const home = options.home
-  if (!(options.standalone ?? Bun.isStandaloneExecutable)) {
-    return {
-      home,
-      source: softwareSource(),
-      ...(options.appPath === undefined ? {} : { app: realpathSync(options.appPath) }),
-      discoveryPath: options.discoveryPath ?? hostDiscoveryPath(home),
-    }
-  }
-
-  const source = realpathSync(options.executable ?? process.execPath)
-  const helpers = dirname(source)
-  const contents = dirname(helpers)
-  const app = dirname(contents)
-  if (basename(helpers) !== 'Helpers' || basename(contents) !== 'Contents' ||
-      !app.endsWith('.app') || basename(source) !== 'magic-runtime') {
-    throw new Error(`CLI 不在所属 App 的 Contents/Helpers/magic-runtime 中：${source}；请从 App 重新安装终端命令`)
-  }
-  const plist = Bun.spawnSync([
-    '/usr/libexec/PlistBuddy', '-c', 'Print :CFBundleIdentifier', join(contents, 'Info.plist'),
-  ], { stdout: 'pipe', stderr: 'pipe' })
-  const bundle = plist.stdout.toString().trim()
-  if (plist.exitCode !== 0 || bundle === '') throw new Error(`无法读取所属 App 的 bundle 身份：${app}`)
-  return { home, source, app, discoveryPath: hostDiscoveryPath(home) }
+  const installed = options.enginePath ?? readComponents(options.home)?.engine
+  const source = installed === undefined
+    ? !(options.standalone ?? Bun.isStandaloneExecutable) ? softwareSource() : undefined
+    : componentSource(installed)
+  if (!source) throw new Error('Magic Engine 未安装，请运行终端安装或 App 完整安装')
+  return { home: options.home, source, discoveryPath: options.discoveryPath ?? hostDiscoveryPath(options.home) }
 }
 
 /** 同版、同来源、同数据实例；有发现记录时还必须是同一Engine 代次。 */
@@ -65,20 +45,20 @@ export function assertHostIdentity(
   expected: Pick<ServiceIdentity, 'source'> & Partial<ServiceIdentity>,
 ): void {
   if (!identity || identity.protocol !== NATIVE_PROTOCOL || identity.version !== SOFTWARE_VERSION) {
-    throw new Error('Magic Code 协议或软件版本不匹配；请退出原 App，再打开此 CLI 所属的同版 App')
+    throw new Error('Magic Engine 协议或软件版本不匹配；请使用同版组件')
   }
   if (identity.source !== expected.source) {
-    throw new Error(`Magic Code 软件来源不匹配：CLI=${expected.source}，App=${identity.source}；请退出原 App 后再打开此版本`)
+    throw new Error(`Magic Code 软件来源不匹配：选定 Engine=${expected.source}，实际服务=${identity.source}`)
   }
   if (typeof identity.base !== 'string' || !isAbsolute(identity.base) ||
       typeof identity.serviceInstance !== 'string' || identity.serviceInstance === '') {
     throw new Error('Magic Code 服务身份不完整：缺少数据实例、Engine 代次')
   }
   if (expected.base !== undefined && normalizeDataDir(identity.base) !== normalizeDataDir(expected.base)) {
-    throw new Error(`Magic Code 数据实例不匹配：CLI=${expected.base}，App=${identity.base}；请在 App 设置中明确切换基础路径`)
+    throw new Error(`Magic Code 数据实例不匹配：请求=${expected.base}，Engine=${identity.base}；请明确切换基础路径`)
   }
   if (expected.serviceInstance !== undefined && identity.serviceInstance !== expected.serviceInstance) {
-    throw new Error('Magic Code 发现记录与当前 Engine 代次不一致；请重新连接当前 App')
+    throw new Error('Magic Code 发现记录与当前 Engine 代次不一致；请重新连接当前 Engine')
   }
 }
 
@@ -89,25 +69,18 @@ export function readHostDiscovery(location: HostLocation): HostDiscovery | undef
     raw = readFileSync(location.discoveryPath, 'utf8')
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
-    throw new Error(`读不到 App 发现文件：${location.discoveryPath}`, { cause: error })
+    throw new Error(`读不到 Engine 发现文件：${location.discoveryPath}`, { cause: error })
   }
   let value: unknown
   try { value = JSON.parse(raw) } catch {
-    throw new Error(`App 发现文件不是有效 JSON：${location.discoveryPath}`)
+    throw new Error(`Engine 发现文件不是有效 JSON：${location.discoveryPath}`)
   }
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`App 发现文件形状无效：${location.discoveryPath}`)
+    throw new Error(`Engine 发现文件形状无效：${location.discoveryPath}`)
   }
   const found = value as HostDiscovery
   assertHostIdentity(found, { source: location.source })
-  for (const key of ['socket', 'app'] as const) {
-    if (typeof found[key] !== 'string' || !isAbsolute(found[key])) {
-      throw new Error(`App 发现文件 ${key} 必须是绝对路径：${location.discoveryPath}`)
-    }
-  }
-  if (location.app !== undefined && normalizeDataDir(found.app) !== location.app) {
-    throw new Error(`发现记录指向另一 App：${found.app}；当前 CLI 属于 ${location.app}`)
-  }
+  if (typeof found.socket !== 'string' || !isAbsolute(found.socket)) throw new Error(`Engine 发现文件 socket 必须是绝对路径：${location.discoveryPath}`)
   return found
 }
 
@@ -124,8 +97,8 @@ export function selectedHostConfig(
   if (normalizeDataDir(base) !== normalizeDataDir(discovery.base)) {
     throw new Error(
       `Magic Code 数据实例不匹配：CLI 基础目录=${base}；` +
-      `App 基础目录=${discovery.base}。` +
-      '请在 App 设置中明确切换基础路径，或取消本次 MAGIC_HOME 后重试',
+      `Engine 基础目录=${discovery.base}。` +
+      '请明确切换基础路径，或取消本次 MAGIC_HOME 后重试',
     )
   }
   return { magic, loaded: loadConfig({ magic }) }

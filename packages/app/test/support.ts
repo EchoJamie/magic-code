@@ -196,3 +196,12 @@ export function readDatabase(databasePath: string): RawDatabase {
     close: () => db.close(),
   }
 }
+
+/** 进程内装配用例的界面适配；正式 CLI 的接线由 terminalOptions 集成用例验证。 */
+export async function assemblyTuiOptions(assembly: import('../src/assembly.ts').Assembly): Promise<import('@magic/tui').RunTuiOptions> {
+  return {
+    transport: assembly.shell, boot: () => assembly.boot(), contextWindow: assembly.contextWindow,
+    workspaceRoots: assembly.workspaceRoots, dataDir: assembly.magic.base, magicBase: assembly.magic.base,
+    home: assembly.magic.home, receipts: await assembly.notices(),
+  }
+}

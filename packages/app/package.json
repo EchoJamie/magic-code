@@ -26,7 +26,8 @@
     "@magic/records": "workspace:*",
     "@magic/tools": "workspace:*",
     "@magic/tui": "workspace:*",
-    "undici": "7.29.1"
+    "undici": "7.29.1",
+    "@magic/config": "workspace:*"
   },
   "devDependencies": {
     "@magic/faux": "workspace:*",

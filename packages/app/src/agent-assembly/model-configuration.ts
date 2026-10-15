@@ -12,9 +12,10 @@ import type {
 import type { FetchLike, ModelInfoService, ModelRegistry } from '@magic/model'
 import { createModelInfoService, createModelRegistry, resolveConnection } from '@magic/model'
 import { bindModelChoice } from '../agent-models.ts'
-import { cacheAccessFor, configStamp as configStampOf, connectionScopeChanged } from '../cache-access.ts'
-import { removeProvider, setPrefs } from '../config-save.ts'
-import { loadConfig, type LoadedConfig } from '../config.ts'
+import { configStamp as configStampOf } from '@magic/config'
+import { cacheAccessFor, connectionScopeChanged } from '../cache-access.ts'
+import { removeProvider, setPrefs } from '@magic/config'
+import { loadConfig, type LoadedConfig } from '@magic/config'
 import { createFileModelInfoCache } from '../model-cache.ts'
 import { createSettings } from '../settings.ts'
 
