@@ -28,7 +28,7 @@ function endpoint(options: { failure?: boolean; summaryFailure?: 'auth' | 'netwo
   const seen: { url: string; body: Record<string, any> }[] = []
   const fetch = (async (input: unknown, init?: RequestInit) => {
     const url = String(input)
-    if (url.endsWith('/models')) return Response.json({ data: [{ id: 'deepseek-flash' }, { id: 'deepseek-v4-pro' }] })
+    if (url.endsWith('/models')) return Response.json({ data: [{ id: 'deepseek-flash', reasoning: { disable: true, levels: ['high'] } }, { id: 'deepseek-v4-pro' }] })
     const body = JSON.parse(String(init?.body))
     seen.push({ url, body })
     const summary = body.messages?.[0]?.content?.startsWith('你是会话压缩器') === true
@@ -97,12 +97,13 @@ describe('统一模型配置与执行选择', () => {
   })
 
   test('思考修改不重新解析可变映射；更换实际组合重置不适用思考，成员隔离', () => {
+    const modelInfoOf = (_provider: string, id: string) => ({ id, reasoning: { disable: true, levels: ['high'] } })
     const changed = { ...configuredModels, default: configuredModels.cantrip }
-    const reasoning = resolveModelChoice({ providers, configuredModels: changed, defaults, config: { reasoning: { mode: 'off' } } })
+    const reasoning = resolveModelChoice({ providers, modelInfoOf, configuredModels: changed, defaults, config: { reasoning: { mode: 'off' } } })
     expect(reasoning).toEqual({ ok: true, selection: { ...defaults, reasoning: { mode: 'off' } } })
     const chosen = resolveModelChoice({ providers, configuredModels: changed, defaults, config: { choice: 'default' } })
     expect(chosen).toEqual({ ok: true, selection: { choice: 'default', ...configuredModels.cantrip, protocol: 'chat-completions', endpoint: providers.aux.baseURL } })
-    const options = { providers, stamper: makeTestStamper(), env: {} }
+    const options = { providers, modelInfoOf, stamper: makeTestStamper(), env: {} }
     const first = createAgentModels({ options, configuredModels, defaults })
     const second = createAgentModels({ options, configuredModels, defaults, config: { choice: 'cantrip' } })
     expect(first.ok && second.ok).toBe(true)
@@ -142,9 +143,9 @@ describe('统一模型配置与执行选择', () => {
 
   for (const scenario of ['success', 'capacity', 'server', 'server-large', 'missing', 'auth', 'network', 'empty', 'incomplete'] as const) test(`独立 Cantrip 压缩：${scenario}，请求无工具且关闭思考，失败保留原文`, async () => {
     const wire = endpoint({ failure: scenario === 'server' || scenario === 'server-large', ...(['auth', 'network', 'empty', 'incomplete'].includes(scenario) ? { summaryFailure: scenario as 'auth' | 'network' | 'empty' | 'incomplete' } : {}) })
-    const configured = scenario === 'capacity' ? { ...providers, aux: { ...providers.aux, modelOverrides: { 'deepseek-flash': { limits: { maxInputTokens: 1 } } } } } : scenario === 'server-large' ? { ...providers, aux: { ...providers.aux, modelOverrides: { 'deepseek-flash': { limits: { maxInputTokens: 10000000 } } } } } : providers
+    const configured: MagicConfig['providers'] = scenario === 'capacity' ? { ...providers, aux: { ...providers.aux, modelOverrides: { 'deepseek-flash': { limits: { maxInputTokens: 1 } } } } } : scenario === 'server-large' ? { ...providers, aux: { ...providers.aux, modelOverrides: { 'deepseek-flash': { limits: { maxInputTokens: 10000000 } } } } } : providers
     const configuredAliases: NonNullable<MagicConfig['models']> = scenario === 'missing' ? { default: configuredModels.default, spell: configuredModels.spell, arcane: configuredModels.arcane } : configuredModels
-    const stage = makeStage({ config: { providers: configured, models: configuredAliases } })
+    const stage = makeStage({ config: { providers: { ...configured, aux: { ...configured.aux, modelOverrides: { ...configured.aux!.modelOverrides, 'deepseek-flash': { ...configured.aux!.modelOverrides?.['deepseek-flash'], reasoningSupport: { disable: true } } } } }, models: configuredAliases } })
     const assembly = stage.assemble({ modelGateway: undefined, modelFetch: wire.fetch,
       context: { nearEntries: 1, compactAtTokens: 1, compactAtFraction: 0.000001 } })
     const shell = attachShell(assembly.shell)

@@ -54,7 +54,7 @@ function memoryCache(): ModelInfoCache & { readonly stored: Map<string, ModelInf
   const stored = new Map<string, ModelInfoSnapshot>()
   return {
     stored,
-    read: (providerId) => Promise.resolve(stored.get(providerId)),
+    read: (providerId) => stored.get(providerId),
     replace: (snapshot) => {
       stored.set(snapshot.provider, snapshot)
       return Promise.resolve()

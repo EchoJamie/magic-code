@@ -719,6 +719,7 @@ export function assemble(options: AssembleOptions): Assembly {
       entries: Object.keys(modelSource.providers).map(id => ({ id })),
       ...(current === undefined ? {} : { current }),
       read: (provider) => modelInfo.read(provider),
+      describe: modelInfo.describe,
       inputBudget: (provider, model) => registry?.capacityOf(provider, model)?.inputBudget,
     }
   }
@@ -739,11 +740,6 @@ export function assemble(options: AssembleOptions): Assembly {
       listModels('还没有可刷新的连接——先接入一个供应商')
       return
     }
-    if (!modelInfo.canFetch(target)) {
-      listModels(`「${target}」是兼容接入——它没有模型列表接口，取不到可刷新的东西`)
-      return
-    }
-
     listModels()
     await modelInfo.refresh(target)
   }

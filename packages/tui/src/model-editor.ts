@@ -8,7 +8,7 @@ export const protocolLabel = (value: string): string => protocols.find(one => on
 export function effectiveProtocol(entry: ModelCatalogRow | undefined, vendor: VendorInfo | undefined, model: string): ModelProtocol | undefined {
   if (entry?.protocol !== undefined) return entry.protocol
   if (entry?.vendor === undefined) return 'responses'
-  return vendor?.protocols.find(one => one.models.includes(model))?.id
+  return vendor?.protocols.find(one => one.models === undefined || one.models.includes(model))?.id
 }
 
 /**
@@ -23,8 +23,8 @@ export function effectiveProtocol(entry: ModelCatalogRow | undefined, vendor: Ve
 export function defaultProtocolOf(vendor: VendorInfo | undefined, models: readonly string[] = []): ModelProtocol | undefined {
   if (vendor === undefined) return 'responses'
   if (models.length === 0) return vendor.protocols[0]?.id
-  return (vendor.protocols.find(one => models.every(model => one.models.includes(model)))
-    ?? vendor.protocols.find(one => models.some(model => one.models.includes(model)))
+  return (vendor.protocols.find(one => one.models === undefined || models.every(model => one.models!.includes(model)))
+    ?? vendor.protocols.find(one => one.models === undefined || models.some(model => one.models!.includes(model)))
     ?? vendor.protocols[0])?.id
 }
 export type Field = { key: string; label: string; secret?: boolean; choices?: readonly { id: string; label: string }[] }

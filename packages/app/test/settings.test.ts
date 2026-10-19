@@ -18,7 +18,7 @@ function setup() {
   mkdirSync(workspace)
   const store = createRecordsStore({ dataDir: g.dataDir, workspace: [] })
   cleanups.push(() => { store.close(); g.close() })
-  const context: SettingsContext = { magic: { base: g.base, home: g.home }, environment: {}, fetch: globalThis.fetch }
+  const context: SettingsContext = { magic: { base: g.base, home: g.home }, environment: {}, fetch: async () => new Response('{}') }
   const settings = createSettings(context)
   return { ...g, workspace, config, store, settings, context,
     apply: async (action: SettingsAction) => settings.apply(action, (await settings.read()).stamp),

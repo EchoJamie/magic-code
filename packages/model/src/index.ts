@@ -77,6 +77,8 @@ export { createModelInfoService, resolveConnection, modelSpecOf } from './model-
 export { vendorCatalog, resolveModelSource, authOf, PROTOCOLS } from './vendors.ts'
 export type { ModelConnection, ModelInfoService, ModelInfoServiceOptions } from './model-info.ts'
 export { MODEL_INFO_FAILURE_COOLDOWN_MS, MODEL_INFO_TTL_MS } from './model-info.ts'
+export { MODELS_DEV_URL, MODELS_DEV_TTL_MS, parseModelsDev } from './models-dev.ts'
+export type { ModelsDevResource, ModelsDevSnapshot } from './models-dev.ts'
 
 // —— ③ 构造子（Faux Provider 与循环测试用；信封由注入的 `EventStamper` 铸）——
 
@@ -96,7 +98,6 @@ export { classifyModelError, describeModelError, isAbortError, redactSecrets } f
 // ⚠️ **旧的「窗长表」出口已撤**（U41 返修）：分母改由 `ModelRegistry.capacityOf` 一次解析，
 // 经事件给外壳（`model.switched` / `model.call.start` 的 `inputBudget`）。这两件留着——
 // 它们是域内的容量资料与**兼容接入**那条路的判定（别按「没人调」删掉）。
-export { MODEL_CONTEXT_BUILTIN, resolveContextWindow } from './capacity.ts'
 
 // —— ⑤ 策略（退避重试——见 `retry.ts`）——
 

@@ -1,32 +1,8 @@
-/**
- * U30 · 上下文容量来源与切换显示 —— **验收判据**（全链 · 经真控制面）。
- *
- * 出处：`交接/工单/U30.md`（依据 `进度台账` 的「换模型分母滞后」＋「`contextWindow`
- * 内置表」两条）。两条同属**一条用量读数链**：分母从哪来 · 换过模型之后跟不跟得上。
- *
- * 判据逐条锚「我要什么」：
- *
- * 1. **已知模型不要求用户自己补客观容量**——内置表（官方出处见 `capacity.ts`）命中
- *    就有分母，配置里不必写一行；
- * 2. **用户已明确配置的保持覆盖能力**——`providers.<id>.contextWindow` 声明了就用声明的数；
- * 3. **未知 ⇒ `null`**——不沿用前一个模型的容量、不模糊匹配、不编；
- * 4. **运行时换模型后分母立即更新**（那句「现在谁在干活，分母就得是谁的」）——
- *    **切换失败保持当前读数**；
- * 5. **开机空态不变**——还没有用量就不报用量（**不写一个伪造的 `0/…`**）。
- *
- * 这一层钉的是**全链**：真配置 · 真注册表 · 真对话域 · 真记录域 · 真控制面 ＋
- * **真外壳**——只有端点换成假的。域内那半（怎么判定、怎么装表）钉在 `@magic/model` 的用例里。
- *
- * **两条接线**，别混：
- * - 前两组从 `assemblyTuiOptions` **取件**递进 `createShell`（照 `readouts.test.ts` 的先例：
- *   自己照接一遍就只咬住半边）；
- * - 末一组走**真 `runTui`**（产品那条路本身）——屏上的字从 `runTui` 写出的**字节**里读，
- *   不是「同表达式手工接一遍」。
- */
+/** 本地资料、用户覆盖和未知容量经真实装配进入预算；切换后的读数与出站来源一致。 */
 
 import { describe, expect, test } from 'bun:test'
 import { EventEmitter } from 'node:events'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { EventStamper, KernelEvent, ModelGateway } from '@magic/contracts'
 import { createFauxGateway } from '@magic/faux'
@@ -40,15 +16,15 @@ import { configureModel } from '@magic/config'
 import { magicAt, removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 // ═══════════════════════════════════════════════════════════════════════
-// 夹具 —— 三条目 × 三种容量来处（内置命中 / 声明覆盖 / 未知）
+// 夹具 —— 三条目 × 三种容量来处（资料命中 / 声明覆盖 / 未知）
 // ═══════════════════════════════════════════════════════════════════════
 
 const KEY = 'sk-u30-not-a-real-key'
 
 /**
  * 甲乙丙三格，正好是三种来处：
- * - `mm` —— 内置表命中（`MiniMax-M3` ⇒ 1,000,000），**配置里不写** `contextWindow`；
- * - `mm2` —— 模型也在内置表里（`MiniMax-M2` ⇒ 204,800），但**用户声明了** 32,768
+ * - `mm` —— 本地资料命中（`MiniMax-M3` ⇒ 1,000,000），**配置里不写** `contextWindow`；
+ * - `mm2` —— 模型也在本地资料里（`MiniMax-M2` ⇒ 204,800），但**用户声明了** 32,768
  *   （本地端点 / 私有部署那一类：声明的数说了算）；
  * - `local` —— 表外模型（自建 llama），没声明 ⇒ **不知道**（分母 `null`）。
  */
@@ -92,6 +68,13 @@ function stage(): {
   dispose(): void
 } {
   const root = tempDir('magic-u30-')
+  const cache = join(magicAt(root).base, 'cache')
+  mkdirSync(cache, { recursive: true })
+  writeFileSync(join(cache, 'models.dev.json'), JSON.stringify({ fetchedAt: Date.now(), data: Object.fromEntries(
+    ['mm', 'mm2', 'mm-same'].map(provider => [provider, { api: `https://${provider}.example/v1`, models: Object.fromEntries(
+      [['MiniMax-M3', 1_000_000], ['MiniMax-M2', 204_800], ['MiniMax-M2.5', 204_800]].map(([id, context]) => [id, { id, limit: { context } }]),
+    ) }]),
+  ) }))
   const workspace = join(root, 'ws')
   mkdirSync(workspace, { recursive: true })
 
@@ -148,13 +131,8 @@ const RESERVED_OUTPUT = 4_096
 // ═══════════════════════════════════════════════════════════════════════
 
 describe('开机那一格的分母', () => {
-  /**
-   * **U41 返修改锚**：这一格从「窗长表里的一个数」改成**有效输入预算**——
-   * 联合窗口为本次输出预留之后剩下的那一份（复核：「预留依据是本次实际请求，
-   * 不是供应商最大输出规格是否已知」）。**原锚**是「内置表命中 ⇒ 报 1M」；
-   * **为何变**：分母要与出站请求、用量事件、压缩同一份解析；**新锚**：联合窗口 − 本次输出。
-   */
-  test('**已知模型**：配置里没声明，也有分母（内置表命中 ⇒ M3 的联合窗口）', async () => {
+  // 分母使用联合窗口减去本次实际预留的输出，与请求预算同源。
+  test('**已知模型**：配置里没声明，也有分母（本地资料命中 ⇒ M3 的联合窗口）', async () => {
     const land = stage()
 
     try {
@@ -168,7 +146,7 @@ describe('开机那一格的分母', () => {
     }
   })
 
-  test('**用户声明的压过内置**：声明了 32768 ⇒ 分母是它预留后的数（不是内置的 204800）', async () => {
+  test('**用户声明的压过资料**：声明了 32768 ⇒ 分母是它预留后的数（不是资料的 204800）', async () => {
     const land = stage()
 
     try {
@@ -214,7 +192,7 @@ describe('开机那一格的分母', () => {
     try {
       const assembly = land.assemble()
 
-      // 声明的那条：用它声明的数；同名模型的另一条：内置表那个数
+      // 声明的那条：用它声明的数；同名模型的另一条：本地资料那个数
       expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
       expect((await assemblyTuiOptions(assembly)).contextWindow).toBe(32_768 - RESERVED_OUTPUT)
 
@@ -276,7 +254,7 @@ describe('换过模型之后的分母', () => {
 
   /**
    * **同名模型跨条目**（规划侧打回重做的那一条）——在**真链路**上验：
-   * 声明过 `MiniMax-M2` 的那条目用 32768，挂**同一个模型**的另一条目用内置表的 204800。
+   * 声明过 `MiniMax-M2` 的那条目用 32768，挂**同一个模型**的另一条目用本地资料的 204800。
    */
   test('同名模型两条目：换到哪条就报哪条的——声明不串味', async () => {
     const land = stage()
@@ -291,7 +269,7 @@ describe('换过模型之后的分母', () => {
       expect(shell.getView().status.model).toBe('Cantrip')
       expect(shell.getView().status.window).toBe(32_768 - RESERVED_OUTPUT)
 
-      // **同名模型**的另一条：内置表那个数（不是上一步的 32768）
+      // **同名模型**的另一条：本地资料那个数（不是上一步的 32768）
       expect(assembly.switchModel({ choice: 'arcane' }).ok).toBe(true)
       expect(shell.getView().status.model).toBe('Arcane')
       expect(shell.getView().status.window).toBe(204_800 - RESERVED_OUTPUT)
@@ -354,13 +332,13 @@ describe('换过模型之后的分母', () => {
       const shell = (await shellOf(assembly))
       await warm(assembly)
 
-      // 同一条目换到另一个模型——它自己的窗长（内置 204800），不是 M3 的 1M
+      // 同一条目换到另一个模型——它自己的窗长（资料 204800），不是 M3 的 1M
       expect((await chooseConfiguredModel(assembly, 'MiniMax-M2.5')).ok).toBe(true)
       expect(shell.getView().status.window).toBe(204_800 - RESERVED_OUTPUT)
 
-      // 官方未核实型号不能应用；失败保留当前已知型号与容量。
-      expect((await chooseConfiguredModel(assembly, 'MiniMax-M9')).ok).toBe(false)
-      expect(shell.getView().status.window).toBe(204_800 - RESERVED_OUTPUT)
+      // 协议属于供应商级；未知精确型号可选择，容量保持未知。
+      expect((await chooseConfiguredModel(assembly, 'MiniMax-M9')).ok).toBe(true)
+      expect(shell.getView().status.window).toBeNull()
 
       shell.dispose()
       assembly.close()
@@ -399,7 +377,7 @@ describe('换过模型之后的分母', () => {
    * - 条目名 `'toString'` ⇒ **未知供应商**（不是把原型上那个东西当配置去解 key）、切不动就不动；
    * - 模型名 `'toString'`（同条目只换模型）⇒ 分母**干净地没有**（不是原型上那个函数）。
    */
-  test('原型名不能作为选择或官方型号，失败保留当前模型和分母', async () => {
+  test('未知档位拒绝切换；型号与原型同名也不产生虚假容量', async () => {
     const land = stage()
 
     try {
@@ -415,11 +393,11 @@ describe('换过模型之后的分母', () => {
       expect(shell.getView().status.window).toBe(1_000_000 - RESERVED_OUTPUT)
       expect(shell.getView().status.model).toBe('Default')
 
-      // 官方型号同样只认精确支持表，不读取原型属性。
-      expect((await chooseConfiguredModel(assembly, 'toString')).ok).toBe(false)
-      expect(shell.getView().status.model).toBe('Default')
-      expect(shell.getView().status.window).toBe(1_000_000 - RESERVED_OUTPUT)
-      expect(usageLabel(shell.getView().status.usage, shell.getView().status.window)).toBe('3.1k/996k')
+      // 型号允许精确填写；没有对应资料就保持未知，不读取对象原型。
+      expect((await chooseConfiguredModel(assembly, 'toString')).ok).toBe(true)
+      expect(shell.getView().status.model).toBe('Spell')
+      expect(shell.getView().status.window).toBeNull()
+      expect(usageLabel(shell.getView().status.usage, shell.getView().status.window)).toBe('3.1k')
 
       shell.dispose()
       assembly.close()
@@ -594,7 +572,7 @@ describe('真 `runTui` 那条路（接线在不在）', () => {
 
       // 真换（经装配那条产出路径）⇒ 屏上换成新模型那个数
       expect(assembly.switchModel({ choice: 'arcane' }).ok).toBe(true)
-      // `mm-same` 那条是内置表的 M2（204_800 − 4_096 ⇒ `201k`）
+      // `mm-same` 那条是本地资料的 M2（204_800 − 4_096 ⇒ `201k`）
       await until(tty, '3.1k/201k')
 
       // 再换到未知模型 ⇒ 分母从屏上下去（只剩分子，没有那个斜杠）。

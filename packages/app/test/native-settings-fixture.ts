@@ -1,10 +1,14 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { SettingsAction, SettingsPreview, SettingsSnapshot } from '@magic/contracts'
 
 type Request = { request: string; home: string; base: string; configPath: string; stamp?: string | null; action?: SettingsAction; preview?: SettingsPreview }
 type Result = { request: string; base: string; configPath: string; saved: boolean; note?: string; snapshot?: SettingsSnapshot; error?: string }
+export const nativeModelsDevCatalog = {
+  deepseek: { api: 'https://api.deepseek.com', models: { 'deepseek-flash': { id: 'deepseek-flash', reasoning_options: [{ type: 'toggle' }, { type: 'effort', values: ['low', 'high', 'max'] }] } } },
+  'minimax-cn': { api: 'https://api.minimax.cn/anthropic/v1', models: { 'MiniMax-M3.1-Flash': { id: 'MiniMax-M3.1-Flash', limit: { context: 1_000_000, output: 512_000 }, modalities: { input: ['text', 'image'], output: ['text'] }, tool_call: true, reasoning_options: [{ type: 'effort', values: ['low', 'medium', 'high', 'xhigh', 'max'] }] } } },
+}
 let compiled: Promise<{ binary: string; metadata: string }> | undefined
 function nativeSettings() {
   return compiled ??= (async () => {
@@ -20,6 +24,13 @@ function nativeSettings() {
     const data = Bun.spawn([process.execPath, 'scripts/macos/build-settings-data.ts', metadata], { cwd: root, stdout: 'pipe', stderr: 'pipe' })
     const [dataCode, dataError] = await Promise.all([data.exited, new Response(data.stderr).text()])
     if (dataCode !== 0) throw new Error(`设置资料生成失败：${dataError}`)
+    // 原生网络路径使用真实环回服务，测试不访问公共目录。
+    const catalog = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => Response.json(nativeModelsDevCatalog) })
+    catalog.unref()
+    process.on('exit', () => { catalog.stop(true) })
+    const built = JSON.parse(readFileSync(metadata, 'utf8'))
+    built.modelsDev.url = String(catalog.url)
+    writeFileSync(metadata, JSON.stringify(built))
     return { binary, metadata }
   })()
 }

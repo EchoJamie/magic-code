@@ -6,6 +6,7 @@ import type { ModelRegistry, ModelRegistryOptions, ModelSelection, ModelSwitchRe
 import { loadConfig } from '@magic/config'
 import { cacheAccessFor } from './cache-access.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
+import { createModelsDevResource } from './models-dev-resource.ts'
 
 /** 运行选择的唯一解析边界；缺失不猜测，思考修改不重新读取映射。 */
 export function resolveModelChoice(input: {
@@ -84,7 +85,7 @@ export async function resolveManagedModel(input: {
   const resolved = resolveModelChoice({
     providers: loaded.config.providers, configuredModels: loaded.config.models,
     newAgent: true, defaults: input.defaults, role: role?.model, config: input.model,
-    modelInfoOf: (provider, model) => info.peek(provider).snapshot?.models.find(one => one.id === model),
+    modelInfoOf: (provider, model) => info.model(provider, model),
   })
   if (!resolved.ok) throw new Error(resolved.reason)
   resolveApiKey({ providerId: resolved.selection.provider, config: loaded.config.providers[resolved.selection.provider]!, env: input.environment, configPath: loaded.path })
@@ -100,6 +101,7 @@ async function managedModelContext(magic: MagicHome, environment: Readonly<Recor
       access: cacheAccessFor({ provider: providerId, configPath: loaded.path, apiKey: config.apiKey, processToken }),
     })),
     cache: createFileModelInfoCache(magic.base), now: Date.now,
+    metadata: createModelsDevResource(magic.base, async () => { throw new Error('配置预检不允许联网') }),
     fetch: async () => { throw new Error('配置预检不允许联网') },
   })
   await info.warmup()
@@ -112,7 +114,7 @@ export async function managedModelChoices(magic: MagicHome, environment: Readonl
   return (['default', 'cantrip', 'spell', 'arcane'] as const).map(choice => {
     const mapping = loaded.config.models?.[choice]
     if (mapping === undefined) return { choice, configured: false }
-    const known = info.peek(mapping.provider).snapshot?.models.find(one => one.id === mapping.model)
+    const known = info.model(mapping.provider, mapping.model)
     const override = loaded.config.providers[mapping.provider]?.modelOverrides?.[mapping.model]
     return { choice, configured: true, ...mapping,
       capabilities: known?.capabilities === undefined ? override?.capabilities : { ...known.capabilities, ...override?.capabilities },

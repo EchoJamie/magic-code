@@ -51,6 +51,9 @@ import type { FetchLike } from './ai-sdk.ts'
 import { effectiveSpecOf, resolveApiKey } from './gateway.ts'
 import { normalizeBaseURL, vendorOf } from './vendors.ts'
 import type { VendorAdapter } from './vendors.ts'
+import { mergeModelInfo, modelsDevProvider, MODELS_DEV_TTL_MS } from './models-dev.ts'
+import type { ModelsDevResource } from './models-dev.ts'
+import { ownOf } from './capacity.ts'
 
 /** 默认有效期——24 小时（设计：默认有效期 24 小时）。 */
 export const MODEL_INFO_TTL_MS = 24 * 60 * 60 * 1000
@@ -129,6 +132,7 @@ export function resolveConnection(input: {
 }
 
 export type ModelInfoServiceOptions = {
+  readonly metadata?: ModelsDevResource
   /** 连接一览——**每次现取**（配置可能被改；快照它会让改完的连接认不出）。 */
   readonly connections: () => readonly ModelConnection[]
   /** 缓存持久化端口（实现归装配）。 */
@@ -150,8 +154,12 @@ export type ModelInfoServiceOptions = {
 
 /** 模型信息面——装配与外壳经它读；**刷新是显式动作**，不藏在读里。 */
 export type ModelInfoService = {
+  /** 按需解析本地资料，不访问网络，也不改动供应商原始快照。 */
+  model(providerId: string, model: string): ModelInfo | undefined
+  describe(providerId: string, models: readonly string[]): Pick<import('@magic/contracts').ModelCatalogRow, 'modelInfo' | 'metadata'>
+  refreshMetadata(force?: boolean): Promise<void>
   /** 启动预热：把缓存文件读回内存（缺文件 / 损坏都只是「还没有」，不是错）。 */
-  warmup(): Promise<void>
+  warmup(): void
   /**
    * 读一次——**同步**（读面答复不能等 IO）。
    *
@@ -373,13 +381,44 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
     return task
   }
 
+  const refreshMetadata = async (force = false): Promise<boolean> => {
+    if (!options.metadata) return false
+    const catalog = options.metadata.read().snapshot?.providers ?? {}
+    if (!force && !options.connections().some(c => modelsDevProvider(c.config, catalog) !== undefined)) return false
+    return options.metadata.refresh(force)
+  }
+
+  const describe = (providerId: string, models: readonly string[]): Pick<import('@magic/contracts').ModelCatalogRow, 'modelInfo' | 'metadata'> => {
+    const config = connectionOf(providerId)?.config
+    const resource = options.metadata?.read()
+    const snapshot = resource?.snapshot
+    const provider = config && snapshot ? modelsDevProvider(config, snapshot.providers) : undefined
+    const catalog = provider && snapshot && Object.hasOwn(snapshot.providers, provider) ? snapshot.providers[provider]?.models : undefined
+    const supplied = readOf(providerId).snapshot?.models ?? []
+    return {
+      modelInfo: Object.fromEntries(models.flatMap(id => {
+        const metadata = catalog && Object.hasOwn(catalog, id) ? catalog[id] : undefined
+        const info = mergeModelInfo(id, supplied.find(m => m.id === id), metadata)
+        return info === undefined ? [] : [[id, info]]
+      })),
+      ...(resource === undefined ? {} : { metadata: {
+        stale: snapshot === undefined || options.now() - snapshot.fetchedAt >= MODELS_DEV_TTL_MS,
+        ...(snapshot === undefined ? {} : { fetchedAt: snapshot.fetchedAt }),
+        ...(resource.failure === undefined ? {} : { failure: resource.failure }),
+      } }),
+    }
+  }
+
   return {
-    async warmup(): Promise<void> {
+    describe,
+    model(providerId, model) { return ownOf(describe(providerId, [model]).modelInfo ?? {}, model) },
+    async refreshMetadata(force = false) { await refreshMetadata(force) },
+    warmup(): void {
       for (const connection of options.connections()) {
         // **无可信身份不读共享盘**（内存里照常跑；过渡期可选只为分线编译，不等于隔离已完成）
         if (connection.access === undefined) continue
 
-        const stored = await options.cache.read(connection.id, connection.access)
+        const stored = options.cache.read(connection.id, connection.access)
         if (stored === undefined) continue
 
         // **核范围**：盘上那份说的是不是这条连接**现在这个范围**——
@@ -396,6 +435,7 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
     peek: readOf,
 
     read(providerId: string): ModelInfoRead {
+      void refreshMetadata().then(changed => { if (changed) options.onChange?.(providerId) })
       const connection = connectionOf(providerId)
       if (connection !== undefined && adapterOf(connection.config) !== undefined) {
         if (shouldRefresh(providerId)) {
@@ -410,12 +450,9 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
       const connection = connectionOf(providerId)
       if (connection === undefined) return readOf(providerId)
 
-      const adapter = adapterOf(connection.config)
-      // 兼容接入 / 未知连接：没有可刷的——如实回一句（缘由由读面的 `vendor` 缺席说）
-      if (adapter === undefined) return readOf(providerId)
-
       failures.delete(providerId)
-      await fetchOnce(connection)
+      await Promise.all([fetchOnce(connection), options.metadata?.refresh(true)])
+      options.onChange?.(providerId)
       return readOf(providerId)
     },
 

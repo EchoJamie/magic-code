@@ -270,66 +270,6 @@ describe('供应商读面', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════
-// 四 · 缺项补充：**不添型号 · 不覆盖 API 给的**
-// ═══════════════════════════════════════════════════════════════════════
-
-describe('缺项补充', () => {
-  test('MiniMax：按精确型号补容量，不把响应格式当成型号特征', () => {
-    const filled = MINIMAX_VENDOR.supplement({ id: 'MiniMax-M3' })
-
-    expect(filled.limits?.maxContextTokens).toBe(1_000_000)
-    expect(filled.traits).toBeUndefined()
-    // 只补 API 没给的容量，不凭空增加输入/输出上限
-    expect(filled.limits?.maxInputTokens).toBeUndefined()
-    expect(filled.limits?.maxOutputTokens).toBeUndefined()
-  })
-
-  test('MiniMax：不按型号家族推断内嵌协议，容量仍按精确型号', () => {
-    expect(MINIMAX_VENDOR.supplement({ id: 'MiniMax-M2.7-highspeed' }).traits).toBeUndefined()
-    expect(MINIMAX_VENDOR.supplement({ id: 'MiniMax-M2.7-highspeed' }).limits?.maxContextTokens).toBe(204_800)
-    expect(MINIMAX_VENDOR.supplement({ id: 'MiniMax-M3.1' }).traits).toBeUndefined()
-    expect(MINIMAX_VENDOR.supplement({ id: 'MiniMax-M3.1' }).limits).toBeUndefined()
-  })
-
-  test('**不添型号**：表里没有的就原样返回（一个字段都不加）', () => {
-    const info: ModelInfo = { id: 'some-unlisted-model' }
-    expect(MINIMAX_VENDOR.supplement(info)).toEqual({ id: 'some-unlisted-model' })
-  })
-
-  test('**API 给了的不覆盖**：补充排在供应商当前信息之后', () => {
-    const filled = MINIMAX_VENDOR.supplement({
-      id: 'MiniMax-M3',
-      limits: { maxContextTokens: 1234 },
-    })
-    expect(filled.limits?.maxContextTokens).toBe(1234)
-  })
-
-  test('DeepSeek：补**思考能力**（官方文档有依据），容量一个字都不补', () => {
-    // **原锚**：「官方没给容量 / 能力 ⇒ 一个字都不补」。
-    // **为何变**：独立首验的反例要求「真实列表形成的 DeepSeek 读面须提供已支持的思考选择」
-    // ——列表本身只回 `id`，而官方 `guides/thinking_mode` 确实给了开关与三档；
-    // 设计也说「必要缺项按官方资料补充」。**容量仍不补**（官方写「1M / 384K」，单位不肯定）。
-    // **新锚**：思考能力补（`levels` 三档 ＋ 可关闭），`limits` 一格不加。
-    const filled = DEEPSEEK_VENDOR.supplement({ id: 'deepseek-flash' })
-
-    expect(filled.reasoning?.levels).toEqual(['low', 'high', 'max'])
-    expect(filled.reasoning?.disable).toBe(true)
-    // 没有预算参数（官方没给）——**不给这一位**，别编一个 0 或区间
-    expect(filled.reasoning?.budget).toBeUndefined()
-    // 容量缺项如实未知
-    expect(filled.limits).toBeUndefined()
-  })
-
-  test('DeepSeek：**API 给了的不覆盖**（补充排在供应商当前信息之后）', () => {
-    const given: ModelInfo = {
-      id: 'deepseek-flash',
-      reasoning: { levels: ['high'] },
-    }
-    expect(DEEPSEEK_VENDOR.supplement(given)).toMatchObject(given)
-  })
-})
-
-// ═══════════════════════════════════════════════════════════════════════
 // 五 · 思考设置 → 原生参数（**没依据不发假参数**）
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -363,10 +303,11 @@ describe('思考设置映射', () => {
     expect(budget !== undefined && 'gap' in budget && budget.gap).toMatch(/没有思考预算/)
   })
 
-  test('MiniMax：未知型号仅支持默认思考设置，其余如实报缺口', () => {
+  test('MiniMax：参数映射不维护型号名单，能力由选择层独立校验', () => {
     expect(MINIMAX_VENDOR.reasoningOf({ mode: 'default' }, 'unknown')).toBeUndefined()
 
-    const off = MINIMAX_VENDOR.reasoningOf({ mode: 'off' }, 'unknown')
-    expect(off !== undefined && 'gap' in off && off.gap).toMatch(/不支持该思考设置/)
+    expect(MINIMAX_VENDOR.reasoningOf({ mode: 'off' }, 'unknown')).toEqual({ params: { thinking: { type: 'disabled' } } })
+    const budget = MINIMAX_VENDOR.reasoningOf({ mode: 'budget', budgetTokens: 1024 }, 'unknown')
+    expect(budget !== undefined && 'gap' in budget && budget.gap).toMatch(/不支持该思考设置/)
   })
 })

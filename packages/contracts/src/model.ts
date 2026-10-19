@@ -163,6 +163,8 @@ export type ReasoningSupport = {
  * 模型名称与描述**只用于资料呈现**，不成为系统指令。
  */
 export type ModelInfo = {
+  /** 已合并的第三方资料来源；不属于供应商原始缓存。 */
+  readonly metadata?: { readonly provider: string; readonly updatedAt?: string }
   /** 供应商原始 id **原样保留**（大小写与符号都不动——它就是调用时要送的那个名字）。 */
   readonly id: string
   /** 显示名——资料呈现用；缺省＝用 `id`。 */
@@ -273,7 +275,7 @@ export interface ModelInfoCache {
    * ⚠️ `access` 目前是**可选**的（**过渡**）：只为两线各自能编译，**不等于隔离已完成**——
    * 缺它时实现**不读共享盘**（不是「按老样子读」）。装配真注入之后转必填。
    */
-  read(provider: string, access?: ModelCacheAccess): Promise<ModelInfoSnapshot | undefined>
+  read(provider: string, access?: ModelCacheAccess): ModelInfoSnapshot | undefined
   /**
    * 写入**该范围**：**只动 `snapshot` 所属 `access`** 那一份，碰不到别的范围。
    *
@@ -332,4 +334,4 @@ export type ModelChoice = 'default' | 'cantrip' | 'spell' | 'arcane'
 export type ModelProtocol = 'responses' | 'messages' | 'chat-completions'
 export type ProviderAuth = 'none' | 'bearer' | 'api-key'
 export type ModelSource = { readonly protocol: ModelProtocol; readonly endpoint: string }
-export type VendorProtocol = { readonly id: ModelProtocol; readonly label: string; readonly models: readonly string[] }
+export type VendorProtocol = { readonly id: ModelProtocol; readonly label: string; readonly models?: readonly string[] }

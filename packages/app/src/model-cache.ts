@@ -152,7 +152,7 @@ export function createFileModelInfoCache(dataDir: string): ModelInfoCache {
   }
 
   return {
-    async read(providerId: string, access?: ModelCacheAccess): Promise<ModelInfoSnapshot | undefined> {
+    read(providerId: string, access?: ModelCacheAccess): ModelInfoSnapshot | undefined {
       // **不落盘的那一类**（环境变量来源）：盘上没有它的东西，去读只会读到别人的；
       // **没有身份**同理——过渡期 `access` 可选只为分线各自编译得过，**不是「按老样子读」**
       if (access === undefined || !access.persistent) return undefined

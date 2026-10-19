@@ -9,7 +9,6 @@ export function effectiveReasoningSupportOf(config: ProviderConfig, model: strin
   try { protocol = resolveModelSource(config, model).protocol } catch { return undefined }
   const adapter = config.vendor === undefined ? undefined : vendorOf(config.vendor)
   const support = ownOf(config.modelOverrides ?? {}, model)?.reasoningSupport
-    ?? adapter?.supplement(known?.id === model ? known : { id: model }, protocol).reasoning
     ?? (known?.id === model ? known.reasoning : undefined)
   if (support === undefined) return undefined
   const canMap = (setting: ReasoningSetting) => {

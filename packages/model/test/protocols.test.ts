@@ -205,6 +205,7 @@ for (const vendor of ['minimax', 'deepseek']) for (const protocol of protocols) 
   const source = resolveModelSource({ vendor, protocol }, model)
   const bodies: any[] = []
   const gateway = createModelGateway({ providerId: vendor, model, config: { vendor, protocol }, apiKey: 'controlled', stamper: makeTestStamper(),
+    modelInfoOf: () => ({ id: model, reasoning: { disable: true } }),
     fetch: async (url, init) => { expect(String(url)).toBe(source.endpoint + (protocol === 'chat-completions' ? '/chat/completions' : `/${protocol}`)); bodies.push(JSON.parse(String(init?.body))); return sse(chunks(protocol, bodies.length === 1)) },
   })
   const user: ModelMessage = { role: 'user', content: 'read' }
@@ -223,6 +224,7 @@ for (const vendor of ['minimax', 'deepseek']) for (const protocol of protocols) 
 for (const protocol of protocols) test(`MiniMax M3.1/${protocol}: all documented effort levels reach the wire`, async () => {
   const bodies: any[] = []
   const gateway = createModelGateway({ providerId: 'mm', model: 'MiniMax-M3.1-Flash-Preview', config: { vendor: 'minimax', protocol }, apiKey: 'controlled', stamper: makeTestStamper(),
+    modelInfoOf: () => ({ id: 'MiniMax-M3.1-Flash-Preview', reasoning: { levels: ['low', 'medium', 'high', 'xhigh', 'max'] } }),
     fetch: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return sse(chunks(protocol, false)) },
   })
   for (const level of ['low', 'medium', 'high', 'xhigh', 'max']) {

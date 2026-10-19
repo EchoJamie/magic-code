@@ -505,9 +505,7 @@ describe('manager 模型预检只读已有缓存', () => {
       await expect(resolveManagedModel({ environment: {}, magic: f.magic, defaults, role: 'unknown' })).rejects.toThrow('未知角色')
       await expect(resolveManagedModel({ environment: {}, magic: f.magic, defaults, model: { choice: 'spell', reasoning: { mode: 'off' } } })).rejects.toThrow('未知')
       f.store.collaboration.updateAgent(f.agent.agentId, { model: defaults })
-      const app = f.open()
-      try { await expect(app.ready()).rejects.toThrow('不支持思考档位') }
-      finally { app.close() }
+      expect(() => f.open()).toThrow('不支持思考档位')
       expect(f.seen).toEqual([])
     } finally { f.close() }
   })

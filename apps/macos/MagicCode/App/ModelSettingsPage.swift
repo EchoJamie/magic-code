@@ -18,15 +18,15 @@ func providerProtocolOptions(_ vendor: SettingsValue) -> [SettingsValue] {
 func providerDefaultProtocol(_ vendor: SettingsValue, models: [String]) -> String {
     let protocols = providerProtocolOptions(vendor)
     guard !models.isEmpty else { return protocols.first?["id"].text ?? "responses" }
-    let all = protocols.first { protocolOption in models.allSatisfy { protocolOption["models"].array.contains(.string($0)) } }
-    let any = protocols.first { protocolOption in models.contains { protocolOption["models"].array.contains(.string($0)) } }
+    let all = protocols.first { protocolOption in protocolOption["models"] == .null || models.allSatisfy { protocolOption["models"].array.contains(.string($0)) } }
+    let any = protocols.first { protocolOption in protocolOption["models"] == .null || models.contains { protocolOption["models"].array.contains(.string($0)) } }
     return (all ?? any ?? protocols.first)?["id"].text ?? "responses"
 }
 func modelProtocolName(provider: SettingsValue, model: String, vendors: [SettingsValue]) -> String {
     if !provider["protocol"].text.isEmpty { return providerProtocolLabel(provider["protocol"].text) }
     if provider["vendor"].text.isEmpty { return providerProtocolLabel("responses") }
     guard let vendor = vendors.first(where: { $0["vendor"].text == provider["vendor"].text }),
-          let supported = providerProtocolOptions(vendor).first(where: { $0["models"].array.contains(.string(model)) }) else { return "未知 · 尚无此型号的协议资料" }
+          let supported = providerProtocolOptions(vendor).first(where: { $0["models"] == .null || $0["models"].array.contains(.string(model)) }) else { return "未知 · 尚无此型号的协议资料" }
     return supported["label"].text
 }
 func providerFormValue(id: String, snapshot: SettingsSnapshot) -> SettingsValue {
@@ -265,7 +265,9 @@ private struct ModelCatalogStatus: View {
     @State private var feedback: String?
     @State private var failed = false
     var body: some View {
-        let cache = snapshot.catalog.first { $0["provider"].text == provider }?["cache"] ?? .null
+        let entry = snapshot.catalog.first { $0["provider"].text == provider } ?? .null
+        let cache = entry["cache"]
+        let metadata = entry["metadata"]
         VStack(alignment: .leading, spacing: 6) {
             if cache["snapshot"] == .null {
                 Text(snapshot.configuration["providers"][provider]["vendor"].text.isEmpty ? "自定义连接可直接手动填写模型，无需模型列表接口。" : "尚未获取模型列表；可刷新列表或手动填写精确型号。")
@@ -278,14 +280,18 @@ private struct ModelCatalogStatus: View {
             if !cache["failure"]["reason"].text.isEmpty {
                 Text(cache["failure"]["reason"].text).foregroundStyle(.red).textSelection(.enabled)
             }
-            if !snapshot.configuration["providers"][provider]["vendor"].text.isEmpty {
-                Button("刷新模型列表", systemImage: "arrow.clockwise") {
-                    refreshing = true; feedback = nil
-                    model.applySettings(.object(["type": .string("model.refresh"), "provider": .string(provider)]), stamp: snapshot.stamp, key: "refresh-\(provider)")
-                }.disabled(model.settingsBusy)
+            if let ms = metadata["fetchedAt"].number {
+                Text("Models.dev 资料：\(Date(timeIntervalSince1970: ms / 1000).formatted(date: .abbreviated, time: .shortened)) · \(metadata["stale"].flag ? "已过期" : "1 小时内有效")")
             }
+            if !metadata["failure"].text.isEmpty {
+                Text(metadata["failure"].text).foregroundStyle(.red).textSelection(.enabled)
+            }
+            Button("刷新模型列表与资料", systemImage: "arrow.clockwise") {
+                refreshing = true; feedback = nil
+                model.applySettings(.object(["type": .string("model.refresh"), "provider": .string(provider)]), stamp: snapshot.stamp, key: "refresh-\(provider)")
+            }.disabled(model.settingsBusy)
             if refreshing && model.settingsBusy {
-                HStack { ProgressView().controlSize(.small); Text("正在获取模型列表…") }
+                HStack { ProgressView().controlSize(.small); Text("正在获取模型列表与资料…") }
             } else if let feedback {
                 Text(feedback).foregroundStyle(failed ? Color.red : Color.secondary).textSelection(.enabled)
             }
@@ -618,8 +624,8 @@ struct ModelSpecRows: View {
     let info: SettingsValue
     let source: String
     var body: some View {
-        SettingsCard(title: "供应商原始规格") {
-            Text("供应商资料经接入层归一；不含下方用户覆盖。缺失信息保持未知。").font(.caption).foregroundStyle(.secondary)
+        SettingsCard(title: "模型规格") {
+            Text("供应商接口资料优先，缺项由 Models.dev 补充；不含下方用户覆盖。未提供的信息保持未知。").font(.caption).foregroundStyle(.secondary)
             if !info["description"].text.isEmpty { Text(info["description"].text).font(.callout).textSelection(.enabled) }
             ForEach([("maxInputTokens", "输入上限"), ("maxOutputTokens", "输出上限"), ("maxContextTokens", "联合窗口")], id: \.0) { key, label in
                 LabeledContent(label, value: number(info["limits"][key]))
@@ -661,14 +667,16 @@ struct OverrideForm: View {
     }
     private var content: some View {
         VStack(alignment: .leading, spacing: 18) {
-            let cache = snapshot.catalog.first { $0["provider"].text == provider }?["cache"] ?? .null
-            let raw = cache["snapshot"]["models"].array.first { $0["id"].text == selected } ?? .null
+            let entry = snapshot.catalog.first { $0["provider"].text == provider } ?? .null
+            let cache = entry["cache"]
+            let info = entry["modelInfo"][selected]
             Text(selected).font(.headline).textSelection(.enabled)
             LabeledContent("协议（按型号）", value: modelProtocolName(provider: snapshot.configuration["providers"][provider], model: selected, vendors: snapshot.vendors))
             DisclosureGroup("模型信息", isExpanded: $informationExpanded) {
-                ModelSpecRows(info: raw, source: cache["snapshot"]["fetchedAt"].number.map {
+                ModelSpecRows(info: info, source: (cache["snapshot"]["fetchedAt"].number.map {
                     "供应商模型列表 · " + Date(timeIntervalSince1970: $0 / 1000).formatted(date: .abbreviated, time: .shortened) + (cache["stale"].flag ? " · 缓存已过期" : "")
-                } ?? "尚未获取供应商模型列表")
+                } ?? "尚未获取供应商模型列表") + (info["metadata"] == .null ? "" : "；Models.dev（\(info["metadata"]["provider"].text)）· 资料更新 \(info["metadata"]["updatedAt"].text)"))
+                ModelCatalogStatus(model: model, snapshot: snapshot, provider: provider)
                 SettingsCard(title: "用户覆盖 · 上下文与能力") {
                     Text("令牌上限逐项覆盖；留空继承原始资料。数值须为正整数。").font(.caption).foregroundStyle(.secondary)
                     ForEach([("maxInputTokens", "输入上限"), ("maxOutputTokens", "输出上限"), ("maxContextTokens", "联合窗口")], id: \.0) { key, label in

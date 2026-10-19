@@ -114,7 +114,7 @@ export function modelActionRows(entries: readonly ModelCatalogRow[]): readonly P
     })
     rows.push({
       label: '刷新模型',
-      meta: '现在就去供应商那儿取一遍',
+      meta: '更新供应商列表与 Models.dev 资料',
       current: false,
       value: 'refresh',
       oneLine: true,
@@ -147,7 +147,7 @@ function modelsOf(
   for (const ref of configured) {
     if (ref.provider === entry.provider && !has(ref.model)) out.push({ info: { id: ref.model }, cached: false })
   }
-  return out
+  return out.map(one => ({ ...one, info: entry.modelInfo && Object.hasOwn(entry.modelInfo, one.info.id) ? entry.modelInfo[one.info.id]! : one.info }))
 }
 
 /** 副文案里连接名之后的那几格——**只在真有话要说时才给**（没有就一个字不加）。 */
@@ -159,6 +159,9 @@ function tailOf(
   // **显示名与 id 不是同一个**时把 id 报出来（送出去的是它——用户核对得到）
   if (one.info.name !== undefined && one.info.name !== one.info.id) parts.push(one.info.id)
   if (!one.cached) parts.push('不在最近一次列表里')
+  if (one.info.limits?.maxContextTokens !== undefined) parts.push(`上下文 ${tokenLabel(one.info.limits.maxContextTokens)}`)
+  if (one.info.limits?.maxOutputTokens !== undefined) parts.push(`输出 ${tokenLabel(one.info.limits.maxOutputTokens)}`)
+  if (one.info.metadata !== undefined) parts.push('Models.dev')
   if (entry.vendor === undefined && entry.cache === undefined) parts.push('兼容接入')
   return parts.length === 0 ? undefined : parts
 }
@@ -320,6 +323,9 @@ export function modelHint(
   // 认它当判据的装置（`app/test/ui/scenarios.ts` 的抽屉场景）当场全红。
   // 列表下方报键位有先例（`/grants` 的「回车＝撤销选定那条」），照它。
   // **折起来如实报数**（见 `MAX_MODEL_NOTES`）——超出的那几条不逐行铺，指到管理页去
+  const metadata = entries.find(entry => entry.metadata !== undefined)?.metadata
+  if (metadata?.failure) lines.push(metadata.failure)
+  else if (metadata?.stale) lines.push(metadata.fetchedAt === undefined ? 'Models.dev 资料尚未缓存' : 'Models.dev 资料已过期，将按需更新')
   const heads = lines.slice(0, MAX_MODEL_NOTES)
   const rest = lines.length - heads.length
   if (rest > 0) heads.push(`… 另有 ${rest} 条连接也有状况——/model manage 里逐条看`)

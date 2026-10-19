@@ -19,6 +19,7 @@ import { cacheAccessFor, connectionScopeChanged } from '../cache-access.ts'
 import { removeProvider, setPrefs } from '@magic/config'
 import { loadConfig, type LoadedConfig } from '@magic/config'
 import { createFileModelInfoCache } from '../model-cache.ts'
+import { createModelsDevResource } from '../models-dev-resource.ts'
 import { createSettings } from '../settings.ts'
 
 /** 连接资料、配置水位与可重建缓存；每个 Agent 的模型选择由调用者独立持有。 */
@@ -117,13 +118,16 @@ export function createModelConfiguration(input: {
       })
     },
     cache: modelCache,
+    metadata: createModelsDevResource(magic.base, fetch, now),
     fetch,
     now,
     onChange,
   })
 
+  modelInfo.warmup()
+
   const knownModelOf = (provider: string, model: string): ModelInfo | undefined =>
-    modelInfo.peek(provider).snapshot?.models.find((one) => one.id === model)
+    modelInfo.model(provider, model)
 
   // 每次构造独立注册表；保存的组合缺来源时拒绝恢复，不重新猜默认值。
   const registryOf = (selection: AgentModelConfig | undefined, stamper: EventStamper): ModelRegistry => {

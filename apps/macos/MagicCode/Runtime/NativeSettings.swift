@@ -74,8 +74,12 @@ final class NativeSettings {
         let type = action["type"].text
         if type == "model.refresh" {
             guard let config = raw["providers"].object[action["provider"].text] else { throw WireError.invalid("连接已不存在，请重新读取") }
-            try await models.refresh(action["provider"].text, config: config, stamp: stamp)
-            return "模型列表已刷新；未发起模型调用"
+            async let metadataFailure = models.refreshMetadata([config], force: true)
+            var listFailure: String?
+            do { try await models.refresh(action["provider"].text, config: config, stamp: stamp) } catch { listFailure = error.localizedDescription }
+            let failures = await [listFailure, metadataFailure].compactMap { $0 }
+            if !failures.isEmpty { throw WireError.invalid(failures.joined(separator: "；")) }
+            return models.vendor(config) == nil ? "Models.dev 资料已刷新；未发起模型调用" : "模型列表与 Models.dev 资料已刷新；未发起模型调用"
         }
         if type == "grants.revoke" {
             try revoke(action)
@@ -214,7 +218,7 @@ final class NativeSettings {
         guard mapping.isObject else { throw WireError.invalid("角色模型设置：所选档位尚未配置") }
         let id = mapping["provider"].text, model = mapping["model"].text, config = raw["providers"][id]
         try models.checkSelection(config, model: model)
-        let known = models.snapshot(id, config: config, stamp: stamp)?["models"].array.first { $0["id"].text == model }
+        let known = models.modelInfo(config, model: model, supplied: models.snapshot(id, config: config, stamp: stamp)?["models"].array.first { $0["id"].text == model }, resource: models.modelsDevSnapshot())
         try SettingsValidation.require((config["modelOverrides"][model]["capabilities"].object["chat"] ?? known?["capabilities"].object["chat"]) != .bool(false), "角色模型对话能力")
         guard let setting = role.object["reasoning"], setting["mode"].text != "default" else { return }
         guard let support = models.effectiveReasoning(config, model: model, known: known) else { throw WireError.invalid("角色模型的思考能力未知，只能使用默认设置") }

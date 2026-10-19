@@ -6,6 +6,7 @@ import type { ModelStream } from '../src/call.ts'
 function endpoint(deltas: readonly Record<string, unknown>[], provider = 'minimax', config: ProviderConfig = { vendor: 'minimax' }, targetModel = model) {
   const requests: Record<string, unknown>[] = []
   const gateway = createModelGateway({ model: targetModel,
+    modelInfoOf: () => ({ id: targetModel, reasoning: targetModel === 'MiniMax-M3.1-Flash-Preview' ? { levels: ['low', 'medium', 'high', 'xhigh', 'max'] } : { disable: true } }),
     providerId: provider, config: { ...config, protocol: 'chat-completions' }, apiKey: 'test-key', retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },
     stamper: { stamp: (kind, data) => ({ id: 1, session: 'test', turn: 1, at: 0, kind, data }), beginTurn: () => {} } as EventStamper,
     fetch: async (_url, init) => {
@@ -145,7 +146,9 @@ describe('按精确型号处理思考设置', () => {
   })
 
   test('能力覆盖不能绕过实际协议映射；在途请求捕获思考设置', async () => {
-    expect(() => endpoint([], 'minimax', { vendor: 'minimax', modelOverrides: { future: { reasoningSupport: { disable: true } } } }, 'future')).toThrow('future')
+    const future = endpoint([], 'minimax', { vendor: 'minimax', modelOverrides: { future: { reasoningSupport: { budget: { minTokens: 100 } } } } }, 'future')
+    expect((await drain(future.gateway.stream({ messages: [message] }, { reasoning: { mode: 'budget', budgetTokens: 100 } }))).error).toBeDefined()
+    expect(future.requests).toHaveLength(0)
     const { gateway, requests } = endpoint([{ content: '好' }])
     const reasoning: { mode: 'off' | 'default' } = { mode: 'off' }
     const stream = gateway.stream({ messages: [message] }, { reasoning })

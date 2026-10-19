@@ -8,6 +8,7 @@ final class SettingsModels {
     let base: String
     let configPath: String
     let environment: [String: String]
+    private var metadataFailure: String?
     private var transient: [String: SettingsValue] = [:]
     init(metadata: SettingsValue, base: String, configPath: String, environment: [String: String]) {
         self.metadata = metadata; self.base = base; self.configPath = configPath; self.environment = environment
@@ -39,7 +40,7 @@ final class SettingsModels {
     func protocolID(_ config: SettingsValue, model: String) throws -> String {
         if config.object["vendor"] == nil { _ = try endpoint(config); return config.object["protocol"]?.text ?? "responses" }
         guard let vendor = vendor(config) else { throw WireError.invalid("未知供应商适配，请检查 vendor") }
-        let supported = vendor["protocols"].array.filter { $0["models"].array.contains(.string(model)) }
+        let supported = vendor["protocols"].array.filter { $0.object["models"] == nil || $0["models"].array.contains(.string(model)) }
         let selected = config.object["protocol"]?.text ?? supported.first?["id"].text ?? ""
         guard supported.contains(where: { $0["id"].text == selected }), try !endpoint(config, protocolID: selected).isEmpty else {
             throw WireError.invalid("模型不支持所选官方协议或区域，请核对精确型号")
@@ -75,9 +76,9 @@ final class SettingsModels {
     }
     func effectiveReasoning(_ config: SettingsValue, model: String, known: SettingsValue?) -> SettingsValue? {
         guard let protocolID = try? protocolID(config, model: model) else { return nil }
-        let built = vendor(config)?["models"][protocolID][model]
-        guard let support = config["modelOverrides"][model].object["reasoningSupport"] ?? known?.object["reasoning"] ?? built?.object["reasoning"] else { return nil }
-        let allowed = built?["editableReasoning"]
+        guard let support = config["modelOverrides"][model].object["reasoningSupport"] ?? known?.object["reasoning"] else { return nil }
+        let controls = vendor(config)?["reasoningControls"][protocolID]
+        let allowed = controls?.object[model] ?? controls?.object["*"]
         var value: [String: SettingsValue] = [:]
         value["default"] = support.object["default"]
         if support["disable"] == .bool(false) { value["disable"] = .bool(false) }
@@ -90,19 +91,107 @@ final class SettingsModels {
         return .object(value)
     }
     func rows(_ raw: SettingsValue, stamp: String?) -> [SettingsValue] {
-        raw["providers"].object.sorted { $0.key < $1.key }.map { id, config in
+        let resource = modelsDevSnapshot()
+        return raw["providers"].object.sorted { $0.key < $1.key }.map { id, config in
             var row = config.object.filter { ["name", "vendor", "region", "baseURL", "protocol", "auth", "modelOverrides"].contains($0.key) }
             row["provider"] = .string(id)
             let source = keySource(id, config); if source != "missing" { row["keySource"] = .string(source) }
             let snapshot = snapshot(id, config: config, stamp: stamp)
             if let snapshot { row["cache"] = .object(["snapshot": snapshot, "stale": .bool(Date().timeIntervalSince1970 * 1000 - snapshot["fetchedAt"].number! > (metadata["modelTTL"].number ?? 86_400_000))]) }
             let ids = Set((snapshot?["models"].array.map { $0["id"].text } ?? []) + Array(config["modelOverrides"].object.keys) + raw["models"].object.values.filter { $0["provider"].text == id }.map { $0["model"].text })
+            let infos = Dictionary(uniqueKeysWithValues: ids.compactMap { model in
+                modelInfo(config, model: model, supplied: snapshot?["models"].array.first { $0["id"].text == model }, resource: resource).map { (model, $0) }
+            })
+            row["modelInfo"] = .object(infos)
+            var status: [String: SettingsValue] = ["stale": .bool(resource == nil || Date().timeIntervalSince1970 * 1000 - (resource?["fetchedAt"].number ?? 0) >= (metadata["modelsDev"]["ttl"].number ?? 3_600_000))]
+            status["fetchedAt"] = resource?.object["fetchedAt"]
+            if let metadataFailure { status["failure"] = .string(metadataFailure) }
+            row["metadata"] = .object(status)
             let support = Dictionary(uniqueKeysWithValues: ids.compactMap { model -> (String, SettingsValue)? in
-                effectiveReasoning(config, model: model, known: snapshot?["models"].array.first { $0["id"].text == model }).map { (model, $0) }
+                effectiveReasoning(config, model: model, known: infos[model]).map { (model, $0) }
             })
             if !support.isEmpty { row["effectiveReasoning"] = .object(support) }
             return .object(row)
         }
+    }
+    private var modelsDevPath: String { base + "/cache/models.dev.json" }
+    func modelsDevSnapshot() -> SettingsValue? {
+        guard let value = try? SettingsFile.read(modelsDevPath), let fetchedAt = value["fetchedAt"].number, fetchedAt > 0,
+              value["data"].object.values.contains(where: { $0["models"].object.contains { $0.key == $0.value["id"].text } }) else { return nil }
+        return value
+    }
+    private func modelsDevProvider(_ config: SettingsValue, data: SettingsValue) -> String? {
+        guard let address = try? endpoint(config), !address.isEmpty else { return nil }
+        if let alias = metadata["modelsDev"]["aliases"].array.first(where: { $0["vendor"] == config["vendor"] && $0["base"].text == address }) { return alias["provider"].text }
+        let matches = data.object.filter { $0.value["api"].text.replacingOccurrences(of: "/+$", with: "", options: .regularExpression) == address }
+        return matches.count == 1 ? matches.first?.key : nil
+    }
+    func modelInfo(_ config: SettingsValue, model: String, supplied: SettingsValue?, resource: SettingsValue?) -> SettingsValue? {
+        var info: [String: SettingsValue] = [:]
+        if let provider = modelsDevProvider(config, data: resource?["data"] ?? .null),
+           let source = resource?["data"][provider]["models"].object[model], source["id"].text == model {
+            info["id"] = .string(model)
+            for key in ["name", "description"] { if source[key].isText { info[key] = source[key] } }
+            var limits: [String: SettingsValue] = [:]
+            for (from, to) in [("context", "maxContextTokens"), ("input", "maxInputTokens"), ("output", "maxOutputTokens")] {
+                if let n = source["limit"][from].number, n > 0, n <= 9_007_199_254_740_991, n.rounded() == n { limits[to] = .number(n) }
+            }
+            if let context = limits["maxContextTokens"]?.number {
+                for key in ["maxInputTokens", "maxOutputTokens"] where (limits[key]?.number ?? 0) > context { limits.removeValue(forKey: key) }
+            }
+            if !limits.isEmpty { info["limits"] = .object(limits) }
+            var capabilities: [String: SettingsValue] = [:]
+            for (key, capability, modality) in [("input", "image", "image"), ("output", "chat", "text")] {
+                let values = source["modalities"][key]
+                if values.isArray && values.array.allSatisfy({ $0.isText && $0.nonempty }) { capabilities[capability] = .bool(values.array.contains(.string(modality))) }
+            }
+            if source["tool_call"].isBool { capabilities["tools"] = source["tool_call"] }
+            if !capabilities.isEmpty { info["capabilities"] = .object(capabilities) }
+            if source["reasoning_options"].isArray {
+                let options = source["reasoning_options"].array
+                var reasoning: [String: SettingsValue] = [:]
+                if options.contains(where: { $0["type"].text == "toggle" }) { reasoning["disable"] = .bool(true) }
+                if let effort = options.first(where: { $0["type"].text == "effort" }) {
+                    if effort["values"].isArray && effort["values"].array.allSatisfy({ $0.isText && $0.nonempty }) { reasoning["levels"] = effort["values"] }
+                } else { reasoning["levels"] = .array([]) }
+                if let budget = options.first(where: { $0["type"].text == "budget_tokens" }) {
+                    var range: [String: SettingsValue] = [:]
+                    for (from, to) in [("min", "minTokens"), ("max", "maxTokens")] {
+                        if let n = budget[from].number, n > 0, n <= 9_007_199_254_740_991, n.rounded() == n { range[to] = .number(n) }
+                    }
+                    reasoning["budget"] = .object(range)
+                }
+                info["reasoning"] = .object(reasoning)
+            }
+            var origin: [String: SettingsValue] = ["provider": .string(provider)]
+            if source["last_updated"].isText { origin["updatedAt"] = source["last_updated"] }
+            info["metadata"] = .object(origin)
+        }
+        if let supplied {
+            for (key, value) in supplied.object {
+                info[key] = ["limits", "capabilities", "reasoning"].contains(key)
+                    ? .object((info[key]?.object ?? [:]).merging(value.object) { _, current in current }) : value
+            }
+        }
+        return info.isEmpty ? nil : .object(info)
+    }
+    func refreshMetadata(_ configs: [SettingsValue], force: Bool = false) async -> String? {
+        let resource = modelsDevSnapshot()
+        guard force || configs.contains(where: { modelsDevProvider($0, data: resource?["data"] ?? .null) != nil }) else { return nil }
+        if !force, let at = resource?["fetchedAt"].number, Date().timeIntervalSince1970 * 1000 - at < (metadata["modelsDev"]["ttl"].number ?? 3_600_000) { return nil }
+        metadataFailure = await ModelsDevRefresh.shared.run(path: modelsDevPath, force: force) {
+            guard let url = URL(string: self.metadata["modelsDev"]["url"].text) else { throw WireError.invalid("Models.dev 地址无效") }
+            let session = try self.session(for: url); defer { session.invalidateAndCancel() }
+            let (data, response) = try await session.data(for: URLRequest(url: url, timeoutInterval: 10))
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw WireError.invalid("Models.dev 响应失败") }
+            let body = try JSONDecoder().decode(SettingsValue.self, from: data)
+            guard body.object.values.contains(where: { $0["models"].object.contains { !$0.key.isEmpty && $0.key == $0.value["id"].text } }) else { throw WireError.invalid("Models.dev 未返回有效模型目录") }
+            let value = SettingsValue.object(["fetchedAt": .number(Date().timeIntervalSince1970 * 1000), "data": body])
+            try SettingsFile.withLock(self.modelsDevPath, cache: true) {
+                try SettingsFile.replace(value, at: self.modelsDevPath, expected: SettingsFile.stamp(self.modelsDevPath))
+            }
+        }
+        return metadataFailure
     }
     private func session(for url: URL) throws -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
@@ -135,7 +224,8 @@ final class SettingsModels {
         return URLSession(configuration: configuration)
     }
     func refresh(_ id: String, config: SettingsValue, stamp: String?) async throws {
-        guard let vendor = vendor(config), let url = URL(string: try endpoint(config) + "/models") else { throw WireError.invalid("该连接没有可用的官方模型列表接口") }
+        guard vendor(config) != nil else { return }
+        guard let url = URL(string: try endpoint(config) + "/models") else { throw WireError.invalid("该连接没有可用的官方模型列表接口") }
         let key = config["apiKey"].nonempty ? config["apiKey"].text.trimmingCharacters(in: .whitespacesAndNewlines) : environment[Self.environmentKey(id)]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !key.isEmpty else { throw WireError.invalid("连接缺少认证凭据") }
         var request = URLRequest(url: url); request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization"); request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -166,16 +256,31 @@ final class SettingsModels {
             }
             if let min = budget["minTokens"]?.number, let max = budget["maxTokens"]?.number, min > max { budget = [:] }
             if !budget.isEmpty { reasoning["budget"] = .object(budget) }
-            let protocolID = config.object["protocol"]?.text ?? "chat-completions"
-            let supplement = vendor["models"][protocolID][source["id"].text]
-            limits = supplement["limits"].object.merging(limits) { _, current in current }
-            capabilities = supplement["capabilities"].object.merging(capabilities) { _, current in current }
-            if reasoning.isEmpty { reasoning = supplement["reasoning"].object }
             if !limits.isEmpty { row["limits"] = .object(limits) }; if !capabilities.isEmpty { row["capabilities"] = .object(capabilities) }; if !reasoning.isEmpty { row["reasoning"] = .object(reasoning) }
             return .object(row)
         }
         let snapshot = SettingsValue.object(["provider": .string(id), "scope": .string(try scope(config)), "fetchedAt": .number(Date().timeIntervalSince1970 * 1000), "models": .array(models)])
         // 迟到结果只写入发起时的认证范围；后续读取会按当前指纹选取。
         try store(snapshot, config: config, stamp: stamp)
+    }
+}
+
+/// 同一进程共享在途刷新与失败冷却；目录本身始终从文件读取。
+private actor ModelsDevRefresh {
+    static let shared = ModelsDevRefresh()
+    private var tasks: [String: Task<String?, Never>] = [:]
+    private var failures: [String: (Date, String)] = [:]
+    func run(path: String, force: Bool, load: @escaping () async throws -> Void) async -> String? {
+        if let task = tasks[path] { return await task.value }
+        if !force, let (at, failure) = failures[path], Date().timeIntervalSince(at) < 60 { return failure }
+        let task = Task<String?, Never> {
+            do { try await load(); return nil }
+            catch { return "Models.dev 刷新失败：" + error.localizedDescription }
+        }
+        tasks[path] = task
+        let failure = await task.value
+        tasks[path] = nil
+        failures[path] = failure.map { (Date(), $0) }
+        return failure
     }
 }

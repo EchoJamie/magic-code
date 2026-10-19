@@ -37,6 +37,7 @@ import { cacheAccessFor } from '../cache-access.ts'
 import { ConfigError, loadConfig, type LoadedConfig } from '@magic/config'
 import { loadGrants } from '../grants-file.ts'
 import { createFileModelInfoCache } from '../model-cache.ts'
+import { createModelsDevResource } from '../models-dev-resource.ts'
 
 export function workspaceOf(loaded: LoadedConfig, cwd: string): WorkspaceService {
   try {
@@ -48,6 +49,7 @@ export function workspaceOf(loaded: LoadedConfig, cwd: string): WorkspaceService
 
 /** assembly 与观察面共用投影；调用者提供真实内存读数或纯缓存读数。 */
 export type ModelCatalogReader = {
+  readonly describe?: ModelInfoService['describe']
   readonly providers: Readonly<Record<string, ProviderConfig>>
   readonly configuredModels?: MagicConfig['models']
   readonly entries: readonly { readonly id: string; readonly model?: string }[]
@@ -69,15 +71,18 @@ export function modelCatalogRows(reader: ModelCatalogReader): readonly ModelCata
       ...Object.values(reader.configuredModels ?? {}).filter(mapping => mapping.provider === entry.id).map(mapping => mapping.model),
       ...(reader.current?.provider === entry.id ? [reader.current.model] : []),
     ])
+    const described = reader.describe?.(entry.id, [...modelIds])
     const effectiveReasoning = Object.fromEntries([...modelIds].flatMap(model => {
       if (config === undefined) return []
       const effective = reader.current?.provider === entry.id && reader.current.model === model
         ? { ...config, protocol: reader.current.protocol } : config
-      const support = effectiveReasoningSupportOf(effective, model, cache.snapshot?.models.find(info => info.id === model))
+      const known = described?.modelInfo && Object.hasOwn(described.modelInfo, model) ? described.modelInfo[model] : cache.snapshot?.models.find(info => info.id === model)
+      const support = effectiveReasoningSupportOf(effective, model, known)
       return support === undefined ? [] : [[model, support]]
     }))
     return {
       provider: entry.id,
+      ...described,
       ...(Object.keys(effectiveReasoning).length === 0 ? {} : { effectiveReasoning }),
       ...(config?.name === undefined ? {} : { name: config.name }),
       ...(config?.vendor === undefined ? {} : { vendor: config.vendor }),
@@ -204,23 +209,25 @@ export async function readModelCatalog(loaded: LoadedConfig, magic: MagicHome, s
       access: cacheAccessFor({ provider: providerId, configPath: loaded.path, apiKey: config.apiKey, processToken }),
     })),
     cache: createFileModelInfoCache(magic.base), now, fetch: globalThis.fetch,
+    metadata: createModelsDevResource(magic.base, globalThis.fetch, now),
   })
   await info.warmup() // 仅读缓存并核接入范围；peek 不会触发刷新。
   const picked = request === undefined && selection !== undefined ? { ok: true as const, selection } : resolveModelChoice({
     providers, configuredModels: loaded.config.models, defaults: selection,
-    config: request, modelInfoOf: (provider, model) => info.peek(provider).snapshot?.models.find(one => one.id === model)
+    config: request, modelInfoOf: (provider, model) => info.model(provider, model)
   })
   if (request !== undefined && !picked.ok) throw new Error(picked.reason)
   const current = picked.ok ? picked.selection : undefined
   return {
     providers,
+    describe: info.describe,
     configuredModels: loaded.config.models,
     entries: Object.keys(providers).map(id => ({ id })),
     ...(current === undefined ? {} : { current }),
     read: (provider) => info.peek(provider),
     inputBudget: (provider, model) => {
       const config = providers[provider]
-      return config === undefined ? undefined : modelSpecOf(config, model, info.peek(provider).snapshot?.models.find((one) => one.id === model)).inputBudget
+      return config === undefined ? undefined : modelSpecOf(config, model, info.model(provider, model)).inputBudget
     },
   }
 }

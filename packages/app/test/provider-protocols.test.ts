@@ -6,6 +6,7 @@ import { createSettings } from '../src/settings.ts'
 import { connectionScopeChanged } from '../src/cache-access.ts'
 import { tempDir, removeDir } from './tmp.ts'
 import { makeStage } from './support.ts'
+import { MODELS_DEV_URL } from '@magic/model'
 
 const cleanups: (() => void)[] = []
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup() })
@@ -16,7 +17,10 @@ function setup() {
   cleanups.push(() => removeDir(home))
   let requests = 0
   const settings = createSettings({ magic: { home, base }, environment: { MAGIC_LOCAL_API_KEY: 'ENV_SENTINEL' },
-    fetch: async () => { requests++; throw new Error('配置读写不应联网') } })
+    fetch: async url => {
+      if (String(url) === MODELS_DEV_URL) return new Response('{}')
+      requests++; throw new Error('配置读写不应请求模型接口')
+    } })
   const apply = async (action: SettingsAction) => settings.apply(action, (await settings.read()).stamp)
   return { settings, apply, path, requests: () => requests, raw: () => JSON.parse(readFileSync(path, 'utf8')) }
 }

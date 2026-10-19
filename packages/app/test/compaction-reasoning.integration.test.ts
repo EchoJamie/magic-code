@@ -48,7 +48,7 @@ function stageOn(
     config: {
       models: {default: {provider: "local", model}, cantrip: {provider: "local", model}, spell: {provider: "local", model: options.vendor === 'minimax' ? model : 'deepseek-v4-pro'}, arcane: {provider: "local", model}},
       providers: {
-        local: { vendor: options.vendor ?? 'deepseek', protocol: 'chat-completions', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
+        local: { modelOverrides: options.vendor === 'minimax' ? { [model]: { reasoningSupport: { disable: false } } } : { [model]: { reasoningSupport: { disable: true, levels: ['high'] } } }, vendor: options.vendor ?? 'deepseek', protocol: 'chat-completions', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
       },
     },
   })

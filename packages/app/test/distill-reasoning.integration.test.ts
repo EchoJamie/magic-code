@@ -57,12 +57,13 @@ function stageOn(
   } = {},
 ) {
   const providers: Record<string, Record<string, unknown>> = {
-    local: { vendor: options.vendor ?? 'deepseek', protocol: 'chat-completions', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
+    local: { modelOverrides: { [DISTILL_MODEL]: { reasoningSupport: { disable: true } } }, vendor: options.vendor ?? 'deepseek', protocol: 'chat-completions', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
     switched: { protocol: 'chat-completions', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY,
       modelOverrides: { [SWITCHED_MODEL]: { capabilities: { tools: true } } } },
   }
   if (options.distillVendor !== undefined) {
     providers['distill'] = {
+      modelOverrides: { [MINIMAX_DISTILL_MODEL]: { reasoningSupport: { disable: false } } },
       vendor: options.distillVendor,
       protocol: 'chat-completions',
       baseURL: fixture.baseURL,

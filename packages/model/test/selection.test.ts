@@ -9,14 +9,15 @@ const providers: Record<string, ProviderConfig> = {
   missing: { vendor: 'deepseek', protocol: 'chat-completions' },
 }
 const defaults: AgentModelConfig = { protocol: 'chat-completions', endpoint: 'https://api.deepseek.com', choice: 'default', provider: 'ds', model: 'deepseek-flash', reasoning: { mode: 'level', level: 'high' } }
-const registry = (modelInfoOf?: (p: string, m: string) => ModelInfo | undefined) => createModelRegistry({
+const known = (_p: string, m: string): ModelInfo | undefined => ['deepseek-flash', 'MiniMax-M3'].includes(m) ? { id: m, reasoning: { disable: true, levels: ['low', 'high', 'max'] } } : undefined
+const registry = (modelInfoOf: (p: string, m: string) => ModelInfo | undefined = known) => createModelRegistry({
   providers, stamper: makeTestStamper(), env: {}, modelInfoOf,
 })
 
 describe('完整选择的校验与原子提交', () => {
   test('预检不提交或构造网关，运行层不再叠加部分 provider/model', async () => {
     const models = registry()
-    expect(selectModel({ providers }, defaults)).toEqual({ ok: true, selection: defaults })
+    expect(selectModel({ providers, modelInfoOf: known }, defaults)).toEqual({ ok: true, selection: defaults })
     expect(models.current()).toBeUndefined()
     for (const partial of [{ provider: 'ds' }, { model: 'deepseek-flash' }, { reasoning: { mode: 'off' } }, {}]) {
       expect(models.use(partial as unknown as AgentModelConfig).ok).toBe(false)
@@ -47,7 +48,7 @@ describe('完整选择的校验与原子提交', () => {
     expect(selectModel(options, { ...defaults, reasoning: { mode: 'level', level: 'low' } }).ok).toBe(true)
     const unknown = selectModel(options, { ...defaults, provider: 'mm', model: 'MiniMax-M2.5', endpoint: 'https://api.minimax.cn/v1', reasoning: { mode: 'off' } })
     expect(unknown.ok).toBe(false)
-    if (!unknown.ok) expect(unknown.reason).toContain('未声明支持关闭')
+    if (!unknown.ok) expect(unknown.reason).toContain('思考能力未知')
     expect(selectModel(options, { ...defaults, provider: 'mm', model: 'MiniMax-M2.5', endpoint: 'https://api.minimax.cn/v1', reasoning: { mode: 'default' } }).ok).toBe(true)
   })
 
@@ -99,8 +100,8 @@ test('有效思考支持与实际映射同源，协议不能表达的用户声�
   const config: ProviderConfig = { baseURL: 'http://local/v1', modelOverrides: info }
   expect(effectiveReasoningSupportOf({ ...config, protocol: 'responses' }, 'exact')).toEqual({ disable: true, levels: ['low', 'xhigh'] })
   expect(effectiveReasoningSupportOf({ ...config, protocol: 'messages' }, 'exact')).toEqual({ disable: true, levels: ['low', 'xhigh'], budget: { minTokens: 1024 } })
-  expect(effectiveReasoningSupportOf({ vendor: 'minimax', protocol: 'responses' }, 'MiniMax-M3')).toEqual({ default: 'off', disable: true })
-  expect(effectiveReasoningSupportOf({ vendor: 'minimax', protocol: 'chat-completions' }, 'MiniMax-M3')).toEqual({ default: 'on', disable: true })
+  expect(effectiveReasoningSupportOf({ vendor: 'minimax', protocol: 'responses' }, 'MiniMax-M3', { id: 'MiniMax-M3', reasoning: { disable: true } })).toEqual({ disable: true })
+  expect(effectiveReasoningSupportOf({ vendor: 'minimax', protocol: 'chat-completions' }, 'MiniMax-M3')).toBeUndefined()
   expect(effectiveReasoningSupportOf({ vendor: 'deepseek', protocol: 'responses' }, 'deepseek-v4-pro')).toBeUndefined()
   expect(effectiveReasoningSupportOf(config, 'undeclared')).toBeUndefined()
 })

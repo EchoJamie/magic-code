@@ -195,6 +195,9 @@ export type OutputDelta = {
  * 缓存（`cache.snapshot.models`），配置里的 `model` 只是**用户默认选择**，可以没有。
  */
 export type ModelCatalogRow = {
+  /** 供应商与第三方资料的读取结果，不含用户覆盖；型号列表仍来自 cache。 */
+  readonly modelInfo?: Readonly<Record<string, import('./model.ts').ModelInfo>>
+  readonly metadata?: { readonly fetchedAt?: number; readonly stale: boolean; readonly failure?: string }
   readonly effectiveReasoning?: Readonly<Record<string, import('./model.ts').ReasoningSupport>>
   readonly protocol?: import('./model.ts').ModelProtocol
   readonly auth?: import('./model.ts').ProviderAuth

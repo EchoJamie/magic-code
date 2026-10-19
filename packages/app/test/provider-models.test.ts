@@ -12,7 +12,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { KernelEvent, ModelCatalogRow } from '@magic/contracts'
-import { MAX_COMPLETION_TOKENS, resolveModelSource } from '@magic/model'
+import { MAX_COMPLETION_TOKENS, MODELS_DEV_URL, resolveModelSource } from '@magic/model'
 import { assemble, attachShell, loadConfig } from '../src/index.ts'
 import { magicAt, removeDir, tempDir, writeConfig } from './tmp.ts'
 
@@ -54,6 +54,7 @@ function fakeVendor(
 
   const fetch = (async (input: unknown, init?: { headers?: unknown; body?: unknown }) => {
     const url = String(input)
+    if (url === MODELS_DEV_URL) return Response.json({ deepseek: { api: 'https://api.deepseek.com', models: { 'deepseek-flash': { id: 'deepseek-flash', reasoning_options: [{ type: 'toggle' }] } } } })
     const headers = new Headers(init?.headers as Record<string, string> | undefined)
     calls.push({
       url,
@@ -347,6 +348,7 @@ describe('一条连接的闭环', () => {
       const shell = attachShell(assembly.shell)
       await assembly.ready()
 
+      await assembly.modelInfo.refresh('ds')
       expect(assembly.switchModel({ reasoning: { mode: 'off' } }).ok).toBe(true)
       await shell.submit('嗨')
 

@@ -13,6 +13,7 @@ import { loadConfig, parseConfig, webReferenceProblem, type LoadedConfig } from 
 import { editConfigFile, saveProvider, removeProvider, configureModel, configureWeb, setPrefs } from '@magic/config'
 import { commitGrants, loadGrants } from './grants-file.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
+import { createModelsDevResource } from './models-dev-resource.ts'
 import { configStamp } from '@magic/config'
 import { cacheAccessFor, connectionScopeChanged } from './cache-access.ts'
 import { resolveModelChoice } from './agent-models.ts'
@@ -40,7 +41,8 @@ export function createSettings(context: SettingsContext) {
     if (info === undefined) {
       info = createModelInfoService({ connections: () => Object.entries(currentLoaded!.config.providers).map(([providerId, config]) => ({
         ...resolveConnection({ providerId, config, env: context.environment }), access: cacheAccessFor({ provider: providerId, configPath, apiKey: config.apiKey, processToken }),
-      })), cache: createFileModelInfoCache(context.magic.base), now: context.now ?? Date.now, fetch: context.fetch })
+      })), cache: createFileModelInfoCache(context.magic.base), now: context.now ?? Date.now, fetch: context.fetch,
+      metadata: createModelsDevResource(context.magic.base, context.fetch, context.now) })
     }
     return info
   }
@@ -74,7 +76,9 @@ export function createSettings(context: SettingsContext) {
         return { source, path, resolved, ...(problem === undefined ? {} : { problem }) }
       })
     })
-    const reader = await readModelCatalog(loaded, context.magic, undefined, undefined, context.now ?? Date.now, modelInfo(loaded))
+    const currentInfo = modelInfo(loaded)
+    if (Object.keys(config.providers).length) await currentInfo.refreshMetadata()
+    const reader = await readModelCatalog(loaded, context.magic, undefined, undefined, context.now ?? Date.now, currentInfo)
     const catalog = providerCatalog({ ...reader, env: context.environment }).entries
     const grantStamp = configStamp(grantPath)
     const grants = loadGrants(grantPath)
@@ -101,9 +105,8 @@ export function createSettings(context: SettingsContext) {
     if (action.type !== 'web.configure') await currentInfo.warmup()
     const snapshots = Object.entries(loaded.config.providers).map(([provider, config]) => ({ provider, config, snapshot: currentInfo.peek(provider).snapshot }))
     if (action.type === 'role.save' && action.role.model !== undefined) {
-      const reader = await readModelCatalog(loaded, context.magic, undefined, undefined, context.now ?? Date.now, currentInfo)
       const choice = resolveModelChoice({ providers: loaded.config.providers, configuredModels: loaded.config.models, config: action.role.model,
-        modelInfoOf: (provider, model) => reader.read(provider).snapshot?.models.find(info => info.id === model) })
+        modelInfoOf: (provider, model) => currentInfo.model(provider, model) })
       if (!choice.ok) throw new Error(`角色模型设置：${choice.reason}`)
     }
     const validate = (raw: Record<string, unknown>) => {
@@ -156,8 +159,9 @@ export function createSettings(context: SettingsContext) {
         const providers = loaded.config.providers
         if (!providers[action.provider]) throw new Error('连接已不存在，请重新读取')
         const result = await currentInfo.refresh(action.provider)
-        if (result.failure) throw new Error('模型列表刷新失败，请检查连接与认证')
-        return '模型列表已刷新；未发起模型调用'
+        const metadataFailure = currentInfo.describe(action.provider, []).metadata?.failure
+        if (result.failure || metadataFailure) throw new Error([result.failure?.reason, metadataFailure].filter(Boolean).join('；'))
+        return currentInfo.canFetch(action.provider) ? '模型列表与 Models.dev 资料已刷新；未发起模型调用' : 'Models.dev 资料已刷新；未发起模型调用'
       }
       case 'grants.revoke': {
         if (configStamp(grantPath) !== action.grantStamp) throw new Error('授权已改变，请重新读取后再撤销')

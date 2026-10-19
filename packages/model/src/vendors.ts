@@ -11,8 +11,7 @@
  *    字段名 · 分页参数）全封在这里；公开面出的 `ModelInfo` 已是归一后的形态。
  * ② **没有依据不发请求**——没有详情接口的适配**压根不实现** `retrieveModel`，
  *    不去拼一个「看上去对」的 URL（DeepSeek 即此例，设计明文）。
- * ③ **补充不添型号**——`supplement` 只补 API 没给的、**有官方出处**的字段；
- *    它不能让一个供应商没列出的型号出现在选择器里。
+ * ③ 型号规格由供应商接口与 Models.dev 资源提供；适配只处理协议和参数。
  * ④ **认不出就不猜**——未知 `vendor` / 未知 `region` 一律返回 `undefined` 由调用方
  *    如实报错，不回落某个「大概率是它」的地址（凭据会跟着去错地方）。
  *
@@ -34,7 +33,6 @@ import type {
   VendorRegion,
 } from '@magic/contracts'
 import type { FetchLike } from './ai-sdk.ts'
-import { MODEL_CONTEXT_BUILTIN } from './capacity.ts'
 
 /** 发一次请求要的东西——地址与凭据由**连接**给定（适配不猜、不存）。 */
 export type VendorRequestContext = {
@@ -124,12 +122,6 @@ export type VendorAdapter = {
     | ((args: Record<string, unknown>) => Record<string, unknown>)
     | undefined
   /**
-   * **缺项补充**——只补 API 没给的、有官方出处的字段（**不添型号**）。
-   *
-   * 优先级里它排在「供应商 API 当前有效信息」**之后**：API 给了的字段一律不覆盖。
-   */
-  supplement(info: ModelInfo, protocol?: ModelProtocol): ModelInfo
-  /**
    * 思考设置 → **该供应商的原生请求参数**；不是它支持的形态 ⇒ 报缺口（**不发假参数**）。
    *
    * 返回的原样进取件层的 `providerOptions`——`@ai-sdk/openai-compatible` 会把
@@ -208,7 +200,6 @@ export const PROTOCOLS = [
   { id: 'messages', label: 'Anthropic Messages' },
   { id: 'chat-completions', label: 'Chat Completions' },
 ] as const
-const MINIMAX_MODELS = ['MiniMax-M3.1-Flash-Preview', 'MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed', 'MiniMax-M2.1', 'MiniMax-M2.1-highspeed', 'MiniMax-M2']
 
 /** 连接保存与调用来源共用的地址规则；保留基础路径，仅移除末尾斜杠。 */
 export function normalizeBaseURL(base: string): string {
@@ -222,7 +213,7 @@ export function normalizeBaseURL(base: string): string {
 export function resolveModelSource(config: ProviderConfig, model: string): ModelSource {
   const adapter = config.vendor === undefined ? undefined : vendorOf(config.vendor)
   if (config.vendor !== undefined && adapter === undefined) throw new Error(`未知供应商适配「${config.vendor}」`)
-  const supported = adapter?.protocols.filter(p => p.models.includes(model))
+  const supported = adapter?.protocols.filter(p => p.models === undefined || p.models.includes(model))
   const protocol = config.protocol ?? (adapter === undefined ? 'responses' : supported?.[0]?.id)
   if (protocol === undefined || (supported !== undefined && !supported.some(p => p.id === protocol))) {
     throw new Error(`模型「${model}」不支持${config.protocol === undefined ? '已核实的官方协议' : `协议「${config.protocol}」`}；请核对精确型号`)
@@ -253,7 +244,7 @@ export const MINIMAX_VENDOR: VendorAdapter = {
   separatesReasoning: true,
   // ⚠️ 这是**新建官方连接**的地址（文档给的 `api.minimax.cn`）；旧兼容连接用的
   // `api.minimaxi.com` 一个字不动——那是另一条路，不因域名变化自动迁移凭据
-  protocols: PROTOCOLS.map(p => ({ ...p, models: MINIMAX_MODELS })),
+  protocols: PROTOCOLS,
   regions: [{ id: 'cn', label: '中国大陆', baseURL: 'https://api.minimax.cn/v1' }],
 
   baseURLOf(config, protocol = config.protocol ?? 'chat-completions') {
@@ -288,31 +279,11 @@ export const MINIMAX_VENDOR: VendorAdapter = {
     }
   },
 
-  /** 只补精确型号的已知容量；通道格式由适配的请求参数决定。 */
-  supplement(info, protocol = 'chat-completions') {
-    const window = Object.hasOwn(MODEL_CONTEXT_BUILTIN, info.id)
-      ? MODEL_CONTEXT_BUILTIN[info.id]
-      : undefined
-
-    return {
-      ...info,
-      ...(MINIMAX_MODELS.includes(info.id) ? { capabilities: { chat: true, tools: true, image: ['MiniMax-M3', 'MiniMax-M3.1-Flash-Preview'].includes(info.id), ...info.capabilities } } : {}),
-      ...(info.reasoning !== undefined ? {} : info.id === 'MiniMax-M3' ? { reasoning: { disable: true, default: protocol === 'chat-completions' ? 'on' : 'off' } }
-        : info.id === 'MiniMax-M3.1-Flash-Preview' ? { reasoning: { default: 'on', disable: false, levels: ['low', 'medium', 'high', 'xhigh', 'max'] } }
-        : ['MiniMax-M2', 'MiniMax-M2.1', 'MiniMax-M2.1-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'].includes(info.id)
-          ? { reasoning: { default: 'on', disable: false } } : {}),
-      // API 给了的字段一律不覆盖（补充排在它之后）
-      ...(info.limits === undefined && window === undefined
-        ? {}
-        : { limits: { ...(window === undefined ? {} : { maxContextTokens: window }), ...info.limits } }),
-    }
-  },
-
   /** 格式分离不等于关闭思考；按实际型号支持的控制参数映射。 */
   reasoningOf(setting, model, protocol = 'chat-completions'): { readonly params: Record<string, JSONValue> } | { readonly gap: string } | undefined {
     if (setting.mode === 'default') return undefined
-    if (model === 'MiniMax-M3' && setting.mode === 'off') return { params: protocol === 'responses' ? { reasoningEffort: 'none' } : { thinking: { type: 'disabled' } } }
-    if (model === 'MiniMax-M3.1-Flash-Preview' && setting.mode === 'level'
+    if (setting.mode === 'off') return { params: protocol === 'responses' ? { reasoningEffort: 'none' } : { thinking: { type: 'disabled' } } }
+    if (setting.mode === 'level'
       && ['low', 'medium', 'high', 'xhigh', 'max'].includes(setting.level)) return { params: protocol === 'messages' ? { effort: setting.level } : { reasoningEffort: setting.level } }
     return { gap: `当前 MiniMax 模型「${model}」不支持该思考设置` }
   },
@@ -342,17 +313,6 @@ export const DEEPSEEK_VENDOR: VendorAdapter = {
   async listModels(ctx) {
     const body = await getJson(ctx, '/models')
     return collectPages(() => Promise.resolve({ models: toModelsOf(body) }))
-  },
-
-  /** 仅给已知精确型号补官方思考与工具能力；接口现值优先，容量只收接口整数。 */
-  supplement(info) {
-    if (!['deepseek-flash', 'deepseek-v4-pro'].includes(info.id)) return info
-    return {
-      ...info,
-      // API 给了的不覆盖（补充排在供应商当前信息之后）
-      ...(info.reasoning === undefined ? { reasoning: REASONING_SUPPORT } : {}),
-      capabilities: { chat: true, tools: true, image: info.id === 'deepseek-flash', ...info.capabilities },
-    }
   },
 
   /**
@@ -392,13 +352,6 @@ function resolveBaseURL(
 
   const wanted = config.region ?? regions[0]?.id
   return regions.find((one) => one.id === wanted)?.baseURL
-}
-
-/** DeepSeek 的思考能力（官方文档 2026-09-23）——全线模型同一套，故是适配级的常量。 */
-const REASONING_SUPPORT: ReasoningSupport = {
-  default: 'on',
-  levels: ['low', 'high', 'max'],
-  disable: true,
 }
 
 // —— 注册表 ——

@@ -118,46 +118,23 @@ function traitsOf(
   return overrideOf(config, model)?.traits ?? known?.traits
 }
 
-/**
- * **生效的令牌规格**——用户覆盖 → 供应商 API 当前有效信息（缓存里那份）→
- * 该家适配的缺项补充 → 未知（逐位合并，前者盖后者）。
- *
- * 两处都缺的位就是**未知**（不给这一位）：设计明文「零 / 非法规格不当作无限大」，
- * 「读不懂就不给这一位」。兼容接入（没有适配）走域内的内置容量表——旧能力不删。
- */
+/** 来源资料已在读取时合并，用户逐项覆盖优先。 */
 function effectiveLimits(
   model: string,
   config: ProviderConfig,
-  adapter: VendorAdapter | undefined,
   known: ModelInfo | undefined,
 ): ModelLimits | undefined {
-  const override = overrideOf(config, model)?.limits
-  // `supplement` 的契约是「**API 给了的不覆盖**」，故把缓存里那份喂进去即已含它
-  const supplemented =
-    adapter === undefined
-      ? known?.limits
-      : adapter.supplement(known ?? { id: model }).limits
-
-  const merged: ModelLimits = { ...supplemented, ...known?.limits, ...override }
+  const merged: ModelLimits = { ...known?.limits, ...overrideOf(config, model)?.limits }
   return Object.keys(merged).length === 0 ? undefined : merged
 }
 
-/**
- * **生效的能力读数**（U37）——用户覆盖 → 供应商 API 当前有效信息 → **未知**（不给位）。
- *
- * 与 `effectiveLimits` 是同一条优先级的两处落点，只有一条差别：**本处没有「适配补项」那一档**
- * ——今天没有任何一家适配声明过能力（列表接口只给 `id`，见 `vendors.ts` 的文件头注），
- * 硬留一个恒空的档位只会让人以为「写了就会生效」。真有那家给得出时，加它是一行的事。
- *
- * 返回 `undefined` ＝**一位都没有依据**（调用方按「不知道」办，**不当作不支持**）。
- */
+/** 未知能力不当作不支持。 */
 export function effectiveCapabilitiesOf(
   model: string,
   config: ProviderConfig,
   known: ModelInfo | undefined,
 ): ModelCapabilities | undefined {
   const merged: ModelCapabilities = {
-    ...(config.vendor === undefined ? {} : vendorOf(config.vendor)?.supplement(known ?? { id: model }).capabilities),
     ...known?.capabilities,
     ...overrideOf(config, model)?.capabilities,
   }
@@ -211,7 +188,7 @@ export function effectiveSpecOf(input: {
    */
   readonly fallbackOutputTokens?: number | undefined
 }): EffectiveSpec {
-  const limits = effectiveLimits(input.model, input.config, input.adapter, input.known)
+  const limits = effectiveLimits(input.model, input.config, input.known)
   const maxOutputTokens =
     limits?.maxOutputTokens ?? input.fallbackOutputTokens ?? MAX_COMPLETION_TOKENS
 

@@ -12,7 +12,7 @@ import { runPathsOf } from '../src/run/paths.ts'
 import { connectManager } from '../src/run/client.ts'
 import { clientTransport } from '../src/run/terminal.ts'
 import { terminalSettings } from '../src/run/terminal-settings.ts'
-import { holdNativeSettingsLock, runNativeSettings } from './native-settings-fixture.ts'
+import { nativeModelsDevCatalog, holdNativeSettingsLock, runNativeSettings } from './native-settings-fixture.ts'
 import { createSettings } from '../src/settings.ts'
 import { statusLinePreview } from '@magic/tui'
 import { cliGround, waitFor } from './resident-cli-fixture.ts'
@@ -235,9 +235,9 @@ test('App 原生模型刷新保留显式代理与 NO_PROXY，不因客户端拆�
     return runNativeSettings({ ...g, stamp: configStamp(g.configPath), action: { type: 'model.refresh', provider: 'official' } }, environment)
   }
   try {
-    const proxied = await refresh('http://native-models.invalid/v1', { http_proxy: `http://127.0.0.1:${address.port}` })
+    const proxied = await refresh('http://native-models.invalid/v1', { http_proxy: `http://127.0.0.1:${address.port}`, NO_PROXY: '127.0.0.1' })
     expect(proxied.error, JSON.stringify(tunnels)).toBeUndefined(); expect(tunnels).toEqual(['native-models.invalid:80'])
-    const direct = await refresh(`http://127.0.0.1:${model.port}/v1`, { HTTP_PROXY: 'http://127.0.0.1:1', NO_PROXY: `127.0.0.1:${model.port}` })
+    const direct = await refresh(`http://127.0.0.1:${model.port}/v1`, { HTTP_PROXY: 'http://127.0.0.1:1', NO_PROXY: '127.0.0.1' })
     expect(direct.error).toBeUndefined(); expect(tunnels).toHaveLength(1)
     const blocked = await refresh('http://native-models.invalid/v1', { ALL_PROXY: 'http://127.0.0.1:1' })
     expect(blocked.error).toContain('模型列表刷新失败')
@@ -247,6 +247,7 @@ test('App 原生模型刷新保留显式代理与 NO_PROXY，不因客户端拆�
 test('官方 messages 配置的列表仍用目录端点，原生缓存范围与 TS 一致', async () => {
   const g = ground(), urls: string[] = []
   const settings = createSettings({ magic: g, environment: {}, fetch: async input => {
+    if (String(input) === 'https://models.dev/api.json') return Response.json(nativeModelsDevCatalog)
     urls.push(String(input)); return Response.json({ data: [{ id: 'MiniMax-M2.7' }] })
   } })
   try {
@@ -256,5 +257,37 @@ test('官方 messages 配置的列表仍用目录端点，原生缓存范围与 
     const native = (await runNativeSettings(g)).snapshot!
     expect((native.catalog[0] as ModelCatalogRow).cache).toEqual(((await settings.read()).catalog[0] as ModelCatalogRow).cache)
     expect((native.catalog[0] as ModelCatalogRow).cache?.snapshot).toBeDefined()
+  } finally { g.close() }
+}, 60000)
+
+test('App 与 TS 动态解析同一 Models.dev 缓存；精确渠道与型号匹配，手动刷新绕过 TTL', async () => {
+  const g = ground(), id = 'MiniMax-M3.1-Flash'
+  const settings = createSettings({ magic: g, environment: {}, fetch: async () => { throw new Error('新鲜资料应直接读文件') } })
+  try {
+    writeFileSync(g.configPath, JSON.stringify({ providers: {
+      official: { vendor: 'minimax', modelOverrides: { [`${id}-Preview`]: {} } },
+      private: { baseURL: 'https://private.invalid/v1', modelOverrides: { [id]: {} } },
+    }, models: { default: { provider: 'official', model: id } } }))
+    const native = await runNativeSettings(g)
+    expect(native.error).toBeUndefined()
+    const row = native.snapshot!.catalog[0] as ModelCatalogRow
+    expect(row.modelInfo?.[id]?.limits).toEqual({ maxContextTokens: 1_000_000, maxOutputTokens: 512_000 })
+    expect(row.effectiveReasoning?.[id]).toEqual({ levels: ['low', 'medium', 'high', 'xhigh', 'max'] })
+    expect(row.modelInfo?.[`${id}-Preview`]).toBeUndefined()
+    expect((native.snapshot!.catalog[1] as ModelCatalogRow).modelInfo?.[id]).toBeUndefined()
+    const ts = (await settings.read()).catalog[0] as ModelCatalogRow
+    expect(row.modelInfo).toEqual(ts.modelInfo)
+    expect(row.effectiveReasoning).toEqual(ts.effectiveReasoning)
+    const file = join(g.base, 'cache/models.dev.json'), cached = JSON.parse(readFileSync(file, 'utf8'))
+    cached.data['minimax-cn'].models[id].limit.output = 500_000
+    writeFileSync(file, JSON.stringify(cached))
+    const reread = await runNativeSettings(g)
+    expect((reread.snapshot!.catalog[0] as ModelCatalogRow).modelInfo?.[id]?.limits?.maxOutputTokens).toBe(500_000)
+    expect(((await settings.read()).catalog[0] as ModelCatalogRow).modelInfo?.[id]?.limits?.maxOutputTokens).toBe(500_000)
+    // 自定义连接不依赖模型列表接口，也可以手动刷新公共资料。
+    const refreshed = await runNativeSettings({ ...g, stamp: reread.snapshot!.stamp, action: { type: 'model.refresh', provider: 'private' } })
+    expect(refreshed.error).toBeUndefined()
+    expect((refreshed.snapshot!.catalog[0] as ModelCatalogRow).modelInfo?.[id]?.limits?.maxOutputTokens).toBe(512_000)
+    expect(statSync(file).mode & 0o777).toBe(0o600)
   } finally { g.close() }
 }, 60000)

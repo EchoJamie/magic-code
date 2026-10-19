@@ -1,113 +1,7 @@
-/**
- * U30 · 容量（上下文窗总量）—— **内置表 ＋ 覆盖判定**（域内那半）。
- *
- * 判据锚的是「**我要什么**」，逐条：
- *
- * 1. **已知模型不要求用户自己补客观容量**——窗长是模型的客观属性、我们有官方出处
- *    （`capacity.ts` 记着 URL）：查得到就得给得出，不必等配置里写一行；
- * 2. **用户已明确配置的保持覆盖能力**——声明了就用声明的数（本地端点 / 私有部署的
- *    真实窗长只有用户知道）；
- * 3. **未知 / 别名不能证实 ⇒ 不知道**——`undefined`（分母 `null`），**不模糊匹配一整个
- *    家族、不拿别名顶上、不编数**；
- * 4. **同一条判定经出口出去**（`list()` 的行与 `capacityOf` 的有效规格）——
- *    外壳与 `model.catalog` 两处取材同源，不会分叉；**声明只属于配置它的条目及对应模型**
- *    （同名模型在别的条目上不许串味）。
- *
- * ⚠️ **2026-09-23（U41 返修）**：旧的「窗长表」（`windowTable()` ＋ `windowOfSelection`）
- * 随整条旧链删掉——分母改由 `capacityOf` 一次解析、经事件给外壳。这一组里钉旧表那几条
- * 一并撤（判据本身没丢：`capacityOf` 那几条与 `list()` 那几条各自钉着同一批规则）。
- *
- * 数值的**出处**（2026-09-20 核 · 单位 token）：MiniMax 开放平台模型表
- * https://platform.minimax.io/docs/guides/text-generation 。
- */
-
 import { describe, expect, test } from 'bun:test'
 import type { ProviderConfig } from '@magic/contracts'
 import { makeTestStamper } from '@magic/faux'
-import {
-  MODEL_CONTEXT_BUILTIN,
-  createModelRegistry,
-  resolveContextWindow,
-} from '../src/index.ts'
-
-// ═══════════════════════════════════════════════════════════════════════
-// 一 · 裁定：声明 → 内置表 → 未知
-// ═══════════════════════════════════════════════════════════════════════
-
-describe('容量裁定 · 声明 → 内置表 → 未知', () => {
-  test('内置命中：官方表里那些模型，查得出**逐行那个数**', () => {
-    // 旗舰（1M）与 M2（204.8k）——两个不同量级，免得上线时把表写串了还看不出来
-    expect(resolveContextWindow('MiniMax-M3')).toBe(1_000_000)
-    expect(resolveContextWindow('MiniMax-M2')).toBe(204_800)
-  })
-
-  test('同家变体**逐行精确 id**，不是家族匹配——每个 id 单独在表里，数取官方那一行', () => {
-    for (const id of [
-      'MiniMax-M2.7',
-      'MiniMax-M2.7-highspeed',
-      'MiniMax-M2.5',
-      'MiniMax-M2.5-highspeed',
-      'MiniMax-M2.1',
-      'MiniMax-M2.1-highspeed',
-    ]) {
-      expect(resolveContextWindow(id)).toBe(204_800)
-    }
-  })
-
-  test('声明覆盖内置：给了数就用给的数（本地端点 / 私有部署的窗长只有用户知道）', () => {
-    expect(resolveContextWindow('MiniMax-M3', 32_768)).toBe(32_768)
-    // 声明对表外模型同样成立——覆盖位不是「内置的补丁」，是独立的来处
-    expect(resolveContextWindow('my-local-llama', 8_192)).toBe(8_192)
-  })
-
-  test('未知 / 别名 / 表外：`undefined`——不猜、不模糊匹配、不编', () => {
-    // 表里没有的模型
-    expect(resolveContextWindow('MiniMax-M9')).toBeUndefined()
-    // **不许前缀匹配**：名字里带着 MiniMax-M3 的另一个模型 ≠ MiniMax-M3
-    expect(resolveContextWindow('MiniMax-M3-preview')).toBeUndefined()
-    expect(resolveContextWindow('MiniMax-M3.1')).toBeUndefined()
-    // 大小写不同＝另一个键（与真跑送出去的模型名逐字对齐，不做大小写折叠）
-    expect(resolveContextWindow('minimax-m3')).toBeUndefined()
-    // 别名 / 简写不能证实 ⇒ 不知道
-    expect(resolveContextWindow('M3')).toBeUndefined()
-    // 官方表把 M2-her 写成「64 K」——**单位不肯定**，故整行不收（宁可未知，不编）
-    expect(resolveContextWindow('M2-her')).toBeUndefined()
-    // 连空串也照这条走（载荷缺字段时别拿一个"看起来像 0"的东西顶上）
-    expect(resolveContextWindow('')).toBeUndefined()
-  })
-
-  /**
-   * **原型上有名字的模型名**（U30 验收抓到的边界）：查询走的是**自有键**——
-   * 普通对象索引会一路摸到 `Object.prototype`，把 `toString` / `constructor` 这些名字
-   * 读成**函数**、`__proto__` 读成**对象**（`typeof` 都不是 `undefined`）✗。
-   * 「未知」必须是干净的未知：**不是数就不是数**。
-   */
-  test('`toString` / `constructor` / `__proto__` 这类名字 ⇒ 未知（不是原型上那个东西）', () => {
-    for (const name of ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf']) {
-      expect(resolveContextWindow(name)).toBeUndefined()
-    }
-  })
-
-  test('内置表**只有**那几个键——加行是有意的（表本身即规格，别在别处偷偷拼）', () => {
-    expect(Object.keys(MODEL_CONTEXT_BUILTIN).sort()).toEqual(
-      [
-        'MiniMax-M2',
-        'MiniMax-M2.1',
-        'MiniMax-M2.1-highspeed',
-        'MiniMax-M2.5',
-        'MiniMax-M2.5-highspeed',
-        'MiniMax-M2.7',
-        'MiniMax-M2.7-highspeed',
-        'MiniMax-M3',
-        'MiniMax-M3.1-Flash-Preview',
-      ].sort(),
-    )
-  })
-})
-
-// ═══════════════════════════════════════════════════════════════════════
-// 二 · 出口：同一条判定，两处取材（条目表 · 窗长表）
-// ═══════════════════════════════════════════════════════════════════════
+import { createModelRegistry } from '../src/index.ts'
 
 const CONFIG = (_model: string): ProviderConfig => ({ vendor: 'minimax', baseURL: 'https://alpha.example/v1' })
 
@@ -115,6 +9,7 @@ const CONFIG = (_model: string): ProviderConfig => ({ vendor: 'minimax', baseURL
 function registryOf(providers: Record<string, ProviderConfig>) {
   return createModelRegistry({
     providers,
+    modelInfoOf: (_provider, model) => model === 'MiniMax-M2' ? { id: model, limits: { maxContextTokens: 204_800 } } : undefined,
     stamper: makeTestStamper(),
     env: {},
     apiKeys: Object.fromEntries(Object.keys(providers).map((id) => [id, 'test-key'])),
@@ -122,14 +17,14 @@ function registryOf(providers: Record<string, ProviderConfig>) {
 }
 
 describe('条目出口 · `list()` 与**有效规格出口**（`capacityOf`）', () => {
-  test('条目没声明、模型在内置表里 ⇒ 条目**带出内置那个数**（不必让用户自己补）', () => {
+  test('条目没声明、模型在已获取资料里 ⇒ 条目**带出来源资料那个数**（不必让用户自己补）', () => {
     const registry = registryOf({ alpha: CONFIG('MiniMax-M2') })
 
     expect(registry.list()).toEqual([{ id: 'alpha' }])
     expect(registry.capacityOf('alpha', 'MiniMax-M2')?.contextWindow).toBe(204_800)
   })
 
-  test('条目声明了 ⇒ 声明优先（覆盖内置），哪怕模型就在表里', () => {
+  test('条目声明了 ⇒ 声明优先（覆盖来源资料），哪怕模型就在表里', () => {
     const registry = registryOf({
       alpha: { ...CONFIG('MiniMax-M2'), modelOverrides: { 'MiniMax-M2': { limits: { maxContextTokens: 32_768 } } } },
     })
