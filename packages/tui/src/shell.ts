@@ -1588,7 +1588,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }]
 
     for (const entry of view.models) {
-      if (entry.vendor !== 'deepseek' || entry.baseURL !== undefined || entry.region !== undefined) continue
+      // 官方区域（`region`）是既有模型连接字段，不在这里额外排除；保存/运行时按解析后的地址判。
+      if (entry.vendor !== 'deepseek' || entry.baseURL !== undefined) continue
       rows.push({
         label: entry.name ?? entry.provider,
         meta: current === entry.provider ? `当前 · ${entry.provider}` : entry.provider,

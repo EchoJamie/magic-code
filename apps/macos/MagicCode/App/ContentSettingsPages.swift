@@ -13,7 +13,7 @@ struct WebSettingsPage: View {
             let providers = snapshot.configuration["providers"]
             let current = snapshot.configuration["web"]["provider"].text
             let eligible = providers.object.keys.sorted().filter {
-                providers[$0]["vendor"].text == "deepseek" && providers[$0].object["baseURL"] == nil && providers[$0].object["region"] == nil
+                providers[$0]["vendor"].text == "deepseek" && providers[$0].object["baseURL"] == nil
             }
 
             HStack(alignment: .top, spacing: 12) {

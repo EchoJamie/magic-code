@@ -89,6 +89,12 @@ final class NativeSettings {
             // 网页引用在写这一侧从严；加载侧容忍悬空引用（见 SettingsValidation.config）。
             if type == "web.configure" || (type == "provider.save" && next["web"]["provider"].text == action["provider"].text) {
                 try SettingsValidation.webReference(next)
+                if next["web"] != .null {
+                    let id = next["web"]["provider"].text
+                    // `region` 是既有官方区域字段——判据是**解析后的有效基址**固定。
+                    let endpoint = try models.endpoint(next["providers"][id])
+                    try SettingsValidation.require(endpoint == "https://api.deepseek.com", "web.provider 须使用固定官方地址")
+                }
             }
             if type == "provider.save" || type == "model.configure" {
                 let provider = action["provider"].text, config = next["providers"][provider]

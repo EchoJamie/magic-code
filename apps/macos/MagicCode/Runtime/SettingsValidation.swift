@@ -151,7 +151,9 @@ enum SettingsValidation {
             throw WireError.invalid("web.provider 指向未知连接「\(provider)」")
         }
         try require(entry["vendor"].text == "deepseek", "web.provider 须为 DeepSeek 官方连接")
-        try require(entry.object["baseURL"] == nil && entry.object["region"] == nil, "web.provider 须使用固定官方地址")
+        // `region` 是既有模型连接层的官方区域字段，不在这里拒；
+        // 有效地址是否固定由 `NativeSettings.apply` 按供应商适配解析后判。
+        try require(entry.object["baseURL"] == nil, "web.provider 须使用固定官方地址")
     }
 
     static func permission(_ rule: SettingsValue, ops allowed: [String]) throws {

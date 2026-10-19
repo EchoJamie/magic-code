@@ -12,7 +12,7 @@ import type {
 import type { FetchLike, ModelInfoService, ModelRegistry } from '@magic/model'
 import { createModelInfoService, createModelRegistry, resolveConnection } from '@magic/model'
 import type { WebServiceRef } from '@magic/tools'
-import { createWebSource } from '@magic/execution'
+import { createWebSource, DEEPSEEK_WEB_ORIGIN } from '@magic/execution'
 import { bindModelChoice } from '../agent-models.ts'
 import { configStamp as configStampOf } from '@magic/config'
 import { cacheAccessFor, connectionScopeChanged } from '../cache-access.ts'
@@ -183,14 +183,15 @@ export function createModelConfiguration(input: {
         reason: `网页服务连接「${webConfig.provider}」不是 DeepSeek 官方连接——首版只接 DeepSeek`,
       }
     }
-    if (config.baseURL !== undefined || config.region !== undefined) {
-      return {
-        ok: false,
-        reason: `网页服务连接「${webConfig.provider}」使用了自定义地址或区域——首版只接固定官方地址`,
-      }
-    }
 
     const resolved = resolveConnection({ providerId: webConfig.provider, config, env: environment })
+    // `region` 是既有的官方区域字段，不单独拒；判据是**解析后的实际基址**必须固定。
+    if (resolved.baseURL !== DEEPSEEK_WEB_ORIGIN) {
+      return {
+        ok: false,
+        reason: `网页服务连接「${webConfig.provider}」的有效地址不是固定的 ${DEEPSEEK_WEB_ORIGIN}——首版只接 DeepSeek 官方地址`,
+      }
+    }
     const apiKey = resolved.apiKey?.trim() ?? ''
     if (apiKey === '') {
       return {

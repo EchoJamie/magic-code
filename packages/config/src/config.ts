@@ -584,8 +584,10 @@ export function webReferenceProblem(config: Pick<MagicConfig, 'providers' | 'web
   if (entry.vendor !== 'deepseek') {
     return `web.provider「${provider}」不是 DeepSeek 官方连接——网页服务首版只接 DeepSeek`
   }
-  if (entry.baseURL !== undefined || entry.region !== undefined) {
-    return `web.provider「${provider}」使用了自定义地址或区域——网页服务首版只接固定官方地址`
+  // `region` 是既有模型连接层的「官方区域」，不是自定义地址——不在这里拒。
+  // 实际地址是否等于固定官方服务，由能解析供应商适配的调用方按**解析后的 baseURL** 判。
+  if (entry.baseURL !== undefined) {
+    return `web.provider「${provider}」使用了自定义地址——网页服务首版只接固定官方地址`
   }
   return undefined
 }

@@ -5,7 +5,7 @@ import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import type { SettingsAction, SettingsSnapshot, ModelSelectionRef, ModelSwitchRequest } from '@magic/contracts'
 import { expandHome, GRANTS_FILE_NAME, apiKeyEnvVarOf } from '@magic/contracts'
-import { createWorkspaceService } from '@magic/execution'
+import { createWorkspaceService, DEEPSEEK_WEB_ORIGIN } from '@magic/execution'
 import { parseRules } from '@magic/permission'
 import type { FetchLike, ModelInfoService } from '@magic/model'
 import { createModelInfoService, resolveConnection, selectModel, vendorCatalog } from '@magic/model'
@@ -116,6 +116,15 @@ export function createSettings(context: SettingsContext) {
       if (touchesWeb) {
         const problem = webReferenceProblem(config)
         if (problem !== undefined) throw new Error(problem)
+        if (config.web !== undefined) {
+          const entry = config.providers[config.web.provider]
+          if (entry !== undefined) {
+            const resolved = resolveConnection({ providerId: config.web.provider, config: entry, env: context.environment })
+            if (resolved.baseURL !== DEEPSEEK_WEB_ORIGIN) {
+              throw new Error(`网页服务连接「${config.web.provider}」的有效地址不是固定的 ${DEEPSEEK_WEB_ORIGIN}——首版只接 DeepSeek 官方地址`)
+            }
+          }
+        }
       }
       if (action.type === 'provider.save' || action.type === 'model.configure') {
         for (const [choice, mapping] of Object.entries(config.models ?? {})) {

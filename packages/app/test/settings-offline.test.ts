@@ -18,7 +18,9 @@ test('断连 TUI 可读、选、清除网页服务引用；删除被引用的连
   const g = ground(), workspace = createWorkspaceService({ roots: [g.home] })
   writeFileSync(g.configPath, JSON.stringify({
     providers: {
-      web: { vendor: 'deepseek', apiKey: 'offline-test-only' },
+      // `region` 是既有官方区域字段——它不该成为网页服务的额外门槛。
+      web: { vendor: 'deepseek', region: 'official', apiKey: 'offline-test-only' },
+      badRegion: { vendor: 'deepseek', region: 'moon', apiKey: 'offline-test-only' },
       local: { vendor: 'deepseek', protocol: 'chat-completions', baseURL: 'https://example.invalid/v1', apiKey: 'offline-test-only' },
     },
     models: { cantrip: { provider: 'local', model: 'distill-model' } },
@@ -63,6 +65,13 @@ test('断连 TUI 可读、选、清除网页服务引用；删除被引用的连
     last = events.filter(event => event.kind === 'web.state').at(-1)!
     expect(last.kind === 'web.state' && last.data.saved).toBe(false)
     expect(last.kind === 'web.state' && last.data.note).toContain('ghost')
+
+    // 认不出的官方区域：解析不出固定地址 ⇒ 拒绝（但 region 这个字段本身不是门槛）。
+    transport.send({ type: 'web.configure', provider: 'badRegion' })
+    await waitFor(() => events.filter(event => event.kind === 'web.state').length === 6)
+    last = events.filter(event => event.kind === 'web.state').at(-1)!
+    expect(last.kind === 'web.state' && last.data.saved).toBe(false)
+    expect(last.kind === 'web.state' && last.data.note).toContain('固定')
     expect(JSON.parse(readFileSync(g.configPath, 'utf8')).web).toBeUndefined()
   } finally { shell.dispose(); g.close() }
 })
