@@ -163,10 +163,18 @@ function tailOf(
   return parts.length === 0 ? undefined : parts
 }
 
-/** 管理面那一行连接长什么样（副文案）——**只报手上有的事实**，没有的不编。 */
-export function manageMetaOf(entry: ModelCatalogRow): string {
+/**
+ * 管理面那一行连接长什么样（副文案）——**只报手上有的事实**，没有的不编。
+ *
+ * 区域报**官方给的 label**（`中国大陆` / `官方`），不报配置里的 id；拿不到供应商资料
+ * 时才退回 id（不编一个更好看的名字）。
+ */
+export function manageMetaOf(entry: ModelCatalogRow, vendors: readonly VendorInfo[] = []): string {
   const parts = [entry.vendor ?? '兼容接入']
-  if (entry.region !== undefined) parts.push(entry.region)
+  if (entry.region !== undefined) {
+    const vendor = vendors.find(one => one.vendor === entry.vendor)
+    parts.push(vendor?.regions.find(one => one.id === entry.region)?.label ?? entry.region)
+  }
   parts.push(authLabelOf(entry))
   return parts.join(' · ')
 }

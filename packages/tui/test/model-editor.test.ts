@@ -43,15 +43,18 @@ describe('/model 集中编辑', () => {
     expect(stage.commands().some(one => one.type === 'model.refresh')).toBe(false)
   })
 
-  test('官方无地址；更名不锁定协议；密钥隐藏，失败/冲突保留输入与原 stamp', async () => {
+  test('官方无地址；协议/区域直接落官方项；密钥隐藏，失败/冲突保留输入与原 stamp', async () => {
     const stage = createStage(); open(stage, 'manage', [{ provider: 'official', vendor: 'official', name: '已有官方' }]); pick(stage, 'official'); pick(stage, 'edit')
     expect(JSON.stringify(picker(stage))).not.toContain('https://')
     expect(picker(stage).rows.some(one => one.value === 'baseURL')).toBe(false)
+    // 默认就是具体协议与官方区域 label（没有「自动」「供应商默认区域」这种项）。
+    expect(picker(stage).rows.find(one => one.value === 'protocol')?.meta).toBe('Responses')
+    expect(picker(stage).rows.find(one => one.value === 'region')?.meta).toBe('中国')
     fill(stage, 'name', '新名称'); pick(stage, 'apiKey'); stage.type('synthetic-private-key')
     expect(JSON.stringify(stage.shell.getView())).not.toContain('synthetic-private-key')
     const frame = await stage.screen({ columns: 100, rows: 40 }); expect(frame.has('synthetic-private-key')).toBe(false)
     stage.press({ kind: 'enter' }); expect(writes(stage)).toEqual([]); pick(stage, 'save')
-    const command = writes(stage).at(-1)!; expect(command).not.toHaveProperty('protocol')
+    const command = writes(stage).at(-1)!; expect(command).toMatchObject({ protocol: 'responses', region: 'cn' })
     stage.feed([event('provider.catalog', { entries: [], vendors, saved: false, stamp: 'newer', note: '配置冲突' })])
     expect(picker(stage).source).toBe('model-editor'); expect(picker(stage).hint).toContain('配置冲突')
     expect(picker(stage).rows.find(one => one.value === 'name')?.meta).toBe('新名称')

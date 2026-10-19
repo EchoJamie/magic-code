@@ -40,27 +40,31 @@ final class NativeTests: XCTestCase {
             ])], sources: [], grants: [], grantStamp: nil, grantProblem: nil)
     }
 
-    @MainActor func testU126OfficialAutomaticProtocolSurvivesCredentialEditsAndReset() throws {
+    @MainActor func testU126OfficialUsesConcreteProtocolAndRegionLabels() throws {
         let snapshot = u126Snapshot()
-        let draft = SettingsDraft(providerFormValue(id: "official", snapshot: snapshot), stamp: snapshot.stamp)
+        let form = providerFormValue(id: "official", snapshot: snapshot)
+        // 不再保留「自动」与「供应商默认区域」：直接落官方协议 / 区域。
+        XCTAssertEqual(form["protocol"], .string("responses"))
+        XCTAssertEqual(form["region"], .string("test"))
+        let draft = SettingsDraft(form, stamp: snapshot.stamp)
         draft.put("name", .string("改名")); draft.put("apiKey", .string("fixture-secret"))
         let action = providerFormAction(draft.value)
-        XCTAssertNil(action.object["protocol"], "改名或改密钥不得锁定自动协议")
+        XCTAssertEqual(action.object["protocol"], .string("responses"))
         XCTAssertNil(action.object["baseURL"]); XCTAssertNil(action.object["auth"])
         XCTAssertTrue(action.validSettingsAction)
         draft.put("keyAction", .string("keep"))
         XCTAssertNil(providerFormAction(draft.value).object["keyAction"])
-        XCTAssertEqual(modelProtocolName(provider: draft.value, model: "exact-model", vendors: snapshot.vendors), "Responses")
-        XCTAssertEqual(modelProtocolName(provider: draft.value, model: "other-model", vendors: snapshot.vendors), "Anthropic Messages")
-        XCTAssertTrue(modelProtocolName(provider: draft.value, model: "unknown-model", vendors: snapshot.vendors).hasPrefix("未知"))
+        // 旧配置没有协议时，展示仍按精确型号解析（不写回配置）。
+        let unset = snapshot.configuration["providers"]["official"]
+        XCTAssertEqual(modelProtocolName(provider: unset, model: "exact-model", vendors: snapshot.vendors), "Responses")
+        XCTAssertEqual(modelProtocolName(provider: unset, model: "other-model", vendors: snapshot.vendors), "Anthropic Messages")
+        XCTAssertTrue(modelProtocolName(provider: unset, model: "unknown-model", vendors: snapshot.vendors).hasPrefix("未知"))
         XCTAssertEqual(providerProtocolOptions(snapshot.vendors[0]).map { $0["id"].text }, ["responses", "messages", "chat-completions"])
         draft.put("protocol", .string("messages"))
         XCTAssertTrue(providerFormProblem(draft.value, snapshot: snapshot)?.contains("exact-model") == true)
         draft.put("protocol", .null, preserveNull: true)
         XCTAssertEqual(providerFormAction(draft.value).object["protocol"], .null)
         XCTAssertNil(providerFormProblem(draft.value, snapshot: snapshot))
-        let data = try JSONEncoder().encode(providerFormAction(draft.value))
-        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("\"protocol\":null"))
         XCTAssertEqual(providerFormValue(id: "locked", snapshot: snapshot)["protocol"], .string("messages"))
     }
 

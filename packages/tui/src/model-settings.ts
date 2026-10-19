@@ -2,6 +2,7 @@ import type {
   AgentId,
   Command,
   KernelEvent,
+  ModelCatalogRow,
   ModelChoice,
   ModelInfo,
   ModelRef,
@@ -206,7 +207,7 @@ export function createModelSettings(ui: {
         return
       }
       enterLayer()
-      openEditor(providerEditor(entry.provider, vendor, entry))
+      openEditor(providerEditor(entry.provider, vendor, entry, mappedModelsOf(entry.provider)))
       return
     }
     if (value === 'manual') {
@@ -227,7 +228,7 @@ export function createModelSettings(ui: {
   const openManagePicker = (note: string): void => {
     const rows = ui.view.models.map((entry) => ({
       label: entry.name ?? entry.provider,
-      meta: manageMetaOf(entry),
+      meta: manageMetaOf(entry, ui.view.vendors),
       current: false,
       value: entry.provider,
       oneLine: true,
@@ -245,6 +246,30 @@ export function createModelSettings(ui: {
    * 连接自己的那几格（id · 供应商 · 区域 · 地址 · 模型 · 缓存）写在**下方那行说明**里——
    * 它们是**查阅**用的，不占候选格（一屏上的每一格都得影响用户的动作）。
    */
+  /**
+   * 这一条连接**实际会用到的协议**——直接报官方协议的 label，不报「自动」。
+   *
+   * 显式选了就报那一个；没选（旧配置）时按已映射型号的实际支持范围取；一个型号都还没
+   * 映射时就报供应商支持项里优先级最高的一项（Responses → Messages → Chat）。
+   */
+  /** 这条连接上已映射的精确型号——默认协议要按它们的实际支持范围挑。 */
+  const mappedModelsOf = (provider: string): readonly string[] =>
+    Object.values(ui.view.configuredModels).filter((mapping) => mapping.provider === provider).map((mapping) => mapping.model)
+
+  const connectionProtocolLabel = (entry: ModelCatalogRow): string => {
+    if (entry.protocol !== undefined) return protocolLabel(entry.protocol)
+    const vendor = ui.view.vendors.find((one) => one.vendor === entry.vendor)
+    if (vendor === undefined) return protocolLabel('responses')
+    const models = Object.values(ui.view.configuredModels)
+      .filter((mapping) => mapping.provider === entry.provider)
+      .map((mapping) => mapping.model)
+    const ids = models.length === 0
+      ? [vendor.protocols[0]?.id]
+      : models.map((model) => effectiveProtocol(entry, vendor, model))
+    const labels = [...new Set(ids.filter((id): id is NonNullable<typeof id> => id !== undefined).map((id) => protocolLabel(id)))]
+    return labels.length === 0 ? '尚未核实此型号的支持范围' : labels.join(' / ')
+  }
+
   const openManageDetail = (who: string): void => {
     const entry = ui.view.models.find((one) => one.provider === who)
     if (entry === undefined) return // 一览里没有这一条＝不该走到这儿
@@ -254,7 +279,7 @@ export function createModelSettings(ui: {
       source: 'provider-detail',
       selected: 0,
       rows: [
-        { label: '编辑连接', meta: protocolLabel(entry.protocol ?? ''), current: false, value: 'edit', oneLine: true },
+        { label: '编辑连接', meta: connectionProtocolLabel(entry), current: false, value: 'edit', oneLine: true },
         { label: '手动填写模型', meta: '无需列表或详情接口', current: false, value: 'manual', oneLine: true },
         {
           label: '刷新这一条',
@@ -354,7 +379,7 @@ export function createModelSettings(ui: {
       const entry = ui.view.models.find(one => one.provider === held.provider)
       const vendor = ui.view.vendors.find(one => one.vendor === entry?.vendor)
       const fresh = held.kind === 'provider'
-        ? providerEditor(held.provider, vendor, entry)
+        ? providerEditor(held.provider, vendor, entry, mappedModelsOf(held.provider))
         : modelEditor(held.provider, held.values.model ?? '', entry?.modelOverrides?.[held.values.model ?? ''], entry, vendor)
       Object.assign(held, fresh, { stamp: catalogStamp })
       editorDrafts.set(editorKey(held), held)

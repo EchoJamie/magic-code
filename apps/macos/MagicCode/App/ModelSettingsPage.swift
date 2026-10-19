@@ -13,6 +13,15 @@ func providerDefaultAuth(_ value: String) -> String { value == "messages" ? "api
 func providerProtocolOptions(_ vendor: SettingsValue) -> [SettingsValue] {
     providerProtocols.compactMap { id in vendor["protocols"].array.first { $0["id"].text == id } }
 }
+/// 默认协议直接落一个官方支持项（优先级 Responses → Messages → Chat），不留「自动」。
+/// 已映射型号全都支持某一项时取优先级最高那项；否则取至少支持一个型号的最高优先级项。
+func providerDefaultProtocol(_ vendor: SettingsValue, models: [String]) -> String {
+    let protocols = providerProtocolOptions(vendor)
+    guard !models.isEmpty else { return protocols.first?["id"].text ?? "responses" }
+    let all = protocols.first { protocolOption in models.allSatisfy { protocolOption["models"].array.contains(.string($0)) } }
+    let any = protocols.first { protocolOption in models.contains { protocolOption["models"].array.contains(.string($0)) } }
+    return (all ?? any ?? protocols.first)?["id"].text ?? "responses"
+}
 func modelProtocolName(provider: SettingsValue, model: String, vendors: [SettingsValue]) -> String {
     if !provider["protocol"].text.isEmpty { return providerProtocolLabel(provider["protocol"].text) }
     if provider["vendor"].text.isEmpty { return providerProtocolLabel("responses") }
@@ -29,10 +38,17 @@ func providerFormValue(id: String, snapshot: SettingsSnapshot) -> SettingsValue 
         value["protocol"] = existing["protocol"] == .null ? .string("responses") : existing["protocol"]
         value["auth"] = existing["auth"] == .null ? .string(providerDefaultAuth(value["protocol"]!.text)) : existing["auth"]
     } else {
+        let info = snapshot.vendors.first { $0["vendor"].text == vendor } ?? .null
         value["vendor"] = .string(vendor)
-        value["region"] = .string(existing["region"].text)
-        // 未显式选择时不把生效协议写回配置。
-        if existing["protocol"] != .null { value["protocol"] = existing["protocol"] }
+        // 直接落到官方给的区域 label 对应的 id；缺省取第一个官方区域。
+        let region = existing["region"].text.isEmpty ? info["regions"].array.first?["id"].text ?? "" : existing["region"].text
+        value["region"] = .string(region)
+        // 不再保留「自动」：未显式选择时直接落一个具体官方协议（按已映射型号与优先级）。
+        let mappedModels = snapshot.configuration["models"].object.values
+            .filter { $0["provider"].text == id }.map { $0["model"].text }
+        value["protocol"] = existing["protocol"] != .null
+            ? existing["protocol"]
+            : .string(providerDefaultProtocol(info, models: mappedModels))
     }
     return .object(value)
 }
@@ -458,8 +474,14 @@ struct ProviderEditor: View {
                 SettingsCard(title: "接入") {
                     Picker("供应商", selection: Binding(get: { draft.value["vendor"].text }, set: { vendor in
                         draft.put("vendor", vendor.isEmpty ? .null : .string(vendor))
-                        draft.put("region", .string(""))
-                        draft.put("protocol", vendor.isEmpty ? .string("responses") : .null, preserveNull: true)
+                        let info = snapshot.vendors.first { $0["vendor"].text == vendor } ?? .null
+                        let mappedModels = snapshot.configuration["models"].object.values
+                            .filter { $0["provider"].text == draft.value["provider"].text }.map { $0["model"].text }
+                        // 切换到官方供应商时直接落第一个官方区域与一个具体的官方协议。
+                        draft.put("region", .string(info["regions"].array.first?["id"].text ?? ""))
+                        draft.put("protocol", vendor.isEmpty
+                            ? .string("responses")
+                            : .string(providerDefaultProtocol(info, models: mappedModels)))
                         draft.put("auth", vendor.isEmpty ? .string("bearer") : .null)
                     })) {
                         if id.isEmpty || isCustom { Text("自定义").tag("") }
@@ -485,17 +507,17 @@ struct ProviderEditor: View {
                     } else {
                         let vendor = snapshot.vendors.first { $0["vendor"].text == draft.value["vendor"].text } ?? .null
                         let protocols = providerProtocolOptions(vendor)
-                        if protocols.count == 1 && draft.value["protocol"] == .null {
+                        if protocols.count == 1 {
                             LabeledContent("接入协议", value: providerProtocolLabel(protocols[0]["id"].text))
                         } else {
+                            // 不设「自动」项：直接选官方支持的具体协议，默认按约定优先级。
                             Picker("接入协议", selection: Binding(get: { draft.value["protocol"].text }, set: {
-                                draft.put("protocol", $0.isEmpty ? .null : .string($0), preserveNull: true)
+                                draft.put("protocol", .string($0))
                             })) {
-                                Text("自动 · 按精确型号选择").tag("")
                                 ForEach(protocols, id: \.self) { value in Text(value["label"].text).tag(value["id"].text) }
                             }
                         }
-                        Text("自动时按 Responses → Anthropic Messages → Chat Completions 选择此型号支持的协议。手动选择不支持的型号会在保存前提示。")
+                        Text("协议按 Responses → Anthropic Messages → Chat Completions 排列，默认取供应商支持的最高优先级项；手动选择不支持的型号会在保存前提示。")
                             .font(.caption).foregroundStyle(.secondary)
                         ForEach(snapshot.configuration["models"].object.keys.sorted(), id: \.self) { choice in
                             let mapping = snapshot.configuration["models"][choice]
@@ -503,8 +525,8 @@ struct ProviderEditor: View {
                                 LabeledContent("\(choice.capitalized) · \(mapping["model"].text)", value: modelProtocolName(provider: draft.value, model: mapping["model"].text, vendors: snapshot.vendors))
                             }
                         }
+                        // 不设「供应商默认区域」项：直接显示官方给的区域名称。
                         Picker("官方区域", selection: draft.field("region")) {
-                            Text("供应商默认区域").tag("")
                             ForEach(vendor["regions"].array, id: \.self) { region in Text(region["label"].text).tag(region["id"].text) }
                         }
                     }

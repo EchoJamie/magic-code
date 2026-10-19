@@ -4,11 +4,28 @@ import type { PickerRow } from './view.ts'
 export const protocols: readonly { id: ModelProtocol; label: string }[] = [
   { id: 'responses', label: 'Responses' }, { id: 'messages', label: 'Anthropic Messages' }, { id: 'chat-completions', label: 'Chat Completions' },
 ]
-export const protocolLabel = (value: string): string => protocols.find(one => one.id === value)?.label ?? '自动（按精确型号）'
+export const protocolLabel = (value: string): string => protocols.find(one => one.id === value)?.label ?? '未选择协议'
 export function effectiveProtocol(entry: ModelCatalogRow | undefined, vendor: VendorInfo | undefined, model: string): ModelProtocol | undefined {
   if (entry?.protocol !== undefined) return entry.protocol
   if (entry?.vendor === undefined) return 'responses'
   return vendor?.protocols.find(one => one.models.includes(model))?.id
+}
+
+/**
+ * 这条连接**应当直接落下的官方协议**（U126 协议优先级：Responses → Messages → Chat）。
+ *
+ * - 已映射的型号全都支持某一协议 ⇒ 取优先级最高的那一项；
+ * - 没有共同协议 ⇒ 取优先级最高、且至少支持一个已映射型号的那项（保存前仍会逐型号校验）；
+ * - 还没映射任何型号 ⇒ 取供应商支持项里的第一项。
+ *
+ * 不再返回「自动」：界面与保存都落到一个具体协议。
+ */
+export function defaultProtocolOf(vendor: VendorInfo | undefined, models: readonly string[] = []): ModelProtocol | undefined {
+  if (vendor === undefined) return 'responses'
+  if (models.length === 0) return vendor.protocols[0]?.id
+  return (vendor.protocols.find(one => models.every(model => one.models.includes(model)))
+    ?? vendor.protocols.find(one => models.some(model => one.models.includes(model)))
+    ?? vendor.protocols[0])?.id
 }
 export type Field = { key: string; label: string; secret?: boolean; choices?: readonly { id: string; label: string }[] }
 export type ModelEditor = {
@@ -20,14 +37,29 @@ const tri = [{ id: '', label: '未知／恢复来源' }, { id: 'true', label: '�
 const numberFields: readonly Field[] = [
   { key: 'maxInputTokens', label: '最大输入 token' }, { key: 'maxOutputTokens', label: '最大输出 token' }, { key: 'maxContextTokens', label: '联合上下文窗口 token' },
 ]
-export function providerEditor(provider: string, vendor?: VendorInfo, original?: ModelCatalogRow): ModelEditor {
+export function providerEditor(
+  provider: string,
+  vendor?: VendorInfo,
+  original?: ModelCatalogRow,
+  mappedModels: readonly string[] = [],
+): ModelEditor {
   return {
     kind: 'provider', provider, vendor, original, changed: new Set(),
-    values: { name: original?.name ?? vendor?.label ?? '自定义', protocol: original?.protocol ?? (vendor ? '' : 'responses'), auth: original?.auth ?? (original?.protocol === 'messages' ? 'api-key' : 'bearer'), baseURL: original?.baseURL ?? '', region: original?.region ?? vendor?.regions[0]?.id ?? '', apiKey: '' },
+    // 官方连接也落**具体协议 / 具体区域**：协议取供应商支持项里优先级最高的一项
+    // （Responses → Anthropic Messages → Chat Completions），区域取第一个官方区域。
+    // 不再给「自动」或「供应商默认区域」这种合成选项——屏上直接是官方给的名称。
+    values: {
+      name: original?.name ?? vendor?.label ?? '自定义',
+      protocol: original?.protocol ?? defaultProtocolOf(vendor, mappedModels) ?? '',
+      auth: original?.auth ?? (original?.protocol === 'messages' ? 'api-key' : 'bearer'),
+      baseURL: original?.baseURL ?? '',
+      region: original?.region ?? vendor?.regions[0]?.id ?? '',
+      apiKey: '',
+    },
     fields: [
       { key: 'name', label: '名称' },
-      { key: 'protocol', label: '接入协议', choices: vendor ? (vendor.protocols.length === 1 ? [{ id: original?.protocol ?? '', label: vendor.protocols[0]!.label }] : [{ id: '', label: '自动（按精确型号）' }, ...vendor.protocols]) : protocols },
-      ...(vendor ? (vendor.regions.length > 1 ? [{ key: 'region', label: '官方区域', choices: vendor.regions.map(one => ({ id: one.id, label: one.label })) }] : []) : [
+      { key: 'protocol', label: '接入协议', choices: vendor ? vendor.protocols : protocols },
+      ...(vendor ? (vendor.regions.length > 0 ? [{ key: 'region', label: '官方区域', choices: vendor.regions.map(one => ({ id: one.id, label: one.label })) }] : []) : [
         { key: 'baseURL', label: 'API 基础地址' },
         { key: 'auth', label: '认证', choices: [{ id: 'none', label: '无需认证' }, { id: 'bearer', label: 'Bearer' }, { id: 'api-key', label: 'API Key（x-api-key）' }] },
       ]),
@@ -53,10 +85,9 @@ export function modelEditor(provider: string, model = '', override?: ProviderMod
 }
 export function editorRows(editor: ModelEditor): readonly PickerRow[] {
   const fields = editor.fields.filter(field => !(field.key === 'apiKey' && editor.values.auth === 'none') && (editor.kind !== 'model' || editor.expanded || field.key === 'model'))
-  const automatic = editor.vendor === undefined ? '' : [...new Set((editor.models?.length ? editor.models.map(model => effectiveProtocol(editor.original, editor.vendor, model)).filter((one): one is ModelProtocol => one !== undefined) : editor.vendor.protocols.map(one => one.id)).map(protocolLabel))].join(' / ')
   return [
     ...fields.map(field => ({ label: field.label, value: field.key, current: false, oneLine: true,
-      meta: field.key === 'protocol' && editor.values.protocol === '' ? `${automatic || '无已核协议'}（自动按型号）` : field.secret ? (editor.values.apiKey ? '已输入（隐藏）' : editor.original ? '未修改' : '未填写；可使用环境变量') : field.choices?.find(one => one.id === editor.values[field.key])?.label ?? editor.values[field.key] ?? '',
+      meta: field.secret ? (editor.values.apiKey ? '已输入（隐藏）' : editor.original ? '未修改' : '未填写；可使用环境变量') : field.choices?.find(one => one.id === editor.values[field.key])?.label ?? editor.values[field.key] ?? '',
     })),
     ...(editor.kind === 'model' ? [{ label: editor.expanded ? '收起模型信息' : '展开模型信息（可选）', value: 'expand', current: false, oneLine: true, meta: '用户填写优先；留空恢复供应商信息或未知' }] : []),
     { label: '保存', value: 'save', current: false, oneLine: true, meta: editor.pending ? '正在保存…' : '一次保存全部字段' },
