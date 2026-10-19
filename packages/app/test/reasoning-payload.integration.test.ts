@@ -97,7 +97,7 @@ function assistantRows(database: string): readonly { readonly text: string; read
   }
 }
 
-describe('U64 · 思考那一轮：落得进去 · 读得回来 · 下一轮回传', () => {
+describe('思考那一轮：落得进去 · 读得回来 · 下一轮回传', () => {
   test('受控端点回了思考——那一轮跑通，且下一次请求里 `reasoning_content` 一字不差', async () => {
     const fixture = startFixture({
       model: MODEL,

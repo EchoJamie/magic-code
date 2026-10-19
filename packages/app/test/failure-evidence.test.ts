@@ -186,7 +186,7 @@ function eventsOf(db: RawDatabase, kind: string): readonly RecordedEvent[] {
 
 // ══════════════════════════════════════════════════════════════════════
 
-describe('U84 ① 必输的请求：事后从记录里查到那一次失败与原因', () => {
+describe('① 必输的请求：事后从记录里查到那一次失败与原因', () => {
   test('错 key（HTTP 400）⇒ model.error 里四件齐全：哪一家 · 哪个模型 · 什么错 · 什么时候', async () => {
     const stage = stageOf()
     try {
@@ -257,7 +257,7 @@ describe('U84 ① 必输的请求：事后从记录里查到那一次失败与�
   })
 })
 
-describe('U84 ② 反面：那次失败不进模型上下文', () => {
+describe('② 反面：那次失败不进模型上下文', () => {
   test('失败之后接着对话——装配出来的消息里一个字都没有它', async () => {
     const stage = stageOf()
     try {
@@ -288,7 +288,7 @@ describe('U84 ② 反面：那次失败不进模型上下文', () => {
   })
 })
 
-describe('U84 ③ 参数不成形：「没给」与「给了但不成形」在留痕里分得开', () => {
+describe('③ 参数不成形：「没给」与「给了但不成形」在留痕里分得开', () => {
   test('同一轮两次调用：一个没给参数、一个给了坏 JSON ⇒ 记录里两种形状不同', async () => {
     const stage = stageOf()
     try {
@@ -375,7 +375,7 @@ describe('U84 ③ 参数不成形：「没给」与「给了但不成形」在�
   })
 })
 
-describe('U84 ④ 脱敏：失败留痕里找不到密钥', () => {
+describe('④ 脱敏：失败留痕里找不到密钥', () => {
   test('带 key 的失败样本：错误消息与**参数原文**里都只剩 ***', async () => {
     const stage = stageOf()
     try {

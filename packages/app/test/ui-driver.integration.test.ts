@@ -16,7 +16,7 @@ afterEach(() => { removeDir(artifacts) })
 /** 一段「起手就回一句话」的剧本——多数用例只要链子走通。 */
 const HELLO = [{ kind: 'text', text: '收到，我在。' }] as const
 
-describe('U40 · 工具自证', () => {
+describe('工具自证', () => {
 
   test('resize 三件同序：子进程 stdout 的尺寸与 VT 一致（只调 resize 不补 SIGWINCH 就不刷新）', async () => {
     // 探针子进程：一收到 WINCH 就把自己看到的 stdout 尺寸报出来
@@ -80,7 +80,7 @@ describe('常驻测试宿主的归属', () => {
 // 退回四条（U40-2）—— 每条都是首轮验收**实测踩出来的**真故障，各留一个回归
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('U40-2 · 退回的四处回归', () => {
+describe('-2 · 退回的四处回归', () => {
 
   test('起手失败也清干净：子进程、端点、沙地一个不留，失败留档还在', async () => {
     const runs = tempDir('magic-u40-boot-runs-')
@@ -286,7 +286,7 @@ function captureStepsOf(runDir: string): Record<string, unknown>[] {
  *    ——联调那条「关闭重开」就靠它；
  * ② **本趟自己的**东西照旧归本驱动（子进程退出确认 · PTY 释放）——外借不等于撒手。
  */
-describe('U34 · 沙地外借：收摊不动别人的东西', () => {
+describe('沙地外借：收摊不动别人的东西', () => {
   /** 探针：报一句话就赖着不走（退出由 `close()` 那三跳来）。 */
   const PROBE = [
     process.execPath,

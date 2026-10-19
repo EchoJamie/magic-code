@@ -245,7 +245,7 @@ describe('接管（裁决挂着时占住输入框）', () => {
     expect(app.view().flash).toContain('先答复')
   })
 
-  test('外部操作按 `a`（U38）——**不发命令**，缘由按它自己的说法（效果由服务器决定）', () => {
+  test('外部操作按 `a`——**不发命令**，缘由按它自己的说法（效果由服务器决定）', () => {
     const app = live()
     app.spy.emit(
       event(

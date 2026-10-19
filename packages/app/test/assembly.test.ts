@@ -162,7 +162,7 @@ describe('执行域——单根＝启动目录（缺省）／多根＝配置接�
    * 走 `read` 而不走 `exec`：**模型手上没有 `exec.cwd` 这个参数**（参数键只锚了 `cmd`——
    * 技术方案 · 工具 · 参数键）；`exec.cwd` 那一跳（内部调用者才走）由 `exec.test.ts` 钉。
    */
-  test('模型给的**声明原形绝对路径**通得到真文件（U27——多根激活的那个坑）', async () => {
+  test('模型给的**声明原形绝对路径**通得到真文件', async () => {
     const real = tempDir('magic-u27-real-')
     const choice = join(tempDir('magic-u27-choice-'), 'proj')
     symlinkSync(real, choice)

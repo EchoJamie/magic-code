@@ -28,7 +28,7 @@ function hit(overrides: Partial<MatchHit> = {}): MatchHit {
 
 // ══ grep ══════════════════════════════════════════════════════════════
 
-describe('U13 · grep', () => {
+describe('grep', () => {
   test('走通：mode=grep ＋ 起点 ＋ 上限交给沙箱，命中成「路径:行号: 原文」', async () => {
     const { runtime, sandbox } = makeToolDeps({
       sandbox: makeFauxSandbox({ hits: [hit(), hit({ path: '/work/proj/b.md', line: 9, text: '# a' })] }),
@@ -127,7 +127,7 @@ describe('U13 · grep', () => {
 
 // ══ glob ══════════════════════════════════════════════════════════════
 
-describe('U13 · glob', () => {
+describe('glob', () => {
   test('走通：mode=glob，命中只有路径（无行号）', async () => {
     const { runtime, sandbox } = makeToolDeps({
       sandbox: makeFauxSandbox({
@@ -175,7 +175,7 @@ describe('U13 · glob', () => {
 
 // ══ ls ════════════════════════════════════════════════════════════════
 
-describe('U13 · ls', () => {
+describe('ls', () => {
   test('走通：目录带尾斜杠、文件带字节数', async () => {
     const { runtime, sandbox } = makeToolDeps({
       sandbox: makeFauxSandbox({

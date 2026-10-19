@@ -9,7 +9,7 @@
 import { describe, expect, test } from 'bun:test'
 import { decodeEntities, htmlToMarkdown } from '../src/html.ts'
 
-describe('U72 · HTML → markdown', () => {
+describe('HTML → markdown', () => {
   test('标题成 `#`，段落成段（块之间隔空行）', () => {
     const got = htmlToMarkdown('<h1>定价</h1><p>第一段</p><p>第二段</p>').markdown
     expect(got).toBe('# 定价\n\n第一段\n\n第二段')

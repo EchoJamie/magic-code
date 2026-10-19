@@ -285,7 +285,7 @@ describe('多根——cwd 与 `resolve` 同源', () => {
     expect(streamsOf(await box.exec('pwd', { cwd: outside })).stdout.trim()).toBe(outside)
   })
 
-  test('cwd 给**声明原形**（非规范形）＝通过，且真在该根里跑（U27）', async () => {
+  test('cwd 给**声明原形**（非规范形）＝通过，且真在该根里跑', async () => {
     // 由头（U27 · `U18` 待决 4）：根记**两张表**（`realpath` 与声明原形）。`exec` 的 cwd
     // 与 `resolve` 同源 ⇒ 沙箱这一跳也得认声明原形，不然就是「解析器认、进程不认」那半边。
     // ⚠️ 模型手上**没有** `cwd` 参数（参数键只锚了 `cmd`）——故这一跳走的是内部调用者，
@@ -420,7 +420,7 @@ const bodyOf = (stdout: string): string => {
   return `${stdout.slice(0, at).replace(/\n$/, '')}${end === -1 ? '' : stdout.slice(end + 1)}`
 }
 
-describe('判据 3 · 超限——头尾都留（U93）', () => {
+describe('判据 3 · 超限——头尾都留', () => {
   const CAP = 64
 
   test('超 `maxOutputBytes` → `truncated` ＋ **头尾各留一半**', async () => {
@@ -586,7 +586,7 @@ describe('判据 4 · 失败三例——各归 `reason`', () => {
     expect(elapsed).toBeLessThan(3000) // 真收命了，不是等它自己睡醒
   })
 
-  test('超时那一支**带上已产出的输出**（U69）——收尸排空时值不该丢', async () => {
+  test('超时那一支**带上已产出的输出**——收尸排空时值不该丢', async () => {
     const { box } = freshSandbox()
 
     // 先吐两行、再拖到超时。命令**跑过了**这件事，`stdout` / `stderr` 就是它的物证。
@@ -820,7 +820,7 @@ describe('选项韧性——非法值不悄悄变成另一种语义', () => {
 // （那条活只有 1.2 秒，120 秒的兜底碰不到它）。那一半改由**下一节那条归一的判据**咬
 // （`timeoutBoundOf`：缺省 / `null` / 写错的数 ⇒ `null`）——**当场红，不等**。
 
-describe('U69 · 无上界——不设就是不设，跑到它自己结束', () => {
+describe('无上界——不设就是不设，跑到它自己结束', () => {
   /**
    * 用例**注入的小上界**（毫秒）——旧常量（120 秒）的替身。
    *

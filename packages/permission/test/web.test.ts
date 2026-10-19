@@ -48,7 +48,7 @@ function askedOnce(toolCall: ToolCall, rules: readonly PermissionRule[] = []) {
   return asked as typeof asked & { readonly request: NonNullable<typeof asked.request> }
 }
 
-describe('U72 · 取网页：外发必闸', () => {
+describe('取网页：外发必闸', () => {
   test('判重（outbound），卡上给出**发给哪个域名**', () => {
     const { request } = askedOnce(fetchCall('https://example.com/pricing'))
 
@@ -101,7 +101,7 @@ describe('U72 · 取网页：外发必闸', () => {
   })
 })
 
-describe('U72 · 「总是允许」按域名给', () => {
+describe('「总是允许」按域名给', () => {
   /**
    * 问一次并数一数**新挂出来的卡**——同一个账本、同一道闸（`resolve` 认的是**本闸**发的
    * 那个 id，另造一道闸去答是答不上的：陌生 id 按迟到/伪造忽略）。

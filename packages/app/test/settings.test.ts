@@ -143,7 +143,7 @@ test('残留 dataDir 无论类型都不出现在设置中，保存其它字段�
   }
 })
 
-test('U125 耗时口径沿配置保存重开，恢复默认删除显式键且保留其他设置', async () => {
+test('耗时口径沿配置保存重开，恢复默认删除显式键且保留其他设置', async () => {
   const g = setup()
   await g.apply({ type: 'prefs.set', turnDuration: 'active', reducedMotion: true })
   expect(loadConfig({ magic: g.context.magic }).config.turnDuration).toBe('active')

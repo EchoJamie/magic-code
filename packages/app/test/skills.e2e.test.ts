@@ -37,7 +37,7 @@ function skillText(name: string, description: string, body: string): string {
   return `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`
 }
 
-describe('U33 · 真 CLI 帧 · `--check` 那一行', () => {
+describe('真 CLI 帧 · `--check` 那一行', () => {
   test('报「发现了哪些、有哪些没读进来」——坏的那一条**指明来源与缘由**', async () => {
     const home = tempDir('magic-cli-skills-')
     mkdirSync(join(home, '.magic'), { recursive: true })

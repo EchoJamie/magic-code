@@ -166,7 +166,7 @@ describe('ConversationService · 中断', () => {
     expect(statesOf(stage)).toEqual(['resumed', 'waiting'])
   })
 
-  test('打断：排队中的交代**保留并标为未执行**（U50）——「停下」就是停下，但也不丢', async () => {
+  test('打断：排队中的交代**保留并标为未执行**——「停下」就是停下，但也不丢', async () => {
     const stage = makeStage({ turns: [{ text: ['一', '二', '三', '四'] }], stepDelayMs: 2 })
     const service = createConversationSession(depsOf(stage))
 
@@ -197,7 +197,7 @@ describe('ConversationService · 中断', () => {
     expect(stage.sink.byKind('error')).toHaveLength(0) // 它不是错误，是「还没轮到」
   })
 
-  test('停下之后接着交代：留着的那几条**不跟着跑**（U50）', async () => {
+  test('停下之后接着交代：留着的那几条**不跟着跑**', async () => {
     const stage = makeStage({
       turns: [{ text: ['一', '二', '三', '四'] }, { text: '回新那一件' }],
       stepDelayMs: 2,

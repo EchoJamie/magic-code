@@ -24,7 +24,7 @@ import { BLOB_THRESHOLD_BYTES } from '../src/blobs.ts'
 import { OUTPUT_EXEC_BAD_TIMEOUT } from '../src/messages.ts'
 import { collector, execCall, execCallWith, makeToolDeps } from './helpers.ts'
 
-describe('U06 · 流式与终值', () => {
+describe('流式与终值', () => {
   test('沙箱 onOutput 的增量转 tool.output.delta——逐条带链引用；终值进 tool.result', async () => {
     const seen = collector()
     const deps = makeToolDeps({
@@ -140,7 +140,7 @@ describe('U06 · 流式与终值', () => {
   })
 })
 
-describe('U06 · 没跑成（错误＝返回值）', () => {
+describe('没跑成（错误＝返回值）', () => {
   test('cwd 越界 / 启动失败 → 同样归返回值，reason 原样带出', async () => {
     for (const reason of ['spawn'] as const) {
       const deps = makeToolDeps({
@@ -155,7 +155,7 @@ describe('U06 · 没跑成（错误＝返回值）', () => {
   })
 })
 
-describe('U06 · 大块转存（写权唯一归记录域）', () => {
+describe('大块转存（写权唯一归记录域）', () => {
   test('超阈值 → 经记录域转存 blob，事件只留引用；面向模型的文本仍是全文', async () => {
     const big = 'A'.repeat(BLOB_THRESHOLD_BYTES + 1)
     const deps = makeToolDeps({ exec: { x: { ok: true, exit: 0, stdout: big, stderr: '' } } })

@@ -261,7 +261,7 @@ describe('一条连接的闭环', () => {
     }
   })
 
-  test('改连接显示名 / 设为默认都**不得偷切当前选择**（U41 返修）', async () => {
+  test('改连接显示名 / 设为默认都**不得偷切当前选择**', async () => {
     const land = stage()
     const vendor = fakeVendor()
 
@@ -408,7 +408,7 @@ describe('一条连接的闭环', () => {
     }
   })
 
-  test('**当前选择**的预算三处同源：切换当下 / 读面 / 调用开始（U41 返修）', async () => {
+  test('**当前选择**的预算三处同源：切换当下 / 读面 / 调用开始', async () => {
     const land = stage()
     const vendor = fakeVendor()
 
@@ -625,7 +625,7 @@ async function outboundBodyOf(
   }
 }
 
-describe('U91 · 输出上限取自模型信息', () => {
+describe('输出上限取自模型信息', () => {
   test('接口给了那一数 ⇒ 请求体里的输出上限就是它（不再是 4096）', async () => {
     const { body } = await outboundBodyOf(DEEPSEEK_LISTED, 'deepseek-flash')
 

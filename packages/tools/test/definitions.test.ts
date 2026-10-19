@@ -30,7 +30,7 @@ function pokeTool(log: string[]): ToolDefinition {
   }
 }
 
-describe('U06 · 定义与注册', () => {
+describe('定义与注册', () => {
   test('definitions() 出七件——顺序与名称 / 描述 / 危险归类逐字段照工具集 v1 的冻结表', () => {
     const { runtime } = makeToolDeps()
 
@@ -109,7 +109,7 @@ describe('U06 · 定义与注册', () => {
     expect(parameters?.required).not.toContain('timeoutMs')
   })
 
-  test('默认集＝工具集 v1 七件（阶段 1 的「仅 exec」随 U13 到站作废）；追加仍是追加', () => {
+  test('默认集＝工具集 v1 七件（阶段 1 的「仅 exec」随 到站作废）；追加仍是追加', () => {
     const log: string[] = []
     const { runtime } = makeToolDeps({ tools: [pokeTool(log)] })
 

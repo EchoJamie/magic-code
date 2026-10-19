@@ -134,7 +134,7 @@ describe('切换与重建（缺陷 D1）', () => {
   })
 })
 
-describe('状态行 · 可配与降级（U112）', () => {
+describe('状态行 · 可配与降级', () => {
   const status = (patch: Partial<ShellStatus> = {}): ShellStatus => ({
     state: 'idle',
     amount: null,
@@ -266,7 +266,7 @@ describe('状态行 · 可配与降级（U112）', () => {
    * 可选项清单就是骗人——它的四条判据照旧：**在** · **位置**（① 之后、② 之前）·
    * **不在** · **永不省**。
    */
-  describe('全放行那一格（U73）', () => {
+  describe('全放行那一格', () => {
     const cells: readonly StatusLineCell[] = ['session', 'model', 'context']
 
     test('全放行时就有——挂在 ① 之后、② 之前（那几格次序一字不动）', () => {

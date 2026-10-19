@@ -47,7 +47,7 @@ function record(over: Partial<RunRecord> = {}): RunRecord {
   return Object.assign(base, over)
 }
 
-describe('U49 · 六行状态逐行对事实', () => {
+describe('六行状态逐行对事实', () => {
   test('模型轮已结束但后台命令仍在：保持 running；后台归零才 idle', () => {
     // **U100 起「还有没有后台命令在跑」不再看 `record.background`**（那一格是个计数），
     // 改看**自有账上那一位 `kind`**（`backgroundOf`）——「产生处写位」，
@@ -128,7 +128,7 @@ describe('U49 · 六行状态逐行对事实', () => {
     expect(runRowOf(record({ lastTurn: 'error' })).lastTurn).toBe('error')
   })
 
-  test('运行还在的时候，上一轮被打断**不叫「已停止」**（U50 改判）', () => {
+  test('运行还在的时候，上一轮被打断**不叫「已停止」**', () => {
     // 用户按了一下「只停这一轮」：那一轮断了，而这条运行还在、还能接着用
     const interrupted = record({ lastTurn: 'aborted' })
     expect(runStateOf(interrupted)).toBe('idle')
@@ -176,7 +176,7 @@ describe('U49 · 六行状态逐行对事实', () => {
   })
 })
 
-describe('U49 · `since` 只在行真的换了那一刻动', () => {
+describe('`since` 只在行真的换了那一刻动', () => {
   test('同一行里连着更新几次，起点不动；换了行才换起点', () => {
     const one = record()
     one.busy = true
@@ -193,7 +193,7 @@ describe('U49 · `since` 只在行真的换了那一刻动', () => {
   })
 })
 
-describe('U49 · 谁占着那条会话', () => {
+describe('谁占着那条会话', () => {
   test('四个「占着」——running / waiting / stopping / unknown', () => {
     expect(blocksNewRun('running')).toBe(true)
     expect(blocksNewRun('waiting')).toBe(true)
@@ -214,7 +214,7 @@ describe('U49 · 谁占着那条会话', () => {
   })
 })
 
-describe('U49 · 重启核对', () => {
+describe('重启核对', () => {
   test('Engine 重启后旧 Agent 已中断，等待明确继续', () => {
     const back = reconcile(
       {
@@ -271,7 +271,7 @@ describe('U49 · 重启核对', () => {
   })
 })
 
-describe('U49 · 进展、动作与输出', () => {
+describe('进展、动作与输出', () => {
   const event = (kind: KernelEvent['kind'], data: unknown, id: number): KernelEvent =>
     ({ id, session: 's-1', turn: null, at: id * 100, kind, data }) as KernelEvent
 
@@ -307,7 +307,7 @@ describe('U49 · 进展、动作与输出', () => {
     expect(endKindOf('settled', false)).toBe('normal')
   })
 
-  test('「手动中断」不靠 `lastTurn` 那一格才有（U50）', () => {
+  test('「手动中断」不靠 `lastTurn` 那一格才有', () => {
     // 收摊时那一轮还开着、而 `turn.end` 没落——缘由仍要说得出是「手动中断」，
     // 不能退成 `ended.why` 那种「连接断了」的什么也没说的话
     // （核销那一跳会把 `turnActive` 抹掉——判 kind 是**在它还在的时候**做的，见 `retire`）

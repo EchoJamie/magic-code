@@ -399,7 +399,7 @@ describe('显式重连（`/mcp reconnect <服务器>`）', () => {
     }
   })
 
-  test('重连到一台**仍不可用**的：回执说「没成」，不说「已重连」（U39 补验）', async () => {
+  test('重连到一台**仍不可用**的：回执说「没成」，不说「已重连」', async () => {
     const http = await serveHttp('auth') // 要认证的对端：怎么重连都连不上
     const stage = makeStage({ config: { mcp: { servers: { locked: { url: http.url } } } } })
 

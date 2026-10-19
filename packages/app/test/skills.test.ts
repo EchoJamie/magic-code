@@ -148,7 +148,7 @@ function userRows(assembly: { paths: { database: string } }) {
   return rows
 }
 
-describe('U33 · 开局只发现元数据', () => {
+describe('开局只发现元数据', () => {
   test('系统提示词里有名称与描述，**正文一个字都没有**；一条模型请求都没因此发生', async () => {
     const stage = makeStage()
     try {
@@ -216,7 +216,7 @@ async function askSkills(handle: ShellHandle): Promise<Extract<KernelEvent, { ki
   return event
 }
 
-describe('U33 · 技能目录的读侧（终端入口那一半的取材）', () => {
+describe('技能目录的读侧（终端入口那一半的取材）', () => {
   test('`skills.list` → 名称 · 简述 · 身份 · 来源标签；**正文一个字都不带**', async () => {
     const stage = makeStage()
 
@@ -377,7 +377,7 @@ describe('U33 · 技能目录的读侧（终端入口那一半的取材）', () 
   })
 })
 
-describe('U33 · 显式选定：随交代一并送达', () => {
+describe('显式选定：随交代一并送达', () => {
   test('绑定的技能主文进**这条**用户消息；落账带来源与正文；回执在主文进了上下文之后', async () => {
     const stage = makeStage()
     try {
@@ -437,7 +437,7 @@ describe('U33 · 显式选定：随交代一并送达', () => {
   })
 })
 
-describe('U33 · 模型自主选用：走真工具通路', () => {
+describe('模型自主选用：走真工具通路', () => {
   test('模型调 `skill` 取正文与引用——真工具 · 真回填，材料进上下文', async () => {
     const stage = makeStage()
     try {
@@ -551,7 +551,7 @@ describe('U33 · 模型自主选用：走真工具通路', () => {
   })
 })
 
-describe('U33 · 回执只报一次（返工）', () => {
+describe('回执只报一次（返工）', () => {
   test('显式技能走**多个工具轮**：仍只有一条 `skill.used` 与一条同 `ref` 的收下', async () => {
     // 返工一条：首轮把 `once(owed)` 造在**每一轮的循环里**，于是每开一轮就多一个
     // 「尚未兑现」的新包装——一条普通的多轮工作会反复报「本次使用技能」。
@@ -658,7 +658,7 @@ describe('U33 · 回执只报一次（返工）', () => {
   })
 })
 
-describe('U33 · 失效与排队', () => {
+describe('失效与排队', () => {
   test('来源失效——这一条**不跑**（不换同名项、不忽略技能），同一队里别的照跑', async () => {
     const stage = makeStage()
     try {
@@ -776,8 +776,8 @@ describe('U33 · 失效与排队', () => {
   })
 })
 
-describe('U33 · 停下时清掉的排队输入', () => {
-  test('**逐条配对 `ok:false`**（没进会话），且那一条不留条目——U50 起那句改说「未执行」', async () => {
+describe('停下时清掉的排队输入', () => {
+  test('**逐条配对 `ok:false`**（没进会话），且那一条不留条目——起那句改说「未执行」', async () => {
     // 由头（2026-09-21 规划裁）：`input.settled` 的契约是「给了 `ref` 必有终态」——
     // 停下的那一刻，排着的那些的去处是**明确失败**，不是「也许以后会跑」。
     //
@@ -821,7 +821,7 @@ describe('U33 · 停下时清掉的排队输入', () => {
   })
 })
 
-describe('U33 · 历史不被材料刷新重写', () => {
+describe('历史不被材料刷新重写', () => {
   test('改过源文件再重开会话：**当时那份正文仍可追溯**，新调用取到的是新的一版', async () => {
     const stage = makeStage()
     try {
@@ -907,7 +907,7 @@ describe('U33 · 历史不被材料刷新重写', () => {
   })
 })
 
-describe('U33 · 边界不越', () => {
+describe('边界不越', () => {
   test('技能里的 `allowed-tools` **不改审批**：脚本照旧走闸门', async () => {
     const stage = makeStage()
     try {
@@ -1019,7 +1019,7 @@ describe('U33 · 边界不越', () => {
   })
 })
 
-describe('U33 · `--script` 的结构化步骤', () => {
+describe('`--script` 的结构化步骤', () => {
   test('`{ "input": { text, skills, ref } }` 经**真脚本入口**递进去（与裸字符串同一条路）', async () => {
     const stage = makeStage()
     try {
@@ -1051,7 +1051,7 @@ describe('U33 · `--script` 的结构化步骤', () => {
   })
 })
 
-describe('U33 · 纯文本不退化', () => {
+describe('纯文本不退化', () => {
   test('不带技能的交代：条目**不带载荷**、模型请求里没有技能块、没有多余事件', async () => {
     const stage = makeStage()
     try {
@@ -1164,7 +1164,7 @@ function realGateway(options: {
   return { make, state }
 }
 
-describe('U33 · 回执只在**真回来**之后（真实网关）', () => {
+describe('回执只在**真回来**之后（真实网关）', () => {
   test('健康路径：回执落在 fetch **之后**，且真发出去的那份请求体里有材料', async () => {
     const stage = makeStage()
     try {

@@ -72,7 +72,7 @@ void _faceProbe
 
 // ══ read ══════════════════════════════════════════════════════════════
 
-describe('U13 · read —— 读文件（超长截断）', () => {
+describe('read —— 读文件（超长截断）', () => {
   test('常规：内容逐字节相等，且没截（字段缺席）', async () => {
     const { box, root } = freshSandbox()
     seed(root, 'note.txt', '第一行\n第二行\n')
@@ -195,7 +195,7 @@ describe('U13 · read —— 读文件（超长截断）', () => {
 
 // ══ write ═════════════════════════════════════════════════════════════
 
-describe('U13 · write —— 新建 / 整写文件', () => {
+describe('write —— 新建 / 整写文件', () => {
   test('新建：文件落盘，内容逐字节相等', async () => {
     const { box, root } = freshSandbox()
 
@@ -248,7 +248,7 @@ describe('U13 · write —— 新建 / 整写文件', () => {
 
 // ══ list ══════════════════════════════════════════════════════════════
 
-describe('U13 · list —— 列目录', () => {
+describe('list —— 列目录', () => {
   test('名 / 类型 / 尺寸三件齐（目录不给尺寸）', async () => {
     const { box, root } = freshSandbox()
     seed(root, 'a.txt', 'abcd')
@@ -322,7 +322,7 @@ describe('U13 · list —— 列目录', () => {
  *
  * 钉的是三件一起：**名分一次** ＋ **路径在**（模型据此改法）＋ **原委（含可照做的指引）在**。
  */
-describe('U83 · 失败报文 —— 名分一次 · 路径在 · 原委在', () => {
+describe('失败报文 —— 名分一次 · 路径在 · 原委在', () => {
   /** 报文里的名分出现次数（`读取失败` / `写入失败` / `列目录失败` 各数各的）。 */
   const nameCount = (message: string, name: string): number =>
     message.split(`${name}失败`).length - 1

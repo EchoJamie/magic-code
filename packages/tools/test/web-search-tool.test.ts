@@ -18,7 +18,7 @@ import { defineToolsetV1 } from '../src/toolset.ts'
 import { WEB_SEARCH_SPEC } from '../src/web-search-tool.ts'
 import { makeToolDeps } from './helpers.ts'
 
-describe('U88 · web_search 的规格（定义留下）', () => {
+describe('web_search 的规格（定义留下）', () => {
   test('名字与既有的 grep 分得开——一个搜工作区里的文件内容，一个搜网上', () => {
     expect(WEB_SEARCH_SPEC.name).toBe('web_search')
     // 与「取网页」同一族（一个找、一个取）；而 `grep` 是沙箱那一条底上的另一件事
@@ -57,7 +57,7 @@ describe('U88 · web_search 的规格（定义留下）', () => {
   })
 })
 
-describe('U88 · 反面：不在给模型的工具集里', () => {
+describe('反面：不在给模型的工具集里', () => {
   test('默认集（工具集 v1 七件）里没有它——一件不多', () => {
     const names = defineToolsetV1().map((definition) => definition.spec.name)
 

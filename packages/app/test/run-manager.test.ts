@@ -49,7 +49,7 @@ function ground(name: string): Ground {
   }
 }
 
-describe('U48-S1 · 规范化（同一处必须算成同一处）', () => {
+describe('规范化（同一处必须算成同一处）', () => {
   test('软链接 / 尾随斜杠 / .. 三种写法归一，且还不存在的目录也算得出来', () => {
     const g = ground('norm')
     try {

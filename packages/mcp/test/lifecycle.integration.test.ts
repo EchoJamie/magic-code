@@ -95,7 +95,7 @@ async function waitGone(pid: number): Promise<void> {
   }
 }
 
-describe('连续两次重连（U39 补验）', () => {
+describe('连续两次重连', () => {
   test('HTTP：只走一趟——**建了几条会话就删几条**，读数可用', async () => {
     const url = await serveHttp(400)
     const connection = createHttpConnection({ server: 'x', config: { url }, connectTimeoutMs: 6_000 })
@@ -142,7 +142,7 @@ describe('连续两次重连（U39 补验）', () => {
   })
 })
 
-describe('重连在途时退出（U39 补验）', () => {
+describe('重连在途时退出', () => {
   test('收尾之后**不许再写回「可用」**，会话一条不剩', async () => {
     const url = await serveHttp(600)
     const connection = createHttpConnection({ server: 'x', config: { url }, connectTimeoutMs: 6_000 })

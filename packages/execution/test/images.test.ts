@@ -50,7 +50,7 @@ const BMP = new Uint8Array([
   0, 0, 0, 0, 0, 0, 0, 0, // 其余字段（本模块不看）
 ])
 
-describe('U37 · 认图：按字节，不按名字', () => {
+describe('认图：按字节，不按名字', () => {
   test('五种光栅图各认各的 MIME', () => {
     expect(sniffImage(PNG)?.mime).toBe('image/png')
     expect(sniffImage(JPEG)?.mime).toBe('image/jpeg')
@@ -86,7 +86,7 @@ describe('U37 · 认图：按字节，不按名字', () => {
   })
 })
 
-describe('U37 · 结构底线：半截的不要（只查规范强制的那几件）', () => {
+describe('结构底线：半截的不要（只查规范强制的那几件）', () => {
   test('真的那几张都过（不误杀）', () => {
     expect(checkImageIntact(PNG, { mime: 'image/png', format: 'PNG' }).ok).toBe(true)
     expect(checkImageIntact(JPEG, { mime: 'image/jpeg', format: 'JPEG' }).ok).toBe(true)

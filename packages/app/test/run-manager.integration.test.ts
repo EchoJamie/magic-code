@@ -72,7 +72,7 @@ async function standUp(g: Ground, launch: ExecutorLauncher = UNUSED_LAUNCHER): P
   return started.manager
 }
 
-test('U114 空态界面设置由管理者实际保存；不建执行者或会话，坏配置不被提前回显覆盖', async () => {
+test('空态界面设置由管理者实际保存；不建执行者或会话，坏配置不被提前回显覆盖', async () => {
   const g = ground('u114-prefs')
   const config = join(g.base, 'config.json')
   writeFileSync(config, JSON.stringify({ motion: { reduced: false }, workspaces: [g.root] }))
@@ -115,7 +115,7 @@ test('U114 空态界面设置由管理者实际保存；不建执行者或会话
   }
 })
 
-describe('U48-S1 · 一个数据目录只有一个管理者', () => {
+describe('一个数据目录只有一个管理者', () => {
   test('七个真进程同时抢——正好一个当上，其余六个认出现有的那一个', async () => {
     const g = ground('race')
     const paths = runPathsOf({ home: g.home, base: g.base }, g.tmp)
@@ -266,7 +266,7 @@ describe('U48-S1 · 一个数据目录只有一个管理者', () => {
   })
 })
 
-describe('U48-S1 · 客户端连得上、说得清自己连的是谁', () => {
+describe('客户端连得上、说得清自己连的是谁', () => {
   test('连上就报得出数据目录——一次往返里说定身份', async () => {
     const g = ground('hello')
     try {
@@ -300,7 +300,7 @@ describe('U48-S1 · 客户端连得上、说得清自己连的是谁', () => {
   })
 })
 
-describe('U48-S1 · 收摊与尸首', () => {
+describe('收摊与尸首', () => {
   test('收摊之后路径干净，下一个随即能立起来', async () => {
     const g = ground('clean')
     try {
@@ -375,7 +375,7 @@ describe('U48-S1 · 收摊与尸首', () => {
   })
 })
 
-describe('U48-S1 · 本机 socket 限该用户访问', () => {
+describe('本机 socket 限该用户访问', () => {
   test('运行目录 0700 · socket 0600', async () => {
     const g = ground('mode')
     try {

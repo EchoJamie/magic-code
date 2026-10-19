@@ -123,7 +123,7 @@ function finish(assembly: Assembly, shell: ReturnType<typeof bareShell>): void {
   assembly.close()
 }
 
-describe('U22 · 「总是允许」的落点＝工作区（落盘 ＋ 跨会话存活）', () => {
+describe('「总是允许」的落点＝工作区（落盘 ＋ 跨会话存活）', () => {
 
   test('**必闸禁区凌驾其上**——最宽的授权也放不出必闸类（照样问，且说得出为什么）', async () => {
     const stage = makeStage()

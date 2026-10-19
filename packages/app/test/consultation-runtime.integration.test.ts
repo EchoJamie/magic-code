@@ -7,7 +7,7 @@ import { collaborationRuntime, latch, requestText, type ModelReply } from './run
 const consult: ModelReply = { tool: 'consult_arcane', args: { operationId: 'consult-1', question: '查 workspace 中的关键证据，判断启动失败原因；只给建议。', body: [{ kind: 'text', text: '相关约束：保持只读。' }] } }
 const usage = { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 }
 
-test('U115：同批立即受理与独立写入、定向种子、自行取证、幂等、依赖等待、事件回报与用量', async () => {
+test('同批立即受理与独立写入、定向种子、自行取证、幂等、依赖等待、事件回报与用量', async () => {
   const advisor = latch()
   const final = latch()
   const f = await collaborationRuntime('u115-complete', async call => {
@@ -50,7 +50,7 @@ test('U115：同批立即受理与独立写入、定向种子、自行取证、�
 }, 20000)
 
 for (const name of ['write', 'edit', 'exec', 'plan_update', 'agent_spawn', 'consult_arcane', 'mcp__fake__read']) {
-  test(`U115：顾问伪造 ${name} 实际分发拒绝，合法 read 继续`, async () => {
+  test(`顾问伪造 ${name} 实际分发拒绝，合法 read 继续`, async () => {
     const f = await collaborationRuntime(`u115-deny-${name}`, call => {
       if (call.model === 'entry-model') return call.index === 0 ? consult : { text: '原执行者保留责任。' }
       if (call.index === 0) return { tool: name, args: { path: 'probe.txt', content: '不应写入', old: '原值', new: '不应修改', cmd: 'touch probe-exec.txt', plan: null,
@@ -75,7 +75,7 @@ for (const name of ['write', 'edit', 'exec', 'plan_update', 'agent_spawn', 'cons
 }
 
 for (const reply of [{ text: '' }, { text: '半截建议', finish: 'length' }]) {
-  test(`U115：${reply.finish ?? '空正文'} 作为失败主动回报，半截内容不成为建议`, async () => {
+  test(`${reply.finish ?? '空正文'} 作为失败主动回报，半截内容不成为建议`, async () => {
     const f = await collaborationRuntime(`u115-failure-${reply.finish ?? 'empty'}`, call => call.model === 'entry-model'
       ? call.index === 0 ? consult : { text: '原执行者等待真实意见。' } : reply, { allowAll: true })
     try {
@@ -89,7 +89,7 @@ for (const reply of [{ text: '' }, { text: '半截建议', finish: 'length' }]) 
   }, 15000)
 }
 
-test('U115：plan/history 绑定发起 Session，主计划不自动入种子，跨独立工作记录不可读', async () => {
+test('plan/history 绑定发起 Session，主计划不自动入种子，跨独立工作记录不可读', async () => {
   let evidenceEntry = 0
   let foreignEntry = 0
   const f = await collaborationRuntime('u115-record-source', call => {
@@ -114,7 +114,7 @@ test('U115：plan/history 绑定发起 Session，主计划不自动入种子，�
 }, 15000)
 
 for (const whole of [false, true]) {
-  test(`U115：${whole ? '整体停止' : '局部撤回'}取消顾问，迟到响应不续跑原工作`, async () => {
+  test(`${whole ? '整体停止' : '局部撤回'}取消顾问，迟到响应不续跑原工作`, async () => {
     const pending = latch()
     let replyReleased = false
     const f = await collaborationRuntime(`u115-stop-${whole}`, async call => {
@@ -141,7 +141,7 @@ for (const whole of [false, true]) {
   }, 15000)
 }
 
-test('U115：窗口断线仍完成咨询，原工作被结果唤起；重复终态不重复消费', async () => {
+test('窗口断线仍完成咨询，原工作被结果唤起；重复终态不重复消费', async () => {
   const pending = latch()
   const f = await collaborationRuntime('u115-disconnect', async call => {
     if (call.model === 'entry-model') return call.index === 0 ? consult : { text: '原工作看到顾问结果继续核对。' }
@@ -164,7 +164,7 @@ test('U115：窗口断线仍完成咨询，原工作被结果唤起；重复终�
   } finally { pending.release(); await f.close() }
 }, 15000)
 
-test('U115：咨询在途映射稳定，下次新咨询读取新映射，主 reasoning 不继承', async () => {
+test('咨询在途映射稳定，下次新咨询读取新映射，主 reasoning 不继承', async () => {
   const pending = latch()
   const consult2: ModelReply = { tool: 'consult_arcane', args: { operationId: 'consult-2', question: '第二个新问题' } }
   const f = await collaborationRuntime('u115-model-isolation', async call => {
@@ -210,7 +210,7 @@ test('U115：咨询在途映射稳定，下次新咨询读取新映射，主 rea
   } finally { pending.release(); await f.close() }
 }, 20000)
 
-test('U115：缺 Arcane 配置或思考不支持在模型调用前拒绝，不换档', async () => {
+test('缺 Arcane 配置或思考不支持在模型调用前拒绝，不换档', async () => {
   const f = await collaborationRuntime('u115-config-reject', call => call.index === 0 ? consult : call.index === 1
     ? { tool: 'consult_arcane', args: { operationId: 'unsupported', question: '不支持的思考设置', reasoning: { mode: 'level', level: 'impossible' } } }
     : { text: '报告配置问题，不绕过咨询条件。' }, { allowAll: true })
@@ -231,7 +231,7 @@ test('U115：缺 Arcane 配置或思考不支持在模型调用前拒绝，不�
   } finally { await f.close() }
 }, 15000)
 
-test('U115：运行中纠正到安全边界，历史保留旧证据，原工作采纳前实际重读当前文件', async () => {
+test('运行中纠正到安全边界，历史保留旧证据，原工作采纳前实际重读当前文件', async () => {
   const readDone = latch()
   const resume = latch()
   let mainRechecked = false
@@ -266,7 +266,7 @@ test('U115：运行中纠正到安全边界，历史保留旧证据，原工作�
   } finally { resume.release(); await f.close() }
 }, 20000)
 
-test('U115：顾问模型流失败主动报未完成，不重发咨询，原工作仍能接住', async () => {
+test('顾问模型流失败主动报未完成，不重发咨询，原工作仍能接住', async () => {
   const pending = latch()
   const f = await collaborationRuntime('u115-crash', async call => {
     if (call.model === 'entry-model') return call.index === 0 ? consult : { text: '收到未完成原因，保留原工作责任。' }
@@ -284,7 +284,7 @@ test('U115：顾问模型流失败主动报未完成，不重发咨询，原工�
   } finally { pending.release(); await f.close() }
 }, 15000)
 
-test('U115：主模型与Arcane同实际型号仍创建独立上下文，咨询不继承主思考', async () => {
+test('主模型与Arcane同实际型号仍创建独立上下文，咨询不继承主思考', async () => {
   let mainCalls = 0
   let advisorCalls = 0
   const f = await collaborationRuntime('u115-same-model', call => {
@@ -315,7 +315,7 @@ test('U115：主模型与Arcane同实际型号仍创建独立上下文，咨询�
   } finally { await f.close() }
 }, 15000)
 
-test('U115：原始条目图片进入咨询能力检查，明确不支持时零顾问请求并主动失败', async () => {
+test('原始条目图片进入咨询能力检查，明确不支持时零顾问请求并主动失败', async () => {
   let imageEntry = 0
   const f = await collaborationRuntime('u115-image-reject', call => {
     if (call.model !== 'entry-model') throw new Error('不支持图片不应发出降为文字的请求')
@@ -341,7 +341,7 @@ test('U115：原始条目图片进入咨询能力检查，明确不支持时零�
   } finally { await f.close() }
 }, 15000)
 
-for (const fault of [{ httpStatus: 429 }, { httpStatus: 503 }, { malformed: true as const }]) test(`U115：上游失败 ${fault.httpStatus ?? '异常SSE'} 不成为成功建议，不换档`, async () => {
+for (const fault of [{ httpStatus: 429 }, { httpStatus: 503 }, { malformed: true as const }]) test(`上游失败 ${fault.httpStatus ?? '异常SSE'} 不成为成功建议，不换档`, async () => {
   const f = await collaborationRuntime(`u115-upstream-${fault.httpStatus ?? 'sse'}`, call => call.model === 'entry-model'
     ? call.index === 0 ? consult : { text: '咨询未完成，继续核对原因。' }
     : { text: '', ...fault }, { allowAll: true })

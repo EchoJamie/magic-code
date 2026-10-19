@@ -1,19 +1,4 @@
-/**
- * U49 · **运行列表、状态与接回**——管理者那一侧的全部判据。
- *
- * 真管理者（真 socket、真库、真路由）＋ **一个说线上话的假执行者**（`Fake`）。这么搭是因为
- * 这一单要证的东西全在**管理者手上那几格事实**：进程起没起来、正在做什么、谁在等你答复、
- * 收到停止没有。拿真子进程去撞这六行，撞出来的多是「模型跑得快不快」——
- * 而**真进程那一层由 `run-terminal.test.ts` 与 `frames-u49-tui.ts` 守着**。
- *
- * 六组：
- * 1. **那六行逐行走一遍**（同一代上把状态推着走一遍，每一步都读一遍真读数）；
- * 2. **接回＝快照 ＋ 水位**（先订阅并缓冲、按 id 去重）；
- * 3. **裁决只有一份**（晚到的那条答复有回声、且不再往下送）；
- * 4. **`/clear` 是这个窗口的**（另一个窗口那一页不跟着走）；
- * 5. **登记落盘 ＋ 重启核对**（待确认 → 已停止；期间不许为同一条会话另起一代）；
- * 6. **入口空闲不遮蔽成员**（自己这条空闲，列表里还看得见别条在跑）。
- */
+/** 验证执行者登记、快照、代次、停止与通知路由。 */
 
 import { describe, expect, test } from 'bun:test'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -228,7 +213,7 @@ async function open(g: Ground, manager: Manager): Promise<ManagerClient> {
 const rowOf = (client: ManagerClient, session: string): RunRow | undefined =>
   client.runs().find((row) => row.session === session)
 
-describe('U49 · 那六行在真管理者上逐行走一遍', () => {
+describe('那六行在真管理者上逐行走一遍', () => {
   test('同一代上把状态推着走——每一步读到的都是事实说的那一行', async () => {
     const g = ground('states')
     seed(g, ['s-1'])
@@ -400,7 +385,7 @@ describe('U49 · 那六行在真管理者上逐行走一遍', () => {
   }, 30_000)
 })
 
-describe('U49 · 接回＝快照 ＋ 水位', () => {
+describe('接回＝快照 ＋ 水位', () => {
   test('先订阅并缓冲、快照到了才放行——水位之后的一条不多一条不少，且按 id 去重', async () => {
     const g = ground('snapshot')
     seed(g, ['s-live'])
@@ -478,7 +463,7 @@ describe('U49 · 接回＝快照 ＋ 水位', () => {
   }, 30_000)
 })
 
-describe('U49 · 裁决只有一份', () => {
+describe('裁决只有一份', () => {
   test('两个窗口看同一代：第一个答复下行，第二个拿到「已处理」且不再往下送', async () => {
     const g = ground('decision')
     seed(g, ['s-dec'])
@@ -533,7 +518,7 @@ describe('U49 · 裁决只有一份', () => {
   }, 30_000)
 })
 
-describe('U49 · `/clear` 是这个窗口的', () => {
+describe('`/clear` 是这个窗口的', () => {
   test('一个窗口开一条新的——另一个窗口那一页不跟着走', async () => {
     const g = ground('clear')
     seed(g, ['s-share'])
@@ -579,7 +564,7 @@ describe('U49 · `/clear` 是这个窗口的', () => {
   }, 30_000)
 })
 
-describe('U49 · 登记落盘与重启核对', () => {
+describe('登记落盘与重启核对', () => {
   test('Engine 重启后旧 Agent 标为中断；接回只读，明确输入才创建新代', async () => {
     const g = ground('restart')
     seed(g, ['s-old'])

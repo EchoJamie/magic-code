@@ -117,7 +117,7 @@ function displayWidth(text: string): number {
 
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('U72 · web_fetch ① 成的那一趟', () => {
+describe('web_fetch ① 成的那一趟', () => {
   test('回执齐四件（状态码 / 字节数 / 耗时 / 模型）＋ 那句「不是原文」', async () => {
     const web = fakeWeb((url) => okPage(url))
     const distiller = fakeDistiller()
@@ -190,7 +190,7 @@ describe('U72 · web_fetch ① 成的那一趟', () => {
   })
 })
 
-describe('U72 · web_fetch ② 缓存', () => {
+describe('web_fetch ② 缓存', () => {
   test('同一地址第二次：不再取网，且**回执说了一声「缓存命中」**、不报取回耗时', async () => {
     const web = fakeWeb((url) => okPage(url))
     const { deps } = toolWith({ web, distiller: fakeDistiller() })
@@ -244,7 +244,7 @@ describe('U72 · web_fetch ② 缓存', () => {
   })
 })
 
-describe('U72 · web_fetch ③ 拒（发请求之前那一关）', () => {
+describe('web_fetch ③ 拒（发请求之前那一关）', () => {
   test('localhost 与无点主机名：拒，且取回面**一次都没被叫**', async () => {
     const web = fakeWeb((url) => okPage(url))
     const { deps } = toolWith({ web, distiller: fakeDistiller() })
@@ -305,7 +305,7 @@ describe('U72 · web_fetch ③ 拒（发请求之前那一关）', () => {
   })
 })
 
-describe('U72 · web_fetch ④ 没配提炼模型：这一轮停住', () => {
+describe('web_fetch ④ 没配提炼模型：这一轮停住', () => {
   test('`ok: false` ＋ **`halt`**（循环据此不开下一轮）', async () => {
     const web = fakeWeb((url) => okPage(url))
     const { deps } = toolWith({ web }) // 不给 distiller ＝ 配置里那一格空着

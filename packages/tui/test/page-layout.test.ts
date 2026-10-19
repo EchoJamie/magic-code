@@ -173,7 +173,7 @@ describe('之一 · 内核挡回（`note` 在）⇒ 不翻页、不种字标', (
 
 // ══ 之二 · 两条分隔线 ═════════════════════════════════════════════════
 
-describe('之二 · 两条分隔线划开哪两块（U59 挪正下沿那条）', () => {
+describe('之二 · 两条分隔线划开哪两块（挪正下沿那条）', () => {
   test('一屏**恰好两条**满宽线，且**同宽同色**（走既有那条的样式）', async () => {
     const frame = await createStage().screen(WIDE)
     const rows = rulesOf(frame)
@@ -188,7 +188,7 @@ describe('之二 · 两条分隔线划开哪两块（U59 挪正下沿那条）',
     }
   })
 
-  test('**输入行夹在当中 · 状态行在下线之下**——三块一眼分得开（U59 的位置）', async () => {
+  test('**输入行夹在当中 · 状态行在下线之下**——三块一眼分得开（的位置）', async () => {
     const frame = await createStage().screen(WIDE)
     const [top, bottom] = rulesOf(frame) as [number, number]
     const composer = frame.screen.lines.findLastIndex((line) => line.includes('›'))

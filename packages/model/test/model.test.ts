@@ -312,7 +312,7 @@ describe('归一 · 思考与工具调用', () => {
     ])
   })
 
-  test('「没给参数」与「给了但不成形」分得开（U84 · 缺陷 D42）', async () => {
+  test('「没给参数」与「给了但不成形」分得开（缺陷 D42）', async () => {
     const { result } = await drain(
       normalize([
         { type: 'start' },
@@ -364,7 +364,7 @@ describe('归一 · 思考与工具调用', () => {
     expect(raw.length).toBe(2000 + '…（原文共 2501 字，已截断）'.length)
   })
 
-  test('原文先过脱敏——记录里不许带 key（U84）', async () => {
+  test('原文先过脱敏——记录里不许带 key', async () => {
     const secret = 'sk-live-abcdefghijklmnop'
     const { result } = await drain(
       toKernelEvents(
@@ -934,7 +934,7 @@ function capture(reply: () => Response): { fetch: typeof globalThis.fetch; seen:
   return { fetch: fake, seen }
 }
 
-describe('调用设置与容量（U41 返修）', () => {
+describe('调用设置与容量', () => {
   /** 一次 SSE 回环，把出站请求体与用量事件交回来。 */
   async function callOnce(
     config: Parameters<typeof createModelGateway>[0]['config'],
@@ -1113,7 +1113,7 @@ describe('调用设置与容量（U41 返修）', () => {
   })
 })
 
-describe('思考的工具往返（U41）', () => {
+describe('思考的工具往返', () => {
   /**
    * **DeepSeek 的思考模式要求回传**：带 tools 时，历史轮的 `reasoning_content`
    * 不回传就 400。判据落在**出站请求体**上——不是「我们记住了」，是「真发出去了」。
@@ -1753,7 +1753,7 @@ describe('端口形态', () => {
     expect(injected.turns).toEqual([])
   })
 
-  test('Faux 可直接实现 ModelGateway（U12 的界面）', async () => {
+  test('Faux 可直接实现 ModelGateway（的界面）', async () => {
     const stamper = testStamper()
 
     async function* scripted(): AsyncIterable<KernelEvent> {
@@ -1843,7 +1843,7 @@ describe('消息装配', () => {
  * 由头（工单的完成出口）：「文字配图和纯图片输入均能**实际送达**模型」——
  * 只验内核侧形态的话，取件层把图丢了也照样绿。
  */
-describe('U37 · 图片输入：出站请求体里的图像部件', () => {
+describe('图片输入：出站请求体里的图像部件', () => {
   /** 一段**认得出是图片**的字节（PNG 魔数 ＋ 后面几个字节——本层不判完整性，那在执行域）。 */
   const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
 

@@ -155,7 +155,7 @@ function plantSkill(root: string, name: string, note: string): void {
   )
 }
 
-describe('U42 · MAGIC_HOME 下的真 CLI', () => {
+describe('MAGIC_HOME 下的真 CLI', () => {
   test('设了基址——自检报的全是新树那几处（配置 · 数据 · 授权 · 用户技能）', async () => {
     const room = makeRoom()
     try {

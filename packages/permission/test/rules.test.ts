@@ -213,7 +213,7 @@ describe('默认通——判轻的**不必配规则**也不问', () => {
     expect(autoVerdicts(miss.h)).toHaveLength(1)
   })
 
-  test('判重的**照问**——那条路规则够不着（除"按域名"那一处，见 U72 的用例）', async () => {
+  test('判重的**照问**——那条路规则够不着（除"按域名"那一处，见 的用例）', async () => {
     const result = await pass(call('exec', { cmd: 'chmod 600 build' }), [{ tool: 'exec', op: 'system' }])
 
     expect(result.asked).toBe(true)
@@ -257,7 +257,7 @@ describe('规则匹配——工具 × 路径模式 × 操作类型（直取匹�
 
 // ══ 判据 · 名单即禁区（优先级：名单 ＞ 规则 ＞ 默认通）═══════════════
 
-describe('名单即禁区——任何规则不可放行（U76：名单只剩两条）', () => {
+describe('名单即禁区——任何规则不可放行（名单只剩两条）', () => {
   /**
    * 名单里那一条（**改权限 / 属主 / 属性 / ACL**）的一圈攻法：
    * 最宽的规则（任意工具 · 任意路径 · 任意操作）逐个碰。
@@ -369,7 +369,7 @@ describe('名单即禁区——任何规则不可放行（U76：名单只剩两�
  * 换成 **`edit` 的根内 / 根外**（判轻 ⇄ 判重）——它判的就是落点认不认得出这两张表，
  * 与 U22 当年那条判据是同一件事。
  */
-describe('声明原形（U22）——落点认两张表', () => {
+describe('声明原形——落点认两张表', () => {
   /** 一条根，两种写法——照 macOS 的 `/tmp` ⇄ `/private/tmp`。 */
   const MAC = (): PermissionContext => context(['/private/tmp/proj'], ['/tmp/proj'])
 
@@ -381,7 +381,7 @@ describe('声明原形（U22）——落点认两张表', () => {
     expect(autoVerdicts(result.h)).toHaveLength(1)
   })
 
-  test('两张表都认——规范形那一张照旧（U18 的行为一条不丢）', async () => {
+  test('两张表都认——规范形那一张照旧（的行为一条不丢）', async () => {
     const normalized = await pass(
       call('edit', { path: '/private/tmp/proj/src/a.ts', oldString: 'a', newString: 'b' }),
       [],
@@ -443,7 +443,7 @@ describe('声明原形（U22）——落点认两张表', () => {
  * 两种情形**一样**（都不问）。故这里与 U77 同一姿势——**面**由真 `analyze` 给，
  * **匹配本身**直取 `matchRule`：测的就是「这一格盖不盖得住」。
  */
-describe('缺省路径（＝根内）那一格：U80 起盖得住内核自己那处', () => {
+describe('缺省路径（＝根内）那一格：起盖得住内核自己那处', () => {
   /** 后台输出目录（`<基础目录>/run/<指纹>/bg`）——它**不在**任何一条根里。 */
   const BG_DIR = '/Users/me/.magic/run/8b0ed361ea/bg'
   const BG_LOG = `${BG_DIR}/bg-1.log`
@@ -586,7 +586,7 @@ describe('「总是允许」——落点是工作区', () => {
     expect(again.material).toContain('禁区') // 而且说得出为什么还问
   })
 
-  test('**授权在删除那一类上更无从谈起**（U77）——它连卡都不出，没有"总是允许"可点', async () => {
+  test('**授权在删除那一类上更无从谈起**——它连卡都不出，没有"总是允许"可点', async () => {
     const s = session(here())
     const again = await s.through(call('exec', { cmd: 'rm -rf build' }))
 

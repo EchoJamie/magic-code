@@ -62,7 +62,7 @@ describe('轮号续跑——记录里的水位抬过来', () => {
   })
 })
 
-describe('开工位——`agent.start` 每个实例一条（U04 口径）', () => {
+describe('开工位——`agent.start` 每个实例一条', () => {
   test('恢复那趟发过（`announced: true`）——首次 submit 不再发第二遍', async () => {
     const stage = makeStage({ turns: [{ text: '好' }] })
     const service = sessionOf(stage)

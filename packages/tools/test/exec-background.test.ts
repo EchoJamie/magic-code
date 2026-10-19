@@ -50,7 +50,7 @@ function backgroundCall(cmd: string): { id: string; name: string; args: Record<s
   return { id: 'call_bg', name: 'exec', args: { cmd, background: true } }
 }
 
-describe('U70 · 后台那一形的发起', () => {
+describe('后台那一形的发起', () => {
   test('交出去 ⇒ 当场回 id ＋ 输出文件路径，**沙箱一次都不被调**', async () => {
     const fake = fakeRuns()
     const deps = makeToolDeps({ background: fake.runs })
@@ -100,7 +100,7 @@ describe('U70 · 后台那一形的发起', () => {
   })
 })
 
-describe('U70 · 后台那一形照旧过闸门', () => {
+describe('后台那一形照旧过闸门', () => {
   test('闸门拒绝 ⇒ 一次都没交出去（后台不是绕过裁决的口子）', async () => {
     const fake = fakeRuns()
     const deps = makeToolDeps({ background: fake.runs, decider: 'reject' })
@@ -119,7 +119,7 @@ describe('U70 · 后台那一形照旧过闸门', () => {
   })
 })
 
-describe('U70 · 前台那一形一字不动', () => {
+describe('前台那一形一字不动', () => {
   test('不带 background ⇒ 走沙箱（与加它之前逐字相同）', async () => {
     const fake = fakeRuns()
     const deps = makeToolDeps({ background: fake.runs })
@@ -143,7 +143,7 @@ describe('U70 · 前台那一形一字不动', () => {
     expect(fake.started).toEqual([])
   })
 
-  test('参数模式仍是叠在 EXEC_PARAMETERS 之上——那个对象本身没被改（它归 U69）', () => {
+  test('参数模式仍是叠在 EXEC_PARAMETERS 之上——那个对象本身没被改（它归 ）', () => {
     // ⚠️ **判的是「关系」，不是一份冻结的键名**（U69 合入时改的这条）：
     // 原写法把键名写死（`['cmd']` / `['cmd','background']`），U69 往 `EXEC_PARAMETERS`
     // 里添了 `timeoutMs` 之后它当场红——**红的不是"叠加被破了"，是"名单过期了"**。

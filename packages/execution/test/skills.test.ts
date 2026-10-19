@@ -70,7 +70,7 @@ function firstError(catalog: SkillCatalog): string {
 
 // —— ① 三类来源与次序 ——
 
-describe('U33 · 发现', () => {
+describe('发现', () => {
   test('项目与用户两处默认来源都发现得了；次序＝项目 → 用户，同作用域内 magic → agents', async () => {
     const land = sandbox()
     try {
@@ -240,7 +240,7 @@ describe('U33 · 发现', () => {
 
 // —— ② 来源标签（一处产出，多处照印） ——
 
-describe('U33 · 来源标签', () => {
+describe('来源标签', () => {
   test('作用域 ＋ 入口两段（同名时人才分得清）；由**发现**产出', async () => {
     const land = sandbox()
     try {
@@ -423,7 +423,7 @@ describe('U33 · 来源标签', () => {
 
 // —— ③ 读不懂的不认（有诊断） ——
 
-describe('U33 · 诊断', () => {
+describe('诊断', () => {
   test('缺 SKILL.md / front-matter 缺失 / name 不成立 / description 缺失——逐条报，且都不加载', async () => {
     const land = sandbox()
     try {
@@ -472,7 +472,7 @@ describe('U33 · 诊断', () => {
 
 // —— ③ 按身份读取 ——
 
-describe('U33 · 按需读取', () => {
+describe('按需读取', () => {
   test('主文＝去掉 front-matter 的正文；版本随正文变', async () => {
     const land = sandbox()
     try {

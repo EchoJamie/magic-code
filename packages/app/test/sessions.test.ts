@@ -290,7 +290,7 @@ describe('恢复入口（boot——订阅之后、放开输入之前）', () => 
     }
   })
 
-  test('有在途的会话：boot 补上中止与结果，续跑接得上（真崩溃相由 U15 的驱动覆盖）', async () => {
+  test('有在途的会话：boot 补上中止与结果，续跑接得上', async () => {
     const stage = makeStage()
     try {
       const first = stage.assemble({ turns: PLAIN })

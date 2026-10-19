@@ -117,7 +117,7 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
       // ⚠️ **U77 换的探针**：从前这一段是**删除**（U76 起名单那两条之一）；
       // 如今删除那一类**直接拒、根本不问**（设计「`rm` 直接拒，指路 `trash`」），
       // 故能造出「一张卡」的只剩**改权限那一族**。删除那一套的验收归
-      // `frames-u77-tui.ts`，不在这条冒烟链上兼职。
+      // `../scripts/verify/irreversible-commands.ts`，不在这条冒烟链上兼职。
       expect(request?.data.weight).toBe('heavy')
       expect(request?.data.material).toContain('改权限 · 属主 · 属性 / ACL（不可逆）')
       expect(request?.data.material).toContain('判据：系统级（改权限 / 属主 / 属性 / ACL）')

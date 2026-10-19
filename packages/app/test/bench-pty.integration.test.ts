@@ -15,7 +15,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { ptyOnce } from './bench-pty.ts'
+import { ptyOnce } from '../scripts/bench-pty.ts'
 import { removeDir, tempDir } from './tmp.ts'
 
 describe('D26 · bench-pty 的收场', () => {

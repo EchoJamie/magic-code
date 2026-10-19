@@ -81,7 +81,7 @@ export type ControlRequest = {
    *   「同名只留一条」的跨档取舍（项目 ＞ 用户）**只有真摆出用户那份才验得出来**。
    *
    * ⚠️ **摆在起手之后**（会话已经起来、首帧已到）：发现面本来就是**每次现扫**的
-   * （「材料动态读取」），故摆下去就认——不必重开一次窗。这一点与 `frames-u33-tui.ts`
+   * （「材料动态读取」），故摆下去就认——不必重开一次窗。这一点与技能帧脚本
    * 里 `putCatalog` 的处置同源。
    */
   readonly files?: Readonly<Record<string, string>>

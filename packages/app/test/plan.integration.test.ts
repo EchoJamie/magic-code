@@ -24,7 +24,7 @@ import type { KernelEvent } from '@magic/contracts'
 import { attachShell } from '../src/index.ts'
 import { eventsOfKind, makeStage } from './support.ts'
 
-describe('U34 · 权限是窄的', () => {
+describe('权限是窄的', () => {
   test('判轻的一件都不问（`plan_read` / `read` 都在内）；**名单里那两条照问**', async () => {
     const stage = makeStage()
     const requests: KernelEvent[] = []

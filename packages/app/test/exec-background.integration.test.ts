@@ -51,7 +51,7 @@ function textOf(message: { readonly role: string }): string {
   return `${any.name ?? ''}: ${any.output ?? ''}`
 }
 
-describe('U70 · 后台那一形（全链）', () => {
+describe('后台那一形（全链）', () => {
   test('交出去 ⇒ 立刻回执 ＋ 模型接着干；跑完 ⇒ 自动多一条带路径的消息', async () => {
     const stage = makeStage()
 

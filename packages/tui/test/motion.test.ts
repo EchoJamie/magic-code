@@ -61,7 +61,7 @@ function fgAt(frame: Frame, row: number, column: number): string | null {
 
 // ══ 一 · 记号：身份与状态两维 ═════════════════════════════════════════
 
-describe('记号 · 身份与状态两维（U112）', () => {
+describe('记号 · 身份与状态两维', () => {
   test('助手正文**去记号**：`⏺` 不上屏，正文**顶格**（首行与续行都在同一条线上）', async () => {
     const stage = live()
     stage.feed([event('model.delta', { channel: 'text', text: '第一行的话\n第二行的话' })])
@@ -94,7 +94,7 @@ describe('记号 · 身份与状态两维（U112）', () => {
     expect(frame.has('"cmd"')).toBe(false)
   })
 
-  test('状态位：成 `✓` · 败 `×`——`✘`(U2718) 与 `✗`(U2717) **都不上屏**', async () => {
+  test('状态位：成 `✓` · 败 `×`——`✘` 与 `✗` **都不上屏**', async () => {
     const done = live()
     done.feed(toolCall('read', { path: 'notes.txt' }, { ok: true, text: '42 行' }))
     expect((await done.screen()).has(MARKS.ok)).toBe(true)
@@ -196,7 +196,7 @@ describe('记号 · 身份与状态两维（U112）', () => {
 
 // ══ 二 · 动效：只挂状态位 ·「动 → 静」═ 完成信号 ═══════════════════════
 
-describe('动效 · 只挂状态位（U112）', () => {
+describe('动效 · 只挂状态位', () => {
   /**
    * **进行中在动**——`▸` 右边那一位的色随「此刻」变（那是呼吸）。
    *

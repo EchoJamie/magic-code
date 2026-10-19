@@ -616,7 +616,7 @@ describe('内核 fs 边界', () => {
   })
 })
 
-describe('blobs 落点（仓库级不变量 · U02 判据 2 并入）', () => {
+describe('blobs 写入边界', () => {
   test('写权唯一——全仓只许记录域出现 `blobs/` 字面量', async () => {
     expect(await blobPathOffendersOf()).toEqual([])
   })

@@ -147,7 +147,7 @@ const RESERVED_OUTPUT = 4_096
 // 一 · 开机那一格：容量从哪来
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('U30 · 开机那一格的分母', () => {
+describe('开机那一格的分母', () => {
   /**
    * **U41 返修改锚**：这一格从「窗长表里的一个数」改成**有效输入预算**——
    * 联合窗口为本次输出预留之后剩下的那一份（复核：「预留依据是本次实际请求，
@@ -248,7 +248,7 @@ describe('U30 · 开机那一格的分母', () => {
 // 二 · 换过模型之后：分母跟不跟得上（真链路 · 真事件 · 真外壳）
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('U30 · 换过模型之后的分母', () => {
+describe('换过模型之后的分母', () => {
   test('已知 ⇒ 另一已知：换过去那一刻分母就换成**新模型**的（不是旧那个）', async () => {
     const land = stage()
 
@@ -567,7 +567,7 @@ async function untilLastLine(
   throw new Error(`等不到「${what}」——此刻最后一行是：${lastLine(tty)}`)
 }
 
-describe('U30 · 真 `runTui` 那条路（接线在不在）', () => {
+describe('真 `runTui` 那条路（接线在不在）', () => {
   test('换模型之后 **屏上那个分母**当场跟着换——经产品那一路走出来的', async () => {
     const land = stage()
 
@@ -628,7 +628,7 @@ function kinds(events: readonly KernelEvent[]): string[] {
   return events.map((event) => event.kind)
 }
 
-describe('U30 · 事件面（不顺带扩张）', () => {
+describe('事件面（不顺带扩张）', () => {
   test('换模型只发 `model.switched` 一条——不发 `model.catalog`、不开会话、不加新 kind', async () => {
     const land = stage()
 

@@ -18,7 +18,7 @@ import { TRANSIENT_EVENT_KINDS } from '@magic/contracts'
 import { FIXED_AT } from '@magic/faux'
 import { execCall, makeToolDeps, ROOT, SESSION } from './helpers.ts'
 
-describe('U06 · 分发回环：请求 → 闸门 → 执行 → 结果', () => {
+describe('分发回环：请求 → 闸门 → 执行 → 结果', () => {
   test('批准 → 执行 → 回填：三件事各留其痕，返回值照终值', async () => {
     const deps = makeToolDeps({ exec: { 'ls -a': { ok: true, exit: 0, stdout: 'a\nb\n', stderr: '' } } })
 
@@ -274,7 +274,7 @@ describe('U06 · 分发回环：请求 → 闸门 → 执行 → 结果', () => 
  * 它只会换着花样再试。本域判断这件事的唯一依据是**闸门给的 `refusalOf`**（契约那一口），
  * 它自己不解析命令（域间不 import）。
  */
-describe('U77 · 内核拒的那一笔：回执指路（用户拒的那一笔照旧）', () => {
+describe('内核拒的那一笔：回执指路（用户拒的那一笔照旧）', () => {
   test('`irreversible` ＋ 这台机器有 `trash` ⇒ 说清为什么 ＋ 指路', async () => {
     const deps = makeToolDeps({ refusal: 'irreversible', trashAvailable: true })
 

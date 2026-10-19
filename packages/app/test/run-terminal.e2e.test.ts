@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { runPathsOf } from '../src/run/paths.ts'
 import { readDatabase } from './support.ts'
 import { REPO_ROOT, createUiSession } from './ui/index.ts'
-import type { Capture, Sandbox, UiSession } from './ui/index.ts'
+import type { Sandbox, UiSession } from './ui/index.ts'
 import { createSandbox, startFixture } from './ui/index.ts'
 import { removeDir, tempDir } from './tmp.ts'
 import { startResidentHost } from './resident-host-fixture.ts'
@@ -50,7 +50,7 @@ async function straysIn(sandbox: Sandbox): Promise<{ managers: string[]; executo
   }
 }
 
-describe('U48-S5 · 终端是客户端', () => {
+describe('终端是客户端', () => {
   test('七个空白窗口连开再关——零 Session 零 Run、客户端退出、无残留', async () => {
     const runs = runArtifacts('magic-u48-seven-runs-')
     const fixture = startFixture({ turns: [{ kind: 'text', text: '没人会看到这句' }] })
@@ -353,7 +353,7 @@ describe('U48-S5 · 终端是客户端', () => {
 const SAID = '记一句短话'
 const REPLY = '好，记下了。'
 
-describe('U53 · `resume` 接续（真窗口）', () => {
+describe('`resume` 接续（真窗口）', () => {
   async function withContent(
     sandbox: Sandbox,
     fixture: ReturnType<typeof startFixture>,
@@ -461,7 +461,7 @@ function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-9;]*m/gu, '')
 }
 
-describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
+describe('停止、后台命令与接着交代（真窗口）', () => {
   /** 库里那一条会话（真会话才落账——首条消息提交之后）。 */
   function sessionIdOf(sandbox: Sandbox): string {
     const db = readDatabase(join(sandbox.dataDir, 'records.db'))
@@ -650,7 +650,6 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       await window.key('enter')
       await window.wait({ text: '正在停' }, { timeoutMs: 20_000 })
       const stopped = await window.capture({ label: '轮间停掉' })
-      keepShot(stopped)
       expect(stopped.lines.some((line) => line.includes('正在停'))).toBe(true)
 
       await window.close({ graceMs: 0 })
@@ -841,14 +840,12 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       // （`▸ ●` 起头）。
       // 「这一轮收完了」原先看「结果行有 `✓`」，那一半照旧（`✓` 现在紧挨头一行的身份记号）。
       const settled = await window.capture({ label: '只剩后台命令（这一轮已收）' })
-      keepShot(settled)
       expect(settled.lines.some((line) => line.includes('交出去了。'))).toBe(true)
       expect(settled.lines.some((line) => line.trimStart().startsWith('▸ ●'))).toBe(false)
       expect(settled.lines.some((line) => line.includes('✓'))).toBe(true)
 
       await window.key('ctrl+c', { until: { text: '当前任务' }, timeoutMs: 15_000 })
       const menu = await window.capture({ label: '只剩后台命令时的三选' })
-      keepShot(menu)
       expect(menu.lines.some((line) => line.includes('当前任务仍在运行'))).toBe(true)
       expect(menu.lines.some((line) => line.includes('停止任务'))).toBe(true)
       expect(menu.lines.some((line) => line.includes('再按一次 ctrl+c 退出'))).toBe(false)
@@ -890,11 +887,4 @@ async function pidsOf(mark: string): Promise<readonly number[]> {
     .split('\n')
     .map((line) => Number(line.trim()))
     .filter((pid) => Number.isInteger(pid) && pid > 0)
-}
-
-/** 留一屏（这一支的帧与 `frames-u100-tui.ts` 同一形制）。 */
-function keepShot(shot: Capture): void {
-  const root = process.env['U100_SHOT_DIR']
-  if (root === undefined) return
-  writeFileSync(join(root, `${shot.label}.txt`), `${shot.text}\n`, 'utf8')
 }

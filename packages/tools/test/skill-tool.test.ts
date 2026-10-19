@@ -53,7 +53,7 @@ async function run(port: Skills, args: Readonly<Record<string, unknown>>) {
   catch (error) { return { ok: false, output: (error as Error).message } }
 }
 
-describe('U33 · skill 工具', () => {
+describe('skill 工具', () => {
   test('只给名字＝取主文；带上 relative＝取那份引用（两次都走同一个来源口）', async () => {
     const { port, asked } = stubSkills([PDF])
 

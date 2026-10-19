@@ -74,7 +74,7 @@ void _faceProbe
 
 // ══ grep（mode: 'grep'）═══════════════════════════════════════════════
 
-describe("U13 · match(grep) —— 内容搜索", () => {
+describe('match(grep) —— 内容搜索', () => {
   test('命中：路径（绝对）· 行号（1 起）· 列号 · 该行原文', async () => {
     const { box, root } = freshSandbox()
     seedTree(root)
@@ -200,7 +200,7 @@ describe("U13 · match(grep) —— 内容搜索", () => {
 
 // ══ glob（mode: 'glob'）═══════════════════════════════════════════════
 
-describe("U13 · match(glob) —— 文件名匹配", () => {
+describe('match(glob) —— 文件名匹配', () => {
   test('递归模式 **/*.ts → 各层都命中（只给路径，行号等缺席）', async () => {
     const { box, root } = freshSandbox()
     seedTree(root)

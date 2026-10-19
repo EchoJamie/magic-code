@@ -40,7 +40,7 @@ function timedOut(over: Partial<TimeoutResult> = {}): TimeoutResult {
   }
 }
 
-describe('U69 · 超时与取消同一口径', () => {
+describe('超时与取消同一口径', () => {
   test('① 抬头不带「未能执行」——它是「跑过了、被掐断」，不是「压根没执行」', async () => {
     const deps = makeToolDeps({ exec: { x: timedOut() } })
 

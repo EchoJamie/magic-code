@@ -413,7 +413,7 @@ describe('改名（session.rename）', () => {
   })
 })
 
-describe('重建面（rebuild——恢复的第 ⑤ 步 · U25）', () => {
+describe('重建面（rebuild——恢复的第 ⑤ 步）', () => {
   test('落在目标会话上，水位与开工位原样交给实例，报告交回调用方', async () => {
     const bench = makeBench({ session: A, rows: [{ id: A, at: T0, first: '甲的事' }] })
 
@@ -629,13 +629,13 @@ describe('读面（history.read）——重建展示的条目块', () => {
 })
 
 
-test('U123 名称截断按完整字素，不切 emoji、ZWJ 与组合字符', () => {
+test('名称截断按完整字素，不切 emoji、ZWJ 与组合字符', () => {
   expect(summarize(`${'中'.repeat(19)}👩‍💻尾`, 20)).toBe(`${'中'.repeat(19)}👩‍💻…`)
   expect(summarize(`${'a'.repeat(19)}e\u0301尾`, 20)).toBe(`${'a'.repeat(19)}e\u0301…`)
   expect(summarize('👩‍💻e\u0301', 2)).toBe('👩‍💻e\u0301')
 })
 
-test('U123 目录先筛元数据；默认标题首条即停，近期摘要只读尾页所需 blob', async () => {
+test('目录先筛元数据；默认标题首条即停，近期摘要只读尾页所需 blob', async () => {
   let forward = 0, backward = 0
   const blobs: string[] = []
   const tail: Entry[] = Array.from({ length: 50 }, (_, index) => ({ id: 950 + index, kind: 'assistant', content: { blob: `old-${index}` }, at: index }))

@@ -602,7 +602,7 @@ function marksOf(plan: PlanNote): readonly string[] {
 /**
  * **收摊并把「它是怎么走的」报出来**——正常与断言失败两条路都走它（失败也留档、也清场）。
  *
- * 收场那一套照 `frames-u36-tui.ts` 的既有写法：**先等它闲下来**（忙的时候 `ctrl+c`
+ * 结束时**先等它闲下来**（忙的时候 `ctrl+c`
  * 是中断不是退出）→ 敲 ctrl+c 让它**自己走** → 宽限给够（外壳收摊要卸挂载、关库）。
  */
 async function shutDownApp(session: UiSession, label: string): Promise<void> {

@@ -30,7 +30,7 @@ function materialsAt(root: string): Materials {
 
 // —— 非普通文件 ——
 
-describe('U36 · 非普通文件：不当文本读（否则会挂在 open 上）', () => {
+describe('非普通文件：不当文本读（否则会挂在 open 上）', () => {
   test('FIFO：**即拒**（`open` 会一直等写端——那一档根本不该去读）', async () => {
     const sand = sandbox()
     try {

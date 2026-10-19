@@ -262,7 +262,7 @@ function spawnGroup(script: string): { readonly pid: number; kill(): void } {
   }
 }
 
-describe('U50 · 停止：整体那一档', () => {
+describe('停止：整体那一档', () => {
   test('受理 → 停止中 → 核销才算停；回执说得出「已受理」与「停了」是两拍', async () => {
     const g = ground('whole')
     seed(g, ['s-1'])
@@ -380,7 +380,7 @@ describe('U50 · 停止：整体那一档', () => {
   }, 30_000)
 })
 
-describe('U50 · 停止：局部那一档', () => {
+describe('停止：局部那一档', () => {
   test('只收这一轮：送中断、**不置停止中**、**不报已停**（那条运行还在）', async () => {
     const g = ground('partial')
     seed(g, ['s-4'])
@@ -426,7 +426,7 @@ describe('U50 · 停止：局部那一档', () => {
   }, 30_000)
 })
 
-describe('U50 · 崩溃与收回自有进程组', () => {
+describe('崩溃与收回自有进程组', () => {
   test('执行者被杀：照登记收回它起的那些组，**不在账上的一个不碰**', async () => {
     const g = ground('reclaim')
     seed(g, ['s-5'])
@@ -539,7 +539,7 @@ describe('U50 · 崩溃与收回自有进程组', () => {
   }, 30_000)
 })
 
-describe('U50 · 通知', () => {
+describe('通知', () => {
   test('同会话两窗口各收三类事项一次，系统不重复通知；进展不通知，重放不重复落账', async () => {
     const g = ground('notice')
     seed(g, ['s-7'])
@@ -718,7 +718,7 @@ describe('U50 · 通知', () => {
 })
 
 /** 待答事项只送给绑定的终端；连接抑制系统提醒，但不隐式确认已读。 */
-describe('U79 · 通知：「需要你」按会话路由', () => {
+describe('通知：「需要你」按会话路由', () => {
   test('TUI 连着待答会话：收到具体事项，抑制事项并保留未读', async () => {
     const g = ground('u79-watched')
     seed(g, ['s-w'])
@@ -864,7 +864,7 @@ describe('U79 · 通知：「需要你」按会话路由', () => {
 })
 
 /** U86：失败、完成、待答统一按具体事项留存；TUI 无可靠焦点证据。 */
-describe('U86 · 通知：三类使用相同事项规则', () => {
+describe('通知：三类使用相同事项规则', () => {
   /**
    * **A 页开着、B 会话出错**——本单要证的那一形（D38 那一格）。
    *
@@ -1025,7 +1025,7 @@ describe('U86 · 通知：三类使用相同事项规则', () => {
   }, 30_000)
 })
 
-describe('U50 · 重启核对里的句柄身份', () => {
+describe('重启核对里的句柄身份', () => {
   test('旧进程字段不作为 Agent 身份；Engine 重启后中断旧代，不误杀无关进程', async () => {
     const g = ground('identity')
     seed(g, ['s-alive', 's-reused'])

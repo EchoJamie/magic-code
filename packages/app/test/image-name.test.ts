@@ -146,7 +146,7 @@ function attach(stage: Stage, options: Parameters<Stage['assemble']>[0] = {}) {
 
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('U62 · 选定那一条 ⇒ 认得出内容身份', () => {
+describe('选定那一条 ⇒ 认得出内容身份', () => {
   test('一张图：答复里给的是**按字节认出来**的那几格，身份＝字节的 sha256', async () => {
     const stage = makeStage()
     try {
@@ -243,7 +243,7 @@ describe('U62 · 选定那一条 ⇒ 认得出内容身份', () => {
   })
 })
 
-describe('U62 · 那个身份真的进了出站请求体', () => {
+describe('那个身份真的进了出站请求体', () => {
   test('选定之后交出去：正文里是编号，抬头也是同一个编号', async () => {
     const stage = makeStage()
     try {

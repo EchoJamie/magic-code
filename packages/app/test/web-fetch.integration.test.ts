@@ -84,7 +84,7 @@ function textOf(request: FixtureRequest | undefined): string {
     .join('\n')
 }
 
-describe('U72 · 配好了的那一趟：取回 → 提炼 → 只交答案', () => {
+describe('配好了的那一趟：取回 → 提炼 → 只交答案', () => {
   test('三次请求：主轮 → 提炼 → 主轮；提炼那一跳**不带任何工具**，用的是配置里那个模型', async () => {
     const fixture = startFixture({
       model: SESSION_MODEL,
@@ -205,7 +205,7 @@ describe('U72 · 配好了的那一趟：取回 → 提炼 → 只交答案', ()
   }, 30_000)
 })
 
-describe('U72 · 没配的那一趟：这一轮停住', () => {
+describe('没配的那一趟：这一轮停住', () => {
   test('只有一次请求——剧本里紧跟着的那发 `exec curl` **没有跑出去**（反证）', async () => {
     const fixture = startFixture({
       model: SESSION_MODEL,
@@ -254,7 +254,7 @@ describe('U72 · 没配的那一趟：这一轮停住', () => {
   }, 30_000)
 })
 
-describe('U78 · 照报错那句走一遍：配上之后**不用重启**就通了', () => {
+describe('照报错那句走一遍：配上之后**不用重启**就通了', () => {
   test('没配 ⇒ 报错指路；`model.configure` 之后 ⇒ 同一条会话再跑一次 `web_fetch` 就通（提炼用的是刚配的那个）', async () => {
     const fixture = startFixture({
       model: SESSION_MODEL,

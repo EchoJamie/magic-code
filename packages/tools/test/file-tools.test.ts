@@ -26,7 +26,7 @@ function row(name: string): (typeof TOOLSET_V1)[number] {
 
 // ══ read ══════════════════════════════════════════════════════════════
 
-describe('U13 · read', () => {
+describe('read', () => {
   test('走通：调沙箱 read(path)，内容原样回给模型', async () => {
     const { runtime, sandbox } = makeToolDeps({
       sandbox: makeFauxSandbox({ files: { '/work/proj/src/a.ts': 'export const a = 1\n' } }),
@@ -105,7 +105,7 @@ describe('U13 · read', () => {
 
 // ══ write ═════════════════════════════════════════════════════════════
 
-describe('U13 · write', () => {
+describe('write', () => {
   test('走通：调沙箱 write(path, {text})，回执带字节数（按字节不是字符）', async () => {
     const { runtime, sandbox } = makeToolDeps()
 
@@ -185,7 +185,7 @@ describe('U13 · write', () => {
 
 // ══ edit ══════════════════════════════════════════════════════════════
 
-describe('U13 · edit —— 唯一定位 · 失配即报', () => {
+describe('edit —— 唯一定位 · 失配即报', () => {
   const ORIGINAL = 'const a = 1\nconst b = 2\nconst c = 3\n'
 
   test('唯一定位：读 → 改 → 写回，只动那一处', async () => {

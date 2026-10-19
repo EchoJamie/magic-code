@@ -667,7 +667,7 @@ export function sessionFaceShape(service: ConversationService, routes: CommandRo
 // ══ 运行时断言 ════════════════════════════════════════════════════════
 
 describe('事件契约', () => {
-  test('不落库清单含三个实时增量 ＋ 会话状态（U16）＋ 八条读面答复（D10 · U33 · U36 · U37 · U39 · U41 · U107）＋ 一条回执（U63）＋ 界面偏好的答复（U112）', () => {
+  test('不落库清单含三个实时增量 ＋ 会话状态＋ 八条读面答复（D10）＋ 一条回执＋ 界面偏好的答复', () => {
     // `model.retry` 是**退避期间那个「正在等」**——实时信号、不是重放事实（重放只看终局）；
     // 重试次数另落 `ModelCallResult.attempts`（可断），故不落库不丢信息。
     // `session.state` 同列：它是快照，不是过程事实（见 events.ts 该处注）。
@@ -782,7 +782,7 @@ describe('工具契约', () => {
   })
 })
 
-describe('外部工具的命名（U38）', () => {
+describe('外部工具的命名', () => {
   test('注册名把服务器与工具两件都带上——解析切**第一刀**，工具名里的 `__` 也回得来', () => {
     expect(mcpToolName('fake', '_echo')).toBe('mcp__fake___echo')
     expect(parseMcpToolName('mcp__fake___echo')).toEqual({ server: 'fake', tool: '_echo' })
@@ -837,7 +837,7 @@ describe('控制面契约（迁移忠实性）', () => {
   })
 })
 
-describe('会话契约（阶段 2 · U16 · 只增不改）', () => {
+describe('会话契约（阶段 2 · 只增不改）', () => {
   test('命令面新增会话四支——判别式各就各位', () => {
     const commands: readonly Command[] = [
       { type: 'session.list' },

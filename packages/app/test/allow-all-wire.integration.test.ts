@@ -1,26 +1,4 @@
-/**
- * U73 · **全放行与开局选中走的是同一条线**（窗口 `hello` → 管理者 → 发车参数）。
- *
- * ## 为什么单有一份
- *
- * 全放行要在**执行者造闸门之前**落地，故它只能随 `hello` 递进去、由管理者放进**为这个窗口
- * 新起那一代**的发车参数里（见 `wire.ts` 的 `allowAll`）。这条线有**三跳**：
- *
- * ```
- *   窗口（cli.ts 的 argv） → client.greet 的 hello → manager 的 conn → launch 的 ExecutorRequest
- * ```
- *
- * 而 U73 实测出这条线上有个**半死的先例**：`switch`（`--provider` / `--model`）在
- * **第二跳丢了**——`wire.ts` 的 `hello` 与 `manager.ts` 都认它，唯独 `client.ts` 的 `greet`
- * 按 `ConnectOptions` 的旧形状拼、没往上带。症状是**静默**：`magic --provider X` 照常起、
- * 照常跑，只是**从来没用上 X**（真 PTY 上才看得出来，单元测试全绿）。
- *
- * ⇒ 这一份把**两件**都钉在**发车参数**上：它是这条线的**出口**，也是唯一能一眼看出
- * 「它到底上没上线」的地方。**跳了任何一跳，两条用例同时红。**
- *
- * ⚠️ 判据落在 `ExecutorRequest` 上、不落在「执行者拿到了没有」——后者要真起一个进程，
- * 而这一跳要证的是**接线**（真链路上的那一头由 `frames-u73-tui.ts` 的真 PTY 帧证）。
- */
+/** 验证窗口 hello 的全放行选项经过管理者传入执行者。 */
 
 import { describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync } from 'node:fs'
@@ -110,7 +88,7 @@ async function spawnedWith(connect: { allowAll?: boolean; switch?: { choice: 'de
   }
 }
 
-describe('U73 · 全放行走的是「窗口 hello → 发车参数」那条线', () => {
+describe('全放行走的是「窗口 hello → 发车参数」那条线', () => {
   test('`hello.allowAll` 一路到得了**发车参数**（三跳没跳掉任何一跳）', async () => {
     const requests = await spawnedWith({ allowAll: true })
 

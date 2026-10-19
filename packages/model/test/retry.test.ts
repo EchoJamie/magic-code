@@ -468,7 +468,7 @@ describe('退避重试 · 假端点回环', () => {
     expect(result.attempts).toBe(1)
   })
 
-  test('上下文超限 → **不重试**（留位：压缩重发归阶段 3 · U19）', async () => {
+  test('上下文超限 → **不重试**（留位：压缩重发归阶段 3）', async () => {
     const slept = recorder()
     const { fetch, requests } = endpoint([
       new Response(

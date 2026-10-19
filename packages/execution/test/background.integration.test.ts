@@ -150,7 +150,7 @@ describe('判据 1 · 发起——交出去就回', () => {
     expect(result.reason).toContain('启动失败')
   })
 
-  test('记进归属账（U50）——后台进程比发起它的那一轮活得久，尤其要记', async () => {
+  test('记进归属账——后台进程比发起它的那一轮活得久，尤其要记', async () => {
     const land = freshLand()
     const { runs, ledger } = runsOn(land)
 

@@ -127,7 +127,7 @@ async function runOneFetch(handle: ShellHandle, round: number, text: string): Pr
   )
 }
 
-describe('U99 · 提炼那一次调用带上了「关思考」', () => {
+describe('提炼那一次调用带上了「关思考」', () => {
   test('① DeepSeek：提炼那次带 `thinking.type = disabled`；循环那几次一个字都没有', async () => {
     const fixture = startFixture({ model: SESSION_MODEL, turns: turnsOf() })
     const stage = stageOn(fixture, { vendor: 'deepseek' })

@@ -56,7 +56,7 @@ async function waitFor(what: string, ok: () => boolean | Promise<boolean>, timeo
   }
 }
 
-describe('U50 · 自有进程的账与收尾', () => {
+describe('自有进程的账与收尾', () => {
   test('同一真实进程：测试宿主与独立执行进程读取相同启动时刻', async () => {
     const group = spawnGroup('sleep 30')
     try {

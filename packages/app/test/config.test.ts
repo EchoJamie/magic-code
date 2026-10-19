@@ -145,7 +145,7 @@ describe('残留 dataDir 不参与配置行为', () => {
   }
 })
 
-describe('MAGIC_HOME：统一基础路径（U42）', () => {
+describe('MAGIC_HOME：统一基础路径', () => {
   const ENV = { MAGIC_HOME: '/tmp/magic-test' }
   const ELSEWHERE = resolveMagicHome(ENV, HOME)
 
@@ -389,7 +389,7 @@ describe('工作区根列表（阶段 3 加键）', () => {
  * （同权限段 / 多根那两条教训）。故「加载器真把它带出来了」这一条必须有用例钉着，别顺手删。
  * 语义那一半（存不存在 / 是文件还是目录）归执行域的规约来源面——它才知道怎么读。
  */
-describe('项目规约的补充来源（阶段 3 加键 · U32）', () => {
+describe('项目规约的补充来源（阶段 3 加键）', () => {
   test('键缺省 —— **不给这一位**（不是空数组）', () => {
     expect(loadFrom(validConfig()).config.rules).toBeUndefined()
     expect(loadFrom(validConfig({ rules: {} })).config.rules).toBeUndefined()
@@ -445,7 +445,7 @@ describe('项目规约的补充来源（阶段 3 加键 · U32）', () => {
   })
 })
 
-describe('外部工具服务器（U38 · `mcp` 段）', () => {
+describe('外部工具服务器（`mcp` 段）', () => {
   test('键缺省 —— **不给这一位**（不是空对象：没配就是没配）', () => {
     expect(loadFrom(validConfig()).config.mcp).toBeUndefined()
   })
@@ -489,7 +489,7 @@ describe('外部工具服务器（U38 · `mcp` 段）', () => {
       .toThrow(/mcp\.servers\.a\.env\.K/)
   })
 
-  test('HTTP 条目——地址 ＋ 请求头（两种接入共用一张表 · U39）', () => {
+  test('HTTP 条目——地址 ＋ 请求头（两种接入共用一张表）', () => {
     const loaded = loadFrom(
       validConfig({
         mcp: {

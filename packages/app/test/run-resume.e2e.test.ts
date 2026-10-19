@@ -19,7 +19,7 @@ import { join } from 'node:path'
 import { readDatabase } from './support.ts'
 import { startResidentHost } from './resident-host-fixture.ts'
 
-describe('U49 · 接回（真窗口）', () => {
+describe('接回（真窗口）', () => {
   test('另一扇窗接回同一条在跑的会话——**只有一个执行者**，且在飞的那一段补齐了', async () => {
     const runs = tempDir('magic-u49-resume-runs-')
     // 一句**长出来**的回话（块多、块间慢）——「接回时那一句正说到一半」才抓得到

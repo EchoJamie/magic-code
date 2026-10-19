@@ -62,7 +62,7 @@ function runWithImage(
   return agentLoop(runtime, { text: '看 @shot.png', refs: [IMAGE_REF] }, new AbortController().signal)
 }
 
-describe('U37 · 图片与当前模型对不对得上', () => {
+describe('图片与当前模型对不对得上', () => {
   test('**明确不支持** ⇒ 整条不跑：不落用户条目 · 不进请求 · 说得清为什么、怎么办', async () => {
     const stage = makeStage({ turns: [{ text: '看图说话' }] })
 

@@ -19,7 +19,7 @@
 import { describe, expect, test } from 'bun:test'
 import { execCall, makeToolDeps, waitFor } from './helpers.ts'
 
-describe('U06 · 取消', () => {
+describe('取消', () => {
   test('入口即中止 → 不问闸门、不执行；链仍收尾（请求 → 结果）', async () => {
     const deps = makeToolDeps()
     const controller = new AbortController()

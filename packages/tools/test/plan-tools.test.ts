@@ -56,7 +56,7 @@ async function run(reader: PlanReader, name: string, args: Readonly<Record<strin
   catch (error) { return { ok: false, output: (error as Error).message } }
 }
 
-describe('U34 · 三件的形态', () => {
+describe('三件的形态', () => {
   test('三个名字齐，且权限域与装配按同一串名字认它们', () => {
     const { reader } = stubReader()
     expect(definePlanTools(reader).map((tool) => tool.spec.name)).toEqual([
@@ -84,7 +84,7 @@ describe('U34 · 三件的形态', () => {
   })
 })
 
-describe('U34 · plan_read', () => {
+describe('plan_read', () => {
   test('有笔记：回执带**完整正文**（模型据此接着干活）', async () => {
     const { reader } = stubReader()
     const result = await run(reader, 'plan_read')
@@ -117,7 +117,7 @@ describe('U34 · plan_read', () => {
   })
 })
 
-describe('U34 · plan_update', () => {
+describe('plan_update', () => {
   test('整体替换：交回的那一份就是载荷（工具不自行写记录）', async () => {
     const { reader } = stubReader()
     const result = await run(reader, 'plan_update', { plan: PLAN })
@@ -182,7 +182,7 @@ describe('U34 · plan_update', () => {
 
 // ══ U90 · 目标那一格 ══════════════════════════════════════════════════
 
-describe('U90 · 目标那一格（`goal`）', () => {
+describe('目标那一格（`goal`）', () => {
   test('参数说明**说清它是什么**（模型读得到才会填），且**不要求必填**', () => {
     const { reader } = stubReader()
     const parameters = toolOf(reader, 'plan_update').spec.parameters as {
@@ -262,7 +262,7 @@ describe('U90 · 目标那一格（`goal`）', () => {
   })
 })
 
-describe('U34 · history_read', () => {
+describe('history_read', () => {
   test('不给参数＝从活动窗口之前读起（把空查询原样交给读面）', async () => {
     const { reader, log } = stubReader()
     const result = await run(reader, 'history_read')

@@ -396,7 +396,7 @@ describe('注册表 · 每条目各归其位', () => {
  * 3. **两处都没有 ⇒ `undefined`**——不知道就是不知道（**不冒充「不支持」**，
  *    否则会凭空禁掉一批其实能看图的模型）。
  */
-describe('U37 · 能力读数', () => {
+describe('能力读数', () => {
   test('用户覆盖：把某个模型明确标成「不吃图」', () => {
     const registry = registryOf(
       { alpha: { ...ALPHA, modelOverrides: { 'alpha-1': { capabilities: { image: false } } } } },

@@ -114,7 +114,7 @@ describe('makeFauxRecords', () => {
     expect(records.blobRefs).toEqual([ref])
   })
 
-  test('listSessions 可注入——多会话列表（U02 到站后换真实现）', async () => {
+  test('listSessions 可注入——多会话列表（到站后换真实现）', async () => {
     const records = makeFauxRecords({
       sessions: [{ id: 's1', title: '首会话', at: 1_000, archived: false }],
     })

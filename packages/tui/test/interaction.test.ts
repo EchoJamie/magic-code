@@ -289,7 +289,7 @@ describe('Ctrl+C 语义', () => {
 })
 
 describe('展开 / 折叠', () => {
-  test('思考在内联恒折一行；全文在**查看那一屏**上（U110）', async () => {
+  test('思考在内联恒折一行；全文在**查看那一屏**上', async () => {
     const { app, shell, push } = liveApp()
 
     await push([

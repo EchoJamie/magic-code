@@ -19,5 +19,5 @@
     "isolatedModules": true,
     "skipLibCheck": true
   },
-  "include": ["packages/*/src", "packages/*/test", "test"]
+  "include": ["packages/*/src", "packages/*/test", "packages/*/scripts/verify", "packages/*/scripts/bench-*.ts", "test"]
 }

@@ -89,7 +89,7 @@ function plainResult(text = '跑了 ls'): Omit<NewEntry, 'at'> {
 
 // ══ ① 当前计划 ════════════════════════════════════════════════════════
 
-describe('U34 · 当前计划取自记录', () => {
+describe('当前计划取自记录', () => {
   test('没有过计划：`{ entry: null, plan: null }`——不隔空回一句「已清空」', async () => {
     const { records } = ledger()
     expect(await readPlanOf(records, SESSION)).toEqual({ entry: null, plan: null })
@@ -163,7 +163,7 @@ describe('U34 · 当前计划取自记录', () => {
 
 // ══ ② 窗口边界 ════════════════════════════════════════════════════════
 
-describe('U34 · 活动窗口边界与 planContext 同一条算术', () => {
+describe('活动窗口边界与 planContext 同一条算术', () => {
   /** 造一条压过的会话：12 条记录 ＋ 一条摘要。 */
   function compactedOnce(): ReturnType<typeof ledger> {
     const stage = ledger()
@@ -240,7 +240,7 @@ function compacted(count: number): ReturnType<typeof ledger> {
   return stage
 }
 
-describe('U34 · 历史回查是有界的', () => {
+describe('历史回查是有界的', () => {
   test('一页至多十条，按记录序交回，并给出继续往前的 `nextBefore`', async () => {
     const { records } = compacted(30)
     const page = await readHistoryOf(records, SESSION, 0, {})
@@ -332,7 +332,7 @@ describe('U34 · 历史回查是有界的', () => {
 
 // ══ ④ 上下文里的计划材料 ══════════════════════════════════════════════
 
-describe('U34 · 计划材料（压缩 / 中断之后重新交付）', () => {
+describe('计划材料（压缩 / 中断之后重新交付）', () => {
   test('没有过计划：不加空材料', async () => {
     const { records, add } = ledger()
     add({ kind: 'user', content: { text: '你好' } })
@@ -433,7 +433,7 @@ describe('U34 · 计划材料（压缩 / 中断之后重新交付）', () => {
 
 // ══ 端口形态 ══════════════════════════════════════════════════════════
 
-describe('U34 · PlanReader 端口', () => {
+describe('PlanReader 端口', () => {
   test('两个读口都在，且都绑定本条会话（模型给不出第二个）', async () => {
     const { records, add } = ledger()
     add({ kind: 'user', content: { text: '开始吧' } })

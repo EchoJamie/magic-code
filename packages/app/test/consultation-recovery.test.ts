@@ -5,7 +5,7 @@ import { captureCollaborationNative, mergeCollaborationNative } from '../src/run
 import { projectWorks } from '../src/run/native-projection.ts'
 import { tempDir, removeDir } from './tmp.ts'
 
-for (const completed of [false, true]) test(`U115：宿主恢复 ${completed ? '已落账尚未投递' : '中断未完成'}，补存回报不重发模型`, async () => {
+for (const completed of [false, true]) test(`宿主恢复 ${completed ? '已落账尚未投递' : '中断未完成'}，补存回报不重发模型`, async () => {
   const dir = tempDir('magic-consult-recovery-')
   const store = createRecordsStore({ dataDir: dir, workspace: [dir] })
   const r = store.collaboration

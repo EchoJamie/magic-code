@@ -33,7 +33,7 @@ function plain(bytes: string): string {
     .replace(/\u001b\[[0-9:;<=>?]*[@-~]/g, '')
 }
 
-describe('U40 · 工具自证', () => {
+describe('工具自证', () => {
   test('按键经真 PTY 到 CLI：敲进去的字，既能上屏、也能到模型请求里', async () => {
     const session = await createUiSession({ artifacts, label: '自证-按键经PTY', turns: HELLO })
 
@@ -256,7 +256,7 @@ describe('常驻测试宿主的归属', () => {
 // 退回四条（U40-2）—— 每条都是首轮验收**实测踩出来的**真故障，各留一个回归
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('U40-2 · 退回的四处回归', () => {
+describe('-2 · 退回的四处回归', () => {
   test('写一次就是一次：`until` 只等待，不重放（超时留档，不重发动作）', async () => {
     const session = await createUiSession({ artifacts, label: '回归-只写一次', turns: HELLO })
 
@@ -323,7 +323,7 @@ describe('U40-2 · 退回的四处回归', () => {
 // 看帧补正（U40-2）—— 光标显隐取样 ＋ 查看页翻帧
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('U40-2 · 光标显隐与翻帧', () => {
+describe('-2 · 光标显隐与翻帧', () => {
 
   test('真应用那一趟：跑的时候光标**显示在编辑位置上**（不是藏着）', async () => {
     const session = await createUiSession({ artifacts, label: '回归-真应用光标', turns: HELLO })
@@ -379,7 +379,7 @@ function stepsOf(runDir: string): Record<string, unknown>[] {
 // 助手那条入口 —— **跨多次独立进程调用**（不是同一个进程里连点六下）
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('U40 · 助手入口（常驻控制进程 · stdin ←→ stdout 逐行 JSON）', () => {
+describe('助手入口（常驻控制进程 · stdin ←→ stdout 逐行 JSON）', () => {
   test('跨多次写操作同一实例（同一 PID、现场保持）；close 清场', async () => {
     const dir = tempDir('magic-u40-ctl-')
     const serve = Bun.spawn(

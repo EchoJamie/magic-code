@@ -24,7 +24,7 @@ function refusalOf(raw: string): string {
   return got.reason
 }
 
-describe('U72 · 取网页的地址判定', () => {
+describe('取网页的地址判定', () => {
   test('http 一律升 https（主机与路径原样）', () => {
     expect(targetOf('http://example.com/a/b?q=1')).toEqual({
       ok: true,

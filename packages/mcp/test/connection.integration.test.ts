@@ -414,7 +414,7 @@ describe('复入 close（返工 A 补正 · 复验退回的最后一处）', () 
   })
 })
 
-describe('失败路径的哨兵（U39 补验）', () => {
+describe('失败路径的哨兵', () => {
   test('对端答的内容不合规——读数与缘由**不带对端原文**，只留一句人话', async () => {
     const sentinel = 'U39_DIAGNOSTIC_FAKE_SECRET'
     const connection = createStdioConnection({
@@ -445,7 +445,7 @@ describe('失败路径的哨兵（U39 补验）', () => {
   })
 })
 
-describe('显式重连（U39）', () => {
+describe('显式重连', () => {
   test('重连重走一趟起手与发现——**新进程**、工具表照旧、读数回到可用', async () => {
     const dir = tempDir()
     const { connection, log } = await connect({}, { dir })

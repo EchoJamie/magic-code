@@ -95,7 +95,7 @@ async function nextState(handle: ShellHandle): Promise<{ readonly active: string
   return { active: event.data.active }
 }
 
-describe('U89 · ① 在跑的在请求里 · ② 跑完就没有了 · ⑤ 不进记录', () => {
+describe('① 在跑的在请求里 · ② 跑完就没有了 · ⑤ 不进记录', () => {
   test('起一条 ⇒ 下一趟请求里有它（编号 · 命令 · 还在跑）；它跑完 ⇒ 再下一趟没有它', async () => {
     const stage = makeStage()
     let reap: (() => Promise<void>) | undefined
@@ -161,7 +161,7 @@ describe('U89 · ① 在跑的在请求里 · ② 跑完就没有了 · ⑤ 不�
   })
 })
 
-describe('U89 · ④ 反面：每会话一份（A 的在跑命令不进 B 的请求）', () => {
+describe('④ 反面：每会话一份（A 的在跑命令不进 B 的请求）', () => {
   test('A 的与 B 的各是各的；切回 A 还看得见它自己那条；停掉 ⇒ 那一块里就没有它了', async () => {
     const stage = makeStage()
     let reap: (() => Promise<void>) | undefined
@@ -240,7 +240,7 @@ describe('U89 · ④ 反面：每会话一份（A 的在跑命令不进 B 的请
   })
 })
 
-describe('U89 · ⑤ 每请求重算（压缩碰不到它）', () => {
+describe('⑤ 每请求重算（压缩碰不到它）', () => {
   test('压过一次之后，那一块照旧在（它不是条目，压缩够不着）', async () => {
     const stage = makeStage()
     let reap: (() => Promise<void>) | undefined

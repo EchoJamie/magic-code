@@ -207,7 +207,7 @@ describe('会话身份与启动失败回归', () => {
   }, 15_000)
 })
 
-describe('U48-S2 · 一个窗口一条执行者', () => {
+describe('一个窗口一条执行者', () => {
   test('七个窗口各开一条新的——七代各自独立，停一项不影响其它', async () => {
     const g = ground('seven')
     const manager = await standUp(g)
@@ -332,7 +332,7 @@ describe('U48-S2 · 一个窗口一条执行者', () => {
   }, 60_000)
 })
 
-describe('U48-S3 · 独占与代次', () => {
+describe('独占与代次', () => {
   test('过期连接携带旧代次的命令一律拒绝——且是有回声的拒绝', async () => {
     const g = ground('stale')
     const manager = await standUp(g)
@@ -387,7 +387,7 @@ describe('U48-S3 · 独占与代次', () => {
 /** 这一支要用的那条会话 id——形制与上面 `session.open` 那几条同。 */
 const SESSION = 'aaaaaaaa-0000-0000-0000-000000000009'
 
-describe('U49 · 停止中那一行（真进程 · 真窗口那一瞬）', () => {
+describe('停止中那一行（真进程 · 真窗口那一瞬）', () => {
   test('管理者收摊那一刻：那一行是「停止中」——已受理，资源尚未全退', async () => {
     const g = ground('stopping')
     // 真会话（列表按目录说话：库里点得出的会话才有那一行）
@@ -419,7 +419,7 @@ describe('U49 · 停止中那一行（真进程 · 真窗口那一瞬）', () =>
   }, 60_000)
 })
 
-describe('U48-S4 · 收缩与异常', () => {
+describe('收缩与异常', () => {
   test('真实模型与工具：中间轮无 done，最终事项只交给绑定终端，执行者释放不重复系统通知', async () => {
     const marker = 'resident-continues-tool-output'
     const g = ground('attention', 'settled', [

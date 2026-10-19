@@ -91,7 +91,7 @@ function prefsOf(stage: Stage): { readonly cells: readonly string[]; readonly co
   }
 }
 
-describe('状态行可配 · 入口走 /config（U112）', () => {
+describe('状态行可配 · 入口走 /config', () => {
   test('`/config` 里多两行：「状态行」与「减少动效」——没配过时那一行**明写「默认」**', () => {
     const stage = openConfig()
 

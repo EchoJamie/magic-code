@@ -57,7 +57,7 @@ function systemsOf(gateway: { readonly requests: readonly { readonly messages: r
   })
 }
 
-describe('U89 · ③ 反面：一条后台任务都没有 ⇒ 那一块不出现', () => {
+describe('③ 反面：一条后台任务都没有 ⇒ 那一块不出现', () => {
   test('普通两轮：每一趟请求都没有那一块，也没有一句「没有后台任务」的空话', async () => {
     const stage = makeStage()
 

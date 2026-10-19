@@ -417,7 +417,7 @@ function liveApp() {
 }
 
 describe('真按键路径', () => {
-  test('`\\u0014`（Ctrl T）到得了外壳：收起、再按展开', async () => {
+  test('`\\`（Ctrl T）到得了外壳：收起、再按展开', async () => {
     const app = liveApp()
     try {
       await app.ready()

@@ -131,7 +131,7 @@ function finish(assembly: Assembly, shell: ReturnType<typeof bareShell>): void {
   assembly.close()
 }
 
-describe('U22 · 「总是允许」的落点＝工作区（落盘 ＋ 跨会话存活）', () => {
+describe('「总是允许」的落点＝工作区（落盘 ＋ 跨会话存活）', () => {
   test('按 `a` → **写进 `grants.json`**（一个文件，按工作区绝对路径分节）', async () => {
     const stage = makeStage()
     try {
@@ -189,7 +189,7 @@ describe('U22 · 「总是允许」的落点＝工作区（落盘 ＋ 跨会话�
   })
 })
 
-describe('U22 · `/grants` 的两条路（读侧 ＋ 撤销）', () => {
+describe('`/grants` 的两条路（读侧 ＋ 撤销）', () => {
   test('`grants.list` → `grants.catalog`：名录 ＋ 陈旧的节 ＋ 本会话的裁决分布', async () => {
     const stage = makeStage()
     try {
@@ -289,7 +289,7 @@ describe('U22 · `/grants` 的两条路（读侧 ＋ 撤销）', () => {
  * 而它**不是**把本会话那个数直接改成累计（那就把两件事混成一件了）：
  * 两笔账各报各的（`decisions` / `history`），外壳那一侧两行分列。
  */
-describe('U28 · 历史累计（跨会话那笔账）', () => {
+describe('历史累计（跨会话那笔账）', () => {
   test('重起之后：本会话的账从头起，**历史把上一趟算进去**', async () => {
     const stage = makeStage()
     try {
@@ -323,7 +323,7 @@ describe('U28 · 历史累计（跨会话那笔账）', () => {
   })
 })
 
-describe('U22 · 启动那几句（审计第 13 条）', () => {
+describe('启动那几句（审计第 13 条）', () => {
   test('被拒的权限规则**进记录区一行回执**——`Assembly.notices` 里备着那句话', async () => {
     const stage = makeStage({
       config: { permissions: { rules: [{ tool: 'read', pth: 'src/**' }] } },

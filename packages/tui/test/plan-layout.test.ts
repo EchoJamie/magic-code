@@ -81,7 +81,7 @@ describe('目标顶格 ＋ 步骤退一级', () => {
     expect(goalRow).toBeLessThan(firstStep)
   })
 
-  test('清单仍在分隔线**之下**（U85 的判据一字不改）：目标与步骤都在两条线之间', async () => {
+  test('清单仍在分隔线**之下**（的判据一字不改）：目标与步骤都在两条线之间', async () => {
     const stage = createStage()
     feedPlan(stage, withGoal('修好登录失败提示', step('读登录逻辑', 'completed'), step('改提示', 'in_progress')))
 

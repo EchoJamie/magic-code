@@ -21,7 +21,7 @@ const LINKS: readonly SearchLink[] = [
 
 const BODY = '# 答案\n\n它是这个意思。'
 
-describe('U88 · 搜索回执的形状', () => {
+describe('搜索回执的形状', () => {
   test('逐字照实测那一节——抬头 / 空行 / 链接段 / 空行 / 正文', () => {
     const receipt = searchReceiptOf({ query: 'magic code 是什么', links: LINKS, body: BODY })
 
@@ -71,7 +71,7 @@ describe('U88 · 搜索回执的形状', () => {
   })
 })
 
-describe('U88 · 拿不到标题就留空', () => {
+describe('拿不到标题就留空', () => {
   test('缺席与全是空白同一条口径——都写成 `"title":""`', () => {
     const receipt = searchReceiptOf({
       query: 'q',
@@ -89,7 +89,7 @@ describe('U88 · 拿不到标题就留空', () => {
   })
 })
 
-describe('U88 · 掐掉小模型的开场白（且只掐开头那一截）', () => {
+describe('掐掉小模型的开场白（且只掐开头那一截）', () => {
   /** 实测那四次全有的两句（设计「三条白拿的细节」第三条，逐字）。 */
   const NOISES = [
     "I'll search for information about X.",

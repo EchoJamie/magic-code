@@ -169,7 +169,7 @@ describe('工具链（call → 询问 → 裁决 → 结果）', () => {
     expect(rowAt(plain, 0)).toMatchObject({ state: 'failed', elapsedMs: 4 })
   })
 
-  test('外部工具（U38）——注册名不照抄到记录行上，写成 `服务器 / 工具`', () => {
+  test('外部工具——注册名不照抄到记录行上，写成 `服务器 / 工具`', () => {
     // 注册名（`mcp__fake__echo`）是**编码**（跨服务器唯一）；给人看的是 `服务器 / 工具`。
     // 流式那一路（模型还没报完名字）与 `tool.call` 那一路都要同一个写法。
     const streamed = viewed([
@@ -317,7 +317,7 @@ describe('接管（裁决挂着时占住输入框）', () => {
     expect(ended.draft).toBe('草稿')
   })
 
-  test('外部操作（U38）——副题说「效果由服务器决定」、只给 `○ 批准这一次 / ○ 拒绝这一次`', () => {
+  test('外部操作——副题说「效果由服务器决定」、只给 `○ 批准这一次 / ○ 拒绝这一次`', () => {
     // 卡上的名字由权限域给成 `服务器 / 工具`（外壳不自己拼）；`external` 一位决定口径
     const view = viewed([askExternal('fake / echo', '参数：\n{\n  "text": "你好"\n}')])
 

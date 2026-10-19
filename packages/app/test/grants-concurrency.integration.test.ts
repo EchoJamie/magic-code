@@ -217,7 +217,7 @@ async function runOnce(
   return { assembly, shell }
 }
 
-describe('U47 · 授权文件：多个写入者不互相覆盖', () => {
+describe('授权文件：多个写入者不互相覆盖', () => {
   test('各持旧账本的两个装配——后写的那一份**留着**前一份的改动', async () => {
     const stage = makeStage()
     try {
@@ -282,7 +282,7 @@ describe('U47 · 授权文件：多个写入者不互相覆盖', () => {
   })
 })
 
-describe('U47 · 授权文件：撤销不得被复活', () => {
+describe('授权文件：撤销不得被复活', () => {
   test('撤掉之后，持旧账本的那一方再写 ＋ 收尾补落记账——**都不把那条写回来**', async () => {
     const stage = makeStage()
     try {
@@ -328,7 +328,7 @@ describe('U47 · 授权文件：撤销不得被复活', () => {
   })
 })
 
-describe('U47 · 授权文件：真进程并发（锁本身在这里被测）', () => {
+describe('授权文件：真进程并发（锁本身在这里被测）', () => {
   /** 几个写入者同时改。四个×六十次＝两百四十次读改写，全挤在同一个窗口里。 */
   const WRITERS = 4
   const EDITS = 60

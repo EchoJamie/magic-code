@@ -123,7 +123,7 @@ describe('甲 · 清单与滚动记录分得开', () => {
     expect(planRow).toBeLessThan(composerRow(frame))
   })
 
-  test('反面：一屏**仍然恰好两条线**，输入区／状态行那条照旧（U45/U59 判据不改）', async () => {
+  test('反面：一屏**仍然恰好两条线**，输入区／状态行那条照旧', async () => {
     const stage = createStage()
     feedPlan(stage, note(step('一步')))
 

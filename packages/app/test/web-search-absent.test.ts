@@ -22,7 +22,7 @@ import { describe, expect, test } from 'bun:test'
 import { attachShell } from '../src/index.ts'
 import { lastModel, makeStage } from './support.ts'
 
-describe('U88 · 搜索不注册——模型看不见它', () => {
+describe('搜索不注册——模型看不见它', () => {
   test('真装配跑一轮：送给模型的那份请求里没有 web_search', async () => {
     const stage = makeStage()
 

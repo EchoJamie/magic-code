@@ -9,10 +9,10 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { REPO_ROOT } from '../test/ui/driver.ts'
-import { parseSteps } from '../test/ui/steps.ts'
+import { REPO_ROOT } from './ui/driver.ts'
+import { parseSteps } from './ui/steps.ts'
 
-describe('U51 · 步骤文件：解析', () => {
+describe('步骤文件：解析', () => {
   test('对象形与数组形都收——`steps` 是同一件事的两种写法', () => {
     const object = parseSteps('{"label":"甲","steps":[{"cmd":"capture"}]}')
     expect(object.label).toBe('甲')

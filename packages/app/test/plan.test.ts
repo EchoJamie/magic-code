@@ -47,7 +47,7 @@ function planWriteTurns(plan: PlanNote | null): readonly Record<string, unknown>
   ]
 }
 
-describe('U34 · 模型真的能写计划（写 → 落账 → 通报 → 进上下文）', () => {
+describe('模型真的能写计划（写 → 落账 → 通报 → 进上下文）', () => {
   test('更新：条目落账 · `plan.changed` 通报 · 下一趟请求里带着完整笔记 · 全程不弹卡', async () => {
     const stage = makeStage()
 
@@ -123,7 +123,7 @@ describe('U34 · 模型真的能写计划（写 → 落账 → 通报 → 进上
   })
 })
 
-describe('U34 · 同一份来源、跨会话不串（重开接得上、别的会话读不到）', () => {
+describe('同一份来源、跨会话不串（重开接得上、别的会话读不到）', () => {
   /** 模型那一轮：先读一次笔记，再说话。 */
   const READ_TURNS = [
     { toolCalls: [{ name: 'plan_read', args: {} }] },
@@ -201,7 +201,7 @@ describe('U34 · 同一份来源、跨会话不串（重开接得上、别的会
   })
 })
 
-describe('U34 · 压缩之后仍取得到最新笔记', () => {
+describe('压缩之后仍取得到最新笔记', () => {
   test('旧段被摘要顶掉之后，计划材料重新落进请求里（且回执本身已不在窗口里）', async () => {
     const stage = makeStage()
 
@@ -276,7 +276,7 @@ describe('U34 · 压缩之后仍取得到最新笔记', () => {
   })
 })
 
-describe('U34 · 回查真的回得到', () => {
+describe('回查真的回得到', () => {
   test('压掉的那一段按记录位置读得回来（含节选标记与续读位置）', async () => {
     const stage = makeStage()
 
@@ -317,7 +317,7 @@ describe('U34 · 回查真的回得到', () => {
   })
 })
 
-describe('U34 · 指导与工具随请求送达（首次即到、压缩后仍在）', () => {
+describe('指导与工具随请求送达（首次即到、压缩后仍在）', () => {
   test('首趟请求就带着规划指导与三件工具；压过之后指导仍在', async () => {
     const stage = makeStage()
 
@@ -402,7 +402,7 @@ describe('U34 · 指导与工具随请求送达（首次即到、压缩后仍在
   })
 })
 
-describe('U34 · 反例：那条节选上限只管 blob，不碰内联正文', () => {
+describe('反例：那条节选上限只管 blob，不碰内联正文', () => {
   /**
    * **独立验收退回的第一条**：`contentTextOf` 一度把**所有内联正文**也过了一遍
    * 2000 字符的节选——真装配里 2225 字符的用户交代只剩 2030，尾巴上的要求当场丢掉

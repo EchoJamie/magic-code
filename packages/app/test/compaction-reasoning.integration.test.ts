@@ -67,7 +67,7 @@ function turnsOf(extra: readonly FixtureTurn[] = []): readonly FixtureTurn[] {
   ]
 }
 
-describe('U97 · 压缩那一次调用带上了「关思考」', () => {
+describe('压缩那一次调用带上了「关思考」', () => {
   test('① DeepSeek：压缩那次带 `thinking.type = disabled`；循环那几次一个字都没有', async () => {
     const fixture = startFixture({ model: MODEL, turns: turnsOf() })
     const stage = stageOn(fixture, { vendor: 'deepseek' })

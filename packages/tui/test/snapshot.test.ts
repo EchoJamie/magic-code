@@ -766,7 +766,7 @@ describe('场景 11 · slash 自动补全', () => {
    * 走 `grants.list`），于是这一条**翻面**：候选里**应当**有它。
    * 「表里列的都得真认得」那半条改由 `shell.test.ts` 的遍历用例钉（更强，且不用手改）。
    */
-  test('真存在的命令照列——`/g` 出 `/grants`（U22 到站后它真有了）', () => {
+  test('真存在的命令照列——`/g` 出 `/grants`（到站后它真有了）', () => {
     const app = live()
 
     app.type('/g')
@@ -793,7 +793,7 @@ describe('场景 11 · slash 自动补全', () => {
 // ══ 密度 ＋ D11 护栏 ═════════════════════════════════════════════════
 
 describe('密度（原型 · 密度节）', () => {
-  test('**块之间留一整行 · 块内紧凑**（U67）', () => {
+  test('**块之间留一整行 · 块内紧凑**', () => {
     const app = live()
     app.feed([state(SESSION, [{ id: SESSION, title: '甲的事' }])])
     app.type('跑一下')
@@ -1027,7 +1027,7 @@ describe('D18 / D19 / D20（缺陷轮 VI）', () => {
     expect(textsOf(lines)).toEqual(['› 第一行', '  第二行'])
   })
 
-  test('D20 · 代码块挂在基线上（U112 后基线 0 ＋ 它自己的缩进 2）', () => {
+  test('D20 · 代码块挂在基线上（后基线 0 ＋ 它自己的缩进 2）', () => {
     expect(textsOf(bodyOf('看：\n\n```\nx\n```'))).toEqual(['  看：', '', '    x'])
   })
 

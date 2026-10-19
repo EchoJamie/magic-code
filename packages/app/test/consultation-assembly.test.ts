@@ -7,7 +7,7 @@ import { attachShell } from '../src/index.ts'
 import { createCollaborationBoundary } from '../src/collaboration-boundary.ts'
 import { makeStage } from './support.ts'
 
-for (const limited of [false, true]) test(`U115：可信用途优先于普通全工具角色，原许可交集 ${limited}，无协作边界也禁止实际写入`, async () => {
+for (const limited of [false, true]) test(`可信用途优先于普通全工具角色，原许可交集 ${limited}，无协作边界也禁止实际写入`, async () => {
   const stage = makeStage({ config: { agentRoles: { all: { name: '普通全工具角色', instructions: '可以修改', tools: ['read', 'write', 'exec', 'plan_update'] },
     origin: { name: '发起角色', instructions: '查证', ...(limited ? { tools: ['read'] } : {}) } } } })
   const store = createRecordsStore({ dataDir: stage.dataDir, workspace: [realpathSync(stage.workspace)] })

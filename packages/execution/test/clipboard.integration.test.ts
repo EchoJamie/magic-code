@@ -43,7 +43,7 @@ const PNG = new Uint8Array(
 /** 半截的 PNG（砍掉尾巴——`IEND` 那块必在最后，见 `checkImageIntact`）。 */
 const TRUNCATED = PNG.slice(0, 40)
 
-describe('U107 · `imageBytesOf`：这一份字节能不能当图送', () => {
+describe('`imageBytesOf`：这一份字节能不能当图送', () => {
   test('真图 ⇒ 过，并给出按字节认出来的 MIME', () => {
     expect(imageBytesOf(PNG, '剪贴板里这一张')).toEqual({ ok: true, mime: 'image/png' })
   })
@@ -108,7 +108,7 @@ async function withStubs<T>(dir: string, body: () => Promise<T>): Promise<T> {
   }
 }
 
-describe('U107 · `readClipboardImage`：取回来的是什么样的字节', () => {
+describe('`readClipboardImage`：取回来的是什么样的字节', () => {
   test('`pngpaste` 在 ⇒ **先走它**，取回的就是它吐的那一份字节', async () => {
     // 桩吐的是一份**可辨认**的字节：既验「走的是 pngpaste」，也验「字节原样过来」。
     // ⚠️ 载荷走**文件**（`cat` 出来），不写进脚本字面量——二进制经 shell 转义必被切坏，

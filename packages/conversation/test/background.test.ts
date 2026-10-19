@@ -32,7 +32,7 @@ function running(over: Partial<BackgroundRunning> = {}): BackgroundRunning {
   }
 }
 
-describe('U89 · 块里有什么（工单 ①：编号 · 命令 · 还在跑）', () => {
+describe('块里有什么（工单 ①：编号 · 命令 · 还在跑）', () => {
   test('一条一行：编号 · 命令 · 还在跑（＋ 输出文件）', () => {
     const text = withBackgroundRuns('base', [running()])
 
@@ -60,7 +60,7 @@ describe('U89 · 块里有什么（工单 ①：编号 · 命令 · 还在跑）
     expect(text).not.toContain('npm run watch')
   })
 
-  test('超长命令按 80 字截断（**与 U70 那条完成消息同一个数**）', () => {
+  test('超长命令按 80 字截断（**与 那条完成消息同一个数**）', () => {
     const long = 'x'.repeat(120)
     const text = withBackgroundRuns('base', [running({ command: long })])
 
@@ -77,7 +77,7 @@ describe('U89 · 块里有什么（工单 ①：编号 · 命令 · 还在跑）
   })
 })
 
-describe('U89 · 没有在跑的就不出现（工单 ③ 的文本层那一半）', () => {
+describe('没有在跑的就不出现（工单 ③ 的文本层那一半）', () => {
   test('空表 ⇒ 块不出现（`withBackgroundRuns` 原样交回）', () => {
     const base = buildSystemPrompt(VARS)
 
@@ -102,7 +102,7 @@ describe('U89 · 没有在跑的就不出现（工单 ③ 的文本层那一半�
   })
 })
 
-describe('U89 · 块界（`splitSystemPrompt` 认得出它）', () => {
+describe('块界（`splitSystemPrompt` 认得出它）', () => {
   test('切得开：后台那一块自成一块，不被算进上一块里', () => {
     const prompt = withBackgroundRuns(buildSystemPrompt(VARS), [running()])
     const blocks = splitSystemPrompt(prompt)

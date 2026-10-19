@@ -101,7 +101,7 @@ describe('空闲按一次 Ctrl+C ⇒ 不退出，那一行在**状态行之下**
     expect(after.statusLine).not.toContain(HINT_EXIT_ARMED)
   })
 
-  test('**交互区一行都不长**——那一行不是交互区的一格了（U68 挪出去的那一半）', async () => {
+  test('**交互区一行都不长**——那一行不是交互区的一格了（挪出去的那一半）', async () => {
     const stage = createStage()
     const before = await stage.screen(WIDE)
 
@@ -282,7 +282,7 @@ describe('账与屏同源', () => {
     expect(chromeHeightOf(stage.shell.getView())).toBe(base)
   })
 
-  test('**交互区那笔账里没有它了**（U68 挪出去的那一半）', () => {
+  test('**交互区那笔账里没有它了**（挪出去的那一半）', () => {
     const stage = createStage()
     const base = dockHeightOf(stage.shell.getView(), WIDE.columns)
 

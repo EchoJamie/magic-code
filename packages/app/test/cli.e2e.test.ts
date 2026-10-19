@@ -233,7 +233,7 @@ describe('入口 magic', () => {
     }
   })
 
-  test('**坏根**退 1 且是「配置有问题：」一行话——不是三段内部栈（U18 守护）', async () => {
+  test('**坏根**退 1 且是「配置有问题：」一行话——不是三段内部栈', async () => {
     // 由头（本轮实测）：`workspaceRoots` 是**用户手写在配置文件里**的东西——路径打错
     // 一个字母就是配置事故。而执行域抛的是普通 `Error`（它不该认识 `ConfigError`），
     // 裸抛出去用户拿到的是「一句 error: ＋ 三段栈」，栈里还写着给开发者看的设计出处。
@@ -276,7 +276,7 @@ describe('入口 magic', () => {
   })
 })
 
-describe('U28 · 夹具沙箱化（D24）', () => {
+describe('夹具沙箱化（D24）', () => {
   test('数据落点**每次唯一**，两遍各自跑通，收尾**不留库**', async () => {
     const first = stageWithConfig()
     const second = stageWithConfig()
@@ -398,7 +398,7 @@ describe('入口 magic · 换模型的启动参数', () => {
   })
 })
 
-describe('入口 magic · 接续（`resume` · U25 恢复入口）', () => {
+describe('入口 magic · 接续（`resume` · 恢复入口）', () => {
   test('旧选项通过真实 CLI 退出，不连接 App', async () => {
     const home = tempDir('magic-cli-')
     try {
@@ -488,7 +488,7 @@ describe('入口 magic · 接续（`resume` · U25 恢复入口）', () => {
   })
 })
 
-describe('入口 magic · 全放行（`--allow-all` · U73）', () => {
+describe('入口 magic · 全放行（`--allow-all`）', () => {
   test('用法里写清了这条入口——**且写清了它只在起会话那一刻给**', async () => {
     const home = tempDir('magic-cli-')
     try {

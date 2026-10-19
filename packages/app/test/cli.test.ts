@@ -4,7 +4,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { parseArgs } from '../src/cli.ts'
 
-describe('入口 magic · 接续（`resume` · U25 恢复入口）', () => {
+describe('入口 magic · 接续（`resume` · 恢复入口）', () => {
   test('旧选项、缺少 id、重复 resume 和多余位置参数明确拒绝', () => {
     for (const argv of [
       ['--session', 's-old'], ['resume'], ['resume', ''], ['resume', '   '],
