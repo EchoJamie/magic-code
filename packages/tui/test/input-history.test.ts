@@ -77,6 +77,7 @@ describe('输入召回与清空', () => {
     s.spy.emit(event('model.catalog',{entries:[]}))
     s.spy.emit(event('grants.catalog',{workspace:'/tmp',grants:[],stale:[],decisions:{total:0,uncovered:0,vetoed:0},history:{total:0,auto:0,kernel:0}}))
     s.spy.emit(event('mcp.catalog',{servers:[]}))
+    s.spy.emit(event('web.state',{}))
     s.key('escape'); s.key('up'); expect(s.view().draft).toBe('/config ')
     s.key('up'); expect(s.view().draft).toBe('/config wrong')
     s.shell.dispose()

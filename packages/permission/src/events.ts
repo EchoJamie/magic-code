@@ -38,6 +38,8 @@ export function decisionRequest(
      * （那一格的授权记的是域名，见契约 `EventDataOf['tool.decision.request'].host`）。
      */
     readonly host?: string
+    /** **这一次经哪一台可信中转服务**（U94）——代读时与目标域一同显示。 */
+    readonly via?: string
   },
 ): KernelEvent {
   return stamper.stamp('tool.decision.request', {
@@ -48,6 +50,7 @@ export function decisionRequest(
     // 只在真为外部时带键（与「缺席可辨、不给假值」同一条口径）
     ...(input.external === true ? { external: true } : {}),
     ...(input.host === undefined ? {} : { host: input.host }),
+    ...(input.via === undefined ? {} : { via: input.via }),
   })
 }
 

@@ -81,7 +81,9 @@ export { definePlanTools, PLAN_TOOL_NAMES } from './plan-tools.ts'
  * （`ToolRunContext` 一个字都没多）。别的工具想调模型，是另开一条这样的窄端口 ＋ 一次裁决。
  */
 export { defineWebFetchTool } from './web-fetch-tool.ts'
-export type { WebFetchDeps } from './web-fetch-tool.ts'
+export type { WebFetchDeps, WebServiceRef } from './web-fetch-tool.ts'
+export { defineWebSearchTool, WEB_SEARCH_MAX_QUERY_CHARS, WEB_SEARCH_PARAMETERS, WEB_SEARCH_SPEC } from './web-search-tool.ts'
+export type { WebSearchDeps } from './web-search-tool.ts'
 
 export { AGENT_TOOL_NAMES, defineAgentTools } from './agent-tools.ts'
 export { defineBackgroundTools } from './background-tools.ts'

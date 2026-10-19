@@ -11,6 +11,7 @@ export function settingsAction(v: unknown): boolean {
     case 'provider.save': return optional(v.protocol, x => x === null || ['responses', 'messages', 'chat-completions'].includes(String(x))) && optional(v.auth, x => ['none', 'bearer', 'api-key'].includes(String(x))) && text(v.provider) && ['vendor', 'name', 'region', 'baseURL', 'apiKey'].every(k => optional(v[k], x => typeof x === 'string'))
     case 'provider.remove': case 'model.refresh': return text(v.provider)
     case 'model.configure': return ['default', 'cantrip', 'spell', 'arcane'].includes(String(v.choice)) && text(v.provider) && text(v.model) && optional(v.initialize, x => typeof x === 'boolean')
+    case 'web.configure': return v.provider === null || text(v.provider)
     case 'model.clear': return ['default', 'cantrip', 'spell', 'arcane'].includes(String(v.choice))
     case 'model.override': return text(v.provider) && text(v.model) && (v.override === null || object(v.override))
     case 'prefs.set': return optional(v.turnDuration, x => x === 'elapsed' || x === 'active') && optional(v.reducedMotion, x => typeof x === 'boolean') && optional(v.statusLine, x => object(x) && Array.isArray(x.cells) && x.cells.every(c => ['session', 'model', 'reasoning', 'context', 'workspace'].includes(String(c))) && new Set(x.cells).size === x.cells.length && optional(x.color, c => typeof c === 'boolean'))

@@ -1,4 +1,4 @@
-import type { ModelCatalogRow, ModelRef, StatusLineCell, StatusLineConfig } from '@magic/contracts'
+import type { EventDataOf, ModelCatalogRow, ModelRef, StatusLineCell, StatusLineConfig } from '@magic/contracts'
 import type { PickerRow } from '../view.ts'
 import type { GrantsCatalog } from './grants.ts'
 import type { McpCatalog } from './mcp.ts'
@@ -28,7 +28,7 @@ export type ConfigItem = {
 
   /** 选定之后进哪一项——落在 `PickerRow.value` 上（与 `modelActionRows` 同一姿势）。 */
   readonly key: 'model' | 'grants'
-  | 'mcp' | 'paths' | 'statusLine' | 'motion' | 'turnDuration'
+  | 'mcp' | 'web' | 'paths' | 'statusLine' | 'motion' | 'turnDuration'
   readonly name: string
 }
 
@@ -36,6 +36,7 @@ export const CONFIG_ITEMS: readonly ConfigItem[] = [
   { key: 'model', name: '模型与连接' },
   { key: 'grants', name: '本工作区授权' },
   { key: 'mcp', name: '外部工具' },
+  { key: 'web', name: '网页查询与搜索' },
   { key: 'statusLine', name: '状态行' },
   { key: 'motion', name: '减少动效' },
   { key: 'turnDuration', name: '本轮耗时' },
@@ -121,6 +122,19 @@ function configMcpValue(catalog: McpCatalog | null): string {
   return catalog.servers.length === 0 ? '还没配' : `${catalog.servers.length} 台`
 }
 
+/**
+ * ④ **网页查询与搜索**的当前值——**连接 ＋ Fetch 的提炼模型**。
+ *
+ * 两件各说一件事：Search 只要连接；Cantrip 只影响 Fetch（未配置时 Search 照常可用）。
+ * 读数来自 `web.state`（不复用模型列表事件冒充网页状态）。
+ */
+function configWebValue(web: EventDataOf['web.state'] | null): string {
+  if (web === null) return ''
+  const provider = web.provider === undefined ? '还没配置' : web.provider
+  const cantrip = web.cantrip === undefined ? '未配置' : web.cantrip.model
+  return `${provider} · Fetch 提炼 ${cantrip}`
+}
+
 /** ④ **数据目录与工作区根**的当前值——两条路作一段（多个根时报个数，逐个摆进它那一屏）。 */
 function configPathsValue(paths: ConfigPaths): string {
   const parts: string[] = []
@@ -137,6 +151,7 @@ export function configRows(input: {
   readonly current: ModelRef | null
   readonly grants: GrantsCatalog | null
   readonly mcp: McpCatalog | null
+  readonly web: EventDataOf['web.state'] | null
   readonly statusLine: StatusLineConfig | undefined
   readonly turnDuration?: 'elapsed' | 'active'
   readonly reducedMotion: boolean
@@ -148,6 +163,7 @@ export function configRows(input: {
     model: configModelValue(input.models, input.current),
     grants: configGrantsValue(input.grants),
     mcp: configMcpValue(input.mcp),
+    web: configWebValue(input.web),
     paths: configPathsValue(input.paths),
     statusLine: configStatusLineValue(input.statusLine),
     motion: input.reducedMotion ? '已开' : '已关',

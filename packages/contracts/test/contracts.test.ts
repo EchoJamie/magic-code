@@ -464,6 +464,8 @@ export function rememberTravelsThroughBothPorts(): void {
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
     onPrefsSet: () => undefined,
+    onWebList: () => undefined,
+    onWebConfigure: () => undefined,
   }
   const widened: CommandRoutes = {
     onInput: () => undefined,
@@ -489,6 +491,8 @@ export function rememberTravelsThroughBothPorts(): void {
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
     onPrefsSet: () => undefined,
+    onWebList: () => undefined,
+    onWebConfigure: () => undefined,
   }
 
   // 端口面持有 → 三参调用成立（这正是装配把位递给权限域的那一跳）
@@ -569,6 +573,8 @@ export function routesCarryModelSwitch(): void {
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
     onPrefsSet: () => undefined,
+    onWebList: () => undefined,
+    onWebConfigure: () => undefined,
   }
   void routes
 }
@@ -748,6 +754,8 @@ describe('事件契约', () => {
       // 两格里），落库＝把同一份读数存第二遍。重放要的是「当时配成什么样」（读配置就有），
       // 不是「某人在哪一屏上点过一下」。
       'prefs.state',
+      // U94：网页服务读数同列——痕在配置文件的 `web.provider` 里，读配置就有。
+      'web.state',
     ])
   })
 

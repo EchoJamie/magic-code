@@ -205,7 +205,7 @@ describe('`/grants` 的两条路（读侧 ＋ 撤销）', () => {
       // 名录那一行照四格报——**域名那一格在写了时才报**（U72；「不写」在取网页上＝不命中，
       // 报成「任意域名」会说反）。夹具换成取网页后，那一行多了「× 域名 example.com」。
       expect(catalog?.grants.map((row) => row.describe)).toEqual([
-        '工具 web_fetch × 根内 × 操作 outbound × 域名 example.com',
+        '工具 web_fetch × 根内 × 操作 outbound × 域名 example.com × 经 api.deepseek.com',
       ])
       expect(catalog?.stale).toEqual([])
       // 放行区那一笔账（`B10` 口径的原料）：这一件是**人答的**（问了）⇒ uncovered＝1

@@ -59,7 +59,10 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
   } })
   const configPath = join(magic.base, 'config.json')
   writeFileSync(configPath, JSON.stringify({ dataDir, workspaceRoots: [workspace], models: {default: {provider: "controlled", model: 'entry-model'}, cantrip: {provider: "controlled", model: 'entry-model'}, spell: {provider: "controlled", model: 'member-model'}, arcane: {provider: "controlled", model: 'descendant-model'}},
-    providers: { controlled: { protocol: 'chat-completions', modelOverrides: Object.fromEntries(['entry-model', 'member-model', 'descendant-model', 'changed-model'].map(id => [id, { reasoningSupport: { disable: true, levels: ['low', 'high'] } }])), baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'local-controlled-only' } },
+    providers: { controlled: { protocol: 'chat-completions', modelOverrides: Object.fromEntries(['entry-model', 'member-model', 'descendant-model', 'changed-model'].map(id => [id, { reasoningSupport: { disable: true, levels: ['low', 'high'] } }])), baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'local-controlled-only' },
+      // U94：顾问的只读工具面仍含 `web_fetch`——它需要一条已配置的网页服务连接。
+      web: { vendor: 'deepseek', apiKey: 'web-controlled-only' } },
+    web: { provider: 'web' },
   }))
   const paths = runPathsOf(magic, tmpdir())
   const launcher = options.launch ?? createAgentLauncher()

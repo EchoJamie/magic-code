@@ -194,6 +194,11 @@ export async function removeProvider(input: {
       if (Object.values(configuredModels ?? {}).some(mapping => mapping.provider === input.provider)) {
         return { ok: false, reason: '连接仍被 Default 或档位引用，请先更换或清除映射' }
       }
+      // 网页服务引用（U94）——同一把「不静默级联」的尺子：删掉那条连接，
+      // 两项网页工具会一起坏掉，而配置里还写着它。点名引用，交给用户先改。
+      if ((raw['web'] as { provider?: unknown } | undefined)?.provider === input.provider) {
+        return { ok: false, reason: '连接仍被网页查询与搜索引用，请先在 /web（或设置里的工具接入）更换或清除' }
+      }
       delete providers[input.provider]
       return { ok: true, raw: { ...raw, providers } }
     },
@@ -230,6 +235,38 @@ export async function configureModel(input: {
       configuredModels[choice] = mapping
       if (initialize === true) for (const tier of ['cantrip', 'spell', 'arcane']) if (!Object.hasOwn(configuredModels, tier)) configuredModels[tier] = mapping
       return { ok: true, raw: { ...raw, models: configuredModels } }
+    },
+  })
+}
+
+/**
+ * 保存网页服务连接（U94）——`provider: null` ＝ 清除引用。
+ *
+ * **只动 `web` 这一段**：连接的密钥、模型映射、授权原样不碰。引用是否合格
+ * （存在 / DeepSeek 官方 / 无自定义地址）由调用方的 `validate`（`parseConfig`）判——
+ * 与读面同一套校验，不在写面另写一份。
+ */
+export async function configureWeb(input: {
+  readonly path: string
+  readonly expectedStamp?: string | null
+  readonly validate?: (raw: Record<string, unknown>) => void
+  readonly provider: string | null
+}): Promise<SaveOutcome> {
+  return editConfigFile({
+    path: input.path,
+    ...(input.expectedStamp === undefined ? {} : { expectedStamp: input.expectedStamp }),
+    ...(input.validate === undefined ? {} : { validate: input.validate }),
+    update(raw) {
+      const next: Record<string, unknown> = { ...raw }
+      if (input.provider === null) {
+        delete next['web']
+        return { ok: true, raw: next }
+      }
+      if (!Object.hasOwn(providersOf(raw), input.provider)) {
+        return { ok: false, reason: `没有「${input.provider}」这条连接——先接入它` }
+      }
+      next['web'] = { provider: input.provider }
+      return { ok: true, raw: next }
     },
   })
 }

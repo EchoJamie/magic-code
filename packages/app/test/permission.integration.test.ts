@@ -74,12 +74,11 @@ function fakeWeb(): WebSource & { readonly asked: string[] } {
       return Promise.resolve({
         ok: true,
         url,
-        status: 200,
-        bytes: 64,
-        body: '<html><body><p>这一页说的是：example.com 这个域名专留作示例。</p></body></html>',
-        contentType: 'text/html',
+        title: '示例',
+        markdown: '这一页说的是：example.com 这个域名专留作示例。',
       })
     },
+    search: async () => ({ ok: true as const, results: [] }),
   }
 }
 
@@ -167,7 +166,7 @@ describe('权限规则 —— 配置真的接进闸门', () => {
       model: SESSION_MODEL,
       turns: [fetchTurn(), { kind: 'text', text: ANSWER }, { kind: 'text', text: '好' }],
     })
-    const stage = stageOn(fixture, { rules: [{ tool: 'web_fetch', host: 'example.com' }] })
+    const stage = stageOn(fixture, { rules: [{ tool: 'web_fetch', host: 'example.com', via: 'api.deepseek.com' }] })
 
     const web = fakeWeb()
 
@@ -175,7 +174,7 @@ describe('权限规则 —— 配置真的接进闸门', () => {
       const assembly = stage.assemble({ modelGateway: undefined, webSource: web })
 
       // 装配侧先自证：规则经 `parseRules` 落了地（没被拒、条数对）
-      expect(assembly.permissionRules).toEqual([{ tool: 'web_fetch', host: 'example.com' }])
+      expect(assembly.permissionRules).toEqual([{ tool: 'web_fetch', host: 'example.com', via: 'api.deepseek.com' }])
       expect(assembly.rejectedRules).toEqual([])
 
       const shell = bareShell(assembly)
@@ -314,7 +313,7 @@ describe('「总是允许」——全链（外壳答复 → 控制域 → 装配
 
       // 而它**真进了工作区级账本**（不是只在闸门里留了个印象）
       expect(assembly.grantsView().grants.map((row) => row.describe)).toEqual([
-        '工具 web_fetch × 根内 × 操作 outbound × 域名 example.com',
+        '工具 web_fetch × 根内 × 操作 outbound × 域名 example.com × 经 api.deepseek.com',
       ])
 
       await untilSettled(shell)

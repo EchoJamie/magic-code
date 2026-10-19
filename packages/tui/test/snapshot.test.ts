@@ -1151,7 +1151,8 @@ describe('slash 候选（D12 · 纯函数级）', () => {
     ])
     // U52——打到一半就认出来（`/ex` 只可能是 `/exit`：别的名里一个 `x` 都没有）
     expect(matchCommands('/ex').map((row) => row.name)).toEqual(['/exit'])
-    expect(matchCommands('/').map((row) => row.name)).toHaveLength(13)
+    // U94：`/web` 进表——全表十四条。
+    expect(matchCommands('/').map((row) => row.name)).toHaveLength(14)
     expect(matchCommands('看下目录')).toEqual([]) // 不是 slash——不出候选
   })
 

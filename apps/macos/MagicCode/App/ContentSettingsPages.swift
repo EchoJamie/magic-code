@@ -1,11 +1,64 @@
 import SwiftUI
 
+/// **网页查询与搜索**（U94）——两项内置工具共用的 DeepSeek 连接。
+/// 只选连接；API Key 仍在「模型与连接」里维护。Cantrip 映射只影响 Fetch。
+struct WebSettingsPage: View {
+    @ObservedObject var model: AppModel
+    let snapshot: SettingsSnapshot
+    var body: some View {
+        SettingsCard(title: "网页查询与搜索") {
+            Text("Search 直接返回逐条服务摘要，由主 Agent 综合；Fetch 由这条连接代读页面，再交 Cantrip 按问题提炼。")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+
+            let providers = snapshot.configuration["providers"]
+            let current = snapshot.configuration["web"]["provider"].text
+            let eligible = providers.object.keys.sorted().filter {
+                providers[$0]["vendor"].text == "deepseek" && providers[$0].object["baseURL"] == nil && providers[$0].object["region"] == nil
+            }
+
+            HStack(alignment: .top, spacing: 12) {
+                MagicIcon(name: "globe")
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(current.isEmpty ? "尚未配置" : displayName(current)).font(.headline)
+                    Text(current.isEmpty ? "两项网页工具都不会送入模型工具表。" : "两项网页工具共用这条连接；它仍作为普通连接在「模型与连接」里维护。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Picker("网页服务连接", selection: Binding(get: { current }, set: { value in
+                    let provider: SettingsValue = value.isEmpty ? .null : .string(value)
+                    model.applySettings(.object(["type": .string("web.configure"), "provider": provider]), stamp: snapshot.stamp, key: "web")
+                })) {
+                    Text("未配置").tag("")
+                    ForEach(eligible, id: \.self) { id in Text(displayName(id)).tag(id) }
+                }.labelsHidden().frame(maxWidth: 220)
+            }
+            if eligible.isEmpty {
+                Text("还没有合格的 DeepSeek 官方连接。请先在「模型与连接」里接入一条（首版只接固定官方地址）。")
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+            let cantrip = snapshot.configuration["models"]["cantrip"]
+            Text(cantrip["model"].text.isEmpty
+                ? "网页提炼：Cantrip 未配置——Fetch 会停下并指路；Search 不受影响。"
+                : "网页提炼：Cantrip · \(cantrip["model"].text)")
+                .font(.caption).foregroundStyle(.secondary)
+        }.id("web")
+    }
+    private func displayName(_ id: String) -> String {
+        let name = snapshot.configuration["providers"][id]["name"].text
+        return name.isEmpty ? id : name
+    }
+}
+
 struct McpSettingsPage: View {
     @ObservedObject var model: AppModel
     let snapshot: SettingsSnapshot
     @ObservedObject var drafts: SettingsDrafts
     @State private var remove: String?
     var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+        WebSettingsPage(model: model, snapshot: snapshot)
         SettingsCard(title: "工具服务") {
             Text("添加你希望任务使用的外部工具。新任务采用保存的配置，正在进行的任务继续使用原来的工具。").font(.callout).foregroundStyle(.secondary)
             let servers = snapshot.configuration["mcp"]["servers"]
@@ -39,6 +92,7 @@ struct McpSettingsPage: View {
                 }
             }
         }.id("servers")
+        }
         .sheet(isPresented: Binding(get: { drafts.mcpEditor != nil }, set: { if !$0 { drafts.mcpEditor = nil } })) {
             if let name = drafts.mcpEditor {
                 let server = snapshot.configuration["mcp"]["servers"][name]

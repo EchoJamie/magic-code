@@ -986,58 +986,64 @@ export type PathCandidate = {
   readonly external: boolean
 }
 
-// —— 取网页（U72）——
+// —— 网页工具（U72 · U94）——
 
 /**
- * **取回面**（U72）——把一份网页取回来（工具域 → 执行域）。
+ * **网页服务**（U94）——两项内置工具共用的取材面（工具域 → 执行域）。
  *
- * ## 为什么它是一条端口，而不是让工具自己 `fetch`
+ * 首版固定接 DeepSeek 官方服务：`fetchPage` 与 `search` 只发请求、返回原始资料，
+ * 不做提炼、不做综合、不自行抓页。服务的 HTTPS 地址固定，不由模型或参数指定。
  *
- * 与沙箱同一条理由（本文件头注：域只经契约、执行边界管原语）：**出网是边界动作**。
- * 三条规矩都落在实现那一侧，一处写死：
- * - **`http` 一律升 `https`**、`localhost` 与无点主机名**发请求之前就拒**（判据在
- *   `web.ts` 的 `webTargetOf`——**它再走一遍**，不假设调用方替它判过）；
- * - **不跟随跨主机重定向**：跳走了就把「从哪跳到哪」交回来（设计明写：让模型自己再取一次），
- *   而不是替它跟过去——跟过去意味着**卡上写的那个域名与实际到达的域名不是一个**；
- * - **只有 http / https**。
+ * 为什么它是一条端口，而不是让工具自己 `fetch`：**出网是边界动作**（与沙箱同一条理由）。
+ * 统一的一处实现管 HTTP、认证、错误分类与取消。
  *
- * 入参是**写的那个地址**（未经归一的原话）：归一与拒绝都在实现里做一次。
+ * 入参是**写的那个地址**（未经归一的原话）：归一与拒绝都在实现里做一次
+ * （`webTargetOf`——**它再走一遍**，不假设调用方替它判过）。
  */
 export interface WebSource {
   fetchPage(url: string, opts?: { readonly signal?: AbortSignal }): Promise<PageFetch>
+  search(
+    input: { readonly query: string },
+    opts?: { readonly signal?: AbortSignal },
+  ): Promise<WebSearchOutcome>
 }
 
-/** 取回的结果——取到了 / 没取到（三种没取到的来路分得开，回执的话各不相同）。 */
+/** 取回的结果——取到了 / 没取到。 */
 export type PageFetch = PageFetchOk | PageFetchFailure
 
 export type PageFetchOk = {
   readonly ok: true
   /** 归一之后的地址（可能与给的那个不同：`http` 升了 `https`）。 */
   readonly url: string
-  /** HTTP 状态码——回执要报它。 */
-  readonly status: number
-  /** 正文字节数——回执要报它（**响应体的字节**，不是转出来那份 markdown 的长度）。 */
-  readonly bytes: number
-  /** 完整响应正文（HTML / 纯文本；转 markdown 是工具那一侧的事）；读取未完成应返回失败。 */
-  readonly body: string
-  readonly contentType?: string
+  /** 服务给的标题；缺失时为空字符串（**不补造**）。 */
+  readonly title: string
+  /** 服务给的 Markdown 正文——Magic 直接采用，不再自行抓取、预检或比对。 */
+  readonly markdown: string
 }
 
 export type PageFetchFailure = {
   readonly ok: false
-  /**
-   * - `refused` ——**压根没发**（地址不合格：本机 / 无点 / 非 http(s)）；
-   * - `failed` ——发了没成（连不上、超时、出错码……）；
-   * - `off-host-redirect` ——它跳到**别的主机**去了，本端口**不跟**（`from` / `to` 给出去向）。
-   */
-  readonly kind: 'refused' | 'failed' | 'off-host-redirect'
   /** 给模型看的一句话（它据此改法）。 */
   readonly reason: string
-  /** `off-host-redirect` 时给：**从哪**。 */
-  readonly from?: string
-  /** `off-host-redirect` 时给：**跳到哪**。 */
-  readonly to?: string
 }
+
+/**
+ * 一条搜索结果——**服务给的原始资料**（不综合、不改写）。
+ *
+ * `title` 可能为空（服务没拿到）；`date` / `summary` 可能缺失——**缺就是缺**，
+ * 工具成形时如实标明，不补造。
+ */
+export type WebSearchItem = {
+  readonly title: string
+  readonly url: string
+  readonly date?: string
+  readonly summary?: string
+}
+
+/** 一次搜索的产物——逐条资料 / 一句缘由（失败是返回值的一种，不抛）。 */
+export type WebSearchOutcome =
+  | { readonly ok: true; readonly results: readonly WebSearchItem[] }
+  | { readonly ok: false; readonly reason: string }
 
 /**
  * **提炼面**（U72）——**一次按问题提炼**的模型调用（工具域 → 模型域）。
@@ -1086,40 +1092,6 @@ export type DistillOutcome =
     }
   /** 配了，但这一趟没成（连不上 / 供应商报错 / 被掐断 / 没给出答案）——照普通失败办。 */
   | { readonly ok: false; readonly kind: 'failed'; readonly reason: string }
-
-// —— 搜索（U88）——
-
-
-export interface WebSearchService {
-  /**
-   * 跑一次搜索——**一次调用进、一根字符串出**（见本节头注）。
-   *
-   * `query` 是那句要查的话的**原话**：写法归一（抬头那一行）归 `searchReceiptOf`，
-   * 本面不预先动它。
-   *
-   * `signal` 与其余端口同一条姿势：取消中止在途；**失败是返回值的一种、不抛**
-   * （照 `SkillRead` / `MaterialRead` / `PageFetch` / `DistillOutcome` 的先例）。
-   */
-  search(
-    input: { readonly query: string },
-    opts?: { readonly signal?: AbortSignal },
-  ): Promise<SearchOutcome>
-}
-
-/**
- * 一次搜索的产物——**成了给那一根回执**，没成给**缘由**。
- *
- * ⚠️ **成功那一支就是那根字符串本身**（`receipt`），**不是**「链接数组 ＋ 正文」的零件：
- * 成形（抬头 / 链接段 / 正文怎么拼）**不在本面说了算**——它归 `searchReceiptOf` 一处
- * （`search.ts`）。把零件交出去、让每个调用方自己拼，就是两套回执。
- *
- * 没成的那一支**只有一句话**（给模型看的，它据此改法）：今天这个面上说得出来的失败
- * 只有一类（源那一边没成 / 报错），**不先立 `kind` 分档**——没有依据的档位是编出来的
- * （同 `DistillOutcome` 只留一档那条由头）。
- */
-export type SearchOutcome =
-  | { readonly ok: true; readonly receipt: string }
-  | { readonly ok: false; readonly reason: string }
 
 // —— 计划与历史（U34）——
 
@@ -1404,6 +1376,13 @@ export type ToolCall = {
    * （见 `analyze`），但材料会说明它**不在已配置的工具表里**。
    */
   readonly external?: ExternalToolRef
+  /**
+   * **这次调用经由哪一台可信中转服务**（U94）——网页工具给的是 DeepSeek 的服务域。
+   *
+   * **来处唯一**：分发查到工具定义之后附上（`ToolDefinition.via` → 此位）。
+   * 权限域据它把「往目标页发」与「经哪家中转」写进同一次授权；**模型侧给不出这一位**。
+   */
+  readonly via?: string
 }
 
 /**
@@ -1855,6 +1834,19 @@ export type CommandRoutes = {
    * 摆成真的样子（写不成时不把用户刚点的那个当成成了）。
    */
   onPrefsSet(request: PrefsSetRequest): void
+  /**
+   * **网页服务读数**（U94 · `web.list`）→ **装配**（配置的读落点在它那一层）。
+   *
+   * 答复走 `web.state`（当前连接 ＋ Cantrip 映射 ＋ 一句说明）——**不复用模型列表事件**
+   * 冒充网页状态。浏览不发起 Search / Fetch / 模型推理请求。
+   */
+  onWebList(): void
+  /**
+   * **设置网页服务连接**（U94 · `web.configure`）→ **装配**（校验与原子写入都在它那一层）。
+   *
+   * `provider: null` ＝ 清除引用。答复走 `web.state`（带上 `saved` 与 `note`）。
+   */
+  onWebConfigure(provider: string | null): void
 }
 
 /**

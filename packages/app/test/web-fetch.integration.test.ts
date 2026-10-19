@@ -23,7 +23,7 @@ const PAGE_HTML =
 const ANSWER = '标准版每月 12 元。'
 
 /** 替身的取回面——记下被叫了几次、取的哪个地址。 */
-function fakeWeb(body = PAGE_HTML): WebSource & { readonly asked: string[] } {
+function fakeWeb(_body = PAGE_HTML): WebSource & { readonly asked: string[] } {
   const asked: string[] = []
 
   return {
@@ -33,12 +33,12 @@ function fakeWeb(body = PAGE_HTML): WebSource & { readonly asked: string[] } {
       return Promise.resolve({
         ok: true,
         url,
-        status: 200,
-        bytes: Buffer.byteLength(body),
-        body,
-        contentType: 'text/html',
+        title: '定价',
+        // 替身直接给 Markdown（转换已在服务那一侧）
+        markdown: '# 定价\n\n标准版每月 12 元。\n\n内部备注：这一段只在原文里，答案里不该出现。',
       })
     },
+    search: async () => ({ ok: true as const, results: [] }),
   }
 }
 

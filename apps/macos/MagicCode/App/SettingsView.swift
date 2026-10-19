@@ -19,6 +19,7 @@ struct SettingsSearchItem: Identifiable {
         .init(id: "configuredModels", category: "models", title: "Default 与能力档位", words: "默认模型 Cantrip Spell Arcane 型号 映射"),
         .init(id: "providers", category: "models", title: "供应商连接与模型规格", words: "密钥 API key DeepSeek MiniMax 地址 缓存 刷新 容量 思考 覆盖"),
         .init(id: "servers", category: "tools", title: "MCP 服务器", words: "工具 stdio HTTP 命令 参数 环境变量 请求头 连接 重连"),
+        .init(id: "web", category: "tools", title: "网页查询与搜索", words: "web search fetch DeepSeek 摘要 代读 Cantrip 联网"),
         .init(id: "rules.sources", category: "materials", title: "主动加载的补充规约", words: "规则 文件 AGENTS CLAUDE sources"),
         .init(id: "rules.linkSources", category: "materials", title: "规约链接的允许来源", words: "符号链接 linkSources"),
         .init(id: "skills.sources", category: "materials", title: "补充技能目录", words: "skill sources 技能 目录"),
@@ -191,6 +192,7 @@ struct SettingsView: View {
         case "configuredModels": return ["default", "cantrip", "spell", "arcane"].map { "\($0.capitalized)：\(config["models"][$0]["model"].text.isEmpty ? "未配置" : config["models"][$0]["model"].text)" }.joined(separator: " · ")
         case "providers": return config["providers"].object.keys.sorted().map { config["providers"][$0]["name"].text.isEmpty ? $0 : config["providers"][$0]["name"].text }.joined(separator: " · ")
         case "servers": return config["mcp"]["servers"].object.keys.sorted().joined(separator: " · ")
+        case "web": return config["web"]["provider"].text.isEmpty ? "尚未配置" : "\(config["web"]["provider"].text) · Fetch 提炼 \(config["models"]["cantrip"]["model"].text.isEmpty ? "未配置" : config["models"]["cantrip"]["model"].text)"
         case "roles": return config["agentRoles"].object.keys.sorted().joined(separator: " · ")
         case "rules.sources", "rules.linkSources", "skills.sources": return model.settingsSnapshot?.sources.filter { $0["source"].text == item.id }.map { $0["path"].text }.joined(separator: " · ") ?? ""
         case "data": return model.settingsSnapshot?.configPath ?? ""

@@ -98,6 +98,13 @@ export type ToolDefinition = {
    * 来源，而不是模型参数里的自报。执行体那一侧看不见它（`run` 只收 `args`）。
    */
   readonly external?: ExternalToolRef
+  /**
+   * **这次调用经由哪一台可信中转服务**（U94）——定义处写死，分发原样附到 `ToolCall.via`。
+   *
+   * 网页工具给的是固定的 `api.deepseek.com`。与 `external` 同一姿势：**模型侧给不出**，
+   * 权限域只认这一份来源。
+   */
+  readonly via?: string
 }
 
 /** 在定义处保留解析后的参数类型；run 只接收本定义 prepare 的成功结果。 */

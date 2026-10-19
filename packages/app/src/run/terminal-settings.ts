@@ -44,9 +44,19 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
     const event = { id: 0, turn: null, at: Date.now(), session, kind, data } as KernelEvent
     for (const listener of listeners) listener(event)
   }
-  const local = new Set<Command['type']>(['model.list', 'provider.list', 'provider.save', 'provider.remove', 'model.configure', 'model.override', 'model.refresh', 'prefs.set', 'grants.list', 'grants.revoke'])
+  const local = new Set<Command['type']>(['model.list', 'provider.list', 'provider.save', 'provider.remove', 'model.configure', 'model.override', 'model.refresh', 'prefs.set', 'web.list', 'web.configure', 'grants.list', 'grants.revoke'])
   if (settingsOnly) local.add('mcp.list')
   async function handle(command: Command) {
+    // 读的是盘上配置——**不建网络环境**（浏览不发起网页或模型调用）。
+    if (command.type === 'web.list') {
+      const config = loadConfig({ magic }).config
+      emit('web.state', {
+        ...(config.web === undefined ? {} : { provider: config.web.provider }),
+        ...(config.models?.cantrip === undefined ? {} : { cantrip: config.models.cantrip }),
+        note: '读的是已保存的配置；浏览不发起网页或模型调用',
+      })
+      return
+    }
     if (command.type === 'mcp.list') {
       const config = loadConfig({ magic }).config
       emit('mcp.catalog', { servers: Object.entries(config.mcp?.servers ?? {}).map(([server, config]) => ({ server,
@@ -61,6 +71,7 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
       let action: SettingsAction | undefined
       switch (command.type) {
         case 'provider.save': case 'provider.remove': case 'model.configure': case 'model.override': case 'prefs.set': action = command; break
+        case 'web.configure': action = { type: 'web.configure', provider: command.provider, ...(command.expectedStamp === undefined ? {} : { expectedStamp: command.expectedStamp }) }; break
         case 'model.refresh': {
           const provider = command.provider ?? selection?.provider ?? loadConfig({ magic }).config.models?.default?.provider
           if (!provider) throw new Error('尚未选择可刷新的供应商')
@@ -83,6 +94,14 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
       if (command.type === 'prefs.set') {
         const config = loadConfig({ magic }).config
         emit('prefs.state', { statusLine: config.statusLine, turnDuration: config.turnDuration ?? 'elapsed', reducedMotion: config.motion?.reduced === true, note })
+      } else if (command.type === 'web.configure') {
+        const config = loadConfig({ magic }).config
+        emit('web.state', {
+          ...(config.web === undefined ? {} : { provider: config.web.provider }),
+          ...(config.models?.cantrip === undefined ? {} : { cantrip: config.models.cantrip }),
+          ...(saved === undefined ? {} : { saved }),
+          ...(note === undefined ? {} : { note }),
+        })
       } else if (command.type === 'grants.list' || command.type === 'grants.revoke') {
           const path = `${magic.base}/grants.json`, before = configStamp(path)
           const local = readGrantView(magic, grants ? createWorkspaceService({ roots: [grants.workspace] }) : workspace)

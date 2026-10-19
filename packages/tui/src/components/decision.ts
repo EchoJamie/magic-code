@@ -7,7 +7,15 @@ export function decisionActions(pending: PendingDecision) {
   return [
     { label: '批准这一次', decision: 'approve' as const, remember: false },
     ...(pending.external !== true && (pending.weight !== 'heavy' || pending.host !== undefined)
-      ? [{ label: pending.host === undefined ? '本工作区总是允许此类操作' : `总是允许这个域名：${pending.host}`, decision: 'approve' as const, remember: true }] : []),
+      ? [{
+        label: pending.host === undefined
+          ? '本工作区总是允许此类操作'
+          : pending.via === undefined
+            ? `总是允许这个域名：${pending.host}`
+            : `总是允许这个域名（经 ${pending.via}）：${pending.host}`,
+        decision: 'approve' as const,
+        remember: true,
+      }] : []),
     { label: '拒绝这一次', decision: 'reject' as const, remember: false },
   ]
 }

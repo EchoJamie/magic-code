@@ -164,6 +164,8 @@ export type EventKind =
   | 'mcp.catalog'
   // 控制 · 界面偏好——**`prefs.set` 的回话**（U112）：那一趟写成了没有、写成了什么；**不落库**
   | 'prefs.state'
+  // 控制 · 网页服务——**`web.list` / `web.configure` 的答复**（U94）；**不落库**
+  | 'web.state'
   // 兜底——内核自身异常（非模型 / 工具域；产生方就近）
   | 'error'
   // 预留——压缩（阶段 3 留位）
@@ -553,6 +555,13 @@ export type EventDataOf = {
      * 缺席＝这一次没有域名这一维（既有那些工具一个字节都不变）。
      */
     readonly host?: string
+    /**
+     * **这次经哪一台可信中转服务**（U94）——网页取回同时带目标 `host` 与中转 `via`。
+     *
+     * 卡上要同时说清「取哪一页」与「谁去取」；「总是允许」按 `{targetHost, viaHost}`
+     * 记，旧的单域授权缺这一位因此**不匹配**（见权限域 `matchesVia`）。
+     */
+    readonly via?: string
   }
   'tool.decision': {
     readonly call: RecordId
@@ -1087,6 +1096,16 @@ export type EventDataOf = {
     /** 一句话说明——只在有事要说时给（没写成的缘由 / 写成了哪几格）。 */
     readonly note?: string
   }
+  'web.state': {
+    /** 当前网页服务连接（`web.provider`）；缺省＝未配置。 */
+    readonly provider?: string
+    /** Fetch 的提炼模型映射（`models.cantrip`）；缺省＝未配置（只影响 Fetch）。 */
+    readonly cantrip?: import('./model.ts').ModelRef
+    /** 这次保存写成了没有；只给 `web.configure` 的答复。 */
+    readonly saved?: boolean
+    /** 一句话说明——写没写成、为什么没写成，或“浏览不等于已连通”。 */
+    readonly note?: string
+  }
   // 兜底——内核自身异常（非模型 / 工具域）
   error: { readonly message: string }
   // 预留——压缩（阶段 3 留位）
@@ -1221,6 +1240,9 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // （痕在配置文件里：`statusLine` / `motion` 那两格），落库＝把同一条读数存第二遍。
   // 重放要的是「当时配成什么样」（读配置就有），不是「某人在哪一屏上点过一下」。
   'prefs.state',
+  // 网页服务读数同列的理由（U94）：与 `prefs.state` 同一条——痕在配置文件里
+  // （`web.provider`），落库＝把同一份读数存第二遍。
+  'web.state',
 ]
 
 /** 整轮耗时所需的原始事实；显示侧与记录读取共用这一边界。 */

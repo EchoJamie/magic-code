@@ -42,6 +42,7 @@ function openConfig(over: { readonly statusLine?: { cells: readonly string[]; co
       history: { total: 0, auto: 0, kernel: 0 },
     }),
     event('mcp.catalog', { servers: [] }),
+    event('web.state', { provider: 'deepseek-web' }),
   ])
 
   return stage
@@ -99,6 +100,7 @@ describe('状态行可配 · 入口走 /config', () => {
       '模型与连接',
       '本工作区授权',
       '外部工具',
+      '网页查询与搜索',
       '状态行',
       '减少动效',
       '本轮耗时',
@@ -215,6 +217,8 @@ test('配置读数按种类到齐，重复授权回话不提前开屏、不关�
   stage.feed([event('model.catalog',{entries:[]}), grants, grants])
   expect(stage.shell.getView().dock.kind).toBe('input')
   stage.feed([event('mcp.catalog',{servers:[]})])
+  expect(stage.shell.getView().dock.kind).toBe('input')
+  stage.feed([event('web.state',{})])
   expect(rowsOf(stage).some(row=>row.value==='turnDuration')).toBe(true)
   stage.feed([grants])
   expect(rowsOf(stage).some(row=>row.value==='turnDuration')).toBe(true)

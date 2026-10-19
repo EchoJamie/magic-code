@@ -160,6 +160,12 @@ export function createControlHub(onError?: (error: unknown) => void): ControlHub
         return target.onModelOverride(command)
       case 'model.configure':
         return target.onModelConfigure(command)
+      case 'web.list':
+        // 网页服务读数（U94）——归装配（配置读在它那一层）；答复走 `web.state`。
+        return target.onWebList()
+      case 'web.configure':
+        // 设置 / 清除网页服务引用——控制域只带话，校验与落盘都在装配。
+        return target.onWebConfigure(command.provider)
       case 'prefs.set':
         // 界面的两格偏好（U112）——写配置里 `statusLine` / `motion` 那两格。控制域只带话：
         // 校验与落盘都在装配（同 `webfetch.set` 的站位）。

@@ -9,8 +9,8 @@ import { createWorkspaceService } from '@magic/execution'
 import { parseRules } from '@magic/permission'
 import type { FetchLike, ModelInfoService } from '@magic/model'
 import { createModelInfoService, resolveConnection, selectModel, vendorCatalog } from '@magic/model'
-import { loadConfig, parseConfig, type LoadedConfig } from '@magic/config'
-import { editConfigFile, saveProvider, removeProvider, configureModel, setPrefs } from '@magic/config'
+import { loadConfig, parseConfig, webReferenceProblem, type LoadedConfig } from '@magic/config'
+import { editConfigFile, saveProvider, removeProvider, configureModel, configureWeb, setPrefs } from '@magic/config'
 import { commitGrants, loadGrants } from './grants-file.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
 import { configStamp } from '@magic/config'
@@ -58,7 +58,7 @@ export function createSettings(context: SettingsContext) {
     const raw = stamp === null ? {} : book(JSON.parse(readFileSync(configPath, 'utf8')))
     const configuration = {
       ...diagnosticsOf(config),
-      providers, models: config.models ?? {}, agentRoles: raw.agentRoles ?? {},
+      providers, models: config.models ?? {}, web: config.web ?? {}, agentRoles: raw.agentRoles ?? {},
       mcp: { servers }, rules: raw.rules ?? {}, skills: raw.skills ?? {},
       ...(raw.workspaceRoots === undefined ? {} : { workspaceRoots: raw.workspaceRoots }),
       permissions: config.permissions ?? {},
@@ -97,7 +97,8 @@ export function createSettings(context: SettingsContext) {
       return '诊断设置已保存；运行中的入口随后采用，离线入口下次启动采用'
     }
     const currentInfo = modelInfo(loaded)
-    await currentInfo.warmup()
+    // 网页配置的保存与浏览不触发任何模型侧请求（U94）；其余设置沿用原有缓存预热。
+    if (action.type !== 'web.configure') await currentInfo.warmup()
     const snapshots = Object.entries(loaded.config.providers).map(([provider, config]) => ({ provider, config, snapshot: currentInfo.peek(provider).snapshot }))
     if (action.type === 'role.save' && action.role.model !== undefined) {
       const reader = await readModelCatalog(loaded, context.magic, undefined, undefined, context.now ?? Date.now, currentInfo)
@@ -108,6 +109,14 @@ export function createSettings(context: SettingsContext) {
     const validate = (raw: Record<string, unknown>) => {
       const config = parseConfig(raw, configPath, context.magic).config
       for (const [id, configEntry] of Object.entries(config.providers)) resolveConnection({ providerId: id, config: configEntry, env: context.environment })
+      // 网页引用在**写**这一侧从严（加载侧容忍手工改坏的引用，见 `asWeb`）：
+      // 只拦会动到它的动作，别让一份悬空引用挡住无关设置的保存。
+      const touchesWeb = action.type === 'web.configure'
+        || (action.type === 'provider.save' && config.web?.provider === action.provider)
+      if (touchesWeb) {
+        const problem = webReferenceProblem(config)
+        if (problem !== undefined) throw new Error(problem)
+      }
       if (action.type === 'provider.save' || action.type === 'model.configure') {
         for (const [choice, mapping] of Object.entries(config.models ?? {})) {
           if (mapping.provider !== action.provider) continue
@@ -132,6 +141,7 @@ export function createSettings(context: SettingsContext) {
       case 'provider.save': outcome = await saveProvider({ ...input, request: action }); break
       case 'provider.remove': outcome = await removeProvider({ ...input, provider: action.provider }); break
       case 'model.configure': outcome = await configureModel({ ...input, request: action }); break
+      case 'web.configure': outcome = await configureWeb({ ...input, provider: action.provider }); break
       case 'prefs.set': outcome = await setPrefs({ ...input, request: action }); break
       case 'model.refresh': {
         const providers = loaded.config.providers
@@ -203,6 +213,7 @@ export function createSettings(context: SettingsContext) {
     } catch (error) { cacheNote = `；模型缓存未能更新：${error instanceof Error ? error.message : String(error)}` }
     if (action.type.startsWith('model.') || action.type.startsWith('provider.')) return '已保存；之后解析模型配置时采用，已有 Agent 的选择保留' + cacheNote
     if (action.type.startsWith('role.')) return '已保存；后续创建采用，已有成员保留'
+    if (action.type === 'web.configure') return '已保存；下一次工具调用采用，已有工作保持原配置'
     if (action.type === 'prefs.set') return '已保存；运行中的入口随后采用，离线入口下次启动采用'
     return '已保存；下次装配时采用，已有工作保持原配置'
   }

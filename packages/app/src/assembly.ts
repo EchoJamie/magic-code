@@ -417,6 +417,7 @@ export function assemble(options: AssembleOptions): Assembly {
         cantrip: modelSource.cantrip,
         canDistill: () => { modelSource.sync(); return modelSource.configured?.cantrip !== undefined },
         connections: () => Object.keys(modelSource.providers).length,
+        webSource: modelSource.webSource,
       },
     })
     chains.set(session, opened)
@@ -757,6 +758,33 @@ export function assemble(options: AssembleOptions): Assembly {
     else await listModels(note, saved)
   }
 
+  /** 网页服务读数（U94）——读的是盘上当下的配置；不发起网页或模型推理请求。 */
+  const emitWebState = (note?: string, saved?: boolean): void => {
+    const config = loadConfig({ path: loaded.path, magic }).config
+    sink.emit(requireActiveStamper().stamp('web.state', {
+      ...(config.web === undefined ? {} : { provider: config.web.provider }),
+      ...(config.models?.cantrip === undefined ? {} : { cantrip: config.models.cantrip }),
+      ...(saved === undefined ? {} : { saved }),
+      ...(note === undefined ? {} : { note }),
+    }))
+  }
+
+  /** 与 `listModels` 同一条起手：还没有会话就先开一条（信封铸造器要它就位）。 */
+  const ensureSession = async (): Promise<void> => {
+    if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
+  }
+
+  const listWeb = async (): Promise<void> => {
+    await ensureSession()
+    emitWebState('读的是已保存的配置；浏览不发起网页或模型调用')
+  }
+
+  const configureWebCommand = async (provider: string | null): Promise<void> => {
+    await ensureSession()
+    const { note, saved } = await modelSource.save({ type: 'web.configure', provider })
+    emitWebState(note, saved)
+  }
+
   const setPrefsCommand = async (request: PrefsSetRequest): Promise<void> => {
     const outcome = await modelSource.setPrefs(request)
 
@@ -830,6 +858,8 @@ export function assemble(options: AssembleOptions): Assembly {
     onModelConfigure: (request) => saveModelSettings({ ...request, type: 'model.configure' }),
     onModelOverride: (request) => saveModelSettings(request),
     onPrefsSet: (request) => setPrefsCommand(request),
+    onWebList: () => listWeb(),
+    onWebConfigure: (provider) => configureWebCommand(provider),
     onProviderList: () => listProviders(),
     onProviderSave: (request) => saveModelSettings({ ...request, type: 'provider.save' }),
     onProviderRemove: (provider) => removeProviderCommand(provider),

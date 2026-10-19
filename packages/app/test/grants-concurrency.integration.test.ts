@@ -290,7 +290,7 @@ describe('授权文件：撤销不得被复活', () => {
       const section = sectionKeyOf(stage)
       // G1 **按域名给**（U76）：判重的执行命令不可授权，故「命中 ⇒ 自动放行 ⇒ 攒一笔
       // 命中记账」这条链只剩按域名那一格走得通（见文件头注）。
-      const gone: Grant = { tool: 'web_fetch', op: ['outbound'], host: 'example.com', grantedAt: 1 }
+      const gone: Grant = { tool: 'web_fetch', op: ['outbound'], host: 'example.com', via: 'api.deepseek.com', grantedAt: 1 }
       writeGrants(path, { version: 1, workspaces: { [section]: [gone] } })
 
       // 持有 G1 的装配：装配完就跑一轮（G1 命中 → **自动放行**，攒下一笔命中记账等收尾补落）

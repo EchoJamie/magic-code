@@ -284,6 +284,7 @@ describe('④ `/config`：门 → 进那一项自己那一屏', () => {
         history: { total: 0, auto: 0, kernel: 0 },
       }),
       event('mcp.catalog', { servers: [] }),
+      event('web.state', {}),
     ] as readonly KernelEvent[])
   }
 

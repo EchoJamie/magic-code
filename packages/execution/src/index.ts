@@ -69,15 +69,17 @@ export { readClipboardImage, writeClipboardText } from './clipboard.ts'
 export type { ClipboardImage } from './clipboard.ts'
 
 /**
- * **取回面**（`WebSource` · U72）——出网那一件原语（抓一个 URL）。
+ * **网页服务**（`WebSource` · U94）——出网那一件原语（取一页 / 搜一次）。
  *
- * 落在这里的理由与沙箱同源（见 `../src/web.ts` 头注）：它是**边界动作**，
- * 三条规矩（只认 http(s) 且升 https、本机与无点主机名发请求之前就拒、不跟随跨主机重定向）
- * 在一处写死。工具那一件经这条端口取网，不自己 `fetch`。
+ * 落在这里的理由与沙箱同源（见 `../src/web.ts` 头注）：它是**边界动作**——
+ * 页面地址归一与拒绝、固定服务域、不跟随重定向、完整读取与错误分类，都在一处写死。
+ * 两项网页工具经这条端口取材，不自己 `fetch`。
  */
 export {
   createWebSource,
-  WEB_FETCH_MAX_REDIRECTS,
+  DEEPSEEK_WEB_HOST,
+  DEEPSEEK_WEB_ORIGIN,
+  WEB_FETCH_MAX_URL_CHARS,
   WEB_FETCH_TIMEOUT_MS,
 } from './web.ts'
 export type { WebSourceOptions } from './web.ts'

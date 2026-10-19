@@ -264,6 +264,8 @@ export type PendingDecision = {
   readonly external?: boolean
 
   readonly host?: string
+  /** **经哪一台可信中转服务**（U94）——代读时与目标域一起显示。 */
+  readonly via?: string
   /**
    * 多件裁决的**第几件 / 共几件**（原型 · 场景 7：件数报两处——卡上 ＋ 状态行）。
    * 单件时 `null`（不报数）。
@@ -343,6 +345,7 @@ export type Picker = {
     | 'skills'
     | 'paths'
     | 'mcp'
+    | 'web'
     | 'vendor'
     | 'provider'
     | 'provider-detail'
@@ -427,6 +430,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: '/skills', summary: '浏览或搜索技能，选定后加入草稿' },
 
   { name: '/mcp', summary: '查看外部工具服务器和工具' },
+  { name: '/web', summary: '选择网页查询与搜索使用的连接' },
   { name: '/help', summary: '显示帮助' },
 ]
 
@@ -728,6 +732,8 @@ export type ShellView = {
   readonly modelCurrent: ModelSelectionRef | null
 
   readonly configuredModels: NonNullable<MagicConfig['models']>
+  /** **网页服务读数**（`web.state` · U94）——`/config` 与 `/web` 那一格；`null` ＝还没问到。 */
+  readonly web: EventDataOf['web.state'] | null
   /** 本轮已出现的工具调用数（多件裁决报 `n/m` 的取材——只数本轮）。 */
   readonly turnTools: number
 
@@ -802,6 +808,7 @@ export function createView(input: CreateViewInput = {}): ShellView {
     vendors: [],
     modelCurrent: null,
     configuredModels: {},
+    web: null,
     grants: null,
     turnTools: 0,
     // **没有计划**（不占位）· 默认展开（设计）· 视口从头开始
@@ -1030,6 +1037,9 @@ export function reduce(
     case 'input.local':
     case 'prefs.state':
       return view
+
+    case 'web.state':
+      return { ...view, web: event.data }
 
     default:
       return assertNever(event)
@@ -1276,6 +1286,7 @@ function reduceDecision(view: ShellView, id: RecordId, data: DecisionRequestData
         ...(data.external === true ? { external: true } : {}),
 
         ...(data.host === undefined ? {} : { host: data.host }),
+        ...(data.via === undefined ? {} : { via: data.via }),
         position,
       },
     },

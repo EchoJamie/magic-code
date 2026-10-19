@@ -209,7 +209,11 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     // **问之前先附上注册表给的身份**（U38）——外部工具的真实来源只认这一处：
     // 定义里写着它属于哪条服务器，模型参数里的自报一概不作数（见契约 `ToolCall.external`）。
     // 查表在询问之前做，是这一步唯一挪动过的东西：查表**没有副作用**，而闸门要的正是它。
-    const asked: ToolCall = { ...call, external: definition.external }
+    const asked: ToolCall = {
+      ...call,
+      external: definition.external,
+      ...(definition.via === undefined ? {} : { via: definition.via }),
+    }
 
     const decision = await raceAbort(options.gate.decide(asked, contextOf(), callRef, opts.signal), opts.signal)
     if (decision === ABORTED) return refused(OUTPUT_CANCELED_BEFORE_RUN)

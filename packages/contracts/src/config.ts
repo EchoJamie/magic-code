@@ -256,6 +256,17 @@ export type AgentRoleConfig = {
 }
 
 
+/**
+ * **网页服务连接**（U94）——两项网页工具共用的那一条 DeepSeek 连接。
+ *
+ * 只存**连接引用**（`providers` 的键），凭据与地址仍归那一条连接：网页服务不另存一份
+ * key，也不从主模型推导。键缺省＝未配置网页服务；此时两项网页工具都不送入模型工具表。
+ */
+export type WebConfig = {
+  /** `providers` 的键。首版只接受明确的 DeepSeek 官方连接（固定地址）。 */
+  readonly provider: string
+}
+
 export type MagicConfig = {
   readonly debugMode?: boolean
   readonly logLevel?: LogLevel
@@ -267,6 +278,8 @@ export type MagicConfig = {
     readonly arcane?: ModelRef
   }
   readonly providers: Readonly<Record<string, ProviderConfig>>
+  /** 网页服务连接（U94）——见 `WebConfig`；键缺省＝两项网页工具都不可用。 */
+  readonly web?: WebConfig
   /** 权限段（阶段 2）——见 `PermissionsConfig`。 */
   readonly permissions?: PermissionsConfig
   /** 工作区根列表（阶段 3）——见 `WorkspaceRoots`；**键缺省＝启动目录单根**。 */

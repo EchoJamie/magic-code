@@ -108,6 +108,7 @@ function webGrantFile(section: string): string {
             tool: 'web_fetch',
             op: ['outbound'],
             host: 'example.com',
+            via: 'api.deepseek.com',
             grantedAt: 1_700_000_000_000,
           },
         ],

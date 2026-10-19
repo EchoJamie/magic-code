@@ -217,6 +217,7 @@ type PendingPicker =
   | 'grants'
   | 'skills'
   | 'mcp'
+  | 'web'
   | 'config'
 
 /**
@@ -233,6 +234,7 @@ const CONFIG_READINGS: readonly {
   { command: { type: 'model.list' }, event: 'model.catalog' },
   { command: { type: 'grants.list' }, event: 'grants.catalog' },
   { command: { type: 'mcp.list' }, event: 'mcp.catalog' },
+  { command: { type: 'web.list' }, event: 'web.state' },
 ]
 
 type Layer = {
@@ -916,7 +918,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   // —— 事件 ——
 
   const onEvent = (event: KernelEvent): void => {
-    if (disposed || (!connected && !reopening && !['model.catalog', 'provider.catalog', 'prefs.state', 'grants.catalog', ...(options.settingsOnly ? ['mcp.catalog'] : [])].includes(event.kind))) return
+    if (disposed || (!connected && !reopening && !['model.catalog', 'provider.catalog', 'prefs.state', 'grants.catalog', 'web.state', ...(options.settingsOnly ? ['mcp.catalog'] : [])].includes(event.kind))) return
 
     for (const [ref, batch] of submittedBatches) {
       if (!batch.replies?.has(event.kind)) continue
@@ -1158,6 +1160,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (event.kind === 'model.catalog' || event.kind === 'provider.catalog') {
       models.receive(event)
     }
+    // 连接表后到也得把网页选择器的候选补齐（`/web` 同时问了 `model.list` 与 `web.list`）。
+    if (event.kind === 'model.catalog' && view.dock.kind === 'picker' && view.dock.picker.source === 'web') {
+      refreshWebPicker()
+    }
 
     // 技能目录回来了 ⇒ 两件。
     // ① **候选跟着这一份重算**：此刻草稿多半正是一条 `/…`（问就是打斜杠那一下问的），
@@ -1223,6 +1229,20 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
       // 重连的**结果**只有答复说得清（成没成 · 有没有这一台）——抽屉开不开都留这一行
       if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
+    }
+
+    // 网页服务读数回来了 ⇒ 开抽屉（`/web`）／保存之后照着新读数重铺 ＋ 留一行回执。
+    if (event.kind === 'web.state') {
+      if (waiting === 'web') {
+        waiting = null
+        openWebPicker()
+      } else {
+        refreshWebPicker()
+      }
+      // 浏览那一句不必上记录区；保存的回话（成 / 没成）要说一声。
+      if (event.data.saved !== undefined && event.data.note !== undefined) {
+        commit(appendReceipt(view, event.data.note))
+      }
     }
   }
 
@@ -1552,6 +1572,62 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   }
 
   /**
+   * **网页服务那一屏**（U94）——未配置 ＋ 合格的 DeepSeek 官方连接。
+   *
+   * 合格＝`vendor: deepseek` 且没有自定义地址 / 区域（与配置加载同一判据）；
+   * 不合格的连接不列出来——选了也保存不了，列出来只会让人对着一条点不中的项发呆。
+   */
+  const webRows = (): readonly PickerRow[] => {
+    const current = view.web?.provider
+    const rows: PickerRow[] = [{
+      label: '未配置',
+      meta: current === undefined ? '当前 · 两项网页工具都不可用' : '清除网页服务引用',
+      current: current === undefined,
+      value: '',
+      oneLine: true,
+    }]
+
+    for (const entry of view.models) {
+      if (entry.vendor !== 'deepseek' || entry.baseURL !== undefined || entry.region !== undefined) continue
+      rows.push({
+        label: entry.name ?? entry.provider,
+        meta: current === entry.provider ? `当前 · ${entry.provider}` : entry.provider,
+        current: current === entry.provider,
+        value: entry.provider,
+        oneLine: true,
+      })
+    }
+
+    return rows
+  }
+
+  const openWebPicker = (): void => {
+    commit(openPicker(view, {
+      source: 'web',
+      title: '网页查询与搜索',
+      selected: 0,
+      rows: webRows(),
+      hint: 'Search 只用这条连接；Fetch 另需 Cantrip（在 /model 配置）',
+    }))
+  }
+
+  const refreshWebPicker = (): void => {
+    if (view.dock.kind !== 'picker' || view.dock.picker.source !== 'web') return
+    const rows = webRows()
+    commit({
+      ...view,
+      dock: {
+        kind: 'picker',
+        picker: {
+          ...view.dock.picker,
+          rows,
+          selected: Math.min(view.dock.picker.selected, Math.max(0, rows.length - 1)),
+        },
+      },
+    })
+  }
+
+  /**
    * **`/config` 的取材**——**一处取**（开屏与每次重铺共用一份，免得两处取成两样）。
    *
    * 四路：三份读数从**视图**里取（`model.catalog` / `grants.catalog` / `mcp.catalog` 各自
@@ -1569,6 +1645,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     grants: view.grants,
     mcp: view.mcp,
+    web: view.web,
 
     statusLine: view.statusLine,
     reducedMotion: view.reducedMotion,
@@ -2983,6 +3060,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
           return NONE
         }
 
+        if (row.value === 'web') {
+          enterLayer()
+          models.cancelOpen()
+          waiting = 'web'
+          // 候选来自连接表（`model.list`），当前值来自 `web.state`——两份都问。
+          send({ type: 'model.list' })
+          send({ type: 'web.list' })
+          return NONE
+        }
+
         // **第 4 项没有可进的入口**——它今天要手改配置文件才动得了，故它「自己那一屏」
         // 就是**一份读出来的账**（纯输出进记录区，同 `/status` 的姿势）：两件事实**写全**
         // （列表里那一格是缩过、截过的，见 `configRows` 的那条注）。
@@ -3050,6 +3137,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       }
 
       if (view.dock.picker.source === 'mcp') return NONE
+
+      if (view.dock.picker.source === 'web') {
+        // 「未配置」那一行的 value 是空串——发出去的是 null（清除引用），不是空 id。
+        send({ type: 'web.configure', provider: row.value === '' ? null : row.value })
+        return NONE
+      }
 
       if (models.select(row)) return NONE
 
@@ -3279,6 +3372,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       waiting = 'skills'
       skillSeed = arg
       return only(cleared, { type: 'skills.list' })
+    }
+
+    if (word === '/web') {
+      if (arg !== '') return only(appendReceipt(cleared, '认得的用法：/web（不带参数）'))
+      models.cancelOpen()
+      waiting = 'web'
+      return only(cleared, { type: 'model.list' }, { type: 'web.list' })
     }
 
     if (word === '/config') {

@@ -31,14 +31,18 @@ import { RULE_OPS, type RuleOp } from './ops.ts'
  * - `op`——操作类型（单个或一组）；**缺省＝任意**。给的是一组时，本次调用的**每一个**
  *   操作类型都要在组里才算命中（规则声明的是「这一类调用整体放行」）。
  * - `host`（U72）——**域名**模式（`*` 段内 · `?` 单字符；同 `globToRegExp` 那套写法，
- *   如 `*.example.com`）。只有「取网页」那一件带得出这一格（见 `analyzeWebFetch`）。
- *   ⚠️ **这一次调用有域名时，不写 `host` 的规则一律不命中**——见 `matchesHost`。
+ *   如 `*.example.com`）。只有网页工具带得出这一格（见 `analyzeWebFetch` /
+ *   `analyzeWebSearch`）。⚠️ **这一次调用有域名时，不写 `host` 的规则一律不命中**
+ *   ——见 `matchesHost`。
+ * - `via`（U94）——**中转服务域**模式，语义与 `host` 同：这一次经中转时，规则必须写明
+ *   `via` 才命中。旧单域授权因此**不会自动扩大**成远端代读授权。
  */
 export type PermissionRule = {
   readonly tool: string
   readonly path?: string
   readonly op?: RuleOp | readonly RuleOp[]
   readonly host?: string
+  readonly via?: string
 }
 
 /** 被拒的条目——`index` ＝ 它在配置数组里的位置（`-1` ＝整个值就不是数组）。 */
@@ -54,7 +58,7 @@ export type RuleParseResult = {
 }
 
 /** 条目认得的键——不认得的键**不收**（`pth` 写了不等于没写）。 */
-const RULE_KEYS: readonly string[] = ['tool', 'path', 'op', 'host']
+const RULE_KEYS: readonly string[] = ['tool', 'path', 'op', 'host', 'via']
 
 /**
  * 解析配置里的权限规则（**只读**——本域不写回）。
@@ -128,6 +132,11 @@ function problemOf(entry: unknown): string | undefined {
     return '域名模式须是非空字符串'
   }
 
+  const via = fields['via']
+  if (via !== undefined && !nonEmptyString(via)) {
+    return '中转服务域名模式须是非空字符串'
+  }
+
   const op = fields['op']
   if (op !== undefined) {
     const list = Array.isArray(op) ? op : [op]
@@ -148,6 +157,7 @@ function toRule(fields: Record<string, unknown>): PermissionRule {
   const path = fields['path']
   const op = fields['op']
   const host = fields['host']
+  const via = fields['via']
 
   return {
     tool,
@@ -156,6 +166,7 @@ function toRule(fields: Record<string, unknown>): PermissionRule {
     ...(op === undefined ? {} : { op: op as RuleOp | readonly RuleOp[] }),
     // 域名归一成小写（域名本就不分大小写；`webTargetOf` 那一侧也已经小写）
     ...(typeof host === 'string' ? { host: host.trim().toLowerCase() } : {}),
+    ...(typeof via === 'string' ? { via: via.trim().toLowerCase() } : {}),
   }
 }
 
@@ -185,6 +196,8 @@ export type CallFace = {
    * 那条「路径模式与域名各判各的」）。
    */
   readonly host?: string
+  /** **这一次经哪一台可信中转服务**（U94）——`Analysis.via` 原样过来。 */
+  readonly via?: string
 }
 
 /**
@@ -205,6 +218,7 @@ function matches(rule: PermissionRule, face: CallFace, ctx: PermissionContext): 
   if (rule.tool !== '*' && rule.tool !== face.tool) return false
   if (!coversOps(rule.op, face.ops)) return false
   if (!matchesHost(rule.host, face)) return false
+  if (!matchesVia(rule.via, face)) return false
   return matchesPath(rule.path, face.landings, ctx)
 }
 
@@ -236,6 +250,21 @@ function matchesHost(declared: string | undefined, face: CallFace): boolean {
   if (declared === undefined) return false
 
   return globToRegExp(declared).test(face.host.toLowerCase())
+}
+
+/**
+ * 中转服务域一格（U94）——与 `matchesHost` 同一条缺省口径。
+ *
+ * **这一次经中转**（网页取回）时，规则必须写明 `via` 才命中：旧的单目标域授权
+ * （`{tool:'web_fetch', host:'example.com'}`）说的是「本地直接取这一页」，
+ * 不能自动批准「把这个地址交给 DeepSeek 去取」——那是多出来的一方接收者。
+ * 调用这一侧没有中转（`face.via` 缺席，如搜索 / exec / write）⇒ 这一维恒真。
+ */
+function matchesVia(declared: string | undefined, face: CallFace): boolean {
+  if (face.via === undefined) return true
+  if (declared === undefined) return false
+
+  return globToRegExp(declared).test(face.via.toLowerCase())
 }
 
 /**
@@ -326,6 +355,8 @@ export function describeRule(rule: PermissionRule): string {
   // 域名那一格**只在写了时才报**（U72）：缺省那一位在「取网页」上等于**不命中**
   // （见 `matchesHost`），报成「任意域名」会正好说反——那一行是用户对账用的，不能说反。
   const host = rule.host === undefined ? '' : ` × 域名 ${rule.host}`
+  // 中转格同样只在写了时才报：缺省在「经中转」的调用上等于不命中（见 `matchesVia`）
+  const via = rule.via === undefined ? '' : ` × 经 ${rule.via}`
 
-  return `${tool} × ${path} × ${ops}${host}`
+  return `${tool} × ${path} × ${ops}${host}${via}`
 }

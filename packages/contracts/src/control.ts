@@ -327,6 +327,26 @@ export type ModelConfigureRequest = {
   readonly initialize?: boolean
 }
 
+/**
+ * **读网页服务配置**（U94）——`/config` 与 `/web` 打开时问一次。
+ *
+ * 答复走 `web.state`：当前连接、Cantrip 映射与一句说明。**不复用模型列表事件**
+ * 冒充网页状态（那一屏说的是两件事）。
+ */
+export type WebList = { readonly type: 'web.list' }
+
+/**
+ * **设置网页服务连接**（U94）——`provider: null` ＝ 清除引用。
+ *
+ * 与 App 的 `web.configure` 设置动作同一份校验、同一份原子写入；`expectedStamp`
+ * 缺省＝由执行侧按当下配置水位补。
+ */
+export type WebConfigure = {
+  readonly type: 'web.configure'
+  readonly expectedStamp?: string | null
+  readonly provider: string | null
+}
+
 export type PrefsSet = { readonly type: 'prefs.set' } & PrefsSetRequest
 
 /**
@@ -552,6 +572,8 @@ export type Command = import('./background.ts').BackgroundCommandRequest
   | ModelList
   | ModelRefresh
   | ModelConfigure
+  | WebList
+  | WebConfigure
   | { readonly type: 'model.override'; readonly expectedStamp?: string | null; readonly provider: string; readonly model: string; readonly override: import('./model.ts').ProviderModelOverride | null }
   | ProviderList
   | ProviderSave

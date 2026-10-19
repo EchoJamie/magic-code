@@ -33,6 +33,13 @@ export const WEB_SCHEMES: readonly string[] = ['http:', 'https:']
 /** 缓存时长——参照面是 15 分钟（设计 · 网页与搜索「已定的取舍」）。 */
 export const WEB_CACHE_TTL_MS = 15 * 60 * 1000
 
+/**
+ * 首版网页服务的固定域名（U94）——DeepSeek 官方代读服务。
+ *
+ * 工具定义据它写 `via`（审批卡上的接收方），权限域据它匹配授权。**不接受模型自报**。
+ */
+export const WEB_SERVICE_HOST = 'api.deepseek.com'
+
 /** 一次取网的**目标**——归一之后的地址 ＋ 它的域名（裁决卡与「总是允许」都认后者）。 */
 export type WebTarget = {
   readonly ok: true

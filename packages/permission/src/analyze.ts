@@ -88,6 +88,13 @@ export type AnalysisPass = {
    * 规则那一格也无从比对（见 `rules.ts` 的 `matchesHost`）。
    */
   readonly host?: string
+  /**
+   * **这次经哪一台可信中转服务**（U94）——网页取回同时带目标域名（`host`）与中转服务域。
+   *
+   * 与 `host` 一样是**规则轴上的格子**，「总是允许」按 `{targetHost, viaHost}` 记；
+   * 旧规则缺 `via` 在这一次**不匹配**（见 `rules.ts` 的 `matchesVia`）。
+   */
+  readonly via?: string
 }
 
 /**
@@ -119,6 +126,7 @@ export type AnalysisRefused = {
   readonly title?: string
   readonly external?: boolean
   readonly host?: string
+  readonly via?: string
 }
 
 /**
@@ -313,6 +321,8 @@ export function analyze(
       return analyzeSkill(call, ctx)
     case 'web_fetch':
       return analyzeWebFetch(call, ctx)
+    case 'web_search':
+      return analyzeWebSearch(call)
     case 'background_stop':
     case 'background_wait':
       return { weight: 'light', material: '仅控制本会话持有的后台命令。', ops: ['read'], landings: [] }
@@ -464,19 +474,50 @@ function analyzeWebFetch(call: ToolCall, _ctx: PermissionContext): Analysis {
   }
 
   const asked = firstString(call.args, (key) => key === 'prompt')
+  const via = call.via
 
   return {
     weight: 'heavy',
     reason: 'outbound',
     material: [
-      `取网页：GET ${target.url}`,
-      `域名：${target.host}`,
-      '外发：只把上面这个地址发过去——问的是什么、看的是什么，都不会发到这个站点。',
+      `取网页：${target.url}`,
+      `目标域名：${target.host}`,
+      ...(via === undefined
+        ? ['外发：把上面这个地址发出去——问的是什么、看的是什么，都不会发到那个站点。']
+        : [`代读：${via} 接收这个地址并抓取正文；Magic 直接采用它成功返回的 Markdown。`]),
       ...(asked === undefined ? [] : [`问的是：${oneLine(asked.value)}`]),
     ].join('\n'),
     ops: ['outbound'],
     landings: [],
     host: target.host,
+    ...(via === undefined ? {} : { via }),
+  }
+}
+
+/**
+ * **联网搜索**（`web_search` · U94）——**外发 ⇒ 必闸**，落点是**服务域**。
+ *
+ * 搜索只把 query 发给固定服务；结果里的网页由服务整理，Magic 不逐项访问，
+ * 因此**不逐结果索取网页访问授权**。`host` 取注册表给的 `via`（可信中转服务域），
+ * 不接受模型自报——「总是允许」按这个服务域记。
+ *
+ * query 在工具那一侧会校验；这里照实呈现它（压成一行），让人看明白发出去的是什么。
+ */
+function analyzeWebSearch(call: ToolCall): Analysis {
+  const asked = firstString(call.args, (key) => key === 'query')
+  const service = call.via
+
+  return {
+    weight: 'heavy',
+    reason: 'outbound',
+    material: [
+      `联网搜索：${asked === undefined ? '（参数里没有 query）' : oneLine(asked.value)}`,
+      ...(service === undefined ? ['外发：查询会发给网页服务。'] : [`发往：${service}`]),
+      '结果由服务整理成摘要；Magic 不逐条访问结果里的网页。',
+    ].join('\n'),
+    ops: ['outbound'],
+    landings: [],
+    ...(service === undefined ? {} : { host: service }),
   }
 }
 

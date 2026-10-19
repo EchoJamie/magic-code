@@ -11,6 +11,8 @@ import type {
 } from '@magic/contracts'
 import type { FetchLike, ModelInfoService, ModelRegistry } from '@magic/model'
 import { createModelInfoService, createModelRegistry, resolveConnection } from '@magic/model'
+import type { WebServiceRef } from '@magic/tools'
+import { createWebSource } from '@magic/execution'
 import { bindModelChoice } from '../agent-models.ts'
 import { configStamp as configStampOf } from '@magic/config'
 import { cacheAccessFor, connectionScopeChanged } from '../cache-access.ts'
@@ -33,6 +35,9 @@ export function createModelConfiguration(input: {
   let providerBook: Readonly<Record<string, ProviderConfig>> = loaded.config.providers
 
   let configuredModels: MagicConfig['models'] = loaded.config.models
+
+  /** 网页服务引用（U94）——与连接表一起按配置水位刷新。 */
+  let webConfig: MagicConfig['web'] = loaded.config.web
 
   const modelCache = createFileModelInfoCache(magic.base)
 
@@ -85,6 +90,7 @@ export function createModelConfiguration(input: {
     const previous = providerBook
     providerBook = reloaded.config.providers
     configuredModels = reloaded.config.models
+    webConfig = reloaded.config.web
     configStamp = stamp
     // 先发布新快照，避免 drop 读取连接时重入；同步作废在途位，异步收妥缓存文件。
     const dropped = Object.entries(previous)
@@ -148,7 +154,61 @@ export function createModelConfiguration(input: {
     })
   }
 
-  async function save(action: Extract<SettingsAction, { type: 'provider.save' | 'model.configure' | 'model.override' }>) {
+  /**
+   * **网页服务读数**（U94）——每次工具调用现取：配置改了下一趟就生效。
+   *
+   * 只做两件事：按 `web.provider` 找到连接、解析凭据。**不发探测请求**——
+   * 「已配置」不等于「已连通」。缺配置 / 悬空引用 / 缺凭据各给一句可处置的话。
+   */
+  const webSource = (): WebServiceRef => {
+    syncProviderBook()
+
+    if (webConfig === undefined) {
+      return {
+        ok: false,
+        reason: '网页服务尚未配置——去 /web（或设置 · 工具接入）选择一条 DeepSeek 连接',
+      }
+    }
+
+    const config = providerBook[webConfig.provider]
+    if (config === undefined) {
+      return {
+        ok: false,
+        reason: `网页服务引用的连接「${webConfig.provider}」已不存在——请重新选择网页服务`,
+      }
+    }
+    if (config.vendor !== 'deepseek') {
+      return {
+        ok: false,
+        reason: `网页服务连接「${webConfig.provider}」不是 DeepSeek 官方连接——首版只接 DeepSeek`,
+      }
+    }
+    if (config.baseURL !== undefined || config.region !== undefined) {
+      return {
+        ok: false,
+        reason: `网页服务连接「${webConfig.provider}」使用了自定义地址或区域——首版只接固定官方地址`,
+      }
+    }
+
+    const resolved = resolveConnection({ providerId: webConfig.provider, config, env: environment })
+    const apiKey = resolved.apiKey?.trim() ?? ''
+    if (apiKey === '') {
+      return {
+        ok: false,
+        reason: `网页服务连接「${webConfig.provider}」缺少凭据——请在连接设置里填写 API Key，或设置对应的环境变量`,
+      }
+    }
+
+    return {
+      ok: true,
+      provider: webConfig.provider,
+      // 缓存身份：连接 id ＋ 凭据作用域。换连接 / 换 key 都不再命中旧页面。
+      scope: `${webConfig.provider}\u0000${apiKey}`,
+      web: createWebSource({ apiKey, fetch }),
+    }
+  }
+
+  async function save(action: Extract<SettingsAction, { type: 'provider.save' | 'model.configure' | 'model.override' | 'web.configure' }>) {
     let note: string
     let saved = false
     try {
@@ -181,7 +241,9 @@ export function createModelConfiguration(input: {
     const next = { ...providerBook }
     delete next[provider]
     providerBook = next
-    configuredModels = loadConfig({ path: loaded.path, magic }).config.models
+    const reloaded = loadConfig({ path: loaded.path, magic }).config
+    configuredModels = reloaded.models
+    webConfig = reloaded.web
 
     modelInfo.drop(provider)
     const cleared = await dropCacheQuietly(removedTarget)
@@ -198,6 +260,7 @@ export function createModelConfiguration(input: {
     registry: registryOf,
     knownModel: knownModelOf,
     cantrip,
+    webSource,
     save,
     remove,
     async setPrefs(request: PrefsSetRequest) {

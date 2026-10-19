@@ -519,9 +519,9 @@ function rowOf(grant: Grant, now: number): GrantRow {
   }
 }
 
-/** 两条授权同不同——工具 × 路径 × 操作 × **域名**四格全等（顺序无关的集合比对）。 */
+/** 两条授权同不同——工具 × 路径 × 操作 × **域名** × **中转**五格全等。 */
 export function sameRule(a: PermissionRule, b: PermissionRule): boolean {
-  return a.tool === b.tool && a.path === b.path && a.host === b.host && opKey(a.op) === opKey(b.op)
+  return a.tool === b.tool && a.path === b.path && a.host === b.host && a.via === b.via && opKey(a.op) === opKey(b.op)
 }
 
 function opKey(op: PermissionRule['op']): string {
@@ -550,10 +550,13 @@ export function grantOf(face: {
   readonly tool: string
   readonly ops: readonly RuleOp[]
   readonly host?: string
+  readonly via?: string
 }): PermissionRule {
   return {
     tool: face.tool,
     op: [...face.ops],
     ...(face.host === undefined ? {} : { host: face.host }),
+    // **经中转时同样要带上它**（U94）——否则「往这家发」会被记成「经谁都行」。
+    ...(face.via === undefined ? {} : { via: face.via }),
   }
 }

@@ -33,12 +33,11 @@ function fakeWeb(body = PAGE): WebSource & { readonly asked: string[] } {
       return Promise.resolve({
         ok: true,
         url,
-        status: 200,
-        bytes: Buffer.byteLength(body),
-        body,
-        contentType: 'text/markdown',
+        title: '页面',
+        markdown: body,
       })
     },
+    search: async () => ({ ok: true as const, results: [] }),
   }
 }
 

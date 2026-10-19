@@ -17,7 +17,7 @@ async function until(check: () => boolean) {
 test('两个真实终端共享 Engine；网络、工具与 MCP 环境隔离，接回保留旧环境，继续采用新环境', async () => {
   const sandbox = createSandbox()
   const cert = join(sandbox.root, 'cert.pem'), key = join(sandbox.root, 'key.pem')
-  const made = Bun.spawnSync(['/usr/bin/openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=work.test', '-addext', 'subjectAltName=DNS:work.test'], { stdout: 'ignore', stderr: 'pipe' })
+  const made = Bun.spawnSync(['/usr/bin/openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=work.test', '-addext', 'subjectAltName=DNS:work.test,DNS:api.deepseek.com'], { stdout: 'ignore', stderr: 'pipe' })
   if (made.exitCode !== 0) throw new Error(made.stderr.toString())
   const tls = createSecureContext({ cert: readFileSync(cert), key: readFileSync(key) })
   const windows: UiSession[] = []
@@ -37,7 +37,9 @@ test('两个真实终端共享 Engine；网络、工具与 MCP 环境隔离，�
     const auxiliary = Array.isArray(json.messages) && !json.tools
     received.push({ path, key, auxiliary })
     if (path === '/mcp') return fetch(`http://127.0.0.1:${port}/mcp`, { method: request.method, headers: request.headers, body: body || undefined })
-    if (path.startsWith('/web/')) return new Response('<html><body>终端环境验证页面。</body></html>', { headers: { 'content-type': 'text/html' } })
+    // U94：网页工具经固定 DeepSeek 服务取材——替身按正式接口的形状答。
+    if (path === '/v1/tools/fetch') return Response.json({ title: '终端环境验证页面', content: '终端环境验证页面。' })
+    if (path === '/v1/tools/search') return Response.json({ results: [] })
     const fixture = fixtures.get(key)
     if (!fixture) return new Response('unexpected environment', { status: 401 })
     if (auxiliary) return new Response('data: ' + JSON.stringify({ id: 'aux', choices: [{ index: 0, delta: { content: '页面摘要' }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
@@ -66,7 +68,7 @@ test('两个真实终端共享 Engine；网络、工具与 MCP 环境隔离，�
     writeFileSync(join(bin, 'env-probe'), probe('tool'), { mode: 0o755 })
     writeFileSync(join(bin, 'mcp-probe'), probe('mcp') + `await import(${JSON.stringify(join(import.meta.dir, '../../mcp/test/support/fake-server.ts'))});\n`, { mode: 0o755 })
     const url = `http://127.0.0.1:${(proxy.address() as { port: number }).port}`
-    envs[label] = { PATH: bin + ':/usr/bin:/bin', MAGIC_LOCAL_API_KEY: label, WORK_MARK: label,
+    envs[label] = { PATH: bin + ':/usr/bin:/bin', MAGIC_LOCAL_API_KEY: label, MAGIC_WEB_API_KEY: label, WORK_MARK: label, NODE_EXTRA_CA_CERTS: cert,
       http_proxy: url, https_proxy: url, all_proxy: '', no_proxy: '', HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', NO_PROXY: '' }
     fixtures.set(label, startFixture({ turns: [
       { kind: 'tool', name: 'exec', args: { cmd: `env-probe; while [ ! -f '${join(sandbox.root, `release-${label}`)}' ]; do /bin/sleep 0.05; done` } },
@@ -76,6 +78,9 @@ test('两个真实终端共享 Engine；网络、工具与 MCP 环境隔离，�
   }
   const config = JSON.parse(readFileSync(sandbox.configPath, 'utf8'))
   config.providers.local = { protocol: 'chat-completions', baseURL: 'http://work.test/v1' }
+  // U94：网页服务引用一条官方 DeepSeek 连接（地址固定）；凭据按窗口环境变量隔离。
+  config.providers.web = { vendor: 'deepseek' }
+  config.web = { provider: 'web' }
   config.mcp = { servers: { local: { command: 'mcp-probe' }, remote: { url: 'http://work.test/mcp' } } }
   writeFileSync(sandbox.configPath, JSON.stringify(config))
   const host = await startResidentHost({ ...sandbox, env: { ...sandbox.env, MAGIC_LOCAL_API_KEY: 'engine', WORK_MARK: 'engine', NODE_EXTRA_CA_CERTS: cert, http_proxy: 'http://127.0.0.1:1', no_proxy: '' } })
@@ -110,7 +115,9 @@ test('两个真实终端共享 Engine；网络、工具与 MCP 环境隔离，�
     const continued = JSON.parse(readFileSync(join(sandbox.root, 'tool-C.json'), 'utf8'))
     expect(continued.cwd).toBe(realpathSync(sandbox.workspace)); expect(continued.env.WORK_MARK).toBe('C')
     for (const label of ['A', 'B', 'C']) {
-      expect(traffic[label]).toContain(`/web/${label}`)
+      // 网页取材走固定服务；窗口各自的凭据与目标地址都出现在这一条流量里。
+      expect(traffic[label]).toContain('/v1/tools/fetch')
+      expect(traffic[label]).toContain(`work.test/web/${label}`)
       expect(traffic[label]).toContain('POST /mcp')
       expect(received.some(row => row.key === label && row.auxiliary)).toBe(true)
       expect(received.some(row => row.key === label && !row.auxiliary)).toBe(true)

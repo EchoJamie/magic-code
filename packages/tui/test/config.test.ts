@@ -77,6 +77,11 @@ const MCP: EventDataOf['mcp.catalog'] = {
   ],
 }
 
+const WEB: EventDataOf['web.state'] = {
+  provider: 'deepseek',
+  cantrip: { provider: 'deepseek', model: 'deepseek-chat' },
+}
+
 /** 开那一屏：打 `/config` ＋ 回车 → 内核回三份读数。 */
 function open(
   stage: Stage,
@@ -86,6 +91,7 @@ function open(
     /** 「取网页用的模型」那一格（U78）——不给＝**还没配**（答复上不给这一位）。 */
         readonly grants?: EventDataOf['grants.catalog']
     readonly mcp?: EventDataOf['mcp.catalog']
+    readonly web?: EventDataOf['web.state']
   } = {},
 ): void {
   stage.type('/config ')
@@ -101,6 +107,7 @@ function open(
     }),
     event('grants.catalog', over.grants ?? GRANTS),
     event('mcp.catalog', over.mcp ?? MCP),
+    event('web.state', over.web ?? WEB),
   ])
 }
 
@@ -152,26 +159,30 @@ const statusHintOf = (stage: Stage): string => stage.shell.getView().status.hint
 // ══ 一 · 开屏 ═════════════════════════════════════════════════════════
 
 describe('`/config` · 开屏', () => {
-  test('一次问三份读数（连接 · 授权 · 外部工具）；**齐了才开屏**', () => {
+  test('一次问四份读数（连接 · 授权 · 外部工具 · 网页服务）；**齐了才开屏**', () => {
     const stage = live()
     stage.type('/config ')
     stage.press(ENTER)
 
     // ⚠️ 头一条是打 `/` 那一下的技能目录查询（U33：输入行候选要它）——与这一屏无关
-    expect(stage.commands()).toEqual([{ type: 'skills.list' }, {"local":true,ref:expect.any(String),"refs":[],"text":"/config ","type":"input.submit"}, { type: 'model.list' }, { type: 'grants.list' }, { type: 'mcp.list' }])
+    expect(stage.commands()).toEqual([{ type: 'skills.list' }, {"local":true,ref:expect.any(String),"refs":[],"text":"/config ","type":"input.submit"}, { type: 'model.list' }, { type: 'grants.list' }, { type: 'mcp.list' }, { type: 'web.list' }])
 
-    // 来一份：还差两份 ⇒ **不开**（少问一份，那一格就只能写「还没问到」，而「一眼看全」
+    // 来一份：还差几份 ⇒ **不开**（少问一份，那一格就只能写「还没问到」，而「一眼看全」
     // 正是这一屏存在的理由），记录区也一个字都不进
     stage.feed([event('model.catalog', { entries: ENTRIES, current: CURRENT })])
     expect(pickerOf(stage)).toBeUndefined()
     expect(rowsOf(stage)).toEqual(['/config '])
 
-    // 三份齐了才开
     stage.feed([event('grants.catalog', GRANTS), event('mcp.catalog', MCP)])
+    expect(pickerOf(stage)).toBeUndefined()
+
+    // 四份齐了才开
+    stage.feed([event('web.state', WEB)])
     expect(labelsOf(stage)).toEqual([
       '模型与连接',
       '本工作区授权',
       '外部工具',
+      '网页查询与搜索',
       '状态行', // U112 加的两行（状态行可配 · 减少动效）——都排在末行那份账之前
       '减少动效',
       '本轮耗时',
@@ -180,18 +191,19 @@ describe('`/config` · 开屏', () => {
     expect(statusHintOf(stage)).toBe('')
   })
 
-  test('每行都看得到当前值，且与那三份读数对得上', () => {
+  test('每行都看得到当前值，且与那几份读数对得上', () => {
     const stage = live()
     open(stage)
 
     expect(valueOf(stage, '模型与连接')).toBe('MiniMax-M3 · 个人版 · Enter 进入')
     expect(valueOf(stage, '本工作区授权')).toBe('2 条 · Enter 进入')
     expect(valueOf(stage, '外部工具')).toBe('1 台 · Enter 进入')
+    expect(valueOf(stage, '网页查询与搜索')).toBe('deepseek · Fetch 提炼 deepseek-chat · Enter 进入')
     // 末行：家目录下那一截缩成 `~`（省那一格的地方），根只有一个就直接摆出来
     expect(valueOf(stage, '数据目录与工作区根')).toBe('~/.magic · ~/ns/proj · Enter 查看路径')
   })
 
-  test('**右列对齐**——五行的值在屏上起于同一列（布局那一关）', async () => {
+  test('**右列对齐**——各行的值在屏上起于同一列（布局那一关）', async () => {
     const stage = live()
     open(stage)
 
@@ -200,6 +212,7 @@ describe('`/config` · 开屏', () => {
       'MiniMax-M3 · 个人版 · Enter 进入',
       '2 条 · Enter 进入',
       '1 台 · Enter 进入',
+      'deepseek · Fetch 提炼 deepseek-chat · Enter 进入',
       '~/.magic · ~/ns/proj · Enter 查看路径',
     ]
     const at = values.map((value) => {
@@ -269,7 +282,7 @@ describe('`/config` · 筛', () => {
     expect(hintOf(stage)).toBe('筛选「授」——接着打收窄，退格删一个字\n↑↓ 选择 · 输入筛词 · Esc 返回')
     stage.press(BACKSPACE)
 
-    expect(labelsOf(stage)).toHaveLength(7)
+    expect(labelsOf(stage)).toHaveLength(8)
     expect(hintOf(stage)).toBe(HINT_PICKER_CONFIG)
     expect(statusHintOf(stage)).toBe('') // 抽屉照旧开着
   })
@@ -297,7 +310,7 @@ describe('`/config` · 筛', () => {
 
     // 再开一次 ⇒ 全表（开一屏就是一屏新的，筛词不跟着活下来）
     open(stage)
-    expect(labelsOf(stage)).toHaveLength(7)
+    expect(labelsOf(stage)).toHaveLength(8)
     expect(hintOf(stage)).toBe(HINT_PICKER_CONFIG)
   })
 })
@@ -351,7 +364,7 @@ describe('`/config` · 选中即进那一屏', () => {
   test('「数据目录与工作区根」⇒ 自己那一屏：一块输出，报的是**没缩过的全路径**', () => {
     const stage = live()
     open(stage)
-    for (let step = 0; step < 6; step += 1) stage.press(DOWN) // 末行（U112 起是第 7 行）
+    for (let step = 0; step < 7; step += 1) stage.press(DOWN) // 末行（U94 起是第 8 行）
     stage.press(ENTER)
 
     // 收屏（回输入行），记录区里留一块
@@ -369,7 +382,7 @@ describe('`/config` · 选中即进那一屏', () => {
     // 列表那一格报个数（一格里摆不下两条全路径），它自己那一屏逐条写全
     expect(valueOf(stage, '数据目录与工作区根')).toBe('~/.magic · 2 个根 · Enter 查看路径')
 
-    for (let step = 0; step < 6; step += 1) stage.press(DOWN) // 末行（U112 起是第 7 行）
+    for (let step = 0; step < 7; step += 1) stage.press(DOWN) // 末行（U94 起是第 8 行）
     stage.press(ENTER)
     expect(pickerOf(stage)?.detail).toEqual([
       `  数据目录　${DATA_DIR}`,
@@ -387,7 +400,7 @@ describe('`/config` · 选中即进那一屏', () => {
 
     stage.press(LEFT)
     expect(pickerOf(stage)).toEqual(expect.objectContaining({ source: 'config' }))
-    expect(labelsOf(stage)).toHaveLength(7)
+    expect(labelsOf(stage)).toHaveLength(8)
   })
 })
 
@@ -399,8 +412,8 @@ describe('`/config` · 那一格写什么（纯函数）', () => {
     paths,
     models: ENTRIES,
     current: CURRENT,
-    // 缺省＝**还没配**（U78 那一格；要验配上了的形就显式给一个）
-    webFetch: null,
+    // 缺省＝**还没配**（U94 那一格；要验配上了的形就显式给一个）
+    web: null,
     grants: GRANTS,
     mcp: MCP,
     // U112 新增的两项：状态行**没配过**（`undefined` ＝ 走默认那条）＋ 动效照常（没开「减少动效」）。
@@ -442,8 +455,17 @@ describe('`/config` · 那一格写什么（纯函数）', () => {
     ).toBe('/var/magic · /srv/ws · Enter 查看路径')
   })
 
-  test('筛词空＝全表（七行）；筛不中＝空表（退到空就是全表）', () => {
-    expect(configRows(base)).toHaveLength(7)
+  test('网页服务那一格：未配置 / 连接 ＋ Fetch 提炼模型分开说', () => {
+    expect(rowOf({ web: { provider: 'deepseek-web', cantrip: { provider: 'local', model: 'deepseek-v4-pro' } } })['网页查询与搜索'])
+      .toBe('deepseek-web · Fetch 提炼 deepseek-v4-pro · Enter 进入')
+    expect(rowOf({ web: { provider: 'deepseek-web' } })['网页查询与搜索'])
+      .toBe('deepseek-web · Fetch 提炼 未配置 · Enter 进入')
+    expect(rowOf({ web: {} })['网页查询与搜索'])
+      .toBe('还没配置 · Fetch 提炼 未配置 · Enter 进入')
+  })
+
+  test('筛词空＝全表（八行）；筛不中＝空表（退到空就是全表）', () => {
+    expect(configRows(base)).toHaveLength(8)
     expect(configRows({ ...base, filter: '没有这一项' })).toEqual([])
   })
 

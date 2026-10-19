@@ -10,6 +10,8 @@ export type SettingsAction =
   | ({ readonly type: 'provider.save' } & ProviderSaveRequest)
   | { readonly type: 'provider.remove'; readonly provider: string }
   | ({ readonly type: 'model.configure' } & ModelConfigureRequest)
+  /** 网页服务连接（U94）——`provider: null` ＝ 清除引用（两项网页工具随之不可用）。 */
+  | { readonly type: 'web.configure'; readonly provider: string | null }
   | { readonly type: 'model.clear'; readonly choice: string }
   | { readonly type: 'model.override'; readonly provider: string; readonly model: string; readonly override: ProviderModelOverride | null }
   | { readonly type: 'model.refresh'; readonly provider: string }

@@ -195,7 +195,8 @@ describe('slash（纯输出型 / 交互配置型）', () => {
       ['/grants ', ['grants.list']],
       ['/skills ', ['skills.list']],
       ['/mcp ', ['mcp.list']],
-      ['/config ', ['model.list', 'grants.list', 'mcp.list']],
+      ['/web ', ['model.list', 'web.list']],
+      ['/config ', ['model.list', 'grants.list', 'mcp.list', 'web.list']],
     ] as const
     for (const [text, expected] of routes) {
       const app = live()

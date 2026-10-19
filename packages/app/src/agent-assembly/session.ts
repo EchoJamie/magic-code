@@ -24,7 +24,7 @@ import type {
 import { CONSULTATION_TOOL_NAMES } from '@magic/contracts'
 import type { ContextPolicy, ConversationSession, PromptVars } from '@magic/conversation'
 import { createConversationSession, createPlanReader } from '@magic/conversation'
-import { createProjectRules, createWebSource } from '@magic/execution'
+import { createProjectRules } from '@magic/execution'
 import type { ModelRegistry } from '@magic/model'
 import { createPageDistiller } from '@magic/model'
 import { createPermissionGate, parseRules } from '@magic/permission'
@@ -38,7 +38,9 @@ import {
   definePlanTools,
   defineSkillTool,
   defineWebFetchTool,
+  defineWebSearchTool,
 } from '@magic/tools'
+import type { WebServiceRef } from '@magic/tools'
 import { accessSync, constants } from 'node:fs'
 import { join } from 'node:path'
 import type { bindModelChoice } from '../agent-models.ts'
@@ -103,6 +105,8 @@ export function createAgentSession(input: {
     cantrip: (stamper: EventStamper) => ReturnType<typeof bindModelChoice>
     canDistill: () => boolean
     connections: () => number
+    /** 网页服务读数（U94）——每次工具调用现取；未配置 / 缺凭据给一句可处置的话。 */
+    webSource: () => WebServiceRef
   }
 }): AgentSession {
   const {
@@ -127,8 +131,16 @@ export function createAgentSession(input: {
     const selected = registry?.current()
     return selected === undefined ? undefined : registry?.capabilityOf(selected.provider, selected.model)?.image
   }
+  /**
+   * 两项网页工具共用这一份读数：装配注入的替身（测试）优先；否则按当前配置现取。
+   * 注入替身也给出与真实服务相同的「已配置」形状，便于整条装配用例。
+   */
+  const webService = (): WebServiceRef => webSource === undefined
+    ? model.webSource()
+    : { ok: true, web: webSource, provider: 'injected', scope: 'injected' }
+
   const webFetchTool = defineWebFetchTool({
-    web: webSource ?? createWebSource({ fetch: network.fetch }),
+    web: webService,
     distiller: () => {
       if (!model.canDistill()) return undefined
       try {
@@ -142,6 +154,7 @@ export function createAgentSession(input: {
       }
     },
   })
+  const webSearchTool = defineWebSearchTool({ web: webService })
   const gate = createPermissionGate({
     sink,
     stamper,
@@ -235,7 +248,8 @@ export function createAgentSession(input: {
     // 大块转存经记录域公开面（blob 写权唯一归它）
     blobs: records.blobs,
     tools: () => consulting ? [...planTools.filter(tool => CONSULTATION_TOOL_NAMES.includes(tool.spec.name)), webFetchTool]
-      : [skillTool, ...planTools, webFetchTool, ...mcpTools(), ...agentTools, ...defineBackgroundTools()],
+      // 咨询只保留 Fetch——新增 Search 不自动扩大咨询的授权面
+      : [skillTool, ...planTools, webFetchTool, webSearchTool, ...mcpTools(), ...agentTools, ...defineBackgroundTools()],
 
     trashAvailable: commandOnPath('trash', network.env),
 
@@ -243,6 +257,10 @@ export function createAgentSession(input: {
   })
   const validateRoleTools = (): void => {
     const known = new Set(rawTools.definitions().map(tool => tool.name))
+    // 网页工具按配置可能暂时 `unavailable`（未配置 / 缺凭据）——角色里点名它们
+    // 不该把整条会话变成「未知工具」错误：它们仍在注册表里，只是此刻不送模型。
+    known.add('web_fetch')
+    known.add('web_search')
     for (const name of currentRole()?.tools ?? []) {
       if (!known.has(name)) throw new Error(`角色引用未知或不可用工具「${name}」`)
     }

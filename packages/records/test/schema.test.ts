@@ -177,6 +177,8 @@ describe('判据 3 · 不落库清单', () => {
       'skill.used',
       'skills.catalog',
       'tool.output.delta',
+      // U94：网页服务读数的答复——痕在配置文件的 `web.provider` 里，读配置就有。
+      'web.state',
     ])
   })
 })

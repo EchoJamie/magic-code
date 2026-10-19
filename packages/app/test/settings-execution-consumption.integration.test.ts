@@ -11,11 +11,15 @@ import { startFixture } from './ui/fixture.ts'
 test('保存权限规则和撤销授权在后续裁决采用，已开始的工具不倒撤', async () => {
   const tool = { kind: 'tool' as const, name: 'web_fetch', args: { url: 'https://example.com/u116', prompt: '提炼受控页面' } }
   const text = { kind: 'text' as const, text: '受控结果', chunks: 1, chunkDelayMs: 5 }
-  const fixture = startFixture({ turns: [tool, text, tool, text, text, tool, text, text, tool, text] })
+  // 每一趟：拒绝的（ask=true）两跳、自动放行的（ask=false）三跳。
+  const fixture = startFixture({ turns: [tool, text, tool, text, tool, text, text, tool, text, text, tool, text] })
   const stage = makeStage({ config: { providers: { local: { protocol: 'chat-completions', baseURL: fixture.baseURL, apiKey: 'U116_FAKE_ONLY' } }, models: { default: { provider: 'local', model: 'entry' }, cantrip: { provider: 'local', model: 'distill' } } } })
   const assemblies: ReturnType<typeof stage.assemble>[] = []
   let fetched = 0
-  const webSource = { fetchPage: async (url: string) => { fetched++; return { ok: true as const, url, status: 200, bytes: 20, body: '<p>U116 受控页面</p>', contentType: 'text/html' } } }
+  const webSource = {
+    fetchPage: async (url: string) => { fetched++; return { ok: true as const, url, title: '受控页面', markdown: 'U116 受控页面' } },
+    search: async () => ({ ok: true as const, results: [] }),
+  }
   const grantsFile = join(magicAt(stage.root).base, 'grants.json')
   const make = () => { const assembly = stage.assemble({ modelGateway: undefined, webSource, grantsFile }); assemblies.push(assembly); return assembly }
   const old = make()
@@ -34,11 +38,15 @@ test('保存权限规则和撤销授权在后续裁决采用，已开始的工�
   }
   try {
     await run(old, true); expect(fetched).toBe(0)
+    // U94：旧的单域规则（缺 via）**不**批准远端代读——照样问，且零出网。
     await save({ type: 'permissions.set', rules: [{ tool: 'web_fetch', host: 'example.com' }] })
+    await run(old, true); expect(fetched).toBe(0)
+    // 目标域 ＋ 中转域都写明才命中。
+    await save({ type: 'permissions.set', rules: [{ tool: 'web_fetch', host: 'example.com', via: 'api.deepseek.com' }] })
     await run(old, false); expect(fetched).toBe(1)
     await save({ type: 'permissions.set', rules: [] })
     const workspace = realpathSync(stage.workspace)
-    writeFileSync(grantsFile, JSON.stringify({ version: 1, workspaces: { [workspace]: [{ tool: 'web_fetch', host: 'example.com', grantedAt: 1 }] } }))
+    writeFileSync(grantsFile, JSON.stringify({ version: 1, workspaces: { [workspace]: [{ tool: 'web_fetch', host: 'example.com', via: 'api.deepseek.com', grantedAt: 1 }] } }))
     const granted = make(); await run(granted, false); expect(fetched).toBe(2)
     const snapshot = await settings.read()
     await save({ type: 'grants.revoke', workspace, index: 0, grantStamp: snapshot.grantStamp })

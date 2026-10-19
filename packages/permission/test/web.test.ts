@@ -101,6 +101,65 @@ describe('取网页：外发必闸', () => {
   })
 })
 
+describe('远端代读：目标域 × 中转域（U94）', () => {
+  /** 一次**经 DeepSeek 代读**的取网页——`via` 由注册表给（不是模型参数）。 */
+  function viaCall(url: string): ToolCall {
+    return { ...fetchCall(url), via: 'api.deepseek.com' }
+  }
+
+  test('卡上同时写清目标域与接收方；旧单域规则**不再命中**', () => {
+    const { request } = askedOnce(viaCall('https://example.com/x'), [
+      { tool: 'web_fetch', op: 'outbound', host: 'example.com' },
+    ])
+
+    expect(request.data.host).toBe('example.com')
+    expect(request.data.via).toBe('api.deepseek.com')
+    expect(request.data.material).toContain('api.deepseek.com')
+    // 旧规则缺 via ⇒ 不命中，照问
+    expect(request.data.material).not.toContain('命中')
+  })
+
+  test('目标域与中转域都写明才不问了', () => {
+    const yes: readonly PermissionRule[] = [
+      { tool: 'web_fetch', op: 'outbound', host: 'example.com', via: 'api.deepseek.com' },
+    ]
+    expect(askOnce(viaCall('https://example.com/x'), yes).h.countOf('tool.decision.request')).toBe(0)
+
+    const wrongVia: readonly PermissionRule[] = [
+      { tool: 'web_fetch', op: 'outbound', host: 'example.com', via: 'other-relay.example' },
+    ]
+    expect(askedOnce(viaCall('https://example.com/x'), wrongVia).h.countOf('tool.decision.request')).toBe(1)
+  })
+
+  test('「总是允许」把两格一起记下来；换一个中转方照问', async () => {
+    const h = harness()
+    const grants = ledger()
+    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants })
+
+    void gate.decide(viaCall('https://example.com/a'), context(), 1).catch(() => {})
+    const request = h.eventsOf('tool.decision.request')[0]!
+    await gate.resolve(request.id, 'approve', { remember: true })
+
+    expect(grants.rules().map(({ host, via }) => ({ host, via }))).toEqual([
+      { host: 'example.com', via: 'api.deepseek.com' },
+    ])
+
+    void gate.decide(viaCall('https://example.com/b'), context(), 2).catch(() => {})
+    expect(h.countOf('tool.decision.request')).toBe(1) // 同一对（域 × 中转）不再问
+    void gate.decide({ ...viaCall('https://example.com/c'), via: 'other-relay.example' }, context(), 3).catch(() => {})
+    expect(h.countOf('tool.decision.request')).toBe(2) // 换中转方照问
+  })
+
+  test('搜索：落点是服务域，不逐结果索取网页授权', () => {
+    const { request } = askedOnce({ ...call('web_search', { query: 'magic code' }), via: 'api.deepseek.com' })
+
+    expect(request.data.host).toBe('api.deepseek.com')
+    expect(request.data.via).toBeUndefined()
+    expect(request.data.material).toContain('magic code')
+    expect(request.data.material).toContain('不逐条访问')
+  })
+})
+
 describe('「总是允许」按域名给', () => {
   /**
    * 问一次并数一数**新挂出来的卡**——同一个账本、同一道闸（`resolve` 认的是**本闸**发的

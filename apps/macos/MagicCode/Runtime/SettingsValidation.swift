@@ -101,6 +101,12 @@ enum SettingsValidation {
             }
         }
         if let roots = raw.object["workspaceRoots"] { try texts(roots, "workspaceRoots") }
+        // 加载/浏览只判形制：悬空引用留给网页功能自己报不可用，别让整份配置读不出来。
+        if let web = raw.object["web"] {
+            try object(web, "web")
+            try require(web.object.keys.allSatisfy { $0 == "provider" }, "web 字段")
+            try text(web["provider"], "web.provider")
+        }
         for section in ["rules", "skills", "permissions", "motion", "mcp"] { if let value = raw.object[section] { try object(value, section) } }
         for (section, key) in [("rules", "sources"), ("rules", "linkSources"), ("skills", "sources")] {
             if let values = raw[section].object[key] { try texts(values, section + "." + key) }
@@ -137,11 +143,22 @@ enum SettingsValidation {
         if let level = raw.object["logLevel"] { try require(["error", "warn", "info", "debug", "trace"].contains(level.text), "logLevel") }
         if let duration = raw.object["turnDuration"] { try require(["elapsed", "active"].contains(duration.text), "turnDuration") }
     }
+    /// 保存时的网页引用校验（U94）——与 `@magic/config` 的 `webReferenceProblem` 同一条尺子。
+    static func webReference(_ raw: SettingsValue) throws {
+        guard let web = raw.object["web"] else { return }
+        let provider = web["provider"].text
+        guard let entry = raw["providers"].object[provider] else {
+            throw WireError.invalid("web.provider 指向未知连接「\(provider)」")
+        }
+        try require(entry["vendor"].text == "deepseek", "web.provider 须为 DeepSeek 官方连接")
+        try require(entry.object["baseURL"] == nil && entry.object["region"] == nil, "web.provider 须使用固定官方地址")
+    }
+
     static func permission(_ rule: SettingsValue, ops allowed: [String]) throws {
         try object(rule, "权限规则")
-        try require(rule.object.keys.allSatisfy { ["tool", "path", "host", "op"].contains($0) }, "权限规则字段")
+        try require(rule.object.keys.allSatisfy { ["tool", "path", "host", "via", "op"].contains($0) }, "权限规则字段")
         try text(rule["tool"], "权限规则.tool")
-        for key in ["path", "host"] { if let value = rule.object[key] { try text(value, "权限规则." + key) } }
+        for key in ["path", "host", "via"] { if let value = rule.object[key] { try text(value, "权限规则." + key) } }
         if let op = rule.object["op"] {
             let ops = op.isArray ? op.array : [op]
             try require(!ops.isEmpty && ops.allSatisfy { allowed.contains($0.text) }, "权限规则.op")

@@ -95,6 +95,7 @@ extension SettingsValue {
             && ["vendor", "name", "region", "baseURL", "apiKey"].allSatisfy { key in if v[key] == nil { return true }; if case .string = self[key] { return true }; return false }
         case "provider.remove", "model.refresh": return text("provider")
         case "model.configure": return ["default", "cantrip", "spell", "arcane"].contains(self["choice"].text) && text("provider") && text("model") && (v["initialize"] == nil || self["initialize"] == .bool(true) || self["initialize"] == .bool(false))
+        case "web.configure": return self["provider"] == .null || text("provider")
         case "model.clear": return ["default", "cantrip", "spell", "arcane"].contains(self["choice"].text)
         case "model.override": return text("provider") && text("model") && (self["override"] == .null || object("override"))
         case "diagnostics.set":

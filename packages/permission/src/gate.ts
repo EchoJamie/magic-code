@@ -219,7 +219,7 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
         return Promise.resolve('reject')
       }
 
-      const { weight, material, ops, landings, title, external, host } = analysis
+      const { weight, material, ops, landings, title, external, host, via } = analysis
 
       // 规则轴与判定轴读的是**同一份** `analyze` 结论——两条路径结构上无从分叉
       const face: CallFace = {
@@ -227,6 +227,7 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
         ops,
         landings,
         ...(host === undefined ? {} : { host }),
+        ...(via === undefined ? {} : { via }),
       }
       // **优先级链的次序就在这两行**：手写规则在前、点出来的授权在后
       //（项目规约那一格**留缝不实现**——它要在两者之间，见文件头注那条链）
@@ -264,6 +265,8 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
         ...(external === true ? { external: true } : {}),
         // **这一次发往哪个域名**（U72）——卡上写清去向，也是「总是允许」那一格对不对得上的依据
         ...(host === undefined ? {} : { host }),
+        // **经哪一台中转**（U94）——代读时卡上同时说清目标域与接收方
+        ...(via === undefined ? {} : { via }),
       })
 
       const cancel = (): void => {
@@ -368,7 +371,9 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
  * 那是把一个必闸类的口子开到最大。故判据落在**这一次调用**上。
  */
 function byHost(rule: PermissionRule, face: CallFace): boolean {
+  // 经中转时（U94）两边都必须写明 `via`——旧单域授权不放行远端代读。
   return face.host !== undefined && rule.host !== undefined
+    && (face.via === undefined || rule.via !== undefined)
 }
 
 /**

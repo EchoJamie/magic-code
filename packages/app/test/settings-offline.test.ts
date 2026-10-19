@@ -14,6 +14,59 @@ function ground() {
   return { home, base, configPath, request: crypto.randomUUID(), close: () => rmSync(home, { recursive: true, force: true }) }
 }
 
+test('断连 TUI 可读、选、清除网页服务引用；删除被引用的连接不静默级联', async () => {
+  const g = ground(), workspace = createWorkspaceService({ roots: [g.home] })
+  writeFileSync(g.configPath, JSON.stringify({
+    providers: {
+      web: { vendor: 'deepseek', apiKey: 'offline-test-only' },
+      local: { vendor: 'deepseek', protocol: 'chat-completions', baseURL: 'https://example.invalid/v1', apiKey: 'offline-test-only' },
+    },
+    models: { cantrip: { provider: 'local', model: 'distill-model' } },
+  }))
+  const events: KernelEvent[] = []
+  const transport = terminalSettings({ send() {}, subscribe() { return () => {} } }, { home: g.home, base: g.base }, workspace)
+  transport.subscribe(event => events.push(event))
+  const shell = createShell(transport, { magicBase: g.base })
+  try {
+    shell.releaseInput(); shell.hostGone()
+    transport.send({ type: 'web.list' })
+    await waitFor(() => events.some(event => event.kind === 'web.state'))
+    const first = events.find(event => event.kind === 'web.state')!
+    expect(first.kind === 'web.state' && first.data.provider).toBeUndefined()
+    expect(first.kind === 'web.state' && first.data.cantrip?.model).toBe('distill-model')
+
+    transport.send({ type: 'web.configure', provider: 'web' })
+    await waitFor(() => events.filter(event => event.kind === 'web.state').length === 2)
+    expect(JSON.parse(readFileSync(g.configPath, 'utf8')).web).toEqual({ provider: 'web' })
+
+    // 被网页服务引用的连接不能直接删（与模型引用同一把尺子）
+    transport.send({ type: 'provider.remove', provider: 'web' })
+    await waitFor(() => events.some(event => event.kind === 'provider.catalog'))
+    const refused = events.find(event => event.kind === 'provider.catalog')!
+    expect(refused.kind === 'provider.catalog' && refused.data.saved).toBe(false)
+    expect(refused.kind === 'provider.catalog' && refused.data.note).toContain('网页查询与搜索')
+    expect(JSON.parse(readFileSync(g.configPath, 'utf8')).providers.web).toBeDefined()
+
+    transport.send({ type: 'web.configure', provider: null })
+    await waitFor(() => events.filter(event => event.kind === 'web.state').length === 3)
+    expect(JSON.parse(readFileSync(g.configPath, 'utf8')).web).toBeUndefined()
+
+    // 自定义地址的连接不能拿密钥自动转投官方；未知连接也如实拒。
+    transport.send({ type: 'web.configure', provider: 'local' })
+    await waitFor(() => events.filter(event => event.kind === 'web.state').length === 4)
+    let last = events.filter(event => event.kind === 'web.state').at(-1)!
+    expect(last.kind === 'web.state' && last.data.saved).toBe(false)
+    expect(last.kind === 'web.state' && last.data.note).toContain('固定官方地址')
+
+    transport.send({ type: 'web.configure', provider: 'ghost' })
+    await waitFor(() => events.filter(event => event.kind === 'web.state').length === 5)
+    last = events.filter(event => event.kind === 'web.state').at(-1)!
+    expect(last.kind === 'web.state' && last.data.saved).toBe(false)
+    expect(last.kind === 'web.state' && last.data.note).toContain('ghost')
+    expect(JSON.parse(readFileSync(g.configPath, 'utf8')).web).toBeUndefined()
+  } finally { shell.dispose(); g.close() }
+})
+
 test('断连 TUI 可查询并撤销授权、保存偏好，普通草稿保留且不创建业务库', async () => {
   const g = ground(), workspace = createWorkspaceService({ roots: [g.home] })
   const forwarded: Command[] = [], events: KernelEvent[] = []

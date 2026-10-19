@@ -33,6 +33,7 @@ final class NativeSettings {
             "debugMode": raw.object["debugMode"] ?? .bool(false), "logLevel": raw.object["logLevel"] ?? .string("info"),
             "statusLine": raw.object["statusLine"] ?? .object(["cells": .strings(["session", "context"]), "color": .bool(true)])]
         for key in ["models", "agentRoles", "rules", "skills", "permissions", "motion"] { configuration[key] = raw.object[key] ?? .object([:]) }
+        configuration["web"] = raw.object["web"] ?? .object([:])
         configuration["workspaceRoots"] = raw.object["workspaceRoots"]
         let sources = [("rules", "sources"), ("rules", "linkSources"), ("skills", "sources")].flatMap { section, key in
             raw[section][key].array.map { source -> SettingsValue in
@@ -85,6 +86,10 @@ final class NativeSettings {
             let next = try self.edited(current, action: action)
             try SettingsValidation.config(next)
             for (_, config) in next["providers"].object { _ = try models.endpoint(config) }
+            // 网页引用在写这一侧从严；加载侧容忍悬空引用（见 SettingsValidation.config）。
+            if type == "web.configure" || (type == "provider.save" && next["web"]["provider"].text == action["provider"].text) {
+                try SettingsValidation.webReference(next)
+            }
             if type == "provider.save" || type == "model.configure" {
                 let provider = action["provider"].text, config = next["providers"][provider]
                 for mapping in next["models"].object.values where mapping["provider"].text == provider { try models.checkSelection(config, model: mapping["model"].text) }
@@ -125,7 +130,15 @@ final class NativeSettings {
         case "provider.remove":
             guard raw["providers"].object[provider] != nil else { throw WireError.invalid("连接已不存在") }
             guard !raw["models"].object.values.contains(where: { $0["provider"].text == provider }) else { throw WireError.invalid("连接仍被 Default 或档位引用，请先更换或清除映射") }
+            guard raw["web"]["provider"].text != provider else { throw WireError.invalid("连接仍被网页查询与搜索引用，请先在工具接入里更换或清除") }
             var providers = raw["providers"]; providers.put(provider, nil); next.put("providers", providers)
+        case "web.configure":
+            if action["provider"] == .null { next.put("web", nil) }
+            else {
+                let id = action["provider"].text
+                guard raw["providers"].object[id] != nil else { throw WireError.invalid("连接已不存在，请重新读取") }
+                next.put("web", .object(["provider": .string(id)]))
+            }
         case "model.configure", "model.clear":
             var configured = raw.object["models"] ?? .object([:])
             let choice = action["choice"].text
@@ -220,7 +233,7 @@ final class NativeSettings {
     }
     private func normalizedGrant(_ entry: SettingsValue) -> SettingsValue {
         var entry = entry
-        for key in ["tool", "path", "host"] { if let value = entry.object[key] { let text = value.text.trimmingCharacters(in: .whitespacesAndNewlines); entry.put(key, .string(key == "host" ? text.lowercased() : text)) } }
+        for key in ["tool", "path", "host", "via"] { if let value = entry.object[key] { let text = value.text.trimmingCharacters(in: .whitespacesAndNewlines); entry.put(key, .string(["host", "via"].contains(key) ? text.lowercased() : text)) } }
         return entry
     }
     private func revoke(_ action: SettingsValue) throws {

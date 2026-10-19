@@ -147,6 +147,12 @@ export function commandSubjectOf(command: Command): string {
     case 'model.configure':
       // U41 设为默认——写**配置里的默认选择**（与 `model.switch` 改当下那一件分开）
       return `设为默认：${command.provider} / ${command.model}`
+    case 'web.list':
+      // U94 网页服务读侧——无参：问的就是「当前选了哪条连接」
+      return '列网页服务'
+    case 'web.configure':
+      // U94 设置网页服务引用——null ＝ 清除
+      return `网页服务：${command.provider ?? '（未配置）'}`
     case 'prefs.set':
       // U112 界面那两格——写**配置里 `statusLine` / `motion`**（与上面两条都不同一件事：
       // 它改的是「这一屏长什么样」，连一条会话、一件工具都不碰）
@@ -243,6 +249,8 @@ export function hubFaceRealizesPort(): void {
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
     onPrefsSet: () => undefined,
+    onWebList: () => undefined,
+    onWebConfigure: () => undefined,
   })
   port.attach({ send: () => undefined, subscribe: () => () => undefined })
 
@@ -284,6 +292,8 @@ export function routesAreContractShape(): void {
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
     onPrefsSet: () => undefined,
+    onWebList: () => undefined,
+    onWebConfigure: () => undefined,
   }
   void routes
 }
@@ -328,6 +338,8 @@ function routesWith(overrides: Partial<ControlRoutes>): ControlRoutes {
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
     onPrefsSet: () => undefined,
+    onWebList: () => undefined,
+    onWebConfigure: () => undefined,
     ...overrides,
   }
 }

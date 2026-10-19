@@ -552,6 +552,44 @@ function asStatusLine(value: unknown, path: string): StatusLineConfig {
   return { cells: cells as StatusLineCell[], ...(raw['color'] === undefined ? {} : { color: raw['color'] as boolean }) }
 }
 
+/**
+ * 网页服务连接（U94）——**只存连接引用**，这里只判形制。
+ *
+ * ⚠️ **引用是否可用不在加载时判**：手工改出的悬空引用 / 不支持的连接**只让网页功能
+ * 不可用**，不让其它正常工作因网页配置失效而全部停用（需求明文）。可用性在执行前
+ * 由 `webReferenceProblem`（保存时）与装配的 `webSource`（运行时）分别给出具体原因。
+ *
+ * ⚠️ **漏带＝静默失效**（同权限段 / 工作区根那几条教训）：配置里选了网页服务而这里不接，
+ * 两项网页工具就一声不响地永远不可用。
+ */
+function asWeb(value: unknown, path: string): NonNullable<MagicConfig['web']> {
+  const raw = asObject(value, path, 'web')
+  for (const key of Object.keys(raw)) {
+    if (key !== 'provider') throw new ConfigError(path, `web.${key} 不是网页服务配置字段（只认 web.provider）`)
+  }
+  return { provider: asText(raw['provider'], path, 'web.provider') }
+}
+
+/**
+ * **保存时的严格校验**（U94）——引用必须指向一条 DeepSeek 官方连接且地址固定。
+ *
+ * 与加载时分开：加载要容忍手工改坏的引用（别让整份配置起不来），保存要拦住
+ * 会把引用写坏的动作。返回 `undefined` ＝ 可用。
+ */
+export function webReferenceProblem(config: Pick<MagicConfig, 'providers' | 'web'>): string | undefined {
+  if (config.web === undefined) return undefined
+  const provider = config.web.provider
+  const entry = config.providers[provider]
+  if (entry === undefined) return `web.provider 指向未知连接「${provider}」`
+  if (entry.vendor !== 'deepseek') {
+    return `web.provider「${provider}」不是 DeepSeek 官方连接——网页服务首版只接 DeepSeek`
+  }
+  if (entry.baseURL !== undefined || entry.region !== undefined) {
+    return `web.provider「${provider}」使用了自定义地址或区域——网页服务首版只接固定官方地址`
+  }
+  return undefined
+}
+
 function asMotion(value: unknown, path: string): MotionConfig {
   const raw = asObject(value, path, 'motion')
   if (raw['reduced'] !== undefined && typeof raw['reduced'] !== 'boolean') {
@@ -611,6 +649,8 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
   }
 
   const configuredModels = raw['models'] === undefined ? undefined : asModels(raw['models'], path, providers)
+  // 网页服务（U94）——引用一条已有的 DeepSeek 官方连接；不另存凭据。
+  const web = raw['web'] === undefined ? undefined : asWeb(raw['web'], path)
   const providerId = configuredModels?.default?.provider
   const provider = providerId === undefined ? undefined : providers[providerId]
   const agentRoles = raw['agentRoles'] === undefined ? undefined : asAgentRoles(raw['agentRoles'], path, home)
@@ -667,6 +707,7 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
     config: {
       ...(configuredModels === undefined ? {} : { models: configuredModels }),
       providers,
+      ...(web === undefined ? {} : { web }),
       ...(permissions === undefined ? {} : { permissions: { rules: permissions['rules'] } }),
       ...(workspaceRoots === undefined ? {} : { workspaceRoots }),
       ...(ruleSources === undefined && ruleLinkSources === undefined
