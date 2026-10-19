@@ -140,9 +140,59 @@ def legacy(payload, source):
         print(json.dumps({'signedLegacyConversion': True, 'explicitUpgradeRequired': True, 'oldTaskStopped': True, 'selectionAndDataPreserved': True}))
 
 
+def replaced_legacy(payload, with_record=True):
+    """Replacing the App removes magic-runtime before the first migration runs."""
+    with tempfile.TemporaryDirectory(prefix='magic-replaced-legacy-', dir='/tmp') as temporary:
+        room = Path(temporary).resolve(); app = room / 'Magic Code.app'
+        shutil.copytree(payload.parent.parent, app)
+        helper = app / 'Contents/Helpers/magic-runtime'
+        assert not helper.exists()
+        parent = room / 'selected'; (parent / '.magic').mkdir(parents=True)
+        config = parent / '.magic/config.json'; config.write_text('{"future":{"retained":true}}')
+        directory = room / 'Library/Application Support/Magic Code/runtime'; directory.mkdir(parents=True)
+        discovery = directory / 'host.json'; plist = directory / 'engine.plist'
+        label = 'com.magiccode.validation.' + uuid.uuid4().hex + '.engine'
+        old = {'protocol': 1, 'version': '0.1.0', 'source': str(helper), 'app': str(app),
+               'serviceInstance': str(uuid.uuid4()), 'lifecycle': str(uuid.uuid4()),
+               'base': str(parent / '.magic'), 'socket': str(room / 'old.sock'), 'state': 'stopped'}
+        definition = {'Label': label, 'ProgramArguments': [str(helper), '--internal-engine', '--home', str(room),
+                      '--parent', str(parent), '--source', str(helper)]}
+        if with_record:
+            discovery.write_text(json.dumps(old)); plist.write_bytes(plistlib.dumps(definition))
+        command = room / '.local/bin/magic'; command.parent.mkdir(parents=True); command.symlink_to(helper)
+        args = [payload / 'magic-engine', 'install', '--profile', 'app', '--payload', payload,
+                '--home', room, '--legacy-parent', parent]
+        engine = None
+        try:
+            # A dangling link alone cannot authorize replacing an unsigned App's command.
+            info = app / 'Contents/Info.plist'; original = info.read_bytes()
+            info.write_bytes(original + b'\n')
+            rejected = call([*args, '--upgrade-engine', '--upgrade-cli'], room, success=False)
+            assert '签名无效' in rejected['error'] if with_record else '其他文件占用' in rejected['error'], rejected
+            assert not (directory.parent / 'components.json').exists() and command.readlink() == helper
+            info.write_bytes(original)
+            refused = call(args, room, success=False)
+            assert '明确升级' in refused['error'], refused
+            if with_record: assert json.loads(discovery.read_text()) == old
+            assert command.readlink() == helper
+            installed = call([*args, '--upgrade-engine', '--upgrade-cli'], room)
+            engine = Path(installed['components']['engine'])
+            assert command.resolve() == Path(installed['components']['cli'])
+            assert not discovery.exists() and not plist.exists()
+            assert json.loads(config.read_text()) == {'future': {'retained': True}}
+            current = call([engine, 'service', 'start', '--home', room], room)['record']
+            assert current['base'] == str(parent / '.magic') and current['source'] == str(engine)
+        finally:
+            if engine and engine.exists(): call([engine, 'service', 'remove', '--home', room], room)
+        print(json.dumps({'replacedAppMigration': True, 'legacyRecord': with_record, 'unsignedAppRejected': True,
+                          'explicitUpgradeRequired': True, 'selectionAndDataPreserved': True}))
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('app'); parser.add_argument('--legacy-app')
     args = parser.parse_args(); payload = Path(args.app).resolve() / 'Contents/Helpers'
     profiles(payload)
+    replaced_legacy(payload)
+    replaced_legacy(payload, with_record=False)
     if args.legacy_app: legacy(payload, Path(args.legacy_app).resolve())

@@ -180,6 +180,15 @@ function checkCommand(path: string, cli: string, legacy?: string): void {
   throw new Error(`终端命令位置已被其他文件占用，未覆盖：${path}`)
 }
 
+async function legacySource(path: string, team: string): Promise<string> {
+  if (!isAbsolute(path) || !path.endsWith('/Contents/Helpers/magic-runtime')) throw new Error('现有 Engine 未登记组件来源，请先修复安装记录')
+  // 拖放更新 App 后旧 helper 已被移除；此时由原位置的已签名 App 证明归属。
+  const present = existsSync(path)
+  const owner = present ? componentSource(path) : dirname(dirname(dirname(path)))
+  if (await signingTeam(owner) !== team) throw new Error('旧 Engine 的签名来源不同，未转换')
+  return present ? componentSource(path) : resolve(path)
+}
+
 async function legacyInstallation(home: string, team: string, parent?: string): Promise<{ parent: string; bin?: string; source?: string; label?: string; record?: HostDiscovery } | undefined> {
   // Bun 的 homedir/userInfo 都可能采用 HOME；旧 App 偏好只能用于系统账户的真实家目录。
   const account = await execute(['/usr/bin/dscacheutil', '-q', 'user', '-a', 'uid', String(process.getuid!())])
@@ -200,13 +209,11 @@ async function legacyInstallation(home: string, team: string, parent?: string): 
     let source: string | undefined
     try {
       const target = resolve(dirname(command), readlinkSync(command))
-      if (target.endsWith('/Contents/Helpers/magic-runtime') && await signingTeam(target) === team) source = componentSource(target)
+      source = await legacySource(target, team)
     } catch { /* 无旧链接时只迁移已有选择；占用冲突由安装预检报告。 */ }
     return { parent: selected, ...(bin ? { bin } : {}), ...(source ? { source } : {}) }
   }
-  if (!record.source.endsWith('/Contents/Helpers/magic-runtime')) throw new Error('现有 Engine 未登记组件来源，请先修复安装记录')
-  const source = componentSource(record.source)
-  if (await signingTeam(source) !== team) throw new Error('旧 Engine 的签名来源不同，未转换')
+  const source = await legacySource(record.source, team)
   const definition = await execute(['/usr/bin/plutil', '-convert', 'json', '-o', '-', plist])
   let value: { Label?: string; ProgramArguments?: unknown[] }
   try { value = JSON.parse(definition.out) } catch { throw new Error('旧 Engine 系统任务无法核实，未转换') }
