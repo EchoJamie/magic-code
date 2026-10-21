@@ -14,20 +14,49 @@ import { loadConfig } from '@magic/config'
 import { magicAt, removeDir, tempDir } from './tmp.ts'
 
 export type ModelReply = ({ readonly text: string } | { readonly tool: string; readonly args: Record<string, unknown> } | { readonly tools: readonly { readonly tool: string; readonly args: Record<string, unknown> }[] }) & { readonly finish?: string; readonly usage?: Record<string, number>; readonly httpStatus?: number; readonly malformed?: true }
-export type HttpCall = { readonly at: number; readonly model: string; readonly index: number; readonly body: Record<string, unknown> }
+/**
+ * 这次模型调用属于哪类执行上下文。
+ *
+ * **序号按（类型，型号）分开计**（见 `index`）：主 Agent 的续跑、顾问的首轮、压缩/提炼这类
+ * 内务调用可以交错到达，但它们是**各自的会话**，不能共用一个计数器。
+ * 早先只按 model id 计数，遇到两类同型号（如 `default` 与 `cantrip` 都是 entry-model，
+ * 或测试把 Arcane 指到主模型）时，交错顺序一变，同一份请求体就会拿到不同的 index，
+ * 用例便按「第几步」误判。
+ */
+export type CallKind = 'agent' | 'advisor' | 'internal'
+export type HttpCall = { readonly at: number; readonly model: string; readonly kind: CallKind; readonly index: number; readonly body: Record<string, unknown> }
 export function latch() {
   let release!: () => void
   const promise = new Promise<void>(resolve => { release = resolve })
   return { promise, release }
 }
 
+/**
+ * 从请求体认出调用类型——**按系统提示词的身份段**，不按型号。
+ *
+ * 型号会被配置复用（`default`/`cantrip`、甚至测试把 Arcane 指到主模型），
+ * 身份段才是「谁在跑」。
+ */
+export function callKindOf(body: Record<string, unknown>): CallKind {
+  const messages = Array.isArray(body['messages']) ? body['messages'] as { role?: unknown; content?: unknown }[] : []
+  const system = messages.filter(one => one.role === 'system')
+    .map(one => typeof one.content === 'string' ? one.content : JSON.stringify(one.content)).join('\n')
+  if (system.includes('Arcane 只读顾问')) return 'advisor'
+  if (system.includes('单机开发智能体')) return 'agent'
+  return 'internal'
+}
+
 export async function collaborationRuntime(name: string, respond: (call: HttpCall) => ModelReply | Promise<ModelReply>, options: { readonly allowAll?: true; readonly launch?: ExecutorLauncher } = {}) {
   const root = realpathSync(tempDir('magic-collab-run-'))
+  /** 这块沙地的目录名；系统提示词里带着它，可据此认出来的是不是自己人。 */
+  const runtimeMarker = root.split('/').pop()!
   const magic = magicAt(root)
   const workspace = join(root, 'workspace')
   const dataDir = magic.base
   for (const dir of [magic.base, workspace, dataDir]) mkdirSync(dir, { recursive: true })
   const calls: HttpCall[] = []
+  /** 不属于这块沙地的请求（端口复用后别的夹具残留的连接）——只记下，不进入本夹具的序号。 */
+  const foreign: { readonly at: number; readonly model: string; readonly body: Record<string, unknown> }[] = []
   const errors: string[] = []
   const events: KernelEvent[] = []
   const commands: Command[] = []
@@ -40,7 +69,16 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
       if (request.method === 'GET') return Response.json({ data: [{ id: 'entry-model' }, { id: 'member-model' }, { id: 'descendant-model' }] })
       const body = await request.json() as Record<string, unknown>
       const model = String(body['model'])
-      const call = { at: Date.now(), body, model, index: calls.filter(one => one.model === model).length }
+      // 端口是临时分配的；上一块沙地停掉的执行者若还在重连，可能落到这里。它的
+      // 系统提示词里是**另一块沙地**的工作目录：不计数、不回放，免得把别人的第几轮
+      // 当成自己的第几轮。
+      const mentioned: string[] = JSON.stringify(body['messages'] ?? []).match(/magic-collab-run-[A-Za-z0-9]+/g) ?? []
+      if (mentioned.length > 0 && !mentioned.includes(runtimeMarker)) {
+        foreign.push({ at: Date.now(), model, body })
+        return new Response('不是这块沙地的请求', { status: 400 })
+      }
+      const kind = callKindOf(body)
+      const call = { at: Date.now(), body, model, kind, index: calls.filter(one => one.kind === kind && one.model === model).length }
       calls.push(call)
       const reply = await respond(call)
       if (reply.httpStatus !== undefined) return Response.json({ error: { message: 'controlled upstream failure', type: 'controlled' } }, { status: reply.httpStatus })
@@ -108,7 +146,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
   const wait = async (what: string, ok: () => boolean | Promise<boolean>, timeoutMs = 12000): Promise<void> => {
     const until = Date.now() + timeoutMs
     while (!(await ok())) {
-      if (Date.now() >= until) throw new Error(`等不到 ${what}\n${JSON.stringify({ calls: calls.map(({ model, index }) => ({ model, index })), errors, lines, runs: manager.runs(), last: events.filter(one => one.kind !== 'collaboration.view').slice(-8) })}`)
+      if (Date.now() >= until) throw new Error(`等不到 ${what}\n${JSON.stringify({ calls: calls.map(({ model, kind, index }) => ({ model, kind, index })), foreign: foreign.length, errors, lines, runs: manager.runs(), last: events.filter(one => one.kind !== 'collaboration.view').slice(-8) })}`)
       await Bun.sleep(20)
     }
   }
@@ -124,7 +162,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
     shell.dispose(); client.close()
     for (const window of windows) { window.shell.dispose(); window.client.close() }
   }
-  return { root, magic, workspace, dataDir, calls, errors, events, commands, lines, agentExits, closedViews, manager, store, client, shell, closeWindows,
+  return { root, magic, workspace, dataDir, calls, foreign, errors, events, commands, lines, agentExits, closedViews, manager, store, client, shell, closeWindows,
     session, collaboration, members, member, delegation, wait, pick,
     requests: (model = 'entry-model') => calls.filter(call => call.model === model),
     async openMember(target = shell) {
@@ -160,7 +198,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
       const evidence = process.env['MAGIC_COLLAB_RUN_EVIDENCE']
       if (evidence) {
         const dir = resolve(evidence); mkdirSync(dir, { recursive: true })
-        writeFileSync(join(dir, `${name}.json`), JSON.stringify({ proof: 'real-manager-socket-executor-controlled-http', allowAll: options.allowAll === true, calls, events, commands, errors, lines, agentExits, closedViews,
+        writeFileSync(join(dir, `${name}.json`), JSON.stringify({ proof: 'real-manager-socket-executor-controlled-http', allowAll: options.allowAll === true, calls, foreign, events, commands, errors, lines, agentExits, closedViews,
           windows: windows.map(window => ({ conn: window.client.conn, events: window.events, commands: window.commands })),
           agentStarts, remainingToolProcesses: Bun.spawnSync(['/bin/ps', '-axo', 'pid=,ppid=,pgid=,lstart=,args=']).stdout.toString().split('\n').filter(line => line.includes(root)).map(line => line.replace(/--token \S+/g, '--token [redacted]')),
           inputFacts:members().map(member=>({session:member.sessionId,inputs:store.serviceFor(member.sessionId).inputs.list()})), remainingExecutors: manager.executors(), socket: manager.socketPath }, null, 2))

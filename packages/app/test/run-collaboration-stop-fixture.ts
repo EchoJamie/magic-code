@@ -15,7 +15,7 @@ import { runPathsOf } from '../src/run/paths.ts'
 import { terminalOptions } from '../src/run/terminal.ts'
 import type { ExecutorToManager, ManagerToExecutor, Link } from '../src/run/wire.ts'
 import { magicAt, removeDir, tempDir } from './tmp.ts'
-import type { HttpCall, ModelReply } from './run-collaboration-fixture.ts'
+import { callKindOf, type HttpCall, type ModelReply } from './run-collaboration-fixture.ts'
 
 type Launch = { gen: number; tokenHash: string; session: string | null; exited?: { order: number; reason: string }; owned: readonly OwnedProcess[] }
 type Packet = { order: number; gen: number; direction: 'executor-to-manager' | 'manager-to-executor'; message: ExecutorToManager | ManagerToExecutor; forwarded?: number }
@@ -43,8 +43,9 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     const body = await request.json() as Record<string, unknown>
     const model = String(body['model'])
-    const call = { at: Date.now(), model, index: calls.filter(one => one.model === model).length, body }
-    calls.push(call); mark('http-request', { model, index: call.index })
+    const kind = callKindOf(body)
+    const call = { at: Date.now(), model, kind, index: calls.filter(one => one.kind === kind && one.model === model).length, body }
+    calls.push(call); mark('http-request', { model, kind, index: call.index })
     try {
       const reply = await respond(call)
       mark('http-response-released', { model, index: call.index, reply })

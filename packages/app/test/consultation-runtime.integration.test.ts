@@ -11,7 +11,7 @@ test('同批立即受理与独立写入、定向种子、自行取证、幂等�
   const advisor = latch()
   const final = latch()
   const f = await collaborationRuntime('u115-complete', async call => {
-    if (call.model === 'entry-model') {
+    if (call.kind === 'agent') {
       if (call.index === 0) return { tools: [consult as Extract<ModelReply, { tool: string }>, { tool: 'write', args: { path: 'independent.txt', content: '独立动作已经执行' } }], usage }
       if (call.index === 1) return { ...consult, usage }
       if (call.index === 2) return { tool: 'agent_wait', args: { operationId: 'wait-advisor', agents: [f.member()!.agentId], message: f.delegation()!.delegationId, expectation: '取得顾问实际证据', deadline: Date.now() + 60000 }, usage }
@@ -52,7 +52,7 @@ test('同批立即受理与独立写入、定向种子、自行取证、幂等�
 for (const name of ['write', 'edit', 'exec', 'plan_update', 'agent_spawn', 'consult_arcane', 'mcp__fake__read']) {
   test(`顾问伪造 ${name} 实际分发拒绝，合法 read 继续`, async () => {
     const f = await collaborationRuntime(`u115-deny-${name}`, call => {
-      if (call.model === 'entry-model') return call.index === 0 ? consult : { text: '原执行者保留责任。' }
+      if (call.kind === 'agent') return call.index === 0 ? consult : { text: '原执行者保留责任。' }
       if (call.index === 0) return { tool: name, args: { path: 'probe.txt', content: '不应写入', old: '原值', new: '不应修改', cmd: 'touch probe-exec.txt', plan: null,
         operationId: 'recursive', question: '再咨询', name: '伪造成员', responsibility: '修改', scope: '任意', body: [{ kind: 'text', text: '伪造' }] } }
       if (call.index === 1) {
@@ -76,7 +76,7 @@ for (const name of ['write', 'edit', 'exec', 'plan_update', 'agent_spawn', 'cons
 
 for (const reply of [{ text: '' }, { text: '半截建议', finish: 'length' }]) {
   test(`${reply.finish ?? '空正文'} 作为失败主动回报，半截内容不成为建议`, async () => {
-    const f = await collaborationRuntime(`u115-failure-${reply.finish ?? 'empty'}`, call => call.model === 'entry-model'
+    const f = await collaborationRuntime(`u115-failure-${reply.finish ?? 'empty'}`, call => call.kind === 'agent'
       ? call.index === 0 ? consult : { text: '原执行者等待真实意见。' } : reply, { allowAll: true })
     try {
       f.shell.key({ kind: 'paste', text: '先咨询再执行' }); f.shell.key({ kind: 'enter' })
@@ -92,14 +92,24 @@ for (const reply of [{ text: '' }, { text: '半截建议', finish: 'length' }]) 
 test('plan/history 绑定发起 Session，主计划不自动入种子，跨独立工作记录不可读', async () => {
   let evidenceEntry = 0
   let foreignEntry = 0
-  const f = await collaborationRuntime('u115-record-source', call => {
-    if (call.model === 'entry-model') {
+  // 顾问第一轮可能比测试的「原交代落账」等待更早到达：查发起条目要在顾问那一侧
+  // 现取，别依赖主测试线程何时把 id 写进变量。
+  const originEntry = async (): Promise<number> => {
+    if (evidenceEntry !== 0) return evidenceEntry
+    const id = f.session()
+    if (id === null) throw new Error('发起 Session 尚不可见')
+    for await (const entry of f.store.readEntries(id)) if (entry.kind === 'user') { evidenceEntry = entry.id; return entry.id }
+    throw new Error('原交代尚未落账')
+  }
+  const f = await collaborationRuntime('u115-record-source', async call => {
+    if (call.kind === 'agent') {
       if (call.index === 0) return { tool: 'plan_update', args: { plan: { goal: 'MAIN-PLAN-ONLY-592', steps: [], notes: '主计划仅按需查询' } } }
       if (call.index === 1) return consult
       return { text: '原工作保持计划与责任。' }
     }
+    expect(call.kind).toBe('advisor')
     if (call.index === 0) { expect(requestText(call)).not.toContain('MAIN-PLAN-ONLY-592'); return { tool: 'plan_read', args: {} } }
-    if (call.index === 1) { expect(requestText(call)).toContain('MAIN-PLAN-ONLY-592'); return { tool: 'history_read', args: { entry: evidenceEntry } } }
+    if (call.index === 1) { expect(requestText(call)).toContain('MAIN-PLAN-ONLY-592'); return { tool: 'history_read', args: { entry: await originEntry() } } }
     if (call.index === 2) { expect(requestText(call)).toContain('ORIGIN-HISTORY-EVIDENCE-771'); return { tool: 'history_read', args: { entry: foreignEntry } } }
     expect(requestText(call)).not.toContain('FOREIGN-SECRET-991')
     return { text: '只读查证了原工作计划与历史；独立工作记录不可读。' }
@@ -113,12 +123,59 @@ test('plan/history 绑定发起 Session，主计划不自动入种子，跨独�
   } finally { await f.close() }
 }, 15000)
 
+/**
+ * 回归：顾问与主 Agent 同型号时，两边的调用交错会落在同一个 model id 上。
+ *
+ * 旧夹具按 model id 计 `index`：主模型先走两轮（0＝咨询、1＝续跑），顾问首轮就成了 2，
+ * 于是被当成「第三步」去断言历史里的 ORIGIN 串（正是那次全量偶发红的样子）。
+ * 两种到达顺序都用 latch 钉死：主模型续跑先到 / 顾问首轮先到。
+ */
+for (const mainFirst of [false, true]) {
+  test(`同型号顾问与主 Agent 交错的两种顺序：序号按调用类型分开（${mainFirst ? '主模型续跑先到' : '顾问首轮先到'}）`, async () => {
+    const advisorFirst = latch()
+    const mainContinued = latch()
+    const f = await collaborationRuntime(`u115-shared-order-${mainFirst}`, async call => {
+      if (call.kind === 'agent') {
+        // 一轮里直接发起咨询；下一轮（续跑）用来放行/等待顾问首轮。
+        if (call.index === 0) return consult
+        if (mainFirst) mainContinued.release()
+        else await advisorFirst.promise
+        return { text: '主模型继续独立工作。' }
+      }
+      expect(call.kind).toBe('advisor')
+      if (call.index === 0) {
+        expect(requestText(call)).toContain('查 workspace 中的关键证据')
+        if (mainFirst) await mainContinued.promise
+        else advisorFirst.release()
+        return { text: '顾问建议：先核对证据。' }
+      }
+      return { text: '顾问建议：先核对证据。' }
+    }, { allowAll: true })
+    const path = join(f.magic.base, 'config.json')
+    const config = JSON.parse(readFileSync(path, 'utf8'))
+    config.models.arcane = config.models.default
+    writeFileSync(path, JSON.stringify(config))
+    try {
+      f.shell.key({ kind: 'paste', text: '先咨询同型号顾问' }); f.shell.key({ kind: 'enter' })
+      await f.wait('同型号顾问完成并回报', () => f.delegation()?.deliveryMessageId !== undefined)
+      advisorFirst.release(); mainContinued.release()
+      expect(f.errors).toEqual([])
+      const agents = f.calls.filter(one => one.kind === 'agent')
+      const advisors = f.calls.filter(one => one.kind === 'advisor')
+      // 主模型确实先走了两轮；顾问首轮仍从 0 起算，不被主模型的序号推着走。
+      expect(agents.slice(0, 2).map(one => one.index)).toEqual([0, 1])
+      expect(advisors.map(one => one.index)).toEqual([0])
+      expect(advisors[0]!.model).toBe('entry-model')
+    } finally { advisorFirst.release(); mainContinued.release(); await f.close() }
+  }, 15000)
+}
+
 for (const whole of [false, true]) {
   test(`${whole ? '整体停止' : '局部撤回'}取消顾问，迟到响应不续跑原工作`, async () => {
     const pending = latch()
     let replyReleased = false
     const f = await collaborationRuntime(`u115-stop-${whole}`, async call => {
-      if (call.model === 'entry-model') return call.index === 0 ? consult : { text: '原工作完成独立步骤。' }
+      if (call.kind === 'agent') return call.index === 0 ? consult : { text: '原工作完成独立步骤。' }
       await pending.promise
       replyReleased = true
       return { text: '停止后迟到的建议不触发实施。' }
@@ -144,7 +201,7 @@ for (const whole of [false, true]) {
 test('窗口断线仍完成咨询，原工作被结果唤起；重复终态不重复消费', async () => {
   const pending = latch()
   const f = await collaborationRuntime('u115-disconnect', async call => {
-    if (call.model === 'entry-model') return call.index === 0 ? consult : { text: '原工作看到顾问结果继续核对。' }
+    if (call.kind === 'agent') return call.index === 0 ? consult : { text: '原工作看到顾问结果继续核对。' }
     await pending.promise
     return { text: '后台顾问的完整建议。' }
   }, { allowAll: true })
@@ -168,7 +225,7 @@ test('咨询在途映射稳定，下次新咨询读取新映射，主 reasoning 
   const pending = latch()
   const consult2: ModelReply = { tool: 'consult_arcane', args: { operationId: 'consult-2', question: '第二个新问题' } }
   const f = await collaborationRuntime('u115-model-isolation', async call => {
-    if (call.model === 'entry-model') {
+    if (call.kind === 'agent') {
       if (call.index === 0) return consult
       if (call.index === 1) return { text: '继续独立工作。' }
       if (call.index === 2) return consult2
@@ -236,7 +293,7 @@ test('运行中纠正到安全边界，历史保留旧证据，原工作采纳�
   const resume = latch()
   let mainRechecked = false
   const f = await collaborationRuntime('u115-correction', async call => {
-    if (call.model === 'entry-model') {
+    if (call.kind === 'agent') {
       if (call.index === 0) return consult
       if (call.index === 1) return { text: '继续独立步骤。' }
       if (!requestText(call).includes('顾问最终建议')) return { text: '已记下新的用户要求。' }
@@ -269,7 +326,7 @@ test('运行中纠正到安全边界，历史保留旧证据，原工作采纳�
 test('顾问模型流失败主动报未完成，不重发咨询，原工作仍能接住', async () => {
   const pending = latch()
   const f = await collaborationRuntime('u115-crash', async call => {
-    if (call.model === 'entry-model') return call.index === 0 ? consult : { text: '收到未完成原因，保留原工作责任。' }
+    if (call.kind === 'agent') return call.index === 0 ? consult : { text: '收到未完成原因，保留原工作责任。' }
     await pending.promise; return { text: '', malformed: true }
   }, { allowAll: true })
   try {
@@ -318,7 +375,7 @@ test('主模型与Arcane同实际型号仍创建独立上下文，咨询不继�
 test('原始条目图片进入咨询能力检查，明确不支持时零顾问请求并主动失败', async () => {
   let imageEntry = 0
   const f = await collaborationRuntime('u115-image-reject', call => {
-    if (call.model !== 'entry-model') throw new Error('不支持图片不应发出降为文字的请求')
+    if (call.kind !== 'agent') throw new Error('不支持图片不应发出降为文字的请求')
     if (call.index === 0) {
       const service = f.store.serviceFor(f.session()!)
       imageEntry = service.appendEntry({ kind: 'user', at: Date.now(), content: { text: '原图 Image#1' }, payload: { refs: [{ kind: 'image', at: 3,
@@ -342,7 +399,7 @@ test('原始条目图片进入咨询能力检查，明确不支持时零顾问�
 }, 15000)
 
 for (const fault of [{ httpStatus: 429 }, { httpStatus: 503 }, { malformed: true as const }]) test(`上游失败 ${fault.httpStatus ?? '异常SSE'} 不成为成功建议，不换档`, async () => {
-  const f = await collaborationRuntime(`u115-upstream-${fault.httpStatus ?? 'sse'}`, call => call.model === 'entry-model'
+  const f = await collaborationRuntime(`u115-upstream-${fault.httpStatus ?? 'sse'}`, call => call.kind === 'agent'
     ? call.index === 0 ? consult : { text: '咨询未完成，继续核对原因。' }
     : { text: '', ...fault }, { allowAll: true })
   try {
