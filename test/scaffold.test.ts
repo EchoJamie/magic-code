@@ -99,7 +99,11 @@ const ALLOWED_EXTERNAL: Record<string, readonly string[]> = {
   // `string-width`（U31 返工轮）——**折行器量宽用的就是它**：折出来的行有多宽、
   // 插入点落在行里第几列，必须是同一把尺（返工①：按码点量组合字符 / emoji，两个数对不上
   // ⇒ 插入点找不到那一行 ⇒ 真光标掉到状态行下）。与 `wrap-ansi` 同一版本支（`^8`）。
-  '@magic/tui': ['ink', 'react', 'wrap-ansi', 'string-width'],
+  //
+  // `mermaid-glyph`（Mermaid Glyph 0.1.0）——把已闭合的 ```mermaid 块按真实列宽画成字符图
+  // （见 `packages/tui/src/components/log.ts` 的 Mermaid 那一节）。它**零运行时依赖**、
+  // 不知道 Ink / 终端 / 产品配色，产品侧只在记录区把语义 token 映射到既有 `PALETTE`。
+  '@magic/tui': ['ink', 'react', 'wrap-ansi', 'string-width', 'mermaid-glyph'],
 }
 
 /**

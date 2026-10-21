@@ -31,6 +31,18 @@ export type MdLine = {
    * 不给就是普通正文（渲染层按默认缩进挂）。
    */
   readonly hang?: string
+  /**
+   * **已闭合的 Mermaid 围栏**（0.1.0 本次接入）——值就是围栏里的**原文**。
+   *
+   * 一条 `MdLine` 代表**整块**（不是逐行），因为画图要按**真实列宽**整体布局，
+   * 而宽度只有渲染层（`components/log.ts`）知道；本文件仍是不看宽度的纯函数。
+   * 渲染层画不出来（语法错 / 图型不支持 / 超宽 / 库异常）就按**代码块**显示这份原文
+   * （`codeBlockLines`）——围栏与语言标记照旧不上屏，与普通代码块同一个样子。
+   *
+   * ⚠️ **只在围栏闭合后才出现**：`markdownStream` 的尾巴那一段走 `markdown()`，
+   * 围栏没闭合时这里一个 `diagram` 都不会有，原文照旧逐行显示。
+   */
+  readonly diagram?: string
 }
 
 /** 行内代码的颜色——**换色不换背景**（背景要占行高，密度不划算）。 */
@@ -45,8 +57,16 @@ const BLOCK_INDENT = '  '
 /** 链接的 URL——**淡化**（文字留给读者，地址只是备查）。 */
 const URL_COLOR = PALETTE.faint
 
-/** 开围栏（```` ``` ```` / `~~~`，三个起步）。 */
-const FENCE = /^\s*(`{3,}|~{3,})/
+/**
+ * 开围栏（```` ``` ```` / `~~~`，三个起步）＋ **语言标记**（围栏后面那截 info string）。
+ *
+ * 0.1.0 起要留下 info：` ```mermaid ` 那一块在闭合后交给渲染层画图，其余语言照旧当代码块。
+ * 取语言只认 info 的**第一个词**（`` ```mermaid title="x" `` 的写法也认）。
+ */
+const FENCE = /^\s*(`{3,}|~{3,})(.*)$/
+
+/** Mermaid 围栏的语言标记（大小写不敏感——` ```Mermaid ` 也算）。 */
+const MERMAID = 'mermaid'
 
 /** 标题——`#` 一到六个 ＋ 一个空白；**没有空白的不算**（`#话题` 是正文）。 */
 const HEADING = /^\s*#{1,6}\s+(.*)$/
@@ -74,8 +94,8 @@ export function markdown(source: string): readonly MdLine[] {
       const close = closingFence(lines, at + 1, open)
 
       if (close !== -1) {
-        // 围栏闭合 ⇒ 成块：**围栏两行都不出现**，正文缩进 ＋ 淡化
-        for (let body = at + 1; body < close; body += 1) out.push(codeLine(lines[body] as string))
+        // 围栏闭合 ⇒ 成块：**围栏两行都不出现**；mermaid 那块整块交给渲染层（见 `blockLines`）
+        for (const line of blockLines(lines, at + 1, close, fence[2] as string)) out.push(line)
         at = close + 1
         continue
       }
@@ -110,6 +130,49 @@ function textLine(line: string): MdLine {
 /** 代码块里的一行——缩进 ＋ 淡化（**不带围栏**）。 */
 function codeLine(line: string): MdLine {
   return { segments: [{ text: `${BLOCK_INDENT}${line}`, color: BLOCK_COLOR }] }
+}
+
+/**
+ * 一个**已闭合**围栏的正文 → 显示行。
+ *
+ * - `mermaid`：**一行**（整块）带原文——画图归渲染层，那里才知道真实列宽；
+ * - 其余语言：照旧逐行缩进 ＋ 淡化。
+ *
+ * ⚠️ 非 mermaid 那一支走 `codeBlockLines` 会把「一整块空正文」与「一行空行」都变成空数组
+ * （原文拼出来是空串）；这里保留**逐行**的旧写法，免得一个空围栏凭空多／少一行。
+ */
+function blockLines(
+  lines: readonly string[],
+  from: number,
+  to: number,
+  info: string,
+): readonly MdLine[] {
+  if (fenceLanguage(info) === MERMAID) {
+    return [{ segments: [], diagram: lines.slice(from, to).join('\n') }]
+  }
+
+  const out: MdLine[] = []
+  for (let body = from; body < to; body += 1) out.push(codeLine(lines[body] as string))
+
+  return out
+}
+
+/**
+ * 围栏的语言标记——info string 的**第一个词**（小写）。
+ * ` ```mermaid title="x" ` 只认 `mermaid`；没有 info 就是空串。
+ */
+function fenceLanguage(info: string): string {
+  return (info.trim().split(/\s+/)[0] ?? '').toLowerCase()
+}
+
+/**
+ * **代码块形态**的显示行（渲染层退回代码块时用）——Mermaid 那块画不出来，就按这个显示原文：
+ * 与普通代码块**一模一样**（缩进 ＋ 淡化、围栏与语言标记不上屏）。
+ *
+ * 导出是给 `components/log.ts` 的：失败降级要落在**同一个样子**上，不能另写一份代码块样式。
+ */
+export function codeBlockLines(source: string): readonly MdLine[] {
+  return source === '' ? [] : source.split('\n').map(codeLine)
 }
 
 /**
@@ -281,7 +344,8 @@ export function markdownStream(key: string, source: string): MarkdownStream {
     // 保守那一档只是少赚一次增量，不会算错（尾巴走的是全量那条路）。
     if (close === -1 || close >= complete) break
 
-    for (let body = done + 1; body < close; body += 1) grown.push(codeLine(lines[body] as string))
+    // 与 `markdown()` 同一条路（mermaid 整块只产一条 `diagram`）——两处必须逐字一致
+    for (const line of blockLines(lines, done + 1, close, fence[2] as string)) grown.push(line)
     done = close + 1
   }
 

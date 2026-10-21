@@ -29,8 +29,10 @@ import type { ReactElement } from 'react'
 import { bannerOf } from '../banner.ts'
 import { diffRowsOf, looksLikeDiff, replaceDiff } from '../diff.ts'
 import type { DiffKind, DiffRow } from '../diff.ts'
-import { markdownStream } from '../markdown.ts'
+import { codeBlockLines, markdownStream } from '../markdown.ts'
 import type { MdLine } from '../markdown.ts'
+import { renderMermaidGlyph } from 'mermaid-glyph'
+import type { GlyphToken } from 'mermaid-glyph'
 import { MARKS } from '../marks.ts'
 import { breathColor, breathOf } from '../motion.ts'
 import type { LogRow } from '../view.ts'
@@ -348,17 +350,135 @@ function wrapAssistant(
 
   for (let at = from; at < to; at += 1) {
     const line = lines[at] as MdLine
-    appendLines(
-      out,
-      wrapSegments(line.segments.length === 0 ? [] : [seg(INDENT), ...line.segments], columns, {
-        key: `r:a:${at}`,
-        hang: INDENT + (line.hang ?? ''),
-        bodyColor: PALETTE.fg,
-      }),
-    )
+    const key = `r:a:${at}`
+
+    // **已闭合的 Mermaid 块**（0.1.0）——按这一屏的真实列宽画图；画不出来退回代码块
+    if (line.diagram !== undefined) {
+      const drawn = diagramLines(line.diagram, columns, key)
+      if (drawn !== null) {
+        appendLines(out, drawn)
+        continue
+      }
+
+      codeBlockLines(line.diagram).forEach((fallback, index) => {
+        appendLines(out, wrapMdLine(fallback, columns, `${key}:f${index}`))
+      })
+      continue
+    }
+
+    appendLines(out, wrapMdLine(line, columns, key))
   }
 
   return out
+}
+
+/** 一条 `MdLine` → 折好的显示行（助手的基线缩进 ＋ Markdown 自己的悬挂）。 */
+function wrapMdLine(line: MdLine, columns: number, key: string): readonly LogLine[] {
+  return wrapSegments(line.segments.length === 0 ? [] : [seg(INDENT), ...line.segments], columns, {
+    key,
+    hang: INDENT + (line.hang ?? ''),
+    bodyColor: PALETTE.fg,
+  })
+}
+
+// ══ Mermaid 字符图（0.1.0）════════════════════════════════════════════
+//
+// 库（`mermaid-glyph`）只做「Mermaid 原文 ＋ 列宽 → 字符行」，不知道终端与配色；
+// 这一层负责**真实列宽**（内容区＝`columns - INDENT`）、**语义色**与**失败降级**。
+
+/**
+ * 语义 token → 既有色板。**颜色不是唯一辨别依据**——框线 / 箭头 / 文字的形状本身已经分得开，
+ * 色只做第二层：正文最亮、结构与走线退后、箭头用工具蓝（与工具行的「动」同色）。
+ */
+const DIAGRAM_COLOR: Record<GlyphToken, string> = {
+  text: PALETTE.fg,
+  border: PALETTE.dim,
+  corner: PALETTE.dim,
+  line: PALETTE.faint,
+  junction: PALETTE.faint,
+  arrow: PALETTE.tool,
+}
+
+/** 画出来的一行（不含每帧的 `key`——人可按「原文 ＋ 宽度」复用）。 */
+type DiagramRow = { readonly segments: readonly Segment[] }
+
+/**
+ * 按 **（原文，宽度）** 缓存画好的行。
+ *
+ * 由头：同一条助手行在一帧里会被问好几遍（活动区行数预算与真渲染各一次），而流式时
+ * 围栏刚闭合那一帧还会走尾巴那条路——**每帧重画一张图**是 O(画布)，不是 O(一行)。
+ * 宽度进键是必须的：同一段原文在 100／200 列下是两张图。
+ */
+const diagrams = new Map<string, readonly DiagramRow[] | null>()
+
+/** 缓存条数上限——同时只有一两张图在长；给上限是防长会话里把每张图都攒着。 */
+const DIAGRAM_LIMIT = 32
+
+/**
+ * 一块 Mermaid 原文 → 显示行（`null` ＝**画不出来**，调用方退回代码块）。
+ *
+ * 画不出来的四种（库已归口成 `fallback`）：解析失败 · 图型不支持 · 节点超限 · 宽度超限。
+ * **默认溢出策略就是退回源码**——不裁半张图、不弹错误、不阻塞消息。
+ * 库异常也按同一档降级（不把一屏弄没）。
+ *
+ * ⚠️ 宽度用**内容区列数**（`columns - INDENT`），返回的每一行再按 `INDENT` 挂进去——
+ * 与正文同一基线（`wrapAssistant` 的统一悬挂）。
+ */
+function diagramLines(source: string, columns: number, key: string): readonly LogLine[] | null {
+  const width = columns - displayWidth(INDENT)
+  if (width < 1) return null
+
+  const rows = diagramRows(source, width)
+  if (rows === null) return null
+
+  return rows.map((row, at) => ({ key: `${key}:g${at}`, segments: row.segments }))
+}
+
+/** 画一次（带（原文，宽度）缓存；失败也缓存——免得同一块每帧重跑一遍解析）。 */
+function diagramRows(source: string, width: number): readonly DiagramRow[] | null {
+  const cacheKey = `${width}\u0000${source}`
+  const hit = diagrams.get(cacheKey)
+  if (hit !== undefined) return hit
+
+  const rows = drawDiagram(source, width)
+  diagrams.set(cacheKey, rows)
+
+  while (diagrams.size > DIAGRAM_LIMIT) {
+    const oldest = diagrams.keys().next().value
+    if (oldest === undefined) break
+    diagrams.delete(oldest)
+  }
+
+  return rows
+}
+
+function drawDiagram(source: string, width: number): readonly DiagramRow[] | null {
+  try {
+    // `overflow: 'source'` 是库的默认档，这里写明是为读代码的人：超宽 ⇒ 退回源码
+    const result = renderMermaidGlyph(source, { width, profile: 'unicode', overflow: 'source' })
+    if (result.status !== 'ok') return null
+
+    const rows: DiagramRow[] = []
+
+    for (const line of result.lines) {
+      // **两把尺子必须同结论**：库算它装得下，宿主这把（string-width）算出超一行，
+      // 宁可退回代码块——画出去的就是残缺图（终端会自己折行，边框当场断掉）。
+      if (displayWidth(line.text) > width) return null
+
+      rows.push({
+        segments: [
+          seg(INDENT),
+          ...line.segments.map((piece) =>
+            seg(piece.text, piece.token === undefined ? undefined : DIAGRAM_COLOR[piece.token]),
+          ),
+        ],
+      })
+    }
+
+    return rows.length === 0 ? null : rows
+  } catch {
+    return null
+  }
 }
 
 // ══ 分段：块与块之间留一整行（U67）══════════════════════════════════
