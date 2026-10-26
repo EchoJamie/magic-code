@@ -68,6 +68,45 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(providerFormValue(id: "locked", snapshot: snapshot)["protocol"], .string("messages"))
     }
 
+    /// 角色保存只记录模板（D65）：状态在界面上说明清楚，不藏成保存失败。
+    func testRoleModelNotesShowStateWithoutBlockingSave() {
+        let snapshot = SettingsSnapshot(preview: .object([:]), configPath: "/fixture/config.json", base: "/fixture", stamp: "stamp",
+            configuration: .object([
+                "providers": .object([
+                    "local": .object(["baseURL": .string("https://local.invalid/v1"),
+                        "modelOverrides": .object(["chatless": .object(["capabilities": .object(["chat": .bool(false)])])])]),
+                    "bare": .object(["vendor": .string("no-such-vendor")]),
+                    "official": .object(["vendor": .string("fixture"), "region": .string("mars")])
+                ]),
+                "models": .object([
+                    "default": .object(["provider": .string("local"), "model": .string("chatless")]),
+                    "spell": .object(["provider": .string("bare"), "model": .string("mystery")]),
+                    "arcane": .object(["provider": .string("official"), "model": .string("exact")])
+                ])
+            ]),
+            catalog: [.object(["provider": .string("local"), "modelInfo": .object(["chatless": .object(["capabilities": .object(["chat": .bool(false)])])])])],
+            vendors: [.object(["vendor": .string("fixture"), "label": .string("测试供应商"),
+                "regions": .array([.object(["id": .string("test"), "label": .string("测试区域")])]),
+                "protocols": .array([])])],
+            sources: [], grants: [], grantStamp: nil, grantProblem: nil)
+        // 未设置的档位如实标出，列表与编辑器看到同一件事。
+        let unconfigured = roleModelNotes(.object(["choice": .string("cantrip")]), snapshot: snapshot)
+        XCTAssertTrue(unconfigured.first?.contains("尚未配置") == true)
+        XCTAssertEqual(roleChoiceLabel(.object(["choice": .string("cantrip")]), snapshot: snapshot), "Cantrip（尚未配置）")
+        // chat=false 与思考能力未知各说各的下一步。
+        let chatless = roleModelNotes(.object(["choice": .string("default"), "reasoning": .object(["mode": .string("level"), "level": .string("xhigh")])]), snapshot: snapshot)
+        XCTAssertTrue(chatless.contains { $0.contains("不支持对话") })
+        XCTAssertTrue(chatless.contains { $0.contains("思考能力未知") })
+        // 官方适配不可解析时给出可执行下一步。
+        let unlisted = roleModelNotes(.object(["choice": .string("spell")]), snapshot: snapshot)
+        XCTAssertTrue(unlisted.contains { $0.contains("供应商适配") && $0.contains("无法识别") })
+        // 官方区域认不出时同样指出改哪里。
+        let region = roleModelNotes(.object(["choice": .string("arcane")]), snapshot: snapshot)
+        XCTAssertTrue(region.contains { $0.contains("官方区域") && $0.contains("mars") })
+        // 没有显式默认时说明继承关系。
+        XCTAssertTrue(roleModelNotes(.null, snapshot: snapshot).first?.contains("创建入口") == true)
+    }
+
     @MainActor func testU126CustomAuthenticationAddressAndWireValidation() {
         let snapshot = u126Snapshot()
         let draft = SettingsDraft(providerFormValue(id: "local", snapshot: snapshot), stamp: snapshot.stamp)

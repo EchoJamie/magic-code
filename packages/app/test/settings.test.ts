@@ -107,6 +107,38 @@ test('无效字段与数据责任拒写；角色工具缺省/空列表、清除�
   expect('canChangeData' in await g.settings.read()).toBe(false)
 })
 
+test('角色保存只判结构与明显冲突：档位未配置、地址不可解析、chat=false、思考未知都照存', async () => {
+  const g = setup()
+  writeFileSync(g.config, JSON.stringify({
+    providers: {
+      local: { baseURL: 'https://local.invalid/v1', protocol: 'responses', auth: 'none',
+        modelOverrides: { chatless: { capabilities: { chat: false } } } },
+      unlisted: { vendor: 'no-such-vendor' },
+    },
+    models: {
+      default: { provider: 'local', model: 'chatless' },
+      spell: { provider: 'unlisted', model: 'mystery' },
+    },
+  }))
+  // 档位未配置：先定义角色、后补模型。
+  await g.apply({ type: 'role.save', id: 'future', role: { name: '先定义', instructions: '稍后补模型', model: { choice: 'cantrip' } } })
+  // chat=false 与思考能力未知：保存不拦，创建或真实请求时再解析。
+  await g.apply({ type: 'role.save', id: 'chatless', role: { name: '无对话', instructions: '先存模板', model: { choice: 'default', reasoning: { mode: 'level', level: 'xhigh' } } } })
+  // 官方供应商适配无法解析（地址来源不可确定）：同样照存。
+  await g.apply({ type: 'role.save', id: 'unlisted', role: { name: '未列型号', instructions: '稍后核对', model: { choice: 'spell', reasoning: { mode: 'off' } } } })
+  const roles = loadConfig({ magic: g.context.magic }).config.agentRoles
+  expect(roles?.future?.model).toEqual({ choice: 'cantrip' })
+  expect(roles?.chatless?.model).toEqual({ choice: 'default', reasoning: { mode: 'level', level: 'xhigh' } })
+  expect(roles?.unlisted?.model).toEqual({ choice: 'spell', reasoning: { mode: 'off' } })
+
+  // 结构、枚举、类型这些明显冲突仍拒绝，且不落盘。
+  const before = readFileSync(g.config, 'utf8')
+  await expect(g.apply({ type: 'role.save', id: 'bad', role: { name: '缺档位', instructions: '只写思考', model: { reasoning: { mode: 'off' } } } })).rejects.toThrow('明确选择')
+  await expect(g.apply({ type: 'role.save', id: 'bad', role: { name: '未知档位', instructions: '拼错枚举', model: { choice: 'bogus' } as never } })).rejects.toThrow()
+  await expect(g.apply({ type: 'role.save', id: 'bad', role: { name: '未知思考', instructions: '拼错模式', model: { choice: 'default', reasoning: { mode: 'telepathy' } } as never } })).rejects.toThrow()
+  expect(readFileSync(g.config, 'utf8')).toBe(before)
+})
+
 test('授权撤销比较真实文件身份，重读后撤销且回读同一事实', async () => {
   const g = setup(), grantPath = join(g.base, 'grants.json')
   writeFileSync(grantPath, JSON.stringify({ version: 1, workspaces: { [g.workspace]: [{ tool: 'read', grantedAt: 1 }] } }))

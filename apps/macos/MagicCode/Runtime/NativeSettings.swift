@@ -105,7 +105,7 @@ final class NativeSettings {
                 for mapping in next["models"].object.values where mapping["provider"].text == provider { try models.checkSelection(config, model: mapping["model"].text) }
                 if type == "provider.save" { for model in config["modelOverrides"].object.keys { try models.checkSelection(config, model: model) } }
             }
-            if type == "role.save", let model = action["role"].object["model"] { try validateRole(model, raw: next, stamp: stamp) }
+            if type == "role.save" { try validateRole(action["role"]) }
             return next
         }
         var cacheNote = ""
@@ -212,23 +212,13 @@ final class NativeSettings {
         }
         return next
     }
-    private func validateRole(_ role: SettingsValue, raw: SettingsValue, stamp: String?) throws {
-        guard let choice = role.object["choice"]?.text else { throw WireError.invalid("角色模型设置须明确选择 Default 或模型档位") }
-        let mapping = raw["models"][choice]
-        guard mapping.isObject else { throw WireError.invalid("角色模型设置：所选档位尚未配置") }
-        let id = mapping["provider"].text, model = mapping["model"].text, config = raw["providers"][id]
-        try models.checkSelection(config, model: model)
-        let known = models.modelInfo(config, model: model, supplied: models.snapshot(id, config: config, stamp: stamp)?["models"].array.first { $0["id"].text == model }, resource: models.modelsDevSnapshot())
-        try SettingsValidation.require((config["modelOverrides"][model]["capabilities"].object["chat"] ?? known?["capabilities"].object["chat"]) != .bool(false), "角色模型对话能力")
-        guard let setting = role.object["reasoning"], setting["mode"].text != "default" else { return }
-        guard let support = models.effectiveReasoning(config, model: model, known: known) else { throw WireError.invalid("角色模型的思考能力未知，只能使用默认设置") }
-        switch setting["mode"].text {
-        case "off": try SettingsValidation.require(support["disable"] == .bool(true), "角色模型关闭思考")
-        case "level": try SettingsValidation.require(support["levels"].array.contains(setting["level"]), "角色模型思考档位")
-        case "budget":
-            let value = setting["budgetTokens"].number ?? 0, budget = support["budget"]
-            try SettingsValidation.require(budget.isObject && value >= (budget["minTokens"].number ?? 1) && value <= (budget["maxTokens"].number ?? .greatestFiniteMagnitude), "角色模型思考预算")
-        default: throw WireError.invalid("角色模型思考设置无效")
+    /// 角色保存只判结构与明显冲突（D65）：档位是否配置、地址／协议能否解析、
+    /// 对话与思考能力都留给创建成员或真实请求时解析。形制（字段、枚举、类型）
+    /// 已由 `SettingsValidation.config` 校验；这里只多守一条——写了 model 就要指明档位。
+    private func validateRole(_ role: SettingsValue) throws {
+        guard role.object["model"] != nil else { return }
+        guard role.object["model"]?.object["choice"] != nil else {
+            throw WireError.invalid("角色模型设置须明确选择 Default 或模型档位")
         }
     }
     private func validGrantFile(_ raw: SettingsValue) throws {
