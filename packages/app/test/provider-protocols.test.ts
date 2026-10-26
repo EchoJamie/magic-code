@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import type { ModelCatalogRow, SettingsAction } from '@magic/contracts'
 import { createSettings } from '../src/settings.ts'
 import { connectionScopeChanged } from '../src/cache-access.ts'
+import { attachShell } from '../src/index.ts'
 import { tempDir, removeDir } from './tmp.ts'
 import { makeStage } from './support.ts'
 import { MODELS_DEV_URL } from '@magic/model'
@@ -75,23 +76,46 @@ test('协议及认证改变作废缓存范围，普通改名可保留', () => {
 })
 
 
-test('保存协议不改变已绑定 Agent，明确应用重新解析；无会话时也采用新连接', () => {
+test('改协议或地址后下一次请求按当前配置组装，不必重新选档', async () => {
+  const seen: string[] = []
+  const chat = 'data: {"choices":[{"index":0,"delta":{"content":"好"}}]}\n\n'
+    + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n'
+  const responses = [
+    { type: 'response.created', response: { id: 'resp', created_at: 1, model: 'raw' } },
+    { type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'msg' } },
+    { type: 'response.output_text.delta', item_id: 'msg', output_index: 0, content_index: 0, delta: '好' },
+    { type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'msg' } },
+    { type: 'response.completed', response: { usage: { input_tokens: 1, output_tokens: 1 } } },
+  ].map(frame => `data: ${JSON.stringify(frame)}\n\n`).join('')
+  const modelFetch = async (input: unknown) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    seen.push(url.origin + url.pathname)
+    const body = url.pathname.endsWith('/responses') ? responses : url.pathname.endsWith('/chat/completions') ? chat : undefined
+    if (body === undefined) throw new Error(`未预期的模型请求：${url.pathname}`)
+    return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
+  }
   const stage = makeStage({ config: { providers: { local: { baseURL: 'http://localhost:9000/prefix', protocol: 'chat-completions', auth: 'none' } }, models: { default: { provider: 'local', model: 'raw' } } } })
-  const assembly = stage.assemble({ modelGateway: undefined })
+  const assembly = stage.assemble({ modelGateway: undefined, modelFetch })
+  const shell = attachShell(assembly.shell, { timeoutMs: 5000 })
   try {
-    const before = assembly.models?.current()
-    expect(before?.protocol).toBe('chat-completions')
+    await shell.submit('第一句')
+    expect(seen).toEqual(['http://localhost:9000/prefix/chat/completions'])
+    expect(assembly.models?.current()?.protocol).toBe('chat-completions')
+    // 改了协议：下一次请求自己按新配置解析，用户不必重新选档。
     const raw = JSON.parse(readFileSync(stage.configPath, 'utf8'))
     raw.providers.local.protocol = 'responses'
     writeFileSync(stage.configPath, JSON.stringify(raw))
-    expect(assembly.models?.current()).toEqual(before)
-    expect(assembly.switchModel({ choice: 'default' })).toEqual({ ok: true, selection: { choice: 'default', provider: 'local', model: 'raw', protocol: 'responses', endpoint: 'http://localhost:9000/prefix' } })
+    await shell.submit('第二句')
+    expect(seen.at(-1)).toBe('http://localhost:9000/prefix/responses')
     expect(assembly.models?.current()?.protocol).toBe('responses')
+    // 改了地址：同样在下一次请求生效；保存的选择字段不被改写。
     raw.providers.local.baseURL = 'http://localhost:9001/new'
     writeFileSync(stage.configPath, JSON.stringify(raw))
-    expect(assembly.switchModel({ choice: 'default' }).ok).toBe(true)
+    await shell.submit('第三句')
+    expect(seen.at(-1)).toBe('http://localhost:9001/new/responses')
     expect(assembly.models?.current()?.endpoint).toBe('http://localhost:9001/new')
-  } finally { assembly.close(); stage.dispose() }
+    expect(assembly.models?.current()).toMatchObject({ choice: 'default', provider: 'local', model: 'raw' })
+  } finally { shell.dispose(); assembly.close(); stage.dispose() }
 })
 
 test('设置读面只开放当前协议能表达的思考形态，保留用户原始覆盖', async () => {

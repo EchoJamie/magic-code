@@ -115,69 +115,127 @@ describe('成员主机装配', () => {
     } finally { shell.dispose(); app.close(); f.close() }
   })
 
-  test('接回使用已保存协议；服务地址改变时拒绝且保留原记录', async () => {
+  test('接回按当前配置重新解析来源：服务地址改变后下一次请求用新地址，不必重选模型', async () => {
     const f = setup()
     try {
-      writeFileSync(f.configPath, JSON.stringify({ ...f.config, providers: { ...f.providers, mm: { ...f.providers.mm, protocol: 'responses' } } }))
       const app = f.open(), shell = attachShell(app.shell)
       try {
         await app.ready(); await app.boot()
         expect(app.models?.current()).toEqual(f.agent.model)
-        await shell.submit('沿保存的 Chat 协议继续', 3000)
+        await shell.submit('第一句', 3000)
         expect(f.seen[0]?.route).toBe('/mm/chat/completions')
+        // 改接入地址：下一次请求按当前配置组装；保存的组合字段不迁移、不改写。
+        writeFileSync(f.configPath, JSON.stringify({ ...f.config, providers: { ...f.providers, mm: { ...f.providers.mm, baseURL: `${f.providers.mm.baseURL}/changed` } } }))
+        await shell.submit('第二句', 3000)
+        expect(f.seen.at(-1)?.route).toBe('/mm/changed/chat/completions')
+        expect(app.models?.current()?.endpoint).toBe(`${f.providers.mm.baseURL}/changed`)
         expect(f.store.collaboration.getAgent(f.agent.agentId)?.model).toEqual(f.agent.model)
       } finally { shell.dispose(); app.close() }
-      const calls = f.seen.length
-      writeFileSync(f.configPath, JSON.stringify({ ...f.config, providers: { ...f.providers, mm: { ...f.providers.mm, baseURL: `${f.providers.mm.baseURL}/changed` } } }))
-      expect(() => { const changed = f.open(); changed.close() }).toThrow('已保存的服务地址与当前连接不同')
-      expect(f.store.collaboration.getAgent(f.agent.agentId)?.model).toEqual(f.agent.model)
-      expect(f.seen).toHaveLength(calls)
     } finally { f.close() }
   })
 
-  for (const missing of ['protocol', 'endpoint', 'protocol+endpoint', 'Agent'] as const) {
-    test(`旧记录缺少 ${missing} 时拒绝接回，数据库字节、条目和元数据不变且不出站`, () => {
+  test('旧记录缺少协议或端点时仍可接回：按当前配置组装，旧字段原样保留不迁移', async () => {
+    for (const missing of ['protocol', 'endpoint'] as const) {
       const f = setup()
       const db = new Database(f.store.paths.database)
       try {
-        const session = missing === 'Agent' ? 'legacy-without-agent' : 'member'
-        f.store.serviceFor(session).appendEntry({ kind: 'user', content: { text: '保留旧工作原文' }, at: 10 })
-        f.store.setSessionTitle(session, '旧工作标题', 11)
-        f.store.setSessionArchived(session, true)
-        if (missing === 'Agent') {
-          expect(f.store.collaboration.agentForSession(session)).toBeUndefined()
-        } else {
-          const row = db.query<{ data: string }, [string]>('SELECT data FROM collaboration_agents WHERE session = ?').get(session)!
-          const legacy = JSON.parse(row.data)
-          if (missing !== 'endpoint') delete legacy.model.protocol
-          if (missing !== 'protocol') delete legacy.model.endpoint
-          db.query('UPDATE collaboration_agents SET data = ? WHERE session = ?').run(JSON.stringify(legacy, null, 2), session)
-        }
+        f.store.serviceFor('member').appendEntry({ kind: 'user', content: { text: '保留旧工作原文' }, at: 10 })
+        f.store.setSessionTitle('member', '旧工作标题', 11)
+        f.store.setSessionArchived('member', true)
+        const row = db.query<{ data: string }, [string]>('SELECT data FROM collaboration_agents WHERE session = ?').get('member')!
+        const legacy = JSON.parse(row.data)
+        delete legacy.model[missing]
+        db.query('UPDATE collaboration_agents SET data = ? WHERE session = ?').run(JSON.stringify(legacy, null, 2), 'member')
         // 新默认本身有效，也不能据此补造旧工作的模型来源。
         writeFileSync(f.configPath, JSON.stringify({ ...f.config, models: { ...f.config.models, default: { provider: 'ds', model: 'entry-model' } } }))
+        // 元数据里的 next_id 会因装配预取递增；这里只看条目、会话与成员身份有没有变。
         const snapshot = () => ({
           entries: db.query('SELECT * FROM entries ORDER BY id').all(),
           sessions: db.query('SELECT * FROM sessions ORDER BY id').all(),
           agents: db.query('SELECT * FROM collaboration_agents ORDER BY id').all(),
-          metadata: db.query('SELECT * FROM records_meta ORDER BY key').all(),
         })
-        const before = snapshot(), bytes = db.serialize(), config = readFileSync(f.configPath)
+        const before = snapshot(), config = readFileSync(f.configPath)
+        let requests = 0
+        let app: ReturnType<typeof assemble> | undefined
+        try {
+          app = assemble({ cwd: f.changed, session: 'member', magic: f.magic, records: f.store,
+            config: loadConfig({ path: f.configPath, magic: f.magic }),
+            modelFetch: (input, init) => { requests++; return fetch(input, init) },
+          })
+          // 缺的是诊断字段，接回的是当前配置解析出的同一套来源。
+          expect(app.models?.current()).toEqual(f.agent.model)
+          expect(snapshot()).toEqual(before)
+          expect(readFileSync(f.configPath)).toEqual(config)
+          expect(requests).toBe(0)
+          expect(f.seen).toEqual([])
+          const shell = attachShell(app.shell)
+          try {
+            await app.ready(); await app.boot()
+            await shell.submit('沿当前配置继续', 3000)
+            expect(f.seen.at(-1)?.route).toBe('/mm/chat/completions')
+          } finally { shell.dispose() }
+        } finally { app?.close() }
+        // 旧字段保留：没有补写、没有迁移。
+        const after = JSON.parse(db.query<{ data: string }, [string]>('SELECT data FROM collaboration_agents WHERE session = ?').get('member')!.data)
+        expect(Object.hasOwn(after.model, missing)).toBe(false)
+        expect(f.store.collaboration.getAgent(f.agent.agentId)?.model).toMatchObject({
+          choice: 'default', provider: 'mm', model: 'member-model',
+        })
+      } finally { db.close(); f.close() }
+    }
+  })
+
+  test('旧记录没有保存的模型组合时说明缺项与下一步，不补造来源', () => {
+    const f = setup()
+    const db = new Database(f.store.paths.database)
+    try {
+      f.store.serviceFor('legacy-without-agent').appendEntry({ kind: 'user', content: { text: '保留旧工作原文' }, at: 10 })
+      writeFileSync(f.configPath, JSON.stringify({ ...f.config, models: { ...f.config.models, default: { provider: 'ds', model: 'entry-model' } } }))
+      const before = db.serialize()
+      let requests = 0
+      expect(() => {
+        const app = assemble({ cwd: f.changed, session: 'legacy-without-agent', magic: f.magic, records: f.store,
+          config: loadConfig({ path: f.configPath, magic: f.magic }),
+          modelFetch: (input, init) => { requests++; return fetch(input, init) },
+        })
+        app.close()
+      }).toThrow('缺少已保存的模型组合')
+      expect(db.serialize().equals(before)).toBe(true)
+      expect(requests).toBe(0)
+      expect(f.seen).toEqual([])
+    } finally { db.close(); f.close() }
+  })
+
+  test('旧记录缺连接或型号、当前配置缺服务地址时点名缺项与下一步', () => {
+    for (const missing of ['provider', 'model', 'endpoint'] as const) {
+      const f = setup()
+      const db = new Database(f.store.paths.database)
+      try {
+        const row = db.query<{ data: string }, [string]>('SELECT data FROM collaboration_agents WHERE session = ?').get('member')!
+        const legacy = JSON.parse(row.data)
+        let config: Record<string, unknown> = f.config
+        if (missing === 'endpoint') {
+          delete legacy.model.endpoint
+          // 官方连接不给地址、又指了一个不存在的区域 ⇒ 当前配置确实没有有效服务地址。
+          config = { ...f.config, providers: { ...f.providers, mm: { vendor: 'minimax', region: 'nowhere', protocol: 'chat-completions', apiKey: 'local-only-mm' } } }
+        } else legacy.model[missing] = missing === 'provider' ? '' : ' '
+        db.query('UPDATE collaboration_agents SET data = ? WHERE session = ?').run(JSON.stringify(legacy, null, 2), 'member')
+        writeFileSync(f.configPath, JSON.stringify(config))
+        const before = db.serialize()
         let requests = 0
         expect(() => {
-          const app = assemble({ cwd: f.changed, session, magic: f.magic, records: f.store,
+          const app = assemble({ cwd: f.changed, session: 'member', magic: f.magic, records: f.store,
             config: loadConfig({ path: f.configPath, magic: f.magic }),
             modelFetch: (input, init) => { requests++; return fetch(input, init) },
           })
           app.close()
-        }).toThrow(missing === 'Agent' ? '缺少已保存的模型组合' : '缺少协议或服务地址来源')
-        expect(snapshot()).toEqual(before)
-        expect(db.serialize().equals(bytes)).toBe(true)
-        expect(readFileSync(f.configPath)).toEqual(config)
+        }).toThrow(missing === 'provider' ? '缺少连接（provider）' : missing === 'model' ? '缺少模型（model）' : '连接没有有效服务地址')
+        expect(db.serialize().equals(before)).toBe(true)
         expect(requests).toBe(0)
         expect(f.seen).toEqual([])
       } finally { db.close(); f.close() }
-    })
-  }
+    }
+  })
 
   test('即使绕过协作循环准入和 allowAll，隐藏的 write 也不能执行', async () => {
     const f = setup()

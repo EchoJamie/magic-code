@@ -190,13 +190,12 @@ for (const protocol of protocols) test(`真装配 ${protocol}：exec 执行、�
     } finally { db.close() }
 
     if (protocol === 'responses') {
+      // D63：改配置即在下一次请求生效，不再需要 `model.switch` —— 来源不是会话接续决策。
       const switchTo = (next: ModelProtocol) => {
         const config = JSON.parse(readFileSync(stage.configPath, 'utf8'))
         config.providers.local.protocol = next
         config.providers.local.auth = authOf(next)
         writeFileSync(stage.configPath, JSON.stringify(config))
-        shell!.send({ type: 'model.switch', choice: 'default' })
-        expect(eventsOfKind(shell!.events, 'model.switched').at(-1)?.data).toMatchObject({ ok: true, protocol: next, endpoint: endpoint.baseURL })
       }
       switchTo('messages')
       const nextPrompt = '在同一会话再执行一次。'

@@ -63,7 +63,13 @@ export function reasoningFailure(
   return 'gap' in mapped ? mapped.gap : undefined
 }
 
-/** 校验完整的运行选择；档位解析与继承只在宿主入口完成。 */
+/**
+ * 校验完整的运行选择；档位解析与继承只在宿主入口完成。
+ *
+ * `selected.protocol` / `selected.endpoint` 是**历史记录里的诊断元数据**（D63）：不参与解析、
+ * 不与当前连接比对。来源一律按**当前配置**重新解析——换了协议、地址或支持提示之后，
+ * 下一次请求照当前配置组装，不要求重新选择模型。进行中的请求由调用方在启动时固定来源。
+ */
 export function selectModel(options: {
   readonly providers: Readonly<Record<string, ProviderConfig>>
   readonly modelInfoOf?: (provider: string, model: string) => ModelInfo | undefined
@@ -73,14 +79,11 @@ export function selectModel(options: {
   if (typeof provider !== 'string' || provider.trim() === '') return { ok: false, reason: 'provider 须是非空字符串' }
   if (typeof model !== 'string' || model.trim() === '') return { ok: false, reason: 'model 须是非空字符串' }
   if (!['default', 'cantrip', 'spell', 'arcane'].includes(choice)) return { ok: false, reason: '有效选择缺少来源；请在 /model 明确选择 Default 或模型档位' }
-  const configured = ownOf(providers, provider)
-  const config = configured === undefined ? undefined : { ...configured, ...(selected.protocol === undefined ? {} : { protocol: selected.protocol }) }
+  const config = ownOf(providers, provider)
   if (config === undefined) return { ok: false, reason: `未知供应商「${provider}」——已注册：${Object.keys(providers).join(' / ') || '（一个都没有）'}` }
   if (config.vendor !== undefined && vendorOf(config.vendor) === undefined) return { ok: false, reason: `未知供应商适配「${config.vendor}」` }
   let source: import('@magic/contracts').ModelSource
   try { source = resolveModelSource(config, model) } catch (error) { return { ok: false, reason: error instanceof Error ? error.message : String(error) } }
-  if (selected.protocol !== undefined && (selected.protocol !== source.protocol || selected.endpoint !== source.endpoint)) return { ok: false, reason: '已保存的服务地址与当前连接不同；请明确重新选择模型' }
-  if ((selected.protocol === undefined) !== (selected.endpoint === undefined)) return { ok: false, reason: '模型历史的协议或服务来源缺项；请明确重新选择' }
   const known = modelInfoOf?.(provider, model)
   const chat = ownOf(config.modelOverrides ?? {}, model)?.capabilities?.chat ?? (known?.id === model ? known.capabilities?.chat : undefined)
   if (chat === false) return { ok: false, reason: `模型「${model}」不支持对话` }

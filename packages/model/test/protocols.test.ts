@@ -112,20 +112,24 @@ test('精确官方支持范围、默认顺序及协议级地址', () => {
   expect(vendorCatalog()[0]?.protocols.map(p => p.id)).toEqual([...protocols])
 })
 
-test('注册表保持已存协议，原配置变化不改已绑定请求', async () => {
+test('注册表按当前配置重新解析来源，旧记录里的协议与地址不锁定', async () => {
   const config: ProviderConfig = { protocol: 'chat-completions', auth: 'none', baseURL: 'http://local/v2' }
   const providers = { local: config }
   const requests: string[] = []
   const registry = createModelRegistry({ providers, stamper: makeTestStamper(), fetch: async url => { requests.push(String(url)); return sse(chunks('chat-completions', false)) } })
   expect(registry.use({ choice: 'default', provider: 'local', model: 'exact' }).ok).toBe(true)
   const previous = registry.current()!
+  // 配置换了协议：下一次请求按新协议组装，旧记录里的 protocol 只作诊断。
   providers.local = { ...config, protocol: 'responses' }
-  expect(registry.use(previous).ok).toBe(true)
+  const switched = registry.use(previous)
+  expect(switched.ok).toBe(true)
+  if (switched.ok) expect(switched.selection).toEqual({ ...previous, protocol: 'responses' })
   await drainStream(registry.stream({ messages: [{ role: 'user', content: 'hi' }] }))
-  expect(requests).toEqual(['http://local/v2/chat/completions'])
+  expect(requests).toEqual(['http://local/v2/responses'])
+  // 配置换了地址：同样不拒绝、不要求重选。
   providers.local = { ...providers.local, baseURL: 'http://other/v2' }
-  expect(registry.use(previous).ok).toBe(false)
-  expect(registry.current()).toEqual(previous)
+  expect(registry.use(previous).ok).toBe(true)
+  expect(registry.current()).toEqual({ ...previous, protocol: 'responses', endpoint: 'http://other/v2' })
 })
 
 for (const protocol of protocols) {
@@ -238,20 +242,26 @@ for (const protocol of protocols) test(`MiniMax M3.1/${protocol}: all documented
   expect(bodies).toHaveLength(5)
 })
 
-test('active 的容量、图片能力和出站输出额度共同冻结，未选候选继续现读', async () => {
+test('在飞的请求按启动时资料结束，下一次请求按当前资料重读容量与能力', async () => {
   let known = { id: 'exact', limits: { maxContextTokens: 1000, maxOutputTokens: 100 }, capabilities: { image: false } }
   const bodies: any[] = []
   const registry = createModelRegistry({ providers: { local: { baseURL: 'http://local/v1', protocol: 'chat-completions', auth: 'none' } }, stamper: makeTestStamper(),
     modelInfoOf: (_provider, model) => ({ ...known, id: model }), fetch: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return sse(chunks('chat-completions', false)) },
   })
   expect(registry.use({ choice: 'default', provider: 'local', model: 'exact' }).ok).toBe(true)
-  known.limits.maxOutputTokens = 800
+  // 这一趟先起（规格在 `stream()` 那一刻捕获），随后缓存里的资料变了。
+  const inFlight = registry.stream({ messages: [{ role: 'user', content: 'hi' }] })
   known = { id: 'exact', limits: { maxContextTokens: 9000, maxOutputTokens: 800 }, capabilities: { image: true } }
   expect(registry.capacityOf('local', 'exact')?.inputBudget).toBe(900)
   expect(registry.capabilityOf('local', 'exact')?.image).toBe(false)
   expect(registry.capacityOf('local', 'other')?.inputBudget).toBe(8200)
-  await drainStream(registry.stream({ messages: [{ role: 'user', content: 'hi' }] }))
+  await drainStream(inFlight)
   expect(bodies[0].max_tokens).toBe(100)
+  // 下一次请求按当前资料组装：额度与能力都跟着更新。
+  await drainStream(registry.stream({ messages: [{ role: 'user', content: 'hi' }] }))
+  expect(bodies[1].max_tokens).toBe(800)
+  expect(registry.capacityOf('local', 'exact')?.inputBudget).toBe(8200)
+  expect(registry.capabilityOf('local', 'exact')?.image).toBe(true)
 })
 
 for (const protocol of protocols) test(`${protocol}: unknown usage fields remain absent`, async () => {

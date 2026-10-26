@@ -446,6 +446,70 @@ describe('能力读数', () => {
 })
 
 
+// ═══════════════════════════════════════════════════════════════════════
+// D63 · 下一次请求按当前配置组装；进行中的请求按启动时来源结束
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('注册表 · 来源随请求边界重读配置', () => {
+  test('进行中的请求按启动时来源结束，配置变化只影响下一次请求', async () => {
+    let providers: Record<string, ProviderConfig> = { alpha: ALPHA }
+    const { fetch, seen } = splitEndpoint()
+    const registry = createModelRegistry({
+      providers, providersOf: () => providers,
+      fetch, apiKeys: { alpha: 'ka' }, env: {}, stamper: makeTestStamper(),
+    })
+    expect(registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-1' }).ok).toBe(true)
+
+    // 启动这一趟（来源在 `stream()` 那一刻已定），随后改掉连接地址。
+    const inFlight = registry.stream({ messages: [{ role: 'user', content: '在飞的那一趟' }] } as import('@magic/contracts').ModelRequest)
+    providers = { alpha: { ...ALPHA, baseURL: 'https://moved.example/v1' } }
+    await drainStream(inFlight)
+    expect(seen[0]?.url).toBe('https://alpha.example/v1/chat/completions')
+
+    // 下一次请求用新地址；当前选择里的来源同步更新（旧记录字段不参与）。
+    await ask(registry, 'alpha-1')
+    expect(seen[1]?.url).toBe('https://moved.example/v1/chat/completions')
+    expect(registry.current()).toEqual({
+      choice: 'default', provider: 'alpha', model: 'alpha-1',
+      protocol: 'chat-completions', endpoint: 'https://moved.example/v1',
+    })
+  })
+
+  test('历史里缺协议／端点或与当前连接不同的旧值，都不妨碍接回与请求', async () => {
+    const { fetch, seen } = splitEndpoint()
+    const registry = createModelRegistry({
+      providers: { alpha: ALPHA },
+      fetch, apiKeys: { alpha: 'ka' }, env: {}, stamper: makeTestStamper(),
+    })
+    // 缺 protocol／endpoint 的旧组合也能接回。
+    expect(registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-1' }).ok).toBe(true)
+    await ask(registry, 'alpha-1')
+    expect(seen[0]?.url).toBe('https://alpha.example/v1/chat/completions')
+    // 旧记录记着另一套来源：照当前连接解析，不比对、不拒绝。
+    expect(registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-1', protocol: 'messages', endpoint: 'https://saved.example/v1' })).toEqual({
+      ok: true,
+      selection: { choice: 'default', provider: 'alpha', model: 'alpha-1', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' },
+    })
+    await ask(registry, 'alpha-1')
+    expect(seen[1]?.url).toBe('https://alpha.example/v1/chat/completions')
+  })
+
+  test('当前配置组装不了时，请求报具体限制且不改动原选择', async () => {
+    let live: Record<string, ProviderConfig> = { alpha: ALPHA }
+    const { fetch } = splitEndpoint()
+    const registry = createModelRegistry({
+      providers: live, providersOf: () => live,
+      fetch, apiKeys: { alpha: 'ka' }, env: {}, stamper: makeTestStamper(),
+    })
+    expect(registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-1' }).ok).toBe(true)
+    const before = registry.current()
+    live = {}
+    const { result } = await drainStream(registry.stream({ messages: [] }))
+    expect(result.error?.message).toContain('未知供应商「alpha」')
+    expect(registry.current()).toBe(before)
+  })
+})
+
 test('请求中间件不能覆盖绑定的实际型号', async () => {
   const { fetch, seen } = splitEndpoint()
   const registry = registryOf({ alpha: ALPHA }, {

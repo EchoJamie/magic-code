@@ -370,7 +370,7 @@ export function assemble(options: AssembleOptions): Assembly {
   const modelsOf = (): ModelRegistry | undefined => chain === undefined ? initialModels : chain.models
   if (options.modelGateway === undefined) {
     if (startup !== undefined && savedAgent === undefined) {
-      throw new Error('该工作缺少已保存的模型组合，无法可靠接回；历史记录已保留')
+      throw new Error('该工作缺少已保存的模型组合，无法按历史接回——请在 /model 为该工作选择默认模型或档位后继续；历史记录已保留')
     }
     const initial = savedAgent === undefined ? resolveModelChoice({ providers: modelSource.providers, configuredModels: modelSource.configured, modelInfoOf: modelSource.knownModel }) : { ok: true as const, selection: savedAgent.model }
     initialModels = modelSource.registry(initial.ok ? initial.selection : undefined, forwardStamper)
