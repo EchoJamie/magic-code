@@ -88,7 +88,7 @@ final class NativeTests: XCTestCase {
             vendors: [.object(["vendor": .string("fixture"), "label": .string("测试供应商"),
                 "regions": .array([.object(["id": .string("test"), "label": .string("测试区域")])]),
                 "protocols": .array([])])],
-            sources: [], grants: [], grantStamp: nil, grantProblem: nil)
+            sources: [])
         // 未设置的档位如实标出，列表与编辑器看到同一件事。
         let unconfigured = roleModelNotes(.object(["choice": .string("cantrip")]), snapshot: snapshot)
         XCTAssertTrue(unconfigured.first?.contains("尚未配置") == true)
