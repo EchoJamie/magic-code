@@ -82,18 +82,32 @@ describe('禁止清单', () => {
 
 describe('sudo 专用认证', () => {
   test.each([
-    ['sudo ls'],
-    ['sudo -u root ls /root'],
-    ['sudo  -nope  apt update'],
-    ['sudo -- apt update'],
-  ])('%s 是合格的短命令', (cmd) => {
+    ['sudo ls', 'ls'],
+    ['sudo -u root ls /root', 'ls'],
+    ['sudo  -nope  apt update', 'apt'],
+    ['sudo -- apt update', 'apt'],
+    // shell 重定向由当前用户的 shell 执行，不改变 sudo 目标，也不碰密码通道。
+    ['sudo ls > out.txt', 'ls'],
+    ['sudo ls >> out.txt', 'ls'],
+    ['sudo tee file < src', 'tee'],
+    ['sudo < src tee file', 'tee'],
+    ['sudo ls 2>&1', 'ls'],
+    ['sudo sh-not-a-shell > out.txt', 'sh-not-a-shell'],
+  ])('%s 是合格的短命令', (cmd, program) => {
     const { gate } = harness()
     expect(gate.refusalOf?.(call(cmd), ctx)).toBeUndefined()
     expect(gate.sudoPlan?.(call(cmd), ctx)).toEqual({
       command: cmd.trim(),
       run: cmd.trim().replace(/^sudo/, 'sudo -n'),
-      program: cmd.includes('apt') ? 'apt' : 'ls',
+      program,
     })
+  })
+
+  test('重定向原样保留到 sudo -n 执行行', () => {
+    const { gate } = harness()
+    expect(gate.sudoPlan?.(call('sudo ls > out.txt'), ctx)?.run).toBe('sudo -n ls > out.txt')
+    expect(gate.sudoPlan?.(call('sudo tee file < src'), ctx)?.run).toBe('sudo -n tee file < src')
+    expect(gate.sudoPlan?.(call('sudo ls 2>&1'), ctx)?.run).toBe('sudo -n ls 2>&1')
   })
 
   test.each([
@@ -101,12 +115,12 @@ describe('sudo 专用认证', () => {
     ['sudo ls && sudo whoami', '复合命令'],
     ['sudo sh -c "ls"', 'sh -c'],
     ['sudo bash -c "ls"', 'bash -c'],
+    ['sudo < script.sh sh', '重定向后的 shell 仍然拒绝'],
     ["sudo sh <<'EOF'\nls\nEOF", 'here-doc'],
     ['sudo python3 deploy.py', '解释器'],
     ['sudo node x.mjs', '解释器'],
     ['sudo ./deploy.sh', '脚本'],
     ['sudo /tmp/deploy.py', '脚本'],
-    ['sudo ls > out.txt', '重定向'],
     ['sudo $(whoami)', '命令替换'],
     ['nice sudo ls', 'sudo 不是第一个词'],
     ['sudo -S ls', '自己写认证旗标'],

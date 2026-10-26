@@ -34,6 +34,18 @@ describe('exec 的 sudo 认证', () => {
     expect(outcome.output).toBe('bin\n')
   })
 
+  test('重定向保留到 sudo -n 执行行（shell 以当前用户执行，不改 sudo 目标）', async () => {
+    const fake = auth({ ok: true })
+    const redirected = { command: 'sudo ls > out.txt', run: 'sudo -n ls > out.txt', program: 'ls' }
+    const deps = makeToolDeps({ sudo: redirected, sudoAuth: fake.port, exec: { 'sudo -n ls > out.txt': { ok: true, exit: 0, stdout: '', stderr: '' } } })
+
+    const outcome = await deps.runtime.invoke(execCall('sudo ls > out.txt'), {})
+
+    expect(fake.calls).toEqual([{ command: 'sudo ls > out.txt', cwd: '/work/proj' }])
+    expect(deps.sandbox.execs.map((one) => one.cmd)).toEqual(['sudo -n ls > out.txt'])
+    expect(outcome.ok).toBe(true)
+  })
+
   test('认证失败 → 不启动原命令，回执如实说「未执行」', async () => {
     const fake = auth({ ok: false, reason: 'failed', detail: 'Sorry, try again.' })
     const deps = makeToolDeps({ sudo: plan, sudoAuth: fake.port })

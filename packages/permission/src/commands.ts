@@ -173,6 +173,42 @@ export function scan(command: string): readonly Segment[] {
       continue
     }
 
+    if (char === '<') {
+      // 输入重定向 / here-doc 的开头——**目标不是程序词**，否则 `sudo < script sh`
+      // 会把 `<` 当成目标程序，绕过「sudo 不许包 shell」那一道。
+      const fd = /^\d+$/.test(word) && !wordQuoted ? word : undefined
+      if (fd !== undefined) word = ''
+
+      const operatorAt = index
+      if (command[index + 1] === '<') index += 1 // `<<` / `<<-`（here-doc 由文本检查另拒）
+      index += 1
+      raw += command.slice(operatorAt, index)
+      while (command[index] === ' ' || command[index] === '\t') {
+        raw += command[index] ?? ''
+        index += 1
+      }
+
+      const targetAt = index
+      let target = ''
+      const targetQuote = command[index] === "'" || command[index] === '"' ? command[index] : undefined
+      if (targetQuote !== undefined) {
+        index += 1
+        while (index < command.length && command[index] !== targetQuote) {
+          target += command[index] ?? ''
+          index += 1
+        }
+        index += 1
+      } else {
+        while (index < command.length && !/[\s;|&]/.test(command[index] ?? '')) {
+          target += command[index] ?? ''
+          index += 1
+        }
+      }
+      raw += command.slice(targetAt, index)
+      tokens.push({ kind: 'redirect', target })
+      continue
+    }
+
     if (char === '>') {
       const operatorAt = index
       if (command[index + 1] === '>') index += 1
@@ -286,6 +322,8 @@ function findDeletes(args: readonly string[]): boolean {
  * **sudo 形状检查**（U129）——合格给 `SudoPlan`，不合格给具体缘由。
  *
  * 只接受：整条命令就是一个 `sudo` 词开头的简单命令，目标不是 shell / 解释器 / 脚本。
+ * **shell 重定向（`>` / `>>` / `<` / `2>` / `2>&1` 等）允许**——它由 shell 以当前用户执行，
+ * 不改变 sudo 的目标，也不接触密码通道；授权行里原样看得到。
  */
 function checkSudo(segment: Segment, command: string): SegmentAnalysis {
   const text = command.trim()
@@ -300,7 +338,6 @@ function checkSudo(segment: Segment, command: string): SegmentAnalysis {
   if (text.includes('\n')) return refusal('命令含换行（多行）')
   if (text.includes('<<')) return refusal('命令含 here-doc')
   if (UNRESOLVABLE.test(text)) return refusal('命令含命令替换或变量展开')
-  if (segment.tokens.some((token) => token.kind !== 'word')) return refusal('命令含重定向')
 
   const list = words(segment.tokens)
   const first = list[0]
