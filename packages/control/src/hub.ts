@@ -67,6 +67,17 @@ export function createControlHub(onError?: (error: unknown) => void): ControlHub
     if (target === undefined) return
 
     switch (command.type) {
+      case 'session.references':
+      case 'memory.read':
+      case 'memory.source':
+      case 'knowledge.query':
+      case 'knowledge.read':
+      case 'knowledge.forget':
+      case 'knowledge.forget-result':
+      case 'compact.request':
+      case 'compact.query':
+      case 'compact.cancel':
+        throw new Error('该操作须经 Magic Engine 的会话控制入口')
       case 'background.list':
       case 'background.stop':
         return target.onBackground?.(command)

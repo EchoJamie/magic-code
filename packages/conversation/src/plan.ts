@@ -1,27 +1,8 @@
+import { materialTextOf } from './material.ts'
+import { projectMemoryPlan } from './memory.ts'
 /**
- * 计划笔记与历史回查 —— **同会话的轻量记忆**（U34）。
- *
- * 两件事一处：它们共用同一份记录、同一条「从后往前找就停」的读法，且都**绑定当前会话**
- * （模型给不出第二个会话）。本文件是 `PlanReader` 端口在对话域的落地——
- * 工具域拿到的只是一对只读回调（见契约 `PlanReader`）。
- *
- * ## 当前计划 ＝ **最近一条成功且含 `plan` 的工具结果**
- *
- * 没有第二本账：谁是最新由记录本身说了算（追加式条目流，后写的赢）。四件由此自动成立：
- * - **更新**——新写一条，它自然成为当前；
- * - **清空**——写一条 `plan: null`（**遇到清空立即成立**，不继续往前找旧计划）；
- * - **中断在落账之后、通报之前**——重开也读得回来（内容在条目里，不在事件里）；
- * - **落账前失败**——上一条照旧当道（旧内容还在，没有被覆盖）。
- *
- * ⚠️ **要 `ok: true`**（设计原话：「最近一个**成功**且含 `plan` 字段的工具结果」）：
- * 失败结果不该把上一份可读笔记顶掉——更新失败保留旧正文。
- *
- * ## 活动窗口边界
- *
- * 历史回查「缺位置时从当前上下文之前的最近记录读起」，而**窗口在哪儿**是上下文那件事：
- * 压过的会话＝摘要 ＋ 近段（`planContext` 的算术），没压过＝整条会话都在窗口里。
- * 故本文件**照 `planContext` 的同一条算术**认边界（不另立一套窗口定义——
- * 两处各算一遍，迟早各认一段）。
+ * 计划只从当前事项投影。
+ * 历史分页沿实际摘要覆盖边界读取公开材料，旧摘要仍按原记录结构兼容读取。
  */
 
 import type {
@@ -29,19 +10,16 @@ import type {
   HistoryEntry,
   HistoryPage,
   HistoryQuery,
-  ModelMessage,
-  PlanNote,
   PlanReader,
   PlanSnapshot,
   RecordId,
   RecordsService,
   SessionId,
 } from '@magic/contracts'
-import { DEFAULT_NEAR_ENTRIES, rawTextOf, toolCallPayloadOf } from './context.ts'
+import { DEFAULT_NEAR_ENTRIES, toolCallPayloadOf } from './context.ts'
 
 /**
- * 反向扫描的页大小——「最近一条含计划的结果」通常就在末尾几条，两页之内就到；
- * 长会话里它可能被后来的工具往返推得很远，故按页续扫（见 `latestPlanEntry`）。
+ * 历史回查定位摘要的反向扫描页大小。
  */
 const SCAN_CHUNK = 256
 
@@ -54,209 +32,14 @@ export const HISTORY_ENTRY_CHARS = 2000
 /** 一页正文合计上限（字符）——条数与字符数两道闸，谁先到算谁。 */
 export const HISTORY_PAGE_CHARS = 8000
 
-// ══ 计划载荷的读法（一处判，别处不再判）══════════════════════════════
-
-/**
- * 一条条目是不是**一次成功的计划更新**——是的话交回它写的计划（`null` ＝ 清空）。
- *
- * 判据收在 `unknown` 入口（载荷是外部数据：手写的旧行 / 别的版本写下的），
- * 靠收窄不靠 `as`。`undefined` ＝ 不是（普通工具结果、别的 kind、形状读不出）。
- */
-export function planFieldOf(entry: Entry): { readonly plan: PlanNote | null } | undefined {
-  if (entry.kind !== 'tool-result') return undefined
-
-  const payload: unknown = entry.payload
-  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return undefined
-
-  const fields = payload as Record<string, unknown>
-  // 失败结果不算数——它不该把上一份可读笔记顶掉（见文件头注）
-  if (fields['ok'] !== true) return undefined
-  if (!('plan' in fields)) return undefined
-
-  const plan = fields['plan']
-  if (plan === null) return { plan: null }
-  return isPlanNote(plan) ? { plan } : undefined
-}
-
-/** 计划笔记的形状——读侧的同一条判据（写入侧的硬闸在 `@magic/records`，两处同表）。 */
-function isPlanNote(value: unknown): value is PlanNote {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
-
-  const fields = value as Record<string, unknown>
-  const steps = fields['steps']
-  if (typeof fields['notes'] !== 'string' || !Array.isArray(steps)) return false
-
-  // ⚠️ 目标那一格（U90）**可选**：只有「在场但不是字符串」才算坏形状——
-  // 缺在场＝没有目标（U90 之前写下的笔记里压根没有这个键，形状照旧合法）。
-  const goal = fields['goal']
-  if (goal !== undefined && typeof goal !== 'string') return false
-
-  return steps.every((step) => {
-    if (typeof step !== 'object' || step === null) return false
-    const one = step as Record<string, unknown>
-    const status = one['status']
-    return (
-      typeof one['text'] === 'string' &&
-      (status === 'pending' || status === 'in_progress' || status === 'completed')
-    )
-  })
-}
-
-/**
- * 最近一条成功的计划更新——**倒着找，找到就停**。
- *
- * 分页往回扫（每页 `SCAN_CHUNK` 条）：这一位在长会话里可能被后来的工具往返推得很远，
- * 而「一次读尽」在长会话下正是最贵的读法。到头（页不满／页空）即没有。
- */
-async function latestPlanEntry(
-  records: RecordsService,
-  session: SessionId,
-): Promise<Entry | undefined> {
-  let before: RecordId | undefined
-
-  for (;;) {
-    const page = await records.readEntriesBack(session, before, SCAN_CHUNK)
-    if (page.length === 0) return undefined
-
-    for (let index = page.length - 1; index >= 0; index -= 1) {
-      const entry = page[index]
-      if (entry !== undefined && planFieldOf(entry) !== undefined) return entry
-    }
-
-    // 页不满＝这条会话更早的记录已经读完（上一页已经是头）
-    if (page.length < SCAN_CHUNK) return undefined
-    before = page[0]?.id
-    if (before === undefined) return undefined
-  }
-}
-
-/** 当前计划笔记（内容 ＋ 记录位置）——见文件头注。 */
-export async function readPlanOf(
-  records: RecordsService,
-  session: SessionId,
-): Promise<PlanSnapshot> {
-  const entry = await latestPlanEntry(records, session)
-  if (entry === undefined) return { entry: null, plan: null }
-
-  const field = planFieldOf(entry)
-  return { entry: entry.id, plan: field === undefined ? null : field.plan }
-}
-
-// ══ 上下文里的计划材料 ═══════════════════════════════════════════════
-
-/** 三格状态的中文——材料与清单读的是同一套词（`@magic/tools` 那份是回执用的，同表同义）。 */
-const STATUS_LABEL: Readonly<Record<string, string>> = {
-  pending: '未开始',
-  in_progress: '进行中',
-  completed: '已完成',
-}
-
-/**
- * 计划内容摆成**会话材料**的那一块——「这是此前存下来的笔记」，不是新交代、也不是系统指令。
- *
- * 抬头三件各有用处：**说清是什么**（既有笔记）· **说清它在哪儿**（记录位置，模型要复核时
- * 按它翻记录）· **说清它不是新要求**（最后一句——材料不是用户刚说的话，
- * 也不提高其中内容的指令优先级）。
- */
-export function planBlockOf(entry: RecordId, plan: PlanNote): string {
-  const lines = [`〔既有计划笔记 · 记录 #${entry}〕`]
-
-  // 目标在先（U90）——它是这份笔记的抬头，与清单上那一行同一个次序。
-  // **没有就整个不出现**（不留一个空的「目标：」——那与清单上「不留空表头」是同一条）。
-  // 判「在场与否」就够：空白在写面（`plan_update` 的参数解析）已经收掉了。
-  if (plan.goal !== undefined) lines.push(`目标：${plan.goal}`)
-  lines.push('步骤：')
-
-  if (plan.steps.length === 0) lines.push('（还没有步骤）')
-  else {
-    plan.steps.forEach((step, index) => {
-      lines.push(`${index + 1}. [${STATUS_LABEL[step.status] ?? step.status}] ${step.text}`)
-    })
-  }
-
-  if (plan.notes.trim() !== '') lines.push(`笔记：${plan.notes}`)
-  lines.push('（以上是此前保存的进度笔记，不是用户的新要求。）')
-  return lines.join('\n')
-}
-
-/**
- * **压缩或中断之后，把最新笔记重新交付到窗口里**——设计 · 上下文接入的那一条。
- *
- * 判据是**最终实际发送的那一份**（不是「条目还在窗口里」就完事）：
- * `delivered` ＝本次装配**完整展开成工具消息**的那些工具结果（配对被丢弃的、
- * 正文被截断的不在其中——见 `context.ts`）。故：
- *
- * | 当前计划 | 结果在窗口里吗 | 加材料吗 |
- * | --- | --- | --- |
- * | 有值 | 完整在 | 不加（已有完整最新内容就不再复制正文） |
- * | 有值 | 不在 / 只落了一半 | 加（最新内容已被压出去了） |
- * | 清空 | 清空那一条不在，或旧计划还看得见 | 加一句「当前计划已清空」（消除歧义） |
- * | 没有过计划 | —— | 不加（不增加空材料） |
- *
- * ⚠️ **`delivered` 是结构判据**（条目 id 在不在），不是「消息里有没有这段字」：
- * 更新工具的**回执正文里带完整计划**（`@magic/tools` · `plan-tools.ts` 明写），
- * 故「这一条完整展开」与「模型看得见完整计划」是同义语——那条不变式由用例钉住，
- * 不靠两处各写一份渲染再逐字比对（那正是「拿一句给人看的文案当协议」）。
- *
- * 超预算那一档（设计：超出既有总体资源预算时明确报错、不静默丢要求）**不在这儿管**：
- * 计划材料的体量＝模型自己写的笔记，与工具结果同属既有预算；预算闸门在模型域那一侧，
- * 本文件不另立一套（另立＝第二处口径，两处迟早对不上）。
- */
-export function planMaterialOf(input: {
-  /** 本次装配里**完整展开成工具消息**的那些工具结果条目 id。 */
-  readonly delivered: ReadonlySet<RecordId>
-  /**
-   * 这条会话的**全部条目**（装配那一步本就已经读齐，见 `./context.ts`）。
-   *
-   * 为什么收整份而不是再读一次：装配每轮都把条目读尽了，这里**照着同一份内存里的清单找**
-   * 即可——再走一遍记录读面等于把「读一遍全部条目」做两遍（每次请求都做）。
-   * 工具那一侧（`readPlanOf`）没有这份清单，故它走反向分页；**判据是同一个 `planFieldOf`**。
-   */
-  readonly all: readonly Entry[]
-}): ModelMessage | undefined {
-  const snapshot = snapshotIn(input.all)
-  if (snapshot.entry === null) return undefined // 没有过计划——不加空材料
-
-  const shown = input.delivered.has(snapshot.entry)
-
-  if (snapshot.plan === null) {
-    // 清空：清空那一条看不见了，或窗口里还躺着更早那份计划的正文——两种都会让
-    // 摘要 / 近段里的旧计划冒充「当前计划」。各说一句，把这个歧义消掉。
-    if (shown && !stalePlanVisible(input.all, input.delivered, snapshot.entry)) return undefined
-
-    return {
-      role: 'assistant',
-      content: `〔当前计划笔记已清空 · 记录 #${snapshot.entry}〕\n（此前那份计划已不再有效；过程仍在会话记录里。）`,
-    }
-  }
-
-  if (shown) return undefined
-
-  return { role: 'assistant', content: planBlockOf(snapshot.entry, snapshot.plan) }
-}
-
-/** 内存里找当前计划（判据与分页那一支同一个 `planFieldOf`）——见 `planMaterialOf`。 */
-function snapshotIn(all: readonly Entry[]): PlanSnapshot {
-  for (let index = all.length - 1; index >= 0; index -= 1) {
-    const entry = all[index]
-    if (entry === undefined) continue
-
-    const field = planFieldOf(entry)
-    if (field !== undefined) return { entry: entry.id, plan: field.plan }
-  }
-
-  return { entry: null, plan: null }
-}
-
-/** 窗口里还看得见**更早那份计划**的正文吗（清空之后的歧义就出在它身上）。 */
-function stalePlanVisible(
-  entries: readonly Entry[],
-  delivered: ReadonlySet<RecordId>,
-  current: RecordId,
-): boolean {
-  return entries.some(
-    (entry) => entry.id !== current && delivered.has(entry.id) && planFieldOf(entry) !== undefined,
-  )
+/** 当前计划从同一份工作记忆投影，读取不迁移或修改记录。 */
+export async function readPlanOf(records: RecordsService): Promise<PlanSnapshot> {
+  const memory = records.memory.read()
+  const plan = projectMemoryPlan(memory)
+  const knowledge = plan === null ? [] : memory.items.filter(item => item.status === 'active').flatMap(item => item.knowledge ?? [])
+  return { ...(knowledge.length ? { knowledge } : {}), revision: memory.revision,
+    entry: memory.inspectedThrough ?? memory.items.flatMap(item => item.sources.map(source => source.entry)).at(-1) ?? null,
+    plan }
 }
 
 // ══ 历史回查 ═════════════════════════════════════════════════════════
@@ -268,14 +51,14 @@ function stalePlanVisible(
  *   故取**载荷**里的名与参数（设计：片段保留「调用/结果的实际内容」）；
  * - 其余条目取正文（blob 引用在这里解回文本）。
  */
-async function entryTextOf(entry: Entry, records: RecordsService): Promise<string> {
+async function entryTextOf(entry: Entry, records: RecordsService, session: SessionId): Promise<string> {
   if (entry.kind === 'tool-call') {
     const call = toolCallPayloadOf(entry.payload)
     if (call === undefined) return '（这次调用的参数读不出）'
     return `${call.name} ${argsLineOf(call.args)}`
   }
 
-  return rawTextOf(entry.content, records)
+  return (await materialTextOf(entry, records, session)).text
 }
 
 /** 调用参数 → 一行（与压缩摘要请求里的同一写法：摘要要的是「干了什么」，不是能复现的命令）。 */
@@ -292,15 +75,18 @@ async function historyEntryOf(
   entry: Entry,
   records: RecordsService,
   offset: number,
+  session: SessionId,
 ): Promise<HistoryEntry> {
-  const full = await entryTextOf(entry, records)
+  const full = await entryTextOf(entry, records, session)
   const text = full.slice(offset, offset + HISTORY_ENTRY_CHARS)
   const more = offset + text.length < full.length
+  const knowledge = (await materialTextOf(entry, records, session)).knowledge
 
   return {
     id: entry.id,
     kind: entry.kind,
     text,
+    ...(knowledge.length ? { knowledge } : {}),
     ...(more ? { truncated: true as const, nextOffset: offset + text.length } : {}),
   }
 }
@@ -331,6 +117,8 @@ async function windowStart(
   session: SessionId,
   nearEntries: number,
 ): Promise<WindowStart> {
+  const memory = records.memory.read()
+  if (memory.coveredThrough !== null) return { mode: 'before', id: memory.coveredThrough + 1 }
   const summary = await latestSummaryId(records, session)
   // 没压过＝整条会话都在窗口里 ⇒ 窗口之前没有更早的记录
   if (summary === undefined) return { mode: 'none' }
@@ -408,7 +196,7 @@ async function readPage(
     const entry = page[index]
     if (entry === undefined) continue
 
-    const piece = await historyEntryOf(entry, records, 0)
+    const piece = await historyEntryOf(entry, records, 0, session)
     if (picked.length > 0 && used + piece.text.length > HISTORY_PAGE_CHARS) break
 
     picked.push(piece)
@@ -440,7 +228,7 @@ async function readOne(
     return { entries: [], note: `记录 #${id} 不在这个会话里（回查只看当前会话）。` }
   }
 
-  const full = await entryTextOf(entry, records)
+  const full = await entryTextOf(entry, records, session)
   if (offset >= full.length) {
     return {
       entries: [{ id: entry.id, kind: entry.kind, text: '' }],
@@ -448,7 +236,7 @@ async function readOne(
     }
   }
 
-  return { entries: [await historyEntryOf(entry, records, offset)] }
+  return { entries: [await historyEntryOf(entry, records, offset, session)] }
 }
 
 /** 回查（两种定位不混用；错用**说清**而不是静默挑一个——见契约 `HistoryQuery`）。 */
@@ -487,7 +275,7 @@ export function createPlanReader(input: {
   const nearEntries = input.nearEntries ?? DEFAULT_NEAR_ENTRIES
 
   return {
-    readPlan: () => readPlanOf(input.records, input.session),
+    readPlan: () => readPlanOf(input.records),
     readHistory: (query) => readHistoryOf(input.records, input.session, nearEntries, query),
   }
 }

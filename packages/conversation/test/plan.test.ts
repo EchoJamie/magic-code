@@ -1,26 +1,13 @@
-/**
- * U34 · 计划笔记与历史回查（对话域那一半）——`./plan.ts`。
- *
- * 四组判据（设计 · 数据与工具契约 ＋ 保存与上下文）：
- * ① **当前计划 ＝ 最近一条成功且含 `plan` 的工具结果**：失败的不算 · 清空立即成立 ·
- *    被后来的条目推开很远也找得到（反向分页）；
- * ② **窗口边界与 `planContext` 同一条算术**（历史默认从活动窗口之前读起）——
- *    这条用**对照**钉：拿同一批条目分别走两处，边界必须是同一个 id；
- * ③ **回查有界**：每页条数与字符数两道闸 · 每条标截断与续读位置 · 分页不跳过 ·
- *    两种定位不混用 · 只认本会话；
- * ④ **上下文里的计划材料**：完整在窗口里就不重复交付；压出去了就补一份；
- *    清空之后旧计划还看得见时消歧义；没有过计划不加空材料。
- */
+/** 当前事项的计划投影与已有历史分页读面。 */
 
 import { describe, expect, test } from 'bun:test'
-import type { Entry, ModelMessage, NewEntry, PlanNote, RecordId, UserMessageContent } from '@magic/contracts'
+import type { Entry, NewEntry, PlanNote, RecordId } from '@magic/contracts'
 import { makeFauxRecords } from '@magic/faux'
 import { planContext } from '../src/context.ts'
 import {
   HISTORY_ENTRY_CHARS,
   HISTORY_PAGE_ENTRIES,
   createPlanReader,
-  planMaterialOf,
   readHistoryOf,
   readPlanOf,
 } from '../src/plan.ts'
@@ -35,12 +22,6 @@ const PLAN: PlanNote = {
     { text: '覆盖四个失败分支', status: 'in_progress' },
   ],
   notes: '约束：保留已输入内容',
-}
-
-/** U90 之前那一形（没有 `goal` 那一格）——旧记录照旧读得回来。 */
-const LEGACY: PlanNote = {
-  steps: [{ text: '老笔记里的一步', status: 'pending' }],
-  notes: '老笔记',
 }
 
 /** 造一个记录桩 ＋ 逐条落账的小助手（id 由桩按序发）。 */
@@ -60,104 +41,41 @@ function ledger(): {
   }
 }
 
-/** 材料那一块的正文——`ModelMessage` 是判别联合，取正文前先收窄（不 `as`）。 */
-function materialText(message: ModelMessage | undefined): string {
-  if (message === undefined) return ''
-  if (message.role === 'assistant' || message.role === 'user' || message.role === 'system') {
-    return textOfContent(message.content)
-  }
-
-  return message.output
-}
-
-/** 一条模型消息的正文（U37 起可能是**部件串**——带图那条）——只取文字那几件。 */
-function textOfContent(content: UserMessageContent): string {
-  return typeof content === 'string'
-    ? content
-    : content.map((part) => (part.type === 'text' ? part.text : '〔图片〕')).join('')
-}
-
-/** 一次成功的计划更新（工具结果 ＋ `plan` 载荷）。 */
-function planResult(plan: PlanNote | null, text = '计划笔记已更新'): Omit<NewEntry, 'at'> {
-  return { kind: 'tool-result', content: { text }, payload: { ok: true, output: { text }, plan } }
-}
-
-/** 一条普通工具结果（无计划字段——「与计划无关」那一路）。 */
-function plainResult(text = '跑了 ls'): Omit<NewEntry, 'at'> {
-  return { kind: 'tool-result', content: { text }, payload: { ok: true, output: { text } } }
-}
-
 // ══ ① 当前计划 ════════════════════════════════════════════════════════
 
-describe('当前计划取自记录', () => {
-  test('没有过计划：`{ entry: null, plan: null }`——不隔空回一句「已清空」', async () => {
-    const { records } = ledger()
-    expect(await readPlanOf(records, SESSION)).toEqual({ entry: null, plan: null })
+function seedPlan(records: ReturnType<typeof makeFauxRecords>, entry: number) {
+  const base = { evidence: 'fact' as const, status: 'active' as const, sources: [{ session: SESSION, entry }] }
+  return records.memory.update({ expectedRevision: 0, changes: [
+    { ...base, id: 'goal', kind: 'goal', text: PLAN.goal! },
+    ...PLAN.steps.map((step, order) => ({ ...base, id: `step-${order}`, kind: 'step' as const, text: step.text, progress: step.status, order })),
+    { ...base, id: 'requirement', kind: 'requirement', text: PLAN.notes },
+  ] })
+}
+
+describe('当前计划只从工作记忆投影', () => {
+  test('没有目标或步骤时只返回空计划，不附未返回的旁支知识', async () => {
+    const { records, add } = ledger()
+    const entry = add({ kind: 'user', content: { text: '调查旁支' } })
+    records.memory.update({ expectedRevision: 0, changes: [{ id: 'side', kind: 'question', text: '旁支问题', evidence: 'unresolved', status: 'active', sources: [{ session: SESSION, entry }], knowledge: [{ id: 'K', revision: 1 }] }] })
+    expect(await readPlanOf(records)).toEqual({ revision: 1, entry, plan: null })
+  })
+  test('无记忆返回空投影，既有原始计划记录不自动迁入', async () => {
+    const { records, add } = ledger()
+    const original = add({ kind: 'tool-result', content: { text: '原始计划记录' }, payload: { ok: true, output: { text: '原始计划记录' }, plan: PLAN } })
+    expect(await readPlanOf(records)).toEqual({ revision: 0, entry: null, plan: null })
+    expect(records.memory.read().revision).toBe(0)
+    expect((await readHistoryOf(records, SESSION, 0, { entry: original })).entries[0]?.text).toBe('原始计划记录')
   })
 
-  test('更新之后取回的那一条就是它（内容 ＋ 记录位置一致）', async () => {
+  test('增量修改步骤不会覆盖目标和要求，计划读取不产生另一份状态', async () => {
     const { records, add } = ledger()
-    add({ kind: 'user', content: { text: '开始吧' } })
-    const id = add(planResult(PLAN))
-
-    expect(await readPlanOf(records, SESSION)).toEqual({ entry: id, plan: PLAN })
-  })
-
-  test('**失败结果不算数**：`ok: false` 的结果带着计划字段也顶不掉上一份', async () => {
-    const { records, add } = ledger()
-    const good = add(planResult(PLAN))
-    // 形状上不合法（写入侧的硬闸会拒），此处直接塞进桩——要验的是**读侧的判据**
-    add({
-      kind: 'tool-result',
-      content: { text: '没能记下来' },
-      payload: { ok: false, output: { text: '没能记下来' }, plan: null },
-    })
-
-    expect(await readPlanOf(records, SESSION)).toEqual({ entry: good, plan: PLAN })
-  })
-
-  test('**清空立即成立**：不回找更早那份计划（`entry` 是清空那一条）', async () => {
-    const { records, add } = ledger()
-    add(planResult(PLAN))
-    const cleared = add(planResult(null, '计划笔记已清空'))
-
-    expect(await readPlanOf(records, SESSION)).toEqual({ entry: cleared, plan: null })
-  })
-
-  test('后面的普通工具结果再多，也不算「当前计划变了」', async () => {
-    const { records, add } = ledger()
-    const id = add(planResult(PLAN))
-    for (let index = 0; index < 30; index += 1) add(plainResult(`第 ${index} 条普通结果`))
-
-    expect(await readPlanOf(records, SESSION)).toEqual({ entry: id, plan: PLAN })
-  })
-
-  /**
-   * **反向分页**：计划条目被后来的条目推得很远（超过一页）也要找得到。
-   * 页大小是 `SCAN_CHUNK`（实现级常量）——这里给足两页以上的条目。
-   */
-  test('计划条目被推到很远（> 一页）仍找得到——反向分页接着扫', async () => {
-    const { records, add } = ledger()
-    const id = add(planResult(PLAN))
-    for (let index = 0; index < 600; index += 1) add(plainResult(`第 ${index} 条`))
-
-    expect(await readPlanOf(records, SESSION)).toEqual({ entry: id, plan: PLAN })
-  })
-
-  test('载荷形状读不出的（旧版本 / 手改过的行）当作没有——不猜一份出来', async () => {
-    const { records, add } = ledger()
-    add({
-      kind: 'tool-result',
-      content: { text: '像计划但不是' },
-      // 故意写坏（状态不在词表里）——要验的是**读侧收窄**
-      payload: {
-        ok: true,
-        output: { text: '像计划但不是' },
-        plan: { steps: [{ text: '一步', status: 'doing' }], notes: '' },
-      } as unknown as NewEntry['payload'],
-    })
-
-    expect(await readPlanOf(records, SESSION)).toEqual({ entry: null, plan: null })
+    const entry = add({ kind: 'user', content: { text: '明确目标和要求' } })
+    expect(seedPlan(records, entry).ok).toBe(true)
+    expect(await readPlanOf(records)).toEqual({ revision: 1, entry, plan: PLAN })
+    const step = records.memory.read().items.find(item => item.id === 'step-1')!
+    expect(records.memory.update({ expectedRevision: 1, changes: [{ ...step, progress: 'completed' }] }).ok).toBe(true)
+    expect((await readPlanOf(records)).plan).toEqual({ ...PLAN, steps: PLAN.steps.map(item => ({ ...item, status: 'completed' })) })
+    expect(records.memory.read().revision).toBe(2)
   })
 })
 
@@ -330,114 +248,13 @@ describe('历史回查是有界的', () => {
   })
 })
 
-// ══ ④ 上下文里的计划材料 ══════════════════════════════════════════════
-
-describe('计划材料（压缩 / 中断之后重新交付）', () => {
-  test('没有过计划：不加空材料', async () => {
-    const { records, add } = ledger()
-    add({ kind: 'user', content: { text: '你好' } })
-
-    const all: Entry[] = []
-    for await (const entry of records.readEntries(SESSION)) all.push(entry)
-    expect(planMaterialOf({ delivered: new Set(), all })).toBeUndefined()
-  })
-
-  test('当前计划那一条**完整落在窗口里**：不再复制一份正文', async () => {
-    const { records, add } = ledger()
-    const id = add(planResult(PLAN))
-    const all: Entry[] = []
-    for await (const entry of records.readEntries(SESSION)) all.push(entry)
-
-    const material = await planMaterialOf({ delivered: new Set<RecordId>([id]), all })
-    expect(material).toBeUndefined()
-  })
-
-  test('压出窗口（或配对丢了）：追加一份**带记录位置**的助手材料，正文完整', async () => {
-    const { records, add } = ledger()
-    const id = add(planResult(PLAN))
-    const all: Entry[] = []
-    for await (const entry of records.readEntries(SESSION)) all.push(entry)
-
-    const material = await planMaterialOf({ delivered: new Set(), all })
-    expect(material?.role).toBe('assistant')
-    expect(materialText(material)).toContain(`#${id}`)
-    expect(materialText(material)).toContain('定位登录失败提示')
-    expect(materialText(material)).toContain('覆盖四个失败分支')
-    expect(materialText(material)).toContain('约束：保留已输入内容')
-    // 说清它是什么——且**不是**用户的新要求（也不是系统指令）
-    expect(materialText(material)).toContain('既有计划笔记')
-    expect(materialText(material)).toContain('不是用户的新要求')
-  })
-
-  // ══ U90 · 目标那一格进了材料 ═════════════════════════════════════════
-
-  test('目标随材料一起交付，且排在步骤之前（与清单同一个次序）', async () => {
-    const { records, add } = ledger()
-    add(planResult(PLAN))
-    const all: Entry[] = []
-    for await (const entry of records.readEntries(SESSION)) all.push(entry)
-
-    const text = materialText(await planMaterialOf({ delivered: new Set(), all }))
-    expect(text).toContain('目标：让登录失败提示说得清哪儿错了')
-    expect(text.indexOf('目标：')).toBeLessThan(text.indexOf('步骤：'))
-  })
-
-  test('⚠️ 反面：旧笔记（没有目标那一格）不补一行空的「目标：」', async () => {
-    const { records, add } = ledger()
-    add(planResult(LEGACY))
-    const all: Entry[] = []
-    for await (const entry of records.readEntries(SESSION)) all.push(entry)
-
-    const text = materialText(await planMaterialOf({ delivered: new Set(), all }))
-    expect(text).toContain('老笔记里的一步')
-    expect(text).not.toContain('目标：')
-  })
-
-  test('清空之后旧计划的正文还看得见：补一句「已清空」消歧义', async () => {
-    const { records, add } = ledger()
-    const old = add(planResult(PLAN))
-    const cleared = add(planResult(null, '计划笔记已清空'))
-    const all: Entry[] = []
-    for await (const entry of records.readEntries(SESSION)) all.push(entry)
-
-    const material = await planMaterialOf({
-      // 清空那一条在窗口里，但更早那份计划也在（近段还没走出去）
-      delivered: new Set<RecordId>([old, cleared]),
-      all,
-    })
-    expect(materialText(material)).toContain('已清空')
-  })
-
-  test('清空那一条本身也看不见了：同样补一句（不把旧内容投影成当前清单）', async () => {
-    const { records, add } = ledger()
-    add(planResult(PLAN))
-    add(planResult(null, '计划笔记已清空'))
-    const all: Entry[] = []
-    for await (const entry of records.readEntries(SESSION)) all.push(entry)
-
-    const material = await planMaterialOf({ delivered: new Set(), all })
-    expect(materialText(material)).toContain('已清空')
-  })
-
-  test('清空那一条在窗口里、也没有旧计划露在外面：不必再补一句', async () => {
-    const { records, add } = ledger()
-    add(planResult(PLAN))
-    const cleared = add(planResult(null, '计划笔记已清空'))
-    const all: Entry[] = []
-    for await (const entry of records.readEntries(SESSION)) all.push(entry)
-
-    const material = await planMaterialOf({ delivered: new Set<RecordId>([cleared]), all })
-    expect(material).toBeUndefined()
-  })
-})
-
 // ══ 端口形态 ══════════════════════════════════════════════════════════
 
 describe('PlanReader 端口', () => {
   test('两个读口都在，且都绑定本条会话（模型给不出第二个）', async () => {
     const { records, add } = ledger()
-    add({ kind: 'user', content: { text: '开始吧' } })
-    add(planResult(PLAN))
+    const entry = add({ kind: 'user', content: { text: '开始吧' } })
+    seedPlan(records, entry)
     add({ kind: 'summary', content: { text: '摘要' } })
     const reader = createPlanReader({ records, session: SESSION, nearEntries: 0 })
 

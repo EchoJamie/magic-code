@@ -162,6 +162,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
       if (opts.signal?.aborted) return refused(OUTPUT_CANCELED_BEFORE_RUN)
       finish = options.beginExecution?.(call)
       return await definition.run(call.args, {
+        ...(opts.entry === undefined ? {} : { entry: opts.entry }),
         sandbox: binding?.sandbox ?? options.sandbox,
         signal: opts.signal,
         onOutput,
@@ -281,6 +282,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
         output: outcome.output,
         callRef,
         content,
+        ...(outcome.knowledge === undefined ? {} : { knowledge: outcome.knowledge }),
         ...(read === undefined ? {} : { read }),
         // **交付身份原样过手**（U33）——有就带、没有就不带（不补 `undefined` 占位）
         ...(outcome.skill === undefined ? {} : { skill: outcome.skill }),

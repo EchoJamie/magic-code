@@ -41,7 +41,7 @@ import type {
 import { TRANSIENT_EVENT_KINDS } from '@magic/contracts'
 import { createControlHub, createInProcessTransportPair } from '@magic/control'
 import type { ContextPolicy, SessionInstance } from '@magic/conversation'
-import { createConversationService } from '@magic/conversation'
+import { createConversationService, createPlanReader } from '@magic/conversation'
 import {
   createBackgroundRuns,
   createMaterials,
@@ -143,6 +143,7 @@ export type McpServerView = {
 }
 
 export type Assembly = {
+  compact(session: string, request: { requestId: string; focus?: string }, signal: AbortSignal, started: () => void): Promise<import('@magic/contracts').CompactState>
   refreshSettings(): void
   reconnectMcp(server: string): Promise<string>
   /** 当前执行实例仍有明确输入消费意图；遗留持久输入不算自动继续授权。 */
@@ -424,6 +425,7 @@ export function assemble(options: AssembleOptions): Assembly {
       readEvents: session => recordsStore.serviceFor(session).readEvents(session),
       blobs: recordsStore.blobs,
     },
+    readPlan: session => createPlanReader({ records: recordsStore.serviceFor(session), session }).readPlan(),
     setTitle: (session, title, at) => recordsStore.setSessionTitle(session, title, at),
     sink,
     now,
@@ -819,6 +821,11 @@ export function assemble(options: AssembleOptions): Assembly {
       reducedMotion = current.config.motion?.reduced === true
     },
     reconnectMcp,
+    compact: (session, request, signal, started) => {
+      const target = chains.get(session)
+      if (target === undefined) return Promise.resolve({ requestId: request.requestId, state: 'failed', reason: '目标会话未装配，未执行压缩' })
+      return target.service.compact(request, signal, started)
+    },
     hasPendingInput: () => [...chains.values()].some(one => one.service.busy()),
     wakeCollaboration: () => chain?.service.wake(),
     supplementCollaboration: async (input, shared) => {

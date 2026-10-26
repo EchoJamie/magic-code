@@ -63,6 +63,7 @@ function makeLedger(rows: readonly LedgerRow[]): Ledger {
   }
 
   const records: RecordsService = {
+    get memory() { return makeFauxRecords().memory },
     get inputs() { return makeFauxRecords().inputs },
     get collaboration(): RecordsService['collaboration'] { throw new Error('collaboration not scripted') },
     nextId: () => 1,
@@ -130,6 +131,7 @@ function makeInstance(session: SessionId): FakeInstance {
       beginTurn: () => undefined,
     },
     service: {
+      compact: async request => ({ requestId: request.requestId, state: 'no-material' }),
       manage: () => {},
       wake: () => undefined,
       supplement: async () => undefined,

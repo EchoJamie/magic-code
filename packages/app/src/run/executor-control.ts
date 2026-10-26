@@ -34,6 +34,7 @@ export function sendToExecutor(executor: Executor, message: ManagerToExecutor): 
 
 /** 执行者协议的待确认请求；回执必须来自原对象，不能跨代完成。 */
 export function createExecutorControl(onStartupTimeout: (executor: Executor) => void) {
+  const compactions = new Map<string, { executor: Executor; started: () => void; resolve: (state: import('@magic/contracts').CompactState) => void; reject: (error: Error) => void }>()
   const configurationWaiters = new Map<string, { executor: Executor; resolve: () => void; reject: (error: Error) => void }>()
   const readyWaiters = new Map<number, { resolve: () => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>()
   const executorSettings = new WeakMap<Executor, readonly McpCatalogRow[]>()
@@ -81,6 +82,21 @@ export function createExecutorControl(onStartupTimeout: (executor: Executor) => 
   }
 
   return {
+    compact(executor: Executor, request: { requestId: string; focus?: string }, signal: AbortSignal, started: () => void): Promise<import('@magic/contracts').CompactState> {
+      signal.throwIfAborted()
+      return new Promise((resolve, reject) => {
+        const abort = () => sendToExecutor(executor, { t: 'compact.cancel', requestId: request.requestId })
+        compactions.set(request.requestId, { executor, started, resolve: state => { signal.removeEventListener('abort', abort); resolve(state) }, reject: error => { signal.removeEventListener('abort', abort); reject(error) } })
+        signal.addEventListener('abort', abort, { once: true })
+        sendToExecutor(executor, { t: 'compact', request })
+      })
+    },
+    compactStarted(executor: Executor, requestId: string): void { const operation = compactions.get(requestId); if (operation?.executor === executor) operation.started() },
+    compactResult(executor: Executor, requestId: string, state: import('@magic/contracts').CompactState): void {
+      const operation = compactions.get(requestId)
+      if (operation?.executor !== executor) return
+      compactions.delete(requestId); operation.resolve(state)
+    },
     waitUntilReady,
     settings: settingsToExecutor,
     servers: (executor: Executor) => executorSettings.get(executor),
@@ -116,6 +132,7 @@ export function createExecutorControl(onStartupTimeout: (executor: Executor) => 
       else pending.resolve(message.note ?? '已受理设置')
     },
     exited(executor: Executor): void {
+      for (const [id, operation] of compactions) if (operation.executor === executor) { compactions.delete(id); operation.reject(new Error('执行实例已结束，本次压缩中断')) }
       for (const [request, pending] of settingsReplies) if (pending.executor === executor) {
         settingsReplies.delete(request)
         pending.reject(new Error('执行者已退出，设置受理未确认；请重新读取'))

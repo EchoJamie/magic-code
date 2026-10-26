@@ -199,47 +199,13 @@ export function hasPlan(view: ShellView): boolean {
   return (view.plan.plan?.steps.length ?? 0) > 0
 }
 
-/**
- * **收下一份新的当前计划**（`plan.changed`）——**按条目 id 判新旧**。
- *
- * 设计明写：「以计划条目 id 比较新旧，**历史晚到不能覆盖更新或清空**」。两条来路都会
- * 落到这儿（实时事件、分块读回来的历史），而读历史那一趟比实时慢——晚到的那一份
- * **旧**内容不许把已经上屏的新计划盖回去。
- *
- * `entry` 是**数字**且单调（契约 `RecordId`：「单调，排序权威」），故「新」就是「大」。
- * 还没有计划时（`entry === null`）一律收下。
- */
-export function withPlan(view: ShellView, entry: RecordId, plan: PlanNote | null): ShellView {
-  const current = view.plan.entry
-  if (current !== null && entry <= current) return view
-
-  return { ...view, plan: { entry, plan } }
-}
-
-/**
- * **条目里那一条当前计划**（重建用）——**从后往前，遇到第一个带 `plan` 字段的工具结果就停**。
- *
- * 两条分寸直接来自设计（·保存与读取是一条链）：
- * - **「含 `plan` 字段」与「`plan` 是 `null`」是两件事**：缺字段＝普通工具结果（跳过），
- *   `null`＝清空（**到此为止，不继续往前找**——清空之后旧的计划不是当前计划）；
- * - **失败结果不携带有效更新**：`ok === false` 的那一条跳过（它没写进去）。
- *
- * 找不到 ⇒ `{entry: null, plan: null}`：**没建立过计划**，如实说没有。
- */
-export function planFromEntries(entries: readonly Entry[]): PlanSnapshot {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index]
-    if (entry === undefined || entry.kind !== 'tool-result') continue
-
-    const payload = entry.payload as { readonly ok?: boolean; readonly plan?: PlanNote | null } | undefined
-    if (payload === undefined || payload.ok === false) continue
-    if (!Object.hasOwn(payload, 'plan')) continue
-
-    // 字段在 = 这一条就是那次更新（值可以是 `null`＝清空）；缺字段才是「不是它」
-    return { entry: entry.id, plan: payload.plan ?? null }
-  }
-
-  return { entry: null, plan: null }
+/** 工作记忆修订优先；旧记录投影只在尚未收到工作记忆时比较来源记录号。 */
+export function withPlan(view: ShellView, entry: RecordId | null, plan: PlanNote | null, revision?: number): ShellView {
+  const current = view.plan
+  if (revision !== undefined) {
+    if (current.revision !== undefined && revision <= current.revision) return view
+  } else if (current.revision !== undefined || entry === null || current.entry !== null && entry <= current.entry) return view
+  return { ...view, plan: { entry, plan, ...(revision === undefined ? {} : { revision }) } }
 }
 
 // ══ 左下交互区（四种用法同一位置）════════════════════════════════════
@@ -297,6 +263,8 @@ export type Picker = {
     | 'session-history'
     | 'model'
     | 'input-purpose'
+    | 'compact-status'
+    | 'memory'
     | 'input-pending'
     | 'input-detail'
     | 'paths-info'
@@ -319,6 +287,7 @@ export type Picker = {
 
     | 'statusline'
 
+  readonly memory?: import('./memory-picker.ts').MemoryPage
   readonly title?: string
   readonly rows: readonly PickerRow[]
   readonly selected: number
@@ -374,6 +343,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: '/connect', summary: '重连当前会话并刷新，保留草稿' },
   { name: '/clear', summary: '新建会话并清屏，保留历史记录' },
   { name: '/ps', summary: '查看协作成员与后台命令' },
+  { name: '/memory', summary: '查看工作记忆与适用知识' },
+  { name: '/compact', summary: '压缩当前会话，可附本次重点' },
   { name: '/resume', summary: '查看记录或接回工作' },
   { name: '/rename', summary: '修改当前会话名称' },
 
@@ -666,6 +637,7 @@ export type ShellView = {
   /** 当前绑定会话的 Engine 归档投影，目录筛选不改变此事实。 */
   readonly archived: boolean
   /** 当前会话 id（还没有会话＝`null`）。 */
+  readonly compactions: readonly { session: SessionId; state: import('@magic/contracts').CompactState }[]
   readonly sessionId: SessionId | null
   /** 会话目录（`session.list` 的答复）。 */
   readonly catalog: readonly SessionSummary[]
@@ -762,6 +734,7 @@ export function createView(input: CreateViewInput = {}): ShellView {
 
     leaving: false,
     archived: false,
+    compactions: [],
     sessionId: null,
     catalog: [],
     runs: [],
@@ -924,7 +897,7 @@ export function reduce(
     case 'plan.changed':
       if (view.sessionId !== null && event.session !== view.sessionId) return view
 
-      return withPlan(view, event.data.entry, event.data.plan)
+      return withPlan(view, event.data.entry, event.data.plan, event.data.revision)
 
     case 'session.managed':
       return view
@@ -973,7 +946,17 @@ export function reduce(
       })
 
     case 'context.compacted':
-      return view
+    case 'memory.model':
+    case 'session.references':
+    case 'memory.state':
+    case 'memory.source':
+    case 'knowledge.state':
+    case 'knowledge.forgotten': return view
+    case 'compact.state': {
+      const previous = view.compactions.find(one => one.session === event.session && one.state.requestId === event.data.requestId)
+      if (previous && !['pending', 'running', 'unknown'].includes(previous.state.state) && ['pending', 'running', 'unknown'].includes(event.data.state)) return view
+      return { ...view, compactions: [...view.compactions.filter(one => one !== previous), { session: event.session, state: event.data }] }
+    }
 
     case 'background.state':
       return { ...view, background: event.data }
@@ -1334,10 +1317,9 @@ function appendSettled(view: ShellView, row: LogRow): ShellView {
   return { ...view, settled: [...view.settled, row] }
 }
 
-export function rebuild(view: ShellView, entries: readonly Entry[], options: { readonly collapseTools?: boolean; readonly timing?: readonly TurnTimingEvent[]; readonly messages?: readonly AgentMessage[] } = {}): ShellView {
+export function rebuild(view: ShellView, entries: readonly Entry[], options: { readonly plan?: PlanSnapshot; readonly collapseTools?: boolean; readonly timing?: readonly TurnTimingEvent[]; readonly messages?: readonly AgentMessage[] } = {}): ShellView {
 
-  const plan = planFromEntries(entries)
-  const fresh = plan.entry !== null && (view.plan.entry === null || plan.entry > view.plan.entry)
+  const projected = options.plan === undefined ? view : withPlan(view, options.plan.entry, options.plan.plan, options.plan.revision)
 
   let round: RoundTiming | null = null
   const rounds: RoundTiming[] = []
@@ -1359,7 +1341,7 @@ export function rebuild(view: ShellView, entries: readonly Entry[], options: { r
     rows: [],
     // **比手上的新才落**——这一趟读库比实时事件慢，晚到的那一份旧内容不许把
     // 已经上屏的新计划（或清空）盖回去（与 `withPlan` 同一把尺子）。
-    ...(fresh ? { plan } : {}),
+    plan: projected.plan,
   }
 }
 

@@ -56,6 +56,7 @@ export type EntryLog = {
  * 本域没见过）。落账只用到这两样，中间的形态差由本类型吸收——**不编造链引用**。
  */
 export type ToolOutcome = {
+  readonly knowledge?: ToolResult['knowledge']
   readonly ok: boolean
   /** 面向模型的文本——条目正文（重放时逐字复原模型看到的那份）。 */
   readonly text: string
@@ -107,6 +108,7 @@ export function toolOutcomeOf(result: ToolResult): ToolOutcome {
     ok: result.ok,
     text: result.output,
     content: result.content,
+    ...(result.knowledge === undefined ? {} : { knowledge: result.knowledge }),
     // 交付身份**原样过手**（有就带、没有就不带——不补 `undefined` 占位）
     ...(result.skill === undefined ? {} : { skill: result.skill }),
     // 计划载荷同理——⚠️ 判 `undefined`（不在场）而非真假：`null` 是**清空**
@@ -130,11 +132,13 @@ export async function appendTextEntry(
   kind: 'user' | 'assistant',
   text: string,
   payload?: AssistantPayload,
+  knowledge: readonly import('@magic/contracts').KnowledgeReference[] = [],
 ): Promise<RecordId> {
+  const supplied = knowledge.length === 0 ? payload : { ...payload, knowledge }
   return log.records.appendEntry({
     kind,
     content: await contentOf(text, log),
-    ...(payload === undefined ? {} : { payload }),
+    ...(supplied === undefined ? {} : { payload: supplied }),
     at: log.now(),
   })
 }
@@ -199,11 +203,11 @@ export async function appendUserEntry(
  * 工具调用条目——`{ name, args }` 载荷。
  * 与后续的结果条目**成对**：「有调用无结果」＝在途（阶段 2 恢复的判据）。
  */
-export function appendToolCallEntry(log: EntryLog, call: ToolCall): RecordId {
+export function appendToolCallEntry(log: EntryLog, call: ToolCall, knowledge: readonly import('@magic/contracts').KnowledgeReference[] = []): RecordId {
   return log.records.appendEntry({
     kind: 'tool-call',
     content: { text: '' },
-    payload: { name: call.name, args: call.args },
+    payload: { name: call.name, args: call.args, ...(knowledge.length === 0 ? {} : { knowledge }) },
     at: log.now(),
   })
 }
@@ -219,13 +223,14 @@ export function appendToolCallEntry(log: EntryLog, call: ToolCall): RecordId {
  * 写入侧的硬闸（`@magic/records`）照旧把关，形状不对连条目都落不下去。
  * ⚠️ **清空要写出 `plan: null` 这个键**（不是省略）——省略就是「这次跟计划无关」。
  */
-export function appendToolResultEntry(log: EntryLog, outcome: ToolOutcome): RecordId {
+export function appendToolResultEntry(log: EntryLog, outcome: ToolOutcome, knowledge: readonly import('@magic/contracts').KnowledgeReference[] = []): RecordId {
   return log.records.appendEntry({
     kind: 'tool-result',
     content: { text: outcome.text },
     payload: {
       ok: outcome.ok,
       output: outcome.content,
+      ...(knowledge.length === 0 ? {} : { knowledge }),
       ...(outcome.skill === undefined ? {} : { skill: outcome.skill }),
       ...(outcome.plan === undefined ? {} : { plan: outcome.plan }),
       ...(outcome.background === undefined ? {} : { background: outcome.background }),

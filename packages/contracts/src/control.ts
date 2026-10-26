@@ -12,7 +12,7 @@ import type { InputManage, InputPurpose } from './input.ts'
 
 import type { StatusLineConfig } from './config.ts'
 import type { InputRefPlace } from './entries.ts'
-import type { BlobRef, SessionId } from './ids.ts'
+import type { BlobRef, RecordId, SessionId } from './ids.ts'
 import type { ModelChoice, ReasoningSetting } from './model.ts'
 import type { CollaborationCommand } from './collaboration-control.ts'
 
@@ -45,6 +45,8 @@ export type SkillRef = {
  */
 export type InputRef = InputRefPlace &
   (
+    | { readonly kind: 'session'; readonly source: SessionId; readonly through?: RecordId }
+    | { readonly kind: 'memory'; readonly source: string; readonly scope: { readonly kind: 'session'; readonly session: SessionId } | import('./knowledge.ts').KnowledgeScope; readonly revision: number }
     | { readonly kind: 'skill'; readonly name: string; readonly source: string }
     | { readonly kind: 'file'; readonly source: string; readonly external?: true }
     | { readonly kind: 'dir'; readonly source: string; readonly external?: true }
@@ -169,6 +171,36 @@ export type ModelSwitch = { readonly type: 'model.switch' } & ModelSwitchRequest
 
 /** `session.list`——列出会话（外壳要一屏目录时发）。 */
 export type SessionList = { readonly type: 'session.list'; readonly archived?: boolean }
+
+/** 引用目录只列来源，不选择或启动会话；查询与分页回执独立于当前输入目标。 */
+export type SessionReferenceList = { readonly type: 'session.references'; readonly requestId: string; readonly query: string; readonly offset?: number }
+export type MemoryRead = { readonly type: 'memory.read'; readonly requestId: string; readonly session?: SessionId }
+export type MemorySourceRead = {
+  readonly type: 'memory.source'; readonly requestId: string
+  readonly session?: SessionId
+  readonly source: import('./memory.ts').MemorySource
+  /** 事项来源按 item 校验；会话引用按实际已受理输入 ref 校验范围。 */
+  readonly item?: string
+  readonly inputRef?: string
+  readonly knowledge?: string
+  readonly limit?: number
+}
+export type KnowledgeCommand =
+  | { readonly type: 'knowledge.query'; readonly requestId: string; readonly session?: SessionId; readonly query?: import('./knowledge.ts').KnowledgeQuery }
+  | { readonly type: 'knowledge.read'; readonly requestId: string; readonly session?: SessionId; readonly id: string }
+  | { readonly type: 'knowledge.forget' | 'knowledge.forget-result'; readonly requestId: string; readonly session?: SessionId; readonly scope: import('./knowledge.ts').KnowledgeScope; readonly id: string; readonly expectedRevision: number }
+export type CompactState = {
+  readonly accepted?: true
+  readonly requestId: string
+  readonly focus?: string
+  readonly state: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'no-material' | 'unknown'
+  readonly reason?: string
+  readonly summary?: RecordId
+}
+export type CompactCommand =
+  | { readonly type: 'compact.request'; readonly requestId: string; readonly session: SessionId; readonly focus?: string }
+  | { readonly type: 'compact.query'; readonly requestId: string; readonly session: SessionId }
+  | { readonly type: 'compact.cancel'; readonly requestId: string; readonly session: SessionId }
 
 /** `session.new`——新建一条会话并切过去（产品方案 功能 1：多会话的新建）。 */
 export type SessionNew = { readonly type: 'session.new' }
@@ -453,6 +485,11 @@ export type Command = import('./background.ts').BackgroundCommandRequest
   | TurnInterrupt
   | ModelSwitch
   | SessionCommand
+  | SessionReferenceList
+  | MemoryRead
+  | MemorySourceRead
+  | KnowledgeCommand
+  | CompactCommand
   | HistoryRead
   | ModelList
   | ModelRefresh

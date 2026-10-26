@@ -1,15 +1,4 @@
-/**
- * U34 · 计划与历史三件（工具域这一半）——`./plan-tools.ts`。
- *
- * 判据（设计 · 数据与工具契约那张表 ＋ 「参数仅校验可读取的结构与状态取值」）：
- * ① 读的回执**带完整正文**（上下文据「这条结果完整在不在窗口里」判送达，见 `@magic/conversation`）；
- * ② 更新只**核对参数并交回载荷**（`plan` 三态：有值 / `null` / 不给），**不自行写记录**；
- * ③ **不做长度、步数、语义检查**——二十字只是参数说明里的一句建议；
- * ④ 回查的参数只认那三格，两种定位不混用、错用说清。
- *
- * 本文件用**桩 `PlanReader`**（工具域不认识记录与上下文）——真装配那条路（真记录、
- * 真事件、真上下文）由 `packages/app/test/plan.test.ts` 咬。
- */
+/** 计划投影与历史读取；事项增量由 memory-tools 的真实记录检查覆盖。 */
 
 import { describe, expect, test } from 'bun:test'
 import type { HistoryPage, PlanNote, PlanReader, PlanSnapshot } from '@magic/contracts'
@@ -56,32 +45,22 @@ async function run(reader: PlanReader, name: string, args: Readonly<Record<strin
   catch (error) { return { ok: false, output: (error as Error).message } }
 }
 
-describe('三件的形态', () => {
-  test('三个名字齐，且权限域与装配按同一串名字认它们', () => {
+describe('两个读取工具的形态', () => {
+  test('两个读取名字齐，且权限域与装配按同一串名字认它们', () => {
     const { reader } = stubReader()
     expect(definePlanTools(reader).map((tool) => tool.spec.name)).toEqual([
       'plan_read',
-      'plan_update',
       'history_read',
     ])
-    expect([...PLAN_TOOL_NAMES]).toEqual(['plan_read', 'plan_update', 'history_read'])
+    expect([...PLAN_TOOL_NAMES]).toEqual(['plan_read', 'history_read'])
   })
 
-  test('三件的静态归类都是 light（只动协作笔记与会话记录，不碰工作区）', () => {
+  test('读取工具的静态归类都是 light（只动协作笔记与会话记录，不碰工作区）', () => {
     const { reader } = stubReader()
     for (const tool of definePlanTools(reader)) expect(tool.spec.danger.level).toBe('light')
   })
 
-  test('二十字的建议**只在步骤文本的参数说明里**——不加 maxLength、不设步数上限', () => {
-    const { reader } = stubReader()
-    const parameters = toolOf(reader, 'plan_update').spec.parameters as {
-      properties: { plan: { properties: { steps: { items: { properties: { text: { description: string; maxLength?: number } } } } } } }
-    }
-    const step = parameters.properties.plan.properties.steps.items.properties
 
-    expect(step.text.description).toBe('简短说明这一步要做成什么，建议二十个字左右。')
-    expect(step.text.maxLength).toBeUndefined()
-  })
 })
 
 describe('plan_read', () => {
@@ -117,149 +96,9 @@ describe('plan_read', () => {
   })
 })
 
-describe('plan_update', () => {
-  test('整体替换：交回的那一份就是载荷（工具不自行写记录）', async () => {
-    const { reader } = stubReader()
-    const result = await run(reader, 'plan_update', { plan: PLAN })
-
-    expect(result.ok).toBe(true)
-    expect(result.plan).toEqual(PLAN)
-    expect(result.output).toContain('定位登录失败提示')
-  })
-
-  test('**清空＝`null`**（与「没给这一位」分得开：没给是调用不成立）', async () => {
-    const { reader } = stubReader()
-
-    const cleared = await run(reader, 'plan_update', { plan: null })
-    expect(cleared.ok).toBe(true)
-    expect(cleared.plan).toBeNull()
-
-    const missing = await run(reader, 'plan_update', {})
-    expect(missing.ok).toBe(false)
-    expect(missing.plan).toBeUndefined()
-  })
-
-  test('notes 缺省＝空串（可读的结构）；steps 空数组照收（**不设步数下限**）', async () => {
-    const { reader } = stubReader()
-    const result = await run(reader, 'plan_update', { plan: { steps: [] } })
-
-    expect(result.ok).toBe(true)
-    expect(result.plan).toEqual({ steps: [], notes: '' })
-  })
-
-  test('步骤文本再长也照收（**不做长度检查、不截断、不警告**）', async () => {
-    const { reader } = stubReader()
-    const long = '把登录失败提示改清楚并且覆盖空密码与网络失败两类分支'
-    const result = await run(reader, 'plan_update', {
-      plan: { steps: [{ text: long, status: 'pending' }], notes: '' },
-    })
-
-    expect(result.ok).toBe(true)
-    expect((result.plan as PlanNote).steps[0]?.text).toBe(long)
-  })
-
-  test('错结构与错状态**整条拒绝**（不落半份计划），且说清是第几步', async () => {
-    const { reader } = stubReader()
-
-    const badStatus = await run(reader, 'plan_update', {
-      plan: { steps: [{ text: '一步', status: 'doing' }], notes: '' },
-    })
-    expect(badStatus.ok).toBe(false)
-    expect(badStatus.output).toContain('status')
-    expect(badStatus.plan).toBeUndefined()
-
-    const noText = await run(reader, 'plan_update', {
-      plan: { steps: [{ status: 'pending' }, { text: '二步', status: 'pending' }], notes: '' },
-    })
-    expect(noText.ok).toBe(false)
-    expect(noText.output).toContain('第 1 个步骤')
-
-    const badShape = await run(reader, 'plan_update', { plan: '帮我修登录' })
-    expect(badShape.ok).toBe(false)
-    expect(badShape.plan).toBeUndefined()
-  })
-})
-
-// ══ U90 · 目标那一格 ══════════════════════════════════════════════════
-
-describe('目标那一格（`goal`）', () => {
-  test('参数说明**说清它是什么**（模型读得到才会填），且**不要求必填**', () => {
-    const { reader } = stubReader()
-    const parameters = toolOf(reader, 'plan_update').spec.parameters as {
-      properties: {
-        plan: {
-          properties: { goal: { type: string; description: string } }
-          required: readonly string[]
-        }
-      }
-    }
-    const plan = parameters.properties.plan
-
-    // 是字符串那一格，且说明里点明了**三件**：是什么 · 给谁看 · 可选
-    expect(plan.properties.goal.type).toBe('string')
-    expect(plan.properties.goal.description).toContain('结果')
-    expect(plan.properties.goal.description).toContain('用户会看到')
-    expect(plan.properties.goal.description).toContain('不给')
-    // **不在必填那一栏**——没有目标是一件合法的事（那一行不出现）
-    expect(plan.required).not.toContain('goal')
-  })
-
-  test('给了目标：载荷带上它，回执**头一行**就是「目标：…」', async () => {
-    const { reader } = stubReader()
-    const result = await run(reader, 'plan_update', {
-      plan: { goal: '修好登录失败提示', steps: [{ text: '一步', status: 'pending' }], notes: '' },
-    })
-
-    expect(result.ok).toBe(true)
-    expect((result.plan as PlanNote).goal).toBe('修好登录失败提示')
-    expect((result.output as string).split('\n')).toContain('目标：修好登录失败提示')
-    // 次序：目标在步骤之前（与界面同一份）
-    expect((result.output as string).indexOf('目标：')).toBeLessThan((result.output as string).indexOf('步骤：'))
-  })
-
-  test('⚠️ 反面：没给目标 ⇒ 载荷里**压根没有这个键**，回执里也没有那一行', async () => {
-    const { reader } = stubReader()
-    const result = await run(reader, 'plan_update', {
-      plan: { steps: [{ text: '一步', status: 'pending' }], notes: '' },
-    })
-
-    expect(result.ok).toBe(true)
-    // **判据是键在不在场**：写成 `goal: undefined` 与「没有这一格」对读侧是两件事
-    expect(Object.hasOwn(result.plan as object, 'goal')).toBe(false)
-    expect(result.output).not.toContain('目标：')
-  })
-
-  test('⚠️ 反面：给了空白（空格 / 空串）＝**与没给同义**（不写一个空的进来）', async () => {
-    const { reader } = stubReader()
-
-    for (const blank of ['', '   ', '\t']) {
-      const result = await run(reader, 'plan_update', {
-        plan: { goal: blank, steps: [{ text: '一步', status: 'pending' }], notes: '' },
-      })
-
-      expect(result.ok).toBe(true)
-      expect(Object.hasOwn(result.plan as object, 'goal')).toBe(false)
-      expect(result.output).not.toContain('目标：')
-    }
-  })
-
-  test('给了非字符串 ⇒ **整条拒绝**（不落半份计划），且指到那一格', async () => {
-    const { reader } = stubReader()
-    const result = await run(reader, 'plan_update', {
-      plan: { goal: 42, steps: [{ text: '一步', status: 'pending' }], notes: '' },
-    })
-
-    expect(result.ok).toBe(false)
-    expect(result.output).toContain('goal')
-    expect(result.plan).toBeUndefined()
-  })
-
-  test('读的回执也带目标（模型回查时看得到自己写的目标）', async () => {
-    const { reader } = stubReader({ entry: 7, plan: { ...PLAN, goal: '修好登录失败提示' } })
-    const result = await run(reader, 'plan_read')
-
-    expect(result.output).toContain('目标：修好登录失败提示')
-  })
+test('计划读取仍带目标投影', async () => {
+  const { reader } = stubReader({ entry: 7, plan: { ...PLAN, goal: '修好登录失败提示' } })
+  expect((await run(reader, 'plan_read')).output).toContain('目标：修好登录失败提示')
 })
 
 describe('history_read', () => {

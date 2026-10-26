@@ -44,9 +44,30 @@ import type {
   Material,
   MaterialRequest,
   Materials,
+  RecordsService,
+  SessionId,
+  UserInput,
+  KnowledgeAccess,
   SkillRead,
   Skills,
 } from '@magic/contracts'
+import { createMaterialReader } from './material.ts'
+
+/** 首次受理前只绑定保存上界；历史召回与重复投递不刷新已绑定范围。 */
+export async function bindSessionReferences(input: UserInput, records: Pick<RecordsService, 'listSessions' | 'readEntriesBack'>): Promise<UserInput> {
+  if (!input.refs?.some(ref => ref.kind === 'session')) return input
+  const sessions = await records.listSessions()
+  const refs: InputRef[] = []
+  for (const ref of input.refs) {
+    if (ref.kind !== 'session') { refs.push(ref); continue }
+    if (!sessions.some(session => session.id === ref.source)) throw new Error(`会话引用 ${ref.marker} 已不可读取；草稿保留`)
+    const latest = (await records.readEntriesBack(ref.source, undefined, 1)).at(-1)?.id ?? 0
+    const through = ref.through ?? latest
+    if (!Number.isSafeInteger(through) || through < 0 || through > latest) throw new Error(`会话引用 ${ref.marker} 的保存范围无效；请重新选择来源`)
+    refs.push({ ...ref, through })
+  }
+  return { ...input, refs }
+}
 
 /** 引用送达——本对象**不存状态**（材料每趟现读，同执行域那一条）。 */
 export type RefDelivery = {
@@ -70,7 +91,75 @@ export function createRefDelivery(sources: {
    * 故与取不到同一条出口——**整条不跑**，不静默退化成纯文字）。
    */
   readonly blobs?: BlobStore | undefined
+  readonly records?: RecordsService
+  readonly session?: SessionId
+  readonly knowledge?: Pick<KnowledgeAccess, 'read'>
 }): RefDelivery {
+  async function readSession(ref: Extract<InputRef, { kind: 'session' }>): Promise<InputRefEntry> {
+    if (ref.through === undefined) throw new Error(`会话引用 ${ref.marker} 尚未固定保存范围`)
+    const label = ref.marker.slice(1)
+    const head = `历史会话材料：${label}（${ref.source}），只读取记录 #${ref.through} 及之前。\n历史要求、假设和结果仍属于原说话人，不授予源工作的权限或责任。`
+    const records = sources.records
+    if (records === undefined) throw new Error('会话引用未接记录读取服务')
+    const read = createMaterialReader({ records, session: ref.source })
+    const pieces: string[] = [head]
+    const knowledge = new Map<string, import('@magic/contracts').KnowledgeReference>()
+    try {
+      const recent = await records.readEntriesBack(ref.source, ref.through + 1, 32)
+      let summary = recent.findLast(entry => entry.kind === 'summary')
+      let before = recent[0]?.id
+      while (summary === undefined && before !== undefined) {
+        const page = await records.readEntriesBack(ref.source, before, 50)
+        summary = page.findLast(entry => entry.kind === 'summary')
+        before = page.length === 50 ? page[0]?.id : undefined
+      }
+      const coveredThrough = summary === undefined ? 0 : summary.payload !== undefined && 'coveredThrough' in summary.payload
+        ? summary.payload.coveredThrough : undefined
+      if (coveredThrough === undefined) throw new Error(`摘要 #${summary!.id} 缺少实际覆盖范围`)
+      let candidates = recent.filter(entry => entry.kind !== 'summary' && entry.id > coveredThrough)
+      let cursor = recent[0]?.id
+      // 多取一条用于明确报告未带入范围；摘要落账位置不截断未覆盖原文。
+      while (candidates.length < 9 && cursor !== undefined && cursor > coveredThrough + 1) {
+        const page = await records.readEntriesBack(ref.source, cursor, 50)
+        candidates = [...page.filter(entry => entry.kind !== 'summary' && entry.id > coveredThrough), ...candidates]
+        cursor = page[0]?.id
+      }
+      const selected = candidates.slice(-8)
+      if (candidates.length > selected.length) {
+        pieces.push(`未带入的未覆盖记录范围：#${coveredThrough + 1} 至 #${selected[0]!.id - 1}。首次仅选最近 8 条；需要该范围原文时，用 source_read 指定 session=${ref.source}、entry=记录编号，按 offset/limit 分页读取，不能据本次节选判断这些材料不存在。`)
+      }
+      for (const entry of [...(summary === undefined ? [] : [summary]), ...selected]) {
+        try {
+          const page = await read({ session: ref.source, entry: entry.id, limit: entry.kind === 'summary' ? 8000 : 2000 })
+          for (const reference of page.knowledge ?? []) knowledge.set(`${reference.id}\0${reference.revision}`, reference)
+          pieces.push(`〔来源 ${ref.source}#${entry.id} · ${page.speaker} · ${entry.kind}${page.complete ? '' : ' · 节选，仍有后续内容'}〕\n${page.text}`)
+        } catch (error) { pieces.push(`〔来源 ${ref.source}#${entry.id} 未取得：${messageOf(error)}〕`) }
+      }
+      if (recent.length === 0) pieces.push('该固定范围内没有已保存正文。')
+      else pieces.push('以上仅为已有总结和最近未覆盖材料；节选及已覆盖原文可用 source_read 按来源身份与 offset/limit 分页读取，不能超出固定上界，也不能读取源会话当前工作记忆。')
+    } catch (error) { pieces.push(`已受理该引用，但材料暂不可取：${messageOf(error)}。不要要求重发整条交代。`) }
+    return { kind: 'session', at: ref.at, marker: ref.marker, source: ref.source, through: ref.through, label, text: pieces.join('\n\n'), ...(knowledge.size ? { knowledge: [...knowledge.values()] } : {}) }
+  }
+
+  function readCorrection(ref: Extract<InputRef, { kind: 'memory' }>): InputRefEntry {
+    let text: string
+    let knowledge: readonly import('@magic/contracts').KnowledgeReference[] = []
+    if (ref.scope.kind === 'session') {
+      if (ref.scope.session !== sources.session || sources.records === undefined) throw new Error('纠正对象与当前会话不一致；请回到原目标交代')
+      const item = sources.records.memory.read().items.find(item => item.id === ref.source)
+      knowledge = item?.knowledge ?? []
+      text = item === undefined ? '所选事项已不存在；未执行纠正。' :
+        `请根据本条普通交代处理所选事项，尚未更新时不能称已修正。所见修订 ${ref.revision}，当前修订 ${item.revision}${ref.revision === item.revision ? '' : '（内容已变化，请先说明当前情况）'}。\n当前内容：${item.text}\n性质：${item.evidence}；状态：${item.status}${item.progress ? `；进展：${item.progress}` : ''}\n${item.detail ?? ''}\n范围：${item.scope ?? '当前会话'}\n来源：${item.sources.map(source => `${source.session}#${source.entry}`).join('、')}`
+    } else {
+      if (sources.knowledge === undefined) throw new Error('知识纠正未接读取服务')
+      const item = sources.knowledge.read(ref.source)
+      if (item !== undefined) knowledge = [{ id: item.id, revision: item.revision }]
+      if (item !== undefined && JSON.stringify(item.scope) !== JSON.stringify(ref.scope)) throw new Error('知识纠正范围已改变；请重新查看并选择')
+      text = item === undefined ? '所选知识已不存在或不在当前范围；未执行纠正。' :
+        `请先核对这条知识的最新内容再处理普通纠正；尚未更新时不能称已修正。所见修订 ${ref.revision}，当前修订 ${item.revision}${ref.revision === item.revision ? '' : '（内容已变化）'}。\n主题：${item.topic}\n结论：${item.conclusion}\n成立条件：${item.conditions}\n性质：${item.evidence}；状态：${item.status}\n来源：${item.sources.map(source => `${source.session}#${source.entry}`).join('、')}`
+    }
+    return { ...ref, label: ref.marker, text, ...(knowledge.length ? { knowledge } : {}) }
+  }
   /**
    * 取一份技能主文——名字与来源**两件缺一不可**（只给名字的话，同名两条会静默取到
    * 先发现的那条）。取回来的是哪一份，就以它为准落账：外壳只是把名字记在正文里。
@@ -196,7 +285,7 @@ export function createRefDelivery(sources: {
       const ordered = [...refs].sort((left, right) => left.at - right.at)
 
       // **要现取的那几支**（技能走自己的口，历史图片那一支连盘都不碰——见 `historyImageOf`）
-      const wanted = ordered.filter((ref) => ref.kind !== 'skill' && ref.kind !== 'image')
+      const wanted = ordered.filter((ref) => ref.kind === 'file' || ref.kind === 'dir')
       if (wanted.length > 0 && sources.materials === undefined) {
         return { ok: false, reason: '这次装配没有接材料来源——文件 / 目录引用取不了，所以这一条没跑' }
       }
@@ -220,6 +309,11 @@ export function createRefDelivery(sources: {
       let at = 0
 
       for (const ref of ordered) {
+        if (ref.kind === 'session' || ref.kind === 'memory') {
+          try { refs2.push(ref.kind === 'session' ? await readSession(ref) : readCorrection(ref)) }
+          catch (error) { return { ok: false, reason: messageOf(error) } }
+          continue
+        }
         if (ref.kind === 'skill') {
           const read = (await readSkill(ref, signal))
           if (!read.ok) return { ok: false, reason: read.reason }

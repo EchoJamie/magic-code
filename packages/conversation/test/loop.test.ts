@@ -93,8 +93,8 @@ describe('主循环 · Faux 全链', () => {
 
     // —— 回填**送达模型**（循环写给模型看的证据）——
     expect(stage.gateway.requests).toHaveLength(2)
-    expect(rolesOf(stage, 1)).toEqual(['system', 'user', 'assistant', 'tool'])
-    expect(stage.gateway.requests[1]?.messages.at(-1)).toMatchObject({
+    expect(rolesOf(stage, 1)).toEqual(['system', 'user', 'assistant', 'tool', 'assistant'])
+    expect(stage.gateway.requests[1]?.messages.findLast(message => message.role === 'tool')).toMatchObject({
       role: 'tool',
       name: 'exec',
       ok: true,
@@ -118,12 +118,12 @@ describe('主循环 · Faux 全链', () => {
     expect(await run(runtime, '第二件')).toBe('settled')
 
     // 第二次交代的第一轮：把**前面几轮的内容**原样带上（由条目重建，不是另存一份）
-    expect(rolesOf(stage, 1)).toEqual(['system', 'user', 'assistant', 'user'])
+    expect(rolesOf(stage, 1)).toEqual(['system', 'user', 'assistant', 'user', 'assistant'])
     expect(stage.gateway.requests[1]?.messages[1]).toEqual({ role: 'user', content: '第一件' })
     expect(stage.gateway.requests[1]?.messages[2]).toEqual({ role: 'assistant', content: '好' })
 
     // 第二次交代的工具回填同样送达
-    expect(rolesOf(stage, 2)).toEqual(['system', 'user', 'assistant', 'user', 'assistant', 'tool'])
+    expect(rolesOf(stage, 2)).toEqual(['system', 'user', 'assistant', 'user', 'assistant', 'tool', 'assistant'])
 
     // 轮号跨批次续着走（阶段 2 恢复要按记录重建同一串）
     expect(stage.stamper.turns).toEqual([1, undefined, 2, undefined, 3, undefined])
@@ -160,7 +160,7 @@ describe('主循环 · 工具结果的两样输出', () => {
     expect(recorded?.payload).toEqual({ ok: event.data.ok, output: event.data.output })
     // 面向模型的正文：工具域截好的那份（送给模型的就是它）
     expect(recorded?.content).toEqual({ text: '跑了 ls' })
-    expect(stage.gateway.requests[1]?.messages.at(-1)).toMatchObject({ output: '跑了 ls' })
+    expect(stage.gateway.requests[1]?.messages.findLast(message => message.role === 'tool')).toMatchObject({ output: '跑了 ls' })
   })
 
   test('大输出：记录侧落 blob（全量）· 面向模型侧取文本——条目与事件**不分叉**', async () => {
@@ -184,7 +184,7 @@ describe('主循环 · 工具结果的两样输出', () => {
 
     // 面向模型侧仍取文本（给模型看的），不因记录侧落了 blob 而变成引用
     expect(recorded?.content).toEqual({ text: '目录太长，只给前几行' })
-    expect(stage.gateway.requests[1]?.messages.at(-1)).toMatchObject({
+    expect(stage.gateway.requests[1]?.messages.findLast(message => message.role === 'tool')).toMatchObject({
       output: '目录太长，只给前几行',
     })
   })
@@ -418,8 +418,8 @@ describe('主循环 · 收场与兜底', () => {
 
     expect(await run(makeLoopRuntime(stage), '跑一下')).toBe('settled')
 
-    expect(stage.gateway.requests[1]?.messages.at(-1)).toMatchObject({ role: 'tool', ok: false })
-    const last = stage.gateway.requests[1]?.messages.at(-1)
+    expect(stage.gateway.requests[1]?.messages.findLast(message => message.role === 'tool')).toMatchObject({ role: 'tool', ok: false })
+    const last = stage.gateway.requests[1]?.messages.findLast(message => message.role === 'tool')
     expect(last?.role === 'tool' ? last.output : '').toContain('桩炸了')
 
     // 异常照落账（也是 `tool-result` 条目——模型下一轮看得到「这次没成」）
@@ -493,6 +493,6 @@ describe('主循环 · D6（空 assistant 条目）', () => {
 
     // **锚的实证**：第二次模型调用的上下文里，工具往返整段都在
     // （锚一旦被 D6 误删，这里会退化成只有 system ＋ user）
-    expect(rolesOf(stage, 1)).toEqual(['system', 'user', 'assistant', 'tool'])
+    expect(rolesOf(stage, 1)).toEqual(['system', 'user', 'assistant', 'tool', 'assistant'])
   })
 })

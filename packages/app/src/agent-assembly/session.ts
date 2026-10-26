@@ -1,3 +1,5 @@
+import { createKnowledgeAccess, createKnowledgeOrganizer, createMaterialReader, createMemoryAccess } from '@magic/conversation'
+import { defineKnowledgeTools, KNOWLEDGE_TOOL_NAMES, defineMemoryTools, MEMORY_TOOL_NAMES } from '@magic/tools'
 import type {
   AgentModelConfig,
   AgentRoleConfig,
@@ -166,7 +168,15 @@ export function createAgentSession(input: {
   const sourceReader = origin === undefined ? planReader : createPlanReader({
     records: recordsStore.serviceFor(origin.sessionId), session: origin.sessionId, nearEntries: context?.nearEntries,
   })
-  const planTools = definePlanTools(sourceReader)
+  const planTools = definePlanTools(sourceReader).filter(tool => tool.spec.name !== 'plan_update')
+  const memoryTools = defineMemoryTools(createMemoryAccess({ records, session }))
+  const knowledge = recordsStore.knowledge
+  const knowledgeMaterial = (source: import('@magic/contracts').MemorySource & { readonly limit?: number }, evidence?: readonly import('@magic/contracts').MemorySource[]) => {
+    const references = records.inputs.list().filter(row => row.state === 'consumed' || row.state === 'included')
+      .flatMap(row => row.input.refs?.filter((ref): ref is Extract<import('@magic/contracts').InputRef, { kind: 'session' }> => ref.kind === 'session') ?? [])
+    return createMaterialReader({ records, session, references, ...(evidence === undefined ? {} : { allowedSources: evidence }) })(source)
+  }
+  const knowledgeTools = defineKnowledgeTools(createKnowledgeAccess({ records: knowledge, writable: !consulting, material: knowledgeMaterial }), !consulting)
   const currentRole = (): AgentRoleConfig | undefined => {
     const actor = recordsStore.collaboration.agentForSession(session)
     if (actor?.purpose === 'consultation' || !actor?.role) return undefined
@@ -176,8 +186,9 @@ export function createAgentSession(input: {
   }
   const coordination = collaboration === undefined ? undefined : createCollaborationBoundary({
     records: recordsStore.collaboration, session, runId: executionId,
+    materials: records, knowledge: recordsStore.knowledge,
     model: () => opened.models?.current() as AgentModelConfig | undefined,
-    tools: () => currentRole()?.tools,
+    tools: () => tools.definitions().map(tool => tool.name),
     now, changed: () => collaborationChanged?.(),
   })
   const background = backgroundRuns === undefined ? undefined : createBackgroundSession({
@@ -199,18 +210,21 @@ export function createAgentSession(input: {
     },
   })
   const agentTools = consulting || collaboration === undefined ? [] : defineAgentTools({
-    request: (request) => {
+    request: async (request) => {
       if (request.action === 'deliver' && (background?.waiting() || records.inputs.list().some(
         row => row.input.background !== undefined && (row.state === 'pending' || row.state === 'consumed'),
       ))) {
         return Promise.resolve({ ok: false as const, reason: '仍有后台结果等待或尚未处理，不能交付最终结果' })
       }
       coordination?.actor()
-      return collaboration!(session, request)
+      const reply = await collaboration!(session, request)
+      return coordination === undefined ? reply : coordination.projectReply(request, reply)
     },
   })
 
   const toolVisible = (name: string): boolean => {
+    if (MEMORY_TOOL_NAMES.includes(name)) return true
+    if ((KNOWLEDGE_TOOL_NAMES as readonly string[]).includes(name)) return !consulting || name !== 'knowledge_update'
     if (consulting) return CONSULTATION_TOOL_NAMES.includes(name) && (originRole?.tools === undefined || originRole.tools.includes(name))
     const allowed = currentRole()?.tools
     return allowed === undefined || allowed.includes(name)
@@ -235,9 +249,9 @@ export function createAgentSession(input: {
     stamper,
     // 大块转存经记录域公开面（blob 写权唯一归它）
     blobs: records.blobs,
-    tools: () => consulting ? [...planTools.filter(tool => CONSULTATION_TOOL_NAMES.includes(tool.spec.name)), webFetchTool]
+    tools: () => consulting ? [...memoryTools, ...knowledgeTools, ...planTools.filter(tool => CONSULTATION_TOOL_NAMES.includes(tool.spec.name)), webFetchTool]
       // 咨询只保留 Fetch——新增 Search 不自动扩大咨询的授权面
-      : [skillTool, ...planTools, webFetchTool, webSearchTool, ...mcpTools(), ...agentTools, ...defineBackgroundTools()],
+      : [skillTool, ...memoryTools, ...knowledgeTools, ...planTools, webFetchTool, webSearchTool, ...mcpTools(), ...agentTools, ...defineBackgroundTools()],
 
     trashAvailable: commandOnPath('trash', network.env),
 
@@ -248,6 +262,7 @@ export function createAgentSession(input: {
     const known = new Set(rawTools.definitions().map(tool => tool.name))
     // 网页工具按配置可能暂时 `unavailable`（未配置 / 缺凭据）——角色里点名它们
     // 不该把整条会话变成「未知工具」错误：它们仍在注册表里，只是此刻不送模型。
+    known.add('plan_update') // 历史角色配置仍可读，写入口已由 memory_update 替换
     known.add('web_fetch')
     known.add('web_search')
     for (const name of currentRole()?.tools ?? []) {
@@ -280,7 +295,6 @@ export function createAgentSession(input: {
         kind: 'source', path, name, text, root: null, scope: null, paths: [],
       })
       if (role !== undefined) add(`${loaded.path}#agentRoles.${consulting ? origin!.role : actor!.role}`, `角色：${role.name}`, role.instructions)
-      if (actor?.responsibility) add(`agent:${actor.agentId}`, '本次职责', actor.responsibility)
       const catalog = role?.skills?.length ? (await skills.discover(operationSignal)).skills : []
       for (const reference of role?.skills ?? []) {
         const matches = catalog.filter(skill => skill.path === reference || skill.name === reference)
@@ -332,6 +346,10 @@ export function createAgentSession(input: {
   }
 
   const service = createConversationSession({
+    knowledge,
+    ...(consulting ? {} : { organizeKnowledge: createKnowledgeOrganizer({ session, scope: { kind: 'project', workspace: workspace.roots() },
+      memory: records.memory, knowledge, material: knowledgeMaterial,
+      compression: modelGateway === undefined ? () => model.cantrip(stamper) : () => ({ gateway: fixed }), now }) }),
     onInput: () => background?.cancelWait(),
     collaboration: coordination?.boundary,
     purpose: identity?.purpose,

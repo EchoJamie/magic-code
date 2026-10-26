@@ -193,6 +193,8 @@ export type ManagerToClient =
 
 /** 执行者 → 管理者。 */
 export type ExecutorToManager =
+  | { readonly t: 'compact.started'; readonly requestId: string }
+  | { readonly t: 'compact.result'; readonly requestId: string; readonly state: import('./control.ts').CompactState }
   | { readonly t: 'settings.synced'; readonly request: string; readonly note?: string; readonly error?: string; readonly mcp: readonly McpCatalogRow[] }
   | { readonly t: 'collaboration.request'; readonly requestId: string; readonly request: CollaborationRequest }
   | { readonly t: 'collaboration.changed' }
@@ -245,6 +247,8 @@ export type ExecutorToManager =
 
 /** 管理者 → 执行者。 */
 export type ManagerToExecutor =
+  | { readonly t: 'compact'; readonly request: { readonly requestId: string; readonly focus?: string } }
+  | { readonly t: 'compact.cancel'; readonly requestId: string }
   | { readonly t: 'settings.inspect'; readonly request: string }
   | { readonly t: 'diagnostics.sync'; readonly request: string; readonly value: Diagnostics }
   | { readonly t: 'settings.sync'; readonly request: string }

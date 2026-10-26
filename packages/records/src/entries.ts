@@ -120,12 +120,17 @@ export function assertEntryShape(entry: NewEntry): void {
   if (entry.kind === 'assistant') {
     if (entry.payload !== undefined && !isAssistantPayload(entry.payload)) {
       throw new Error(
-        'assistant 载荷只接受 reasoning 字符串和可选 reasoningState（provider、model、details）；没有思考就不写载荷',
+        'assistant 载荷只接受 reasoning 字符串、伴随思考的 reasoningState 和实际提供的 knowledge 引用',
       )
     }
     return
   }
 
+  if (entry.kind === 'summary' && entry.payload !== undefined) {
+    const p = entry.payload
+    if (!('coveredThrough' in p) || !Number.isSafeInteger(p.coveredThrough) || !Number.isSafeInteger(p.from) || !Number.isSafeInteger(p.memoryRevision) || !Array.isArray(p.sources)) throw new Error('摘要覆盖载荷无效')
+    return
+  }
   if (entry.payload !== undefined) {
     throw new Error(
       `条目 kind=${entry.kind} 不带载荷——载荷只有工具条目、user 条目与 assistant 条目（思考）` +
@@ -185,6 +190,7 @@ export function isToolCallPayload(payload: unknown): payload is ToolCallPayload 
 export function isToolResultPayload(payload: unknown): payload is ToolResultPayload {
   if (!isRecord(payload)) return false
   if (typeof payload['ok'] !== 'boolean' || !isContent(payload['output'])) return false
+  if (payload['knowledge'] !== undefined && !isKnowledgeReferences(payload['knowledge'])) return false
 
   // 计划更新那一位（U34）——**只增不改的兼容位**：给了就得是那一份（或 `null` ＝ 清空），
   // 没给照旧什么都不多。与 `user` 条目那条硬闸同一个姿势：**放行两种形状，不是放行一切形状**
@@ -225,10 +231,22 @@ export function isPlanStepStatus(value: unknown): boolean {
   return value === 'pending' || value === 'in_progress' || value === 'completed'
 }
 
-/** 思考文本及来源明确的协议数据；保留旧记录，拒绝无关字段和错误形状。 */
+/** 助手和工具结果采用同一知识身份形状；不从正文或 blob 推断依赖。 */
+function isKnowledgeReferences(value: unknown): boolean {
+  return Array.isArray(value) && value.length > 0 && value.every(reference =>
+    isRecord(reference) && Object.keys(reference).every(key => key === 'id' || key === 'revision' || key === 'provided')
+    && typeof reference['id'] === 'string' && reference['id'].trim() !== ''
+    && Number.isSafeInteger(reference['revision']) && Number(reference['revision']) > 0
+    && (reference['provided'] === undefined || reference['provided'] === true))
+}
+
+/** 思考协议数据与实际提供的知识引用各自可选；知识元数据不伪造思考。 */
 export function isAssistantPayload(payload: unknown): payload is AssistantPayload {
   if (!isRecord(payload)) return false
-  if (Object.keys(payload).some((key) => key !== 'reasoning' && key !== 'reasoningState')) return false
+  if (Object.keys(payload).some((key) => !['reasoning', 'reasoningState', 'knowledge'].includes(key))) return false
+  const knowledge = payload['knowledge']
+  if (knowledge !== undefined && !isKnowledgeReferences(knowledge)) return false
+  if (payload['reasoning'] === undefined) return knowledge !== undefined && payload['reasoningState'] === undefined
   if (typeof payload['reasoning'] !== 'string') return false
   const state = payload['reasoningState']
   if (state === undefined) return true // 旧记录
@@ -303,7 +321,7 @@ function isUsedSkills(skills: unknown): boolean {
 
 /**
  * 新形（U36 · U37）：每一处**位置（`at` 数字 ＋ `marker` 字符串）＋ 身份（`source`）**，
- * 外加**该支自己的内容那几格**——`kind` 四支之一。
+ * 外加**该支自己的内容字段**；会话引用保留固定上界，记忆纠正保留所选范围和修订。
  *
  * | kind | 还必须有 |
  * | --- | --- |
@@ -339,6 +357,16 @@ function isInputRefs(refs: unknown): boolean {
     }
 
     const kind = item['kind']
+    if (kind === 'session') return Number.isSafeInteger(item['through']) && Number(item['through']) >= 0
+      && typeof item['label'] === 'string' && typeof item['text'] === 'string'
+    if (kind === 'memory') {
+      const scope = item['scope']
+      return Number.isSafeInteger(item['revision']) && Number(item['revision']) >= 0
+        && typeof item['label'] === 'string' && typeof item['text'] === 'string' && isRecord(scope)
+        && (scope['kind'] === 'session' && typeof scope['session'] === 'string' && scope['session'] !== ''
+          || scope['kind'] === 'user'
+          || scope['kind'] === 'project' && Array.isArray(scope['workspace']) && scope['workspace'].every(root => typeof root === 'string'))
+    }
     if (kind !== 'skill' && kind !== 'file' && kind !== 'dir') return false
     // 正文在场时必须真是字符串（不在场＝自读那一版，合法）
     if (item['text'] !== undefined && typeof item['text'] !== 'string') return false

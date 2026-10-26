@@ -2,6 +2,7 @@ import type { BackgroundCommand, BackgroundView } from '@magic/contracts'
 import { backgroundDetail, backgroundKey, backgroundPicker } from './background.ts'
 import { createModelSettings, type ModelNavigation } from './model-settings.ts'
 import { createPrompt, type Ask } from './prompt.ts'
+import { createMemoryPicker } from './memory-picker.ts'
 import { createSessionPicker } from './session-picker.ts'
 
 import { sanitizeForDisplay } from '@magic/contracts'
@@ -101,7 +102,7 @@ import {
   statusLineHint,
   statusLineRows,
 } from './view/config.ts'
-import { pathHint, pathRows, resolveSkill, skillHint, skillRows } from './view/materials.ts'
+import { pathHint, pathRows, resolveSkill, sessionReferenceRows, skillHint, skillRows } from './view/materials.ts'
 import { mcpHint, mcpRows, mcpToolRows } from './view/mcp.ts'
 import { configReasoningOf, reasoningText } from './view/models.ts'
 import { runSummary } from './view/sessions.ts'
@@ -153,11 +154,11 @@ export type Shell = {
 const HELP_TITLE = '使用帮助'
 const HELP_COMMAND_WIDTH = Math.max(...COMMANDS.map(command => command.name.length))
 const HELP_LINES: readonly string[] = [
-  '输入任务描述开始工作；/ 查找命令，@ 引用文件。',
+  '输入任务描述开始工作；/ 查找命令，@ 引用文件或会话。',
   '命令：',
   ...COMMANDS.map(command => `  ${command.name.padEnd(HELP_COMMAND_WIDTH + 2)}${command.summary}`),
   '参数用法：',
-  '  /rename <名称> · /skills [关键词]',
+  '  /rename <名称> · /skills [关键词] · /compact [本次重点]',
   '  /model connect              接入模型连接',
   '  /model manage               管理连接与档位',
   '  /model refresh [连接]       刷新模型列表',
@@ -450,7 +451,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
    * - **重新提交时才读当前材料**（走的是与头一次完全同一条通路——出队那一刻现读，见
    *   `agent-loop.ts`）。故历史里存的是**身份**，不是当初那份内容。
    */
-  type HistoryEntry = { readonly text: string; readonly refs: readonly DraftRef[]; readonly caret?: number; readonly cleared?: number }
+  type HistoryEntry = { readonly text: string; readonly refs: readonly DraftRef[]; readonly inputRef?: string; readonly caret?: number; readonly cleared?: number }
   let history: HistoryEntry[] = []
   /** 翻到第几条（`-1` ＝**没在翻**，输入行里是用户自己那份草稿）。 */
   let historyAt = -1
@@ -518,6 +519,31 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     send: command => send(command),
   })
 
+  const compactDrafts = new Map<string, { session: string; text: string; refs: readonly DraftRef[]; caret: number }>()
+  const compactLabel = (state: import('@magic/contracts').CompactState['state']) => ({ pending: '等待完整交互边界', running: '正在压缩', completed: '压缩完成', failed: '压缩失败', cancelled: '已取消', interrupted: '已中断', 'no-material': '没有可压材料', unknown: '受理或结果尚未确认' })[state]
+  const showCompactions = (): void => {
+    const rows = view.compactions.filter(one => one.session === view.sessionId)
+    commit(openPicker(view, { source: 'compact-status', title: '本会话压缩请求', selected: 0, rows: [
+      ...rows.flatMap(one => [
+        { value: `query:${one.state.requestId}`, label: `${compactLabel(one.state.state)} · 查询结果`, meta: '', current: false, detail: [`目标 ${nameOfSession(one.session)}`, `本次重点：${one.state.focus || '未指定'}`, one.state.reason ?? ''].filter(Boolean) },
+        ...(['pending', 'running', 'unknown'].includes(one.state.state) ? [{ value: `cancel:${one.state.requestId}`, label: '取消本次压缩', meta: '不停止其他工作', current: false }] : []),
+      ]), { value: 'back', label: '返回', meta: '', current: false },
+    ], hint: 'Enter 操作 · Esc 返回' }))
+  }
+
+  const memory = createMemoryPicker({
+    get picker() { return view.dock.kind === 'picker' ? view.dock.picker : null },
+    get session() { return view.sessionId },
+    get archived() { return view.archived },
+    present: picker => commit(openPicker(view, picker)),
+    push: () => enterLayer(), back: () => popLayer(), send: command => send(command),
+    correct: ref => {
+      while (layers.length > 0) popLayer()
+      collapseDock()
+      commit(withCompletion({ ...view, ...replaceWith(view.draft, view.refs, { from: view.caret, to: view.caret }, ref, view.caret) }))
+    },
+  })
+
   const models = createModelSettings({
     get view() { return { models: view.models, vendors: view.vendors, modelCurrent: view.modelCurrent, configuredModels: view.configuredModels, collaboration: view.collaboration } },
     get picker() { return view.dock.kind === 'picker' ? view.dock.picker : null },
@@ -530,6 +556,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   })
 
   let collaborationQuery: { readonly member?: AgentId } | null = null
+  let referenceCatalog: Extract<KernelEvent, { kind: 'session.references' }>['data'] | null = null
+  let referenceRequest: string | undefined
+  let referenceFocus: string | undefined
   const reading = new Map<string, number>()
 
   const prompt = createPrompt({
@@ -913,6 +942,23 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const onEvent = (event: KernelEvent): void => {
     if (disposed || (!connected && !reopening && !['model.catalog', 'provider.catalog', 'prefs.state', 'web.state', ...(options.settingsOnly ? ['mcp.catalog'] : [])].includes(event.kind))) return
 
+    if (event.kind === 'paths.catalog' && view.dock.kind === 'picker' && view.dock.picker.source === 'paths' && event.data.query !== view.dock.picker.filter) return
+    if (memory.receive(event)) return
+    if (event.kind === 'compact.state') {
+      const pending = compactDrafts.get(event.data.requestId)
+      if (pending?.session === event.session && (event.data.accepted === true || ['pending', 'running', 'completed'].includes(event.data.state))) {
+        rememberInput(pending.text, pending.refs)
+        if (view.sessionId === pending.session && view.draft === pending.text && view.refs === pending.refs) draft({ ...view, draft: '', caret: 0, refs: [], completion: null })
+        compactDrafts.delete(event.data.requestId)
+      }
+      if (pending && event.data.accepted !== true && ['failed', 'no-material'].includes(event.data.state)) compactDrafts.delete(event.data.requestId)
+      commit(reduce(view, event))
+      if (view.dock.kind === 'picker' && view.dock.picker.source === 'compact-status') showCompactions()
+      else if (view.sessionId === event.session) commit({ ...view, flash: ['pending', 'running'].includes(event.data.state) ? null : `${compactLabel(event.data.state)}${event.data.reason ? '：' + event.data.reason : ''}` })
+      return
+    }
+
+
     for (const [ref, batch] of submittedBatches) {
       if (!batch.replies?.has(event.kind)) continue
       const failed = ('ok' in event.data && event.data.ok === false) || (event.kind === 'session.state' && event.data.note !== undefined)
@@ -1005,7 +1051,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         preview.entries.push(...historyEntries(event.data))
         preview.entries.sort((a, b) => a.at - b.at || a.id - b.id)
         const picker = view.dock.picker
-        const rebuilt = rebuild(createView(), preview.entries, { ...(event.data.timing === undefined ? {} : { timing: event.data.timing }) })
+        const rebuilt = rebuild(createView(), preview.entries, { ...(event.data.plan === undefined ? {} : { plan: event.data.plan }), ...(event.data.timing === undefined ? {} : { timing: event.data.timing }) })
         commit({ ...view, dock: { kind: 'picker', picker: { ...picker, reader: { ...picker.reader!,
           title: picker.reader!.title.replace(' · 正在读取', event.data.done ? '' : ' · 正在读取'), rows: [...rebuilt.settled, ...rebuilt.rows] } } } })
         if (event.data.done) preview = null
@@ -1134,12 +1180,31 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // 路径候选回来了 ⇒ **只认正开着 `@` 那一栏、且 query 对得上的那一次**（边打边问，
     // 答复可能后到——先到的那一份不该盖掉用户已经改过的查询）。
     if (event.kind === 'paths.catalog') refreshPaths()
+    if (event.kind === 'session.references' && event.data.requestId === referenceRequest) {
+      const previous = referenceCatalog
+      referenceCatalog = event.data.offset > 0 && previous?.query === event.data.query
+        ? { ...event.data, rows: [...previous.rows, ...event.data.rows.filter(row => !previous.rows.some(one => one.id === row.id))] }
+        : event.data
+      refreshPaths()
+    }
 
     if (event.kind === 'paths.identified') identifyPicked(event.data)
 
     if (event.kind === 'input.pasted') pastedClipboard(event.data)
 
-    if (event.kind === 'input.settled') acceptBatch(event.data.ref, event.data.ok)
+    if (event.kind === 'input.settled') {
+      const batch = event.data.ref === undefined ? undefined : submittedBatches.get(event.data.ref)
+      if (event.data.ok && event.data.refs !== undefined && batch !== undefined) {
+        const refs = event.data.refs.map(({ at, ...ref }) => ({ ...ref, start: at, end: at + ref.marker.length }))
+        const at = batch.history.findIndex(entry => entry.inputRef === event.data.ref)
+        const old = batch.history[at]
+        if (old !== undefined) {
+          batch.history[at] = { ...old, refs }
+          if (view.refs === old.refs) commit({ ...view, refs })
+        }
+      }
+      acceptBatch(event.data.ref, event.data.ok)
+    }
     if (event.kind === 'input.settled' && event.data.stage !== 'accepted') {
       settleDraft(event.data.ref, !event.data.ok && event.data.keepDraft !== false)
     }
@@ -1193,14 +1258,25 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (!data.done) return
 
     rebuildEntries = [...rebuildEntries].sort((a,b)=>a.at-b.at||a.id-b.id)
-    if(history.length===0)for(const entry of rebuildEntries){
-      if(entry.kind!=='user'||!('text'in entry.content)||(entry.payload as {notice?:true}|undefined)?.notice===true)continue
-      const payload=entry.payload as import('@magic/contracts').UserPayload|undefined
-      const refs=payload?.local===true?payload.inputRefs??[]:payload?.refs??[]
-      history.push({text:entry.content.text,refs:refs.map(({at,...ref})=>({...ref,start:at,end:at+ref.marker.length}))})
+    if (history.length === 0) {
+      const past: { at: number; input: HistoryEntry }[] = []
+      for (const entry of rebuildEntries) {
+        if (entry.kind !== 'user' || !('text' in entry.content) || (entry.payload as { notice?: true } | undefined)?.notice === true) continue
+        const payload = entry.payload as import('@magic/contracts').UserPayload | undefined
+        const refs = payload?.local === true ? payload.inputRefs ?? [] : payload?.refs ?? []
+        past.push({ at: entry.at, input: { text: entry.content.text, refs: refs.map(({ at, ...ref }) => ({ ...ref, start: at, end: at + ref.marker.length })) } })
+      }
+      const requests = new Set<string>()
+      for (const event of data.compactions ?? []) if (!requests.has(event.data.requestId) && (event.data.accepted === true || ['pending', 'running', 'completed'].includes(event.data.state))) {
+        requests.add(event.data.requestId)
+        past.push({ at: event.at, input: { text: '/compact ' + (event.data.focus ?? ''), refs: [] } })
+      }
+      history.push(...past.sort((a, b) => a.at - b.at).map(one => one.input))
     }
+    for (const event of data.compactions ?? []) view = reduce(view, event)
     const unconfirmed = [...view.settled, ...view.rows].filter(row => row.kind === 'user' && row.inputState !== undefined && !view.pendingInputs.some(input => input.ref === row.inputRef && input.entry !== undefined))
     const rebuilt = rebuild(view, rebuildEntries, {
+      ...(data.plan === undefined ? {} : { plan: data.plan }),
       ...(data.timing === undefined ? {} : { timing: data.timing }),
       ...(data.messages === undefined ? {} : { messages: data.messages }),
     })
@@ -1668,7 +1744,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     commit(
       openPicker(view, {
         source: 'paths',
-        title: '引用文件或目录',
+        title: '引用文件、目录或会话',
         selected: view.dock.kind === 'picker' && view.dock.picker.source === 'paths' ? view.dock.picker.selected : 0,
         rows: pathRows(catalog?.rows ?? []),
         filter: query,
@@ -1694,6 +1770,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     const at = caretAt()
     const anchor = { start: Math.max(0, at - 1), end: at }
 
+    referenceFocus = undefined
+    referenceCatalog = null
+    view = { ...view, paths: null }
     openPaths(anchor, '')
     askPaths('')
   }
@@ -1714,6 +1793,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
           ...picker,
           filter: query,
           rows:pending?[]:picker.rows,
+          selected: query === picker.filter ? picker.selected : 0,
           anchor,
           hint: pathHint({
             filter: query,
@@ -1735,21 +1815,36 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     const anchor = view.dock.kind === 'picker' ? view.dock.picker.anchor : undefined
     const row = picked(view)
     const found = view.paths?.rows.find((one) => one.path === row?.value)
-    if (anchor === undefined || found === undefined || view.dock.kind!=='picker' || view.paths?.query!==view.dock.picker.filter) return
+    const session = referenceCatalog?.rows.find(one => `session:${one.id}` === row?.value)
+    if (anchor === undefined || view.dock.kind !== 'picker') return
+    if (session === undefined && (found === undefined || view.paths?.query !== view.dock.picker.filter)) return
+    if (session !== undefined && referenceCatalog?.query !== view.dock.picker.filter) return
 
-    const text = found.kind === 'directory' ? `${found.display}/` : found.display
+    const text = session === undefined ? found!.kind === 'directory' ? `${found!.display}/` : found!.display : session.title ?? session.member?.name ?? '未命名会话'
     const from = anchor.start + 1 // `@` 自己留着——查询那一段是它后面这一截
     // 把 `[from, anchor.end)` 换成补全后的那一段：先按删的算位移，再按插的算
     const refs = insertText(removeRange(view.refs, from, anchor.end), from, text.length)
 
     editAt(view.draft.slice(0, from) + text + view.draft.slice(anchor.end), from + text.length, refs)
     reopenPaths({ start: anchor.start, end: from + text.length }, text)
+    referenceFocus = session === undefined ? undefined : `session:${session.id}`
     askPaths(text)
   }
 
   const pickPath = (): void => {
     const anchor = view.dock.kind === 'picker' ? view.dock.picker.anchor : undefined
     const row = picked(view)
+    if (row?.value === 'session:more' || row?.value === 'session:retry') {
+      askReferenceSessions(view.dock.kind === 'picker' ? view.dock.picker.filter ?? '' : '', row.value === 'session:more' ? referenceCatalog?.next : undefined)
+      return
+    }
+    const session = referenceCatalog?.rows.find(one => `session:${one.id}` === row?.value)
+    if (session !== undefined && anchor !== undefined && view.dock.kind === 'picker' && referenceCatalog?.query === view.dock.picker.filter) {
+      commit(withCompletion({ ...closePicker(view), ...replaceWith(view.draft, view.refs, { from: anchor.start, to: anchor.end },
+        { kind: 'session', source: session.id, marker: markerOf({ kind: 'session', name: session.title ?? session.member?.name ?? '未命名会话' }) }, view.caret) }))
+      referenceFocus = undefined
+      return
+    }
     const found = view.paths?.rows.find((one) => one.path === row?.value)
     if (anchor === undefined || found === undefined || view.dock.kind!=='picker' || view.paths?.query!==view.dock.picker.filter) return
 
@@ -1793,7 +1888,21 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     const query = view.dock.picker.filter ?? ''
     const catalog = view.paths
-    if (catalog === null || catalog.query !== query) return
+    const picker = view.dock.picker
+    const paths = catalog?.query === query ? catalog.rows : []
+    const sessions = referenceCatalog?.query === query ? referenceCatalog : null
+    const rows: readonly PickerRow[] = [
+      ...pathRows(paths).map(row => ({ ...row, group: '文件与目录' })),
+      ...sessionReferenceRows(sessions?.rows ?? []),
+      ...(sessions?.next === undefined ? [] : [{ value: 'session:more', label: '继续读取会话', meta: '', current: false, group: '会话' }]),
+      ...(sessions?.error === undefined ? [] : [{ value: 'session:retry', label: '重新读取会话', meta: sessions.error, current: false, group: '会话' }]),
+    ]
+    const selectedIdentity = referenceFocus ?? picker.rows[picker.selected]?.value
+    // 同一查询更新只跟随身份；来源消失时不让 Enter 暗选原行号上的另一份。
+    const selected = selectedIdentity === undefined
+      ? picker.selected < 0 ? -1 : 0
+      : rows.findIndex(row => row.value === selectedIdentity)
+    if (selected >= 0) referenceFocus = undefined
 
     commit({
       ...view,
@@ -1801,10 +1910,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         kind: 'picker',
         picker: {
           ...view.dock.picker,
-          rows: pathRows(catalog.rows),
-          // 选中项夹回范围内（新一批可能短了）——不越界、也不跳远
-          selected: Math.min(view.dock.picker.selected, Math.max(0, catalog.rows.length - 1)),
-          hint: pathHint({ filter: query, shown: catalog.rows.length, note: catalog.note }),
+          rows,
+          selected,
+          hint: selected < 0 && referenceFocus === undefined
+            ? '原候选已不在列表中 · ↑↓ 重新选择 · Esc 返回'
+            : [pathHint({ filter: query, shown: paths.length, pending: catalog?.query !== query, ...(catalog?.query === query ? { note: catalog.note } : {}) }),
+              sessions === null ? '正在读取会话…' : sessions.rows.length === 0 && sessions.error === undefined ? '没有匹配会话' : '',
+              '↑↓ 选择 · Tab 补全 · Enter 选入 · Esc 返回'].filter(Boolean).join('\n'),
         },
       },
     })
@@ -1813,6 +1925,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   /** 问一次路径候选——`query` 是 `@` 之后那一段（可以是空串）。 */
   const askPaths = (query: string): void => {
     send({ type: 'paths.list', query })
+    askReferenceSessions(query)
+  }
+
+  const askReferenceSessions = (query: string, offset?: number): void => {
+    referenceRequest = crypto.randomUUID()
+    send({ type: 'session.references', requestId: referenceRequest, query, ...(offset === undefined ? {} : { offset }) })
   }
 
   const identifyPicked = (data: Extract<KernelEvent, { kind: 'paths.identified' }>['data']): void => {
@@ -1992,9 +2110,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     editAt(next.draft, next.caret, next.refs)
   }
 
-  const rememberInput = (text: string, refs: readonly DraftRef[]): void => {
+  const rememberInput = (text: string, refs: readonly DraftRef[], inputRef?: string): void => {
     const firstCleared = history.findIndex(entry => entry.cleared !== undefined)
-    history.splice(firstCleared === -1 ? history.length : firstCleared, 0, { text, refs })
+    history.splice(firstCleared === -1 ? history.length : firstCleared, 0, { text, refs, ...(inputRef === undefined ? {} : { inputRef }) })
     historyAt = -1; browsing = null
   }
 
@@ -2025,7 +2143,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // 历史记的是**整份草稿**：正文 ＋ 它里面的引用（位置与身份都在，见 `HistoryEntry`）——
     // `↑` 翻回来的是**当时那一句**，接着改、再发一次都不必重选。
     // 每次明确提交都记一次，召回与取消不另记。
-    rememberInput(text, refs)
+    rememberInput(text, refs, ref)
 
     const echoed = view.inputMember === undefined ? appendEcho(cleared,text,userImages(refs)) : cleared
     draft({...echoed,rows:echoed.rows.map((row,index)=>row.kind==='user'&&index===echoed.rows.length-1?{...row,inputRef:ref,inputState:'提交中'}:row)})
@@ -2134,7 +2252,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const inFlight = (): boolean => {
 
     if (view.status.state === 'lost') return false
-    if (working()) return true
+    if (working() || view.compactions.some(one => one.session === view.sessionId && ['pending', 'running'].includes(one.state.state))) return true
 
     const state = runStateNow()
     return state !== undefined && ACTIVE_RUN_STATES.has(state)
@@ -2372,6 +2490,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       connected = true
       commit(appendReceipt(withRunFacts(patchStatus({ ...view, flash: null }, { state: 'idle', amount: null, hint: HINT_IDLE }), options.runs?.current() ?? view.runs), 'Magic Code 已连接，正在刷新当前会话。草稿未发送。'))
       readHistory()
+      memory.reconnected()
+      for (const one of view.compactions) if (['pending', 'running', 'unknown'].includes(one.state.state)) send({ type: 'compact.query', session: one.session, requestId: one.state.requestId })
     }, error => {
       if (!disposed) commit(appendReceipt(view, `重新连接失败：${String(error)}`))
     }).finally(() => { reopening = false; if (!disposed) commit(view) })
@@ -2381,6 +2501,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const disconnect = (why?: string): void => {
     if (disposed || !connected) return
     connected = false
+    memory.disconnected()
+    view = { ...view, compactions: view.compactions.map(one => ['pending', 'running'].includes(one.state.state) ? { ...one, state: { ...one.state, state: 'unknown' } } : one) }
     view = { ...view, background: { commands: view.background?.commands ?? [], waiting: [], unknown: true }, sudo: null }
     sudoPassword = ''
     const unconfirmed = new Set([...view.settled, ...view.rows].filter(row => row.kind === 'user' && row.inputState === '提交中').map(row => row.kind === 'user' ? row.inputRef : undefined))
@@ -2443,7 +2565,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (view.archived && view.dock.kind === 'input') {
       if (input.kind === 'char' && input.char.startsWith('/')) {
         prompt.open({ label: '只读会话命令', secret: false, value: input.char, caret: input.char.length, placeholder: '/resume',
-          submit: value => { if (value.trim() === '/resume') { models.cancelOpen(); waiting = 'session'; directory.ordinary(); return { type: 'session.list', archived: false } }; return null } })
+          submit: value => { if (value.trim() === '/memory') { prompt.clear(); memory.open(); return null }; if (value.trim() === '/resume') { models.cancelOpen(); waiting = 'session'; directory.ordinary(); return { type: 'session.list', archived: false } }; return null } })
         return NONE
       }
       if (!['ctrl+c', 'ctrl+o', 'escape', 'planTop', 'ctrl+t'].includes(input.kind)) {
@@ -2483,7 +2605,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (view.dock.kind === 'picker' && view.dock.picker.reader !== undefined
       && !['left', 'escape', 'ctrl+c', 'ctrl+o', 'tab'].includes(input.kind)) return NONE
 
-    if (view.dock.kind === 'picker' && ['paths','skills','session','config'].includes(view.dock.picker.source)) {
+    if (view.dock.kind === 'picker' && (['paths','skills','session','config'].includes(view.dock.picker.source) || view.dock.picker.memory?.mode === 'knowledge')) {
       const picker=view.dock.picker, query=picker.filter??''
       const caret=picker.filterCaret??query.length
       if(input.kind==='left'||input.kind==='right'){
@@ -2503,6 +2625,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
           reopenPaths({start:anchor.start,end:start+next.length},next);askPaths(next)
         }else if(picker.source==='skills')openSkillsPicker(next,picker.anchor??{start:0,end:0})
         else if(picker.source==='session'){directory.filter(next)}
+        else if(picker.source==='memory'){memory.filter(next)}
         else {configQuery=next;refreshConfigPicker()}
         if(view.dock.kind==='picker')commit({...view,dock:{kind:'picker',picker:{...view.dock.picker,filterCaret:at}}})
         return NONE
@@ -2738,6 +2861,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (view.dock.kind === 'picker') {
       const row = picked(view)
       if (row === undefined) return NONE
+      if (view.dock.picker.source === 'compact-status') {
+        if (row.value === 'back') popLayer()
+        else {
+          const index = row.value.indexOf(':'), requestId = row.value.slice(index + 1)
+          const target = view.compactions.find(one => one.session === view.sessionId && one.state.requestId === requestId)
+          if (target) send({ type: row.value.startsWith('cancel:') ? 'compact.cancel' : 'compact.query', session: target.session, requestId })
+        }
+        return NONE
+      }
+      if (view.dock.picker.source === 'memory') { memory.select(row.value); return NONE }
       if (view.dock.picker.source === 'background') {
         const command = view.background?.commands.find(one => backgroundKey(one) === row.value)
         if (command) { enterLayer(); backgroundAt = { command }; showBackgroundDetail() }
@@ -2927,6 +3060,29 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (!submittable(view.draft, view.refs)) {
       commit(said(view, '这一句只有一处技能引用——补上要它做什么，再回车发送。'))
       return NONE
+    }
+
+    if (text.startsWith('/compact ')) {
+      if (view.sessionId === null) { commit({ ...view, flash: '还没有会话可压缩；未建立新会话，命令保留。' }); return NONE }
+      if (!connected) { commit({ ...view, flash: '连接已断开；命令保留，重连后先查询原请求。' }); return NONE }
+      const previous = [...compactDrafts].find(([, one]) => one.session === view.sessionId && one.text === text)
+      if (previous) { send({ type: 'compact.query', session: previous[1].session, requestId: previous[0] }); return NONE }
+      const requestId = crypto.randomUUID(), session = view.sessionId, focus = text.slice('/compact '.length).trim()
+      compactDrafts.set(requestId, { session, text, refs: placed, caret: view.caret })
+      commit({ ...view, compactions: [...view.compactions, { session, state: { requestId, focus, state: 'unknown' } }], flash: '正在提交本次压缩请求…' })
+      send({ type: 'compact.request', session, requestId, ...(focus ? { focus } : {}) })
+      return NONE
+    }
+    if (text.trim() === '/status' && text.startsWith('/status ') && view.compactions.some(one => one.session === view.sessionId)) {
+      draft({ ...view, draft: '', refs: [], caret: 0, completion: null })
+      showCompactions(); return NONE
+    }
+
+    if (text.startsWith('/memory ')) {
+      if (text.trim() !== '/memory') { commit({ ...view, flash: '用法：/memory ' }); return NONE }
+      rememberInput(text, placed)
+      draft({ ...view, draft: '', caret: 0, refs: [], completion: null })
+      memory.open(); return NONE
     }
 
     if (text.trim() === '/ps') {

@@ -47,3 +47,6 @@ export * from './diagnostics.ts'
 export { settingsAction, settingsSnapshot, settingsRequest, settingsResult } from './settings-codec.ts'
 export type { ModelProtocol, ProviderAuth, ModelSource, VendorProtocol } from './model.ts'
 export type { BackgroundChange, BackgroundTarget, BackgroundCommand, BackgroundView, BackgroundCommandRequest } from './background.ts'
+
+export type * from './memory.ts'
+export type * from './knowledge.ts'

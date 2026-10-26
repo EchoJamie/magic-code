@@ -140,7 +140,7 @@ export interface ToolRuntime {
   definitions(): readonly ToolSpec[]
   invoke(
     call: ToolCall,
-    opts: { signal?: AbortSignal; onOutput?: (d: OutputDelta) => void },
+    opts: { signal?: AbortSignal; onOutput?: (d: OutputDelta) => void; entry?: import('./collaboration.ts').EntryReference },
   ): Promise<ToolResult>
 }
 
@@ -225,6 +225,7 @@ export interface PermissionGate {
 
 /** 对话域 → 记录域。 */
 export interface RecordsService {
+  readonly memory: import('./memory.ts').MemoryRecords
   readonly inputs: InputRecords
   readonly collaboration: CollaborationRecords
   /**
@@ -1149,6 +1150,7 @@ export type HistoryQuery = {
  * ⚠️ **不许把节选伪报成全文**（工单明写）：`text` 只到上限为止，超出部分由上面那两位说话。
  */
 export type HistoryEntry = {
+  readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[]
   readonly id: RecordId
   readonly kind: EntryKind
   readonly text: string
@@ -1426,6 +1428,8 @@ export type ToolCall = {
  * `callRef` 同理——条目侧 `tool-result` 的 `call` 字段取它，**四事件才串得成一条链**。
  */
 export type ToolResult = {
+  /** 工具实际返回材料的知识关系；不由模型填写。 */
+  readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[]
   readonly ok: boolean
   /** 面向模型的文本（按上限截断）。 */
   readonly output: string

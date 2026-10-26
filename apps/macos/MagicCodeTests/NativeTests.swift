@@ -1831,6 +1831,57 @@ extension NativeTests {
             port.disconnect()
         }
     }
+    @MainActor func testMemoryReadPreservesContentAfterFailureAndRejectsLateMemberReply() throws {
+        let (model, messages) = browser()
+        try catalog(model, messages, [sessionRow()])
+        model.selection = ["one"]; model.choose(); model.memoryExpanded = true; model.readMemory()
+        guard case .memory(let request, let session, _) = messages.requests.last else { return XCTFail("缺少真实读取命令") }
+        let source = MemorySource(session: "one", entry: 1)
+        let item = MemoryItem(id: "fact", kind: "fact", text: "中文事项 😀 é", detail: "完整正文", scope: nil, evidence: "hypothesis", status: "active", sources: [source], revision: 1, progress: nil)
+        let snapshot = MemorySnapshot(session: session, revision: 2, items: [item], inspectedThrough: 1, summary: nil, coveredThrough: nil)
+        model.receive(.memoryResult(request: request, serviceInstance: testIdentity.serviceInstance, session: session, memory: snapshot, unprocessed: true, knowledge: KnowledgePage(items: [], next: nil), material: nil, error: nil))
+        XCTAssertEqual(model.memory, snapshot)
+        XCTAssertTrue(model.memoryUnprocessed)
+        model.readSource(source, item: item.id)
+        guard case .memorySource(let sourceRequest, _, _, let id, _) = messages.requests.last else { return XCTFail("缺少来源命令") }
+        XCTAssertEqual(id, item.id)
+        model.receive(.memoryResult(request: sourceRequest, serviceInstance: testIdentity.serviceInstance, session: session, memory: nil, unprocessed: nil, knowledge: nil, material: MaterialPage(source: source, speaker: "用户", kind: "user", text: "前段", total: 4, complete: false, next: 2), error: nil))
+        model.nextSource()
+        guard case .memorySource(let nextRequest, _, let nextSource, _, _) = messages.requests.last else { return XCTFail("缺少分页命令") }
+        XCTAssertEqual(nextSource.offset, 2)
+        model.receive(.memoryResult(request: nextRequest, serviceInstance: testIdentity.serviceInstance, session: session, memory: nil, unprocessed: nil, knowledge: nil, material: nil, error: "暂不可读"))
+        XCTAssertEqual(model.materialPages.last?.text, "前段")
+        XCTAssertEqual(model.memory, snapshot)
+        model.disconnect()
+        XCTAssertEqual(model.materialPages.last?.text, "前段")
+        model.chooseMember("member")
+        model.receive(.memoryResult(request: sourceRequest, serviceInstance: testIdentity.serviceInstance, session: session, memory: snapshot, unprocessed: false, knowledge: nil, material: nil, error: nil))
+        XCTAssertNil(model.memory)
+        XCTAssertTrue(messages.reads.isEmpty)
+    }
+    @MainActor func testMemoryNativeReadingLightDarkAndNarrowLayout() async throws {
+        _ = NSApplication.shared
+        let (model, messages) = browser()
+        try catalog(model, messages, [sessionRow()])
+        model.selection = ["one"]; model.choose(); model.showDetail(); model.memoryExpanded = true; model.readMemory()
+        guard case .memory(let request, let session, _) = messages.requests.last else { return XCTFail("缺少读取命令") }
+        let item = MemoryItem(id: "long", kind: "fact", text: "长中文工作记忆 👩🏽‍💻 é", detail: String(repeating: "已验证的结果与尚未确认的边界。", count: 20), scope: nil, evidence: "unresolved", status: "active", sources: [MemorySource(session: "one", entry: 1)], revision: 3, progress: nil)
+        model.receive(.memoryResult(request: request, serviceInstance: testIdentity.serviceInstance, session: session, memory: MemorySnapshot(session: session, revision: 3, items: [item], inspectedThrough: 1, summary: nil, coveredThrough: nil), unprocessed: true, knowledge: KnowledgePage(items: [], next: nil), material: nil, error: nil))
+        model.memoryFocus = item.id
+        for (width, appearance) in [(980.0, NSAppearance.Name.aqua), (460.0, .darkAqua)] {
+            let window = try await hostView(SessionWindow(model: model), size: NSSize(width: width, height: 620), appearance: appearance)
+            defer { window.close() }
+            try await assertFrameRender(window, name: "u131-memory-\(Int(width))")
+            model.readSource(item.sources[0], item: item.id)
+            guard case .memorySource(let sourceRequest, _, let source, _, _) = messages.requests.last else { return XCTFail("缺少来源读取请求") }
+            let excerpt = "来源原话：先核对条件，再判断是否适用于当前任务。\n这是原用户交代，不替代当前工作的授权。\n" + String(repeating: "保留已验证结果与未决问题的区别。", count: 8)
+            model.receive(.memoryResult(request: sourceRequest, serviceInstance: testIdentity.serviceInstance, session: session, memory: nil, unprocessed: nil, knowledge: nil, material: MaterialPage(source: source, speaker: "用户", kind: "user", text: excerpt, total: 5000, complete: false, next: excerpt.count), error: nil))
+            try await assertFrameRender(window, name: "u131-memory-source-\(Int(width))")
+            XCTAssertEqual(model.materialPages.last?.text, excerpt)
+            model.backSource()
+            XCTAssertEqual(model.memoryFocus, item.id)
+        }
+    }
     @MainActor func testSessionWindowNativeLightDarkAndNarrowLayout() async throws {
         _ = NSApplication.shared
         let (model, messages) = browser()

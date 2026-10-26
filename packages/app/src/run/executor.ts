@@ -415,9 +415,23 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     link.close()
   }
 
+  const compactControllers = new Map<string, AbortController>()
   link.onMessage((message: ManagerToExecutor) => {
     diagnosticLog?.write('trace', `control.${message.t}`)
     try { switch (message.t) {
+      case 'compact': {
+        if (compactControllers.has(message.request.requestId)) return
+        if (closing || options.session === null) { link.send({ t: 'compact.result', requestId: message.request.requestId, state: { requestId: message.request.requestId, state: 'failed', reason: '执行实例已关闭或没有会话' } }); return }
+        const controller = new AbortController()
+        compactControllers.set(message.request.requestId, controller)
+        trackOperation(assembly.compact(options.session, message.request, controller.signal, () => link.send({ t: 'compact.started', requestId: message.request.requestId })).then(
+          state => link.send({ t: 'compact.result', requestId: message.request.requestId, state }),
+          error => link.send({ t: 'compact.result', requestId: message.request.requestId, state: { requestId: message.request.requestId, state: 'failed', reason: String(error) } }),
+        ).finally(() => { compactControllers.delete(message.request.requestId); considerShrink() }))
+        return
+      }
+      case 'compact.cancel': compactControllers.get(message.requestId)?.abort(); return
+
       case 'settings.inspect':
         link.send({ t: 'settings.synced', request: message.request, mcp: assembly.mcpServers() }); return
       case 'diagnostics.sync':

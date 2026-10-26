@@ -31,6 +31,7 @@ import type { ToolDefinition } from './registry.ts'
  * 消费者写 `invoke(call, { signal })` 即可，不必为此多引一个名字。
  */
 export type ToolInvokeOptions = {
+  readonly entry?: import('@magic/contracts').EntryReference
   readonly signal?: AbortSignal
   /** 执行输出的增量——实时回调（本域另会转 `tool.output.delta` 事件）。 */
   readonly onOutput?: (delta: OutputDelta) => void

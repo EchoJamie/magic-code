@@ -61,6 +61,17 @@ test('关闭控制面停止新准入，并等在途异步操作落定', async ()
 /** 命令目录穷尽——新增 kind 时此处缺返回，tsc 报错。 */
 export function commandSubjectOf(command: Command): string {
   switch (command.type) {
+    case 'session.references':
+    case 'memory.read':
+    case 'memory.source':
+    case 'knowledge.query':
+    case 'knowledge.read':
+    case 'knowledge.forget':
+    case 'knowledge.forget-result':
+    case 'compact.request':
+    case 'compact.query':
+    case 'compact.cancel':
+      return `会话内务：${command.type}`
     case 'background.list':
     case 'background.stop':
     case 'collaboration.read':

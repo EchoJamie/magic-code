@@ -13,6 +13,7 @@ import { attachShell } from '../src/shell.ts'
 import { magicAt, tempDir, removeDir } from './tmp.ts'
 
 type Wire = { route: string; body: Record<string, unknown> }
+const readerTools = ['read', 'memory_read', 'memory_update', 'source_read', 'knowledge_search', 'knowledge_read', 'knowledge_source', 'knowledge_update']
 function setup(rolePatch: Partial<AgentRoleConfig> = {}, image?: boolean) {
   const root = tempDir('magic-collaboration-models-')
   const magic = magicAt(root)
@@ -104,7 +105,7 @@ describe('成员主机装配', () => {
       expect(texts(f.seen.at(-1))).not.toContain('CHANGED_FILE')
       const tools = f.seen[0]?.body['tools'] as { function: { name: string } }[]
       expect(tools.some(tool => tool.function.name === 'read')).toBe(true)
-      expect(tools.filter(tool => !tool.function.name.startsWith('agent_')).map(tool => tool.function.name)).toEqual(['read'])
+      expect(tools.filter(tool => !tool.function.name.startsWith('agent_')).map(tool => tool.function.name)).toEqual(readerTools)
       writeFileSync(f.guide, 'GUIDANCE_CURRENT_B')
       writeFileSync(join(f.skillDir, 'SKILL.md'), '---\nname: review\ndescription: review things\n---\nREQUIRED_SKILL_CURRENT_B')
       await shell.submit('再检查一次', 3000)
@@ -248,7 +249,7 @@ describe('成员主机装配', () => {
       expect(existsSync(join(f.workspace, 'forbidden.txt'))).toBe(false)
       expect(existsSync(join(f.changed, 'forbidden.txt'))).toBe(false)
       expect(shell.events.some(event => event.kind === 'tool.result' && !event.data.ok)).toBe(true)
-      expect((f.seen[0]?.body['tools'] as { function: { name: string } }[]).map(tool => tool.function.name)).toEqual(['read'])
+      expect((f.seen[0]?.body['tools'] as { function: { name: string } }[]).map(tool => tool.function.name)).toEqual(readerTools)
     } finally { shell.dispose(); app.close(); f.close() }
   })
 

@@ -1,3 +1,4 @@
+import { memoryWorkspace, readMemory, readMemorySource } from './memory.ts'
 import { readSessionDisplayHistory } from '@magic/conversation'
 import { normalizeDataDir } from './paths.ts'
 import type { NativeProjection, NativeRequest, NativeResponse, NativeWork, NativeSession, SessionManagement, SessionManagementResult, Entry, KernelEvent, ServiceIdentity, StopPhase, Wire } from '@magic/contracts'
@@ -143,6 +144,18 @@ export function createNativeServer(options: NativeServerOptions) {
           })()
           owned.set(message.request, { signature, result })
           void result.then(response => { if (!link.closed) link.send(response) })
+          break
+        }
+        case 'native.memory':
+        case 'native.memory.source': {
+          const target = { t: 'native.memory.result' as const, request: message.request, serviceInstance: options.identity.serviceInstance, session: message.session }
+          void (async () => {
+            const workspace = await memoryWorkspace(options.store, message.session, [])
+            const records = options.store.forWorkspace(workspace)
+            if (message.t === 'native.memory.source') return { ...target, material: await readMemorySource(records, message) }
+            const data = await readMemory(records, message.session, workspace)
+            return { ...target, memory: data.memory, unprocessed: data.unprocessed, knowledge: records.knowledge.search({ offset: message.offset }) }
+          })().then(result => { if (!link.closed) link.send(result) }, error => { if (!link.closed) link.send({ ...target, error: String(error) }) })
           break
         }
         case 'native.sessions': {

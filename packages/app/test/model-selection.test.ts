@@ -32,12 +32,19 @@ function endpoint(options: { failure?: boolean; summaryFailure?: 'auth' | 'netwo
     const body = JSON.parse(String(init?.body))
     seen.push({ url, body })
     const summary = body.messages?.[0]?.content?.startsWith('你是会话压缩器') === true
-    if (!summary && options.mainLimit && seen.filter(one => one.url.includes('main.example')).length === 2) return Response.json({ error: { message: 'maximum context length exceeded' } }, { status: 400 })
+    const organize = body.messages?.[0]?.content?.includes('受限记忆整理') === true
+    if (!summary && !organize && options.mainLimit && seen.filter(one => one.url.includes('main.example') && !one.body.messages?.[0]?.content?.includes('受限记忆整理')).length === 2) return Response.json({ error: { message: 'maximum context length exceeded' } }, { status: 400 })
     if (summary && options.summaryFailure === 'auth') return Response.json({ error: { message: 'authentication failed' } }, { status: 401 })
     if (summary && options.summaryFailure === 'network') throw new TypeError('fetch failed: controlled network failure')
     if (summary && options.summaryFailure === 'cancel') return await new Promise<Response>((_resolve, reject) => { init?.signal?.addEventListener('abort', () => reject(new DOMException('controlled cancelled', 'AbortError')), { once: true }) })
     if (summary && options.failure) return Response.json({ error: { message: 'maximum context length exceeded' } }, { status: 400 })
     const frame = (choices: unknown, usage?: unknown) => `data: ${JSON.stringify({ id: 'local', object: 'chat.completion.chunk', created: 1, model: body.model, choices, usage })}\n\n`
+    if (organize) {
+      const material = JSON.stringify(body.messages)
+      const args = { expectedRevision: Number(material.match(/预期修订：(\d+)/)?.[1]), inspectedThrough: Number(material.match(/冻结上界：(\d+)/)?.[1]), changes: [] }
+      return new Response(frame([{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'organize', type: 'function', function: { name: 'memory_update', arguments: JSON.stringify(args) } }] } }])
+        + frame([{ index: 0, delta: {}, finish_reason: 'tool_calls' }]) + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+    }
     return new Response(
       frame([{ index: 0, delta: { role: 'assistant', content: summary ? options.summaryFailure === 'empty' ? '' : '保留用户约束与未完成工作' : '工作答复' } }]) +
       (summary && options.summaryFailure === 'incomplete' ? '' : frame([{ index: 0, delta: {}, finish_reason: 'stop' }], { prompt_tokens: 100, completion_tokens: 10 })) + 'data: [DONE]\n\n',
@@ -189,7 +196,8 @@ describe('统一模型配置与执行选择', () => {
     try {
       await shell.submit('已经确认的约束与原始工作')
       await shell.submit('继续这件工作')
-      expect(wire.seen.filter(one => one.url.includes('main.example'))).toHaveLength(2)
+      expect(wire.seen.filter(one => one.url.includes('main.example') && !one.body.messages?.[0]?.content?.includes('受限记忆整理'))).toHaveLength(2)
+      expect(wire.seen.filter(one => one.body.messages?.[0]?.content?.includes('受限记忆整理'))).toHaveLength(1)
       expect(wire.seen.filter(one => one.url.includes('aux.example'))).toHaveLength(1)
       expect(eventsOfKind(shell.events, 'error').map(one => one.data.message).join('\n')).toContain('暂不能继续')
       const db = readDatabase(app.paths.database)

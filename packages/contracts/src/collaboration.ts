@@ -21,6 +21,7 @@ export type AgentIdentity = {
   readonly at: Timestamp
 }
 export type Collaboration = {
+  readonly reasonFrom?: EntryReference
   readonly collaborationId: CollaborationId
   readonly originSessionId: SessionId
   readonly origin: EntryReference
@@ -41,7 +42,9 @@ export type AgentMessage = {
   readonly senderId: AgentId
   readonly recipients: readonly AgentId[]
   readonly purpose: MessagePurpose
-  readonly body: readonly MessagePart[]
+  /** 部件关系由记录域从实际材料取得，发送参数不能自报。 */
+  readonly body: readonly (MessagePart & { readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[] })[]
+  readonly generatedFrom?: EntryReference
   readonly replyTo?: MessageId
   /** 首条讨论消息自身作根；后续消息显式沿用。 */
   readonly discussionRoot?: MessageId
@@ -51,7 +54,7 @@ export type AgentMessage = {
   readonly withdrawn: boolean
 }
 /** 条目只含引用，content 为 {text:''}，正文须经 readMessage 读取。source 仍是发送方 SessionId。 */
-export type AgentMessagePayload = { readonly messageId: MessageId; readonly collaborationId: CollaborationId; readonly senderId: AgentId }
+export type AgentMessagePayload = { readonly messageId: MessageId; readonly collaborationId: CollaborationId; readonly senderId: AgentId; readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[] }
 export type InboxItem = {
   /** 数据库持久入队序号；不可用 messageId 代替。 */
   readonly position: number
@@ -63,6 +66,7 @@ export type InboxItem = {
   readonly includedAt?: Timestamp
 }
 export type Delegation = {
+  readonly reasonFrom?: EntryReference
   /** 初始委派消息的 id，同时是委派身份。 */
   readonly delegationId: DelegationId
   readonly collaborationId: CollaborationId
@@ -81,6 +85,8 @@ export type Delegation = {
   readonly at: Timestamp
 }
 export type CollaborationWait = {
+  readonly generatedFrom?: EntryReference
+  readonly reasonFrom?: EntryReference
   readonly waitId: WaitId
   readonly collaborationId: CollaborationId
   readonly agentId: AgentId
@@ -110,6 +116,7 @@ export type CollaborationScope =
   | { readonly kind: 'collaboration'; readonly collaborationId: CollaborationId }
   | { readonly kind: 'delegation'; readonly delegationId: DelegationId }
 export type ExecutionAdmission = {
+  readonly reasonFrom?: EntryReference
   readonly operationId: OperationId
   readonly agentId: AgentId
   readonly delegationId?: DelegationId
@@ -140,7 +147,7 @@ export type OperationResult =
   | { readonly kind: 'message' | 'delivery' | 'constraint'; readonly messageId: MessageId }
   | { readonly kind: 'wait'; readonly waitId: WaitId }
   | { readonly kind: 'execution'; readonly operationId: OperationId }
-export type OperationInput = { readonly operationId: OperationId; readonly at: Timestamp }
+export type OperationInput = { readonly operationId: OperationId; readonly at: Timestamp; readonly generatedFrom?: EntryReference }
 export type RegisterAgentInput = OperationInput & { readonly sessionId: SessionId; readonly name: string; readonly role: string; readonly responsibility?: string; readonly model: AgentModelConfig }
 export type SendMessageInput = OperationInput & {
   readonly recipients: readonly AgentId[]
@@ -215,12 +222,12 @@ export interface CollaborationRecords {
   consumeWaitOutcomes(agentId: AgentId, at: Timestamp): readonly CollaborationWait[]
   /** 仅确认本 actor 已领取的终态；整批原子、幂等，空数组无事。 */
   markWaitOutcomesIncluded(agentId: AgentId, waitIds: readonly WaitId[], at: Timestamp): void
-  interruptWaits(agentId: AgentId, reason: string): readonly CollaborationWait[]
+  interruptWaits(agentId: AgentId, reason: string, generatedFrom?: EntryReference): readonly CollaborationWait[]
   checkAdmission(agentId: AgentId, delegationId?: DelegationId, mode?: 'work' | 'coordination'): AdmissionDecision
   beginExecution(actor: AgentId, input: OperationInput & { readonly delegationId?: DelegationId; readonly runId: string; readonly kind: ExecutionAdmission['kind']; readonly mode?: 'work' | 'coordination' }): ExecutionAdmission
   finishExecution(operationId: OperationId, reason?: string): void
   listExecutions(collaborationId: CollaborationId): readonly ExecutionAdmission[]
-  stop(scope: CollaborationScope, reason: string, at: Timestamp): StopResult
+  stop(scope: CollaborationScope, reason: string, at: Timestamp, generatedFrom?: EntryReference): StopResult
   /** 显式用户继续；只开放指定范围，不清除旧执行的取消事实，不自动接受排队委派。 */
   resume(scope: CollaborationScope, at: Timestamp): void
   beginClosing(collaborationId: CollaborationId, at: Timestamp): void

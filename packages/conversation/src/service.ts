@@ -1,4 +1,5 @@
-import type { InputManage } from '@magic/contracts'
+import { organizeWorkingMemory } from './organize.ts'
+import type { InputManage, CompactState } from '@magic/contracts'
 /**
  * **一条会话的实例**（`ConversationSession`）——`ConversationService` 的**单会话那一半**。
  *
@@ -57,12 +58,15 @@ import type { PromptVars } from './prompt/index.ts'
 import { createRefDelivery } from './refs.ts'
 import { createRulesDelivery } from './rules.ts'
 import { createSkillsDelivery } from './skills.ts'
+import type { KnowledgeOrganization } from './knowledge.ts'
 
 /**
  * 装配期构造入参——一切「谁来实现」的选择由装配根给出（本域不知道背后是谁：
  * 模型域 / 工具域 / 记录域皆经契约端口）。
  */
 export type ConversationDeps = {
+  readonly knowledge?: import('@magic/contracts').KnowledgeRecords
+  readonly organizeKnowledge?: (signal: AbortSignal) => Promise<KnowledgeOrganization>
   readonly onInput?: (input: UserInput) => void
   readonly collaboration?: CollaborationBoundary | undefined
   readonly purpose?: 'consultation' | undefined
@@ -179,6 +183,8 @@ export type SubmitRefusal = {
  * 它只是**读**一个内部位，不改变任何行为（域内件，不外承诺）。
  */
 export type ConversationSession = {
+  /** 同一压缩链；忙时等待完整交互边界，空闲时不启动业务循环。 */
+  compact(request: { requestId: string; focus?: string }, signal: AbortSignal, started: () => void): Promise<CompactState>
   /** 收件唤起，不伪造用户消息。 */
   wake(): void
   supplement(input: UserInput, shared: boolean): Promise<void>
@@ -231,6 +237,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     ...deps.collaboration,
     admit: call => current?.signal.aborted === true ? '已停止，未消费输入' : deps.collaboration?.admit(call),
     async consume() {
+      await flushCompact()
       let changed = false
       for (const next of supplements.splice(0)) {
         try {
@@ -250,6 +257,12 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
    * 该转 blob 就转 blob、该截断就截断（见 `./compact.ts`）。
    */
   const compactor = createCompactor({
+    knowledge: deps.knowledge,
+    organize: (entries, through, signal) => organizeWorkingMemory({
+      knowledge: deps.knowledge,
+      records: deps.records, session: deps.session, gateway: deps.gateway, tools: deps.tools.definitions(), entries, through, sink, stamper,
+      ...(signal === undefined ? {} : { signal }), now: deps.now ?? Date.now, blobThreshold: policy.blobThreshold,
+    }),
     records: deps.records,
     session: deps.session,
     ...(deps.compression === undefined ? {} : { compression: deps.compression }),
@@ -284,13 +297,43 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
    * （`deps.skills` 与 `deps.materials`）——两形读的是同一棵树，不会各说一套。
    */
   const refs = createRefDelivery({
+    records: deps.records, session: deps.session, knowledge: deps.knowledge,
     skills: deps.skills,
     materials: deps.materials,
     // 图片的字节要进记录（U37）——写权唯一归记录域，故经它的公开面
     blobs: deps.records.blobs,
   })
 
+  let compactPending: {
+    request: { requestId: string; focus?: string }; controller: AbortController
+    signal: AbortSignal; started: () => void; finish: (state: CompactState) => void
+  } | undefined
+  let compactFlight: Promise<void> | undefined
+  function flushCompact(): Promise<void> {
+    if (compactFlight !== undefined) return compactFlight
+    const operation = compactPending
+    if (operation === undefined) return Promise.resolve()
+    compactFlight = Promise.resolve().then(async () => {
+      const base = { requestId: operation.request.requestId, ...(operation.request.focus === undefined ? {} : { focus: operation.request.focus }), accepted: true as const }
+      try {
+        operation.signal.throwIfAborted()
+        operation.started()
+        const outcome = await compactor.run({ trigger: 'threshold', signal: operation.signal, compact: operation.request })
+        operation.finish(outcome.ok ? { ...base, state: 'completed', summary: outcome.summary } : {
+          ...base, state: outcome.kind === 'canceled' ? 'cancelled' : outcome.kind === 'no-material' ? 'no-material' : 'failed', reason: outcome.reason,
+        })
+      } catch (error) { operation.finish({ ...base, state: operation.signal.aborted ? 'cancelled' : 'failed', reason: messageOf(error) }) }
+      finally {
+        if (compactPending === operation) compactPending = undefined
+        compactFlight = undefined
+        if (!closed && !running && pending.length > 0) startDrain()
+      }
+    })
+    return compactFlight
+  }
+
   const runtime: LoopRuntime = {
+    knowledge: deps.knowledge,
     session: deps.session,
     systemPrompt: buildSystemPrompt(deps.prompt, deps.purpose, deps.consultationAvailable),
     gateway: deps.gateway,
@@ -349,7 +392,10 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
     try {
       for (;;) {
-        if (closed || controller.signal.aborted || pending.length === 0) break
+        if (closed || controller.signal.aborted) break
+        // 包括阶段整理等待期间受理的补充；每次消费前统一收取。
+        pending.unshift(...supplements.splice(0))
+        if (pending.length === 0) break
         const first=pending[0]?.input
         if (waitingForDelegations(first)) break
         const queued = pending.shift()!
@@ -365,8 +411,6 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
           try { await deps.collaboration?.userInput?.(entry,queued.shared) } finally { queued.done?.() }
         })
         queued.done?.()
-        // 收束边界之后才到达的当前补充，仍在下一件之前消费；不留在已结束的循环里。
-        if (outcome === 'settled' || outcome === 'rejected') pending.unshift(...supplements.splice(0))
         // **这一条没跑**（显式选定的技能取不到，U33）——停下的是**它**，不是这一队：
         // 后面那几条没做错任何事，清掉＝静默吞了用户的交代（见 `InputOutcome` 的注）
         if (outcome === 'rejected') continue
@@ -376,6 +420,16 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
           holdQueued()
           break
         }
+        if (pending.length === 0 && supplements.length === 0 && deps.organizeKnowledge !== undefined) {
+          const organized = await deps.organizeKnowledge(controller.signal)
+          for (const call of organized.calls ?? []) sink.emit(stamper.stamp('memory.model', {
+            purpose: 'knowledge', durationMs: call.elapsedMs, ok: organized.status === 'completed',
+            ...(call.model === undefined ? {} : { model: call.model }),
+            ...(call.provider === undefined ? {} : { provider: call.provider }),
+            ...(call.usage === undefined ? {} : { usage: call.usage }),
+          }))
+          if (organized.status === 'failed') sink.emit(stamper.stamp('error', { message: `阶段知识整理未完成：${organized.reason}。原材料和整理位置保留，请检查 Cantrip；没有切换模型。` }))
+        }
       }
     } catch (error) {
       // 兜底（保险 · 正常不可达：循环各处已各自兜底）——走到这里＝扇出 / 铸造器本身炸了。
@@ -384,6 +438,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     } finally {
       running = false
       current = undefined
+      if (compactPending !== undefined) void flushCompact()
       // 回到等待输入——收束 / 中止 / 出错**都**回到这里（首站只有这一个稳定态）
       sink.emit(stamper.stamp('agent.state', { state: 'waiting' }))
     }
@@ -401,13 +456,13 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
       try {
         const existing = deps.records.inputs.get(durable.ref)
         const row = deps.records.inputs.accept(durable,(deps.now??Date.now)())
-        sink.emit(stamper.stamp('input.settled',row.state==='failed'||row.state==='withdrawn'?{ref:durable.ref,ok:false,reason:row.reason??'这条输入已撤回'}:{ref:durable.ref,ok:true,stage:row.state==='included'?'included':'accepted'}))
+        sink.emit(stamper.stamp('input.settled',row.state==='failed'||row.state==='withdrawn'?{ref:durable.ref,ok:false,reason:row.reason??'这条输入已撤回'}:{ref:durable.ref,ok:true,stage:row.state==='included'?'included':'accepted',...(row.input.refs===undefined?{}:{refs:row.input.refs})}))
         sink.emit(stamper.stamp('input.pending',{inputs:deps.records.inputs.list()}))
         if (existing !== undefined) { done(); return }
-        deps.onInput?.(input)
+        deps.onInput?.(row.input)
         if (running && row.purpose==='current') supplements.push({input:row.input,shared,done})
         else pending.push({input:row.input,shared,done})
-        if (!running) startDrain()
+        if (!running && compactPending === undefined) startDrain()
       } catch(error) {
         sink.emit(stamper.stamp('input.settled',{ref:durable.ref,ok:false,reason:`受理失败：${messageOf(error)}`}))
         done()
@@ -418,7 +473,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     if (closed || deps.collaboration === undefined || pending.some(one=>one.input===undefined) || current?.signal.aborted===true) return
     if (!running && waitingForDelegations(pending[0]?.input)) return
     pending.unshift({input:undefined,shared:false})
-    if (!running) startDrain()
+    if (!running && compactPending === undefined) startDrain()
   }
   function waitingForDelegations(input:UserInput|undefined):boolean {
     if(input?.purpose!=='next')return false
@@ -429,6 +484,17 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
       (member?.agentId===work.coordinatorId || one.assigneeId===member?.agentId) && !['received','rejected','cancelled'].includes(one.state))
   }
   return {
+    compact(request, signal, started) {
+      if (closed || compactPending !== undefined) return Promise.resolve({ requestId: request.requestId, state: 'failed', reason: closed ? '执行实例已关闭' : '已有压缩请求' })
+      return new Promise(resolve => {
+        const controller = new AbortController()
+        const combined = AbortSignal.any([signal, controller.signal, ...(current === undefined ? [] : [current.signal])])
+        const onAbort = () => { if (compactFlight === undefined) void flushCompact() }
+        compactPending = { request, controller, signal: combined, started, finish: state => { combined.removeEventListener('abort', onAbort); resolve(state) } }
+        combined.addEventListener('abort', onAbort, { once: true })
+        if (!running || combined.aborted) void flushCompact()
+      })
+    },
     supplement(input, shared) {
       return new Promise(resolve => enqueue(input,shared,resolve))
     },
@@ -442,7 +508,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
       if (command.action === 'withdraw') note = inputs.withdraw(command.ref, command.revision) ? '已撤回未消费输入' : '输入已消费或已改变，未撤回'
       if (command.action === 'continue') {
         const row = inputs.get(command.ref)
-        if (row?.state === 'pending' && row.revision === command.revision) { inputs.hold(row.ref,undefined); pending.push({input:row.input,shared:false}); if (!running) startDrain() }
+        if (row?.state === 'pending' && row.revision === command.revision) { inputs.hold(row.ref,undefined); pending.push({input:row.input,shared:false}); if (!running && compactPending === undefined) startDrain() }
         else note = '输入已消费或已改变，未继续'
       }
       sink.emit(stamper.stamp('input.pending', {inputs:inputs.list(),...(note===undefined?{}:{note})}))
@@ -458,6 +524,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
     interrupt(): void {
       current?.abort()
+      compactPending?.controller.abort()
       // 「停下」就是停下——排队那几条**保留并标为未执行**（U50 · 见 `holdQueued`）：
       // 不丢、不接着跑、逐条说清它们还没轮到
       holdQueued()
@@ -465,13 +532,15 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
     async shutdown() {
       closed = true
+      compactPending?.controller.abort()
       current?.abort()
       holdQueued()
       await flight
+      await compactFlight
       if (failure !== undefined) throw failure
     },
 
-    busy: () => running || pending.length > 0,
+    busy: () => running || pending.length > 0 || compactPending !== undefined,
 
     /**
      * 重建（恢复 ⑤）——**认下应用层算好的两件**，其余什么都不做。

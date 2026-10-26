@@ -1,4 +1,4 @@
-import type { PathCatalogRow, SkillCatalogRow } from '@magic/contracts'
+import type { EventDataOf, PathCatalogRow, SkillCatalogRow } from '@magic/contracts'
 import type { PickerRow, SkillsCatalog } from '../view.ts'
 
 export type SkillHit =
@@ -50,6 +50,24 @@ export function pathRows(rows: readonly PathCatalogRow[]): readonly PickerRow[] 
     detail: [`路径：${row.path}`],
     oneLine: true,
   }))
+}
+
+export function sessionReferenceRows(rows: EventDataOf['session.references']['rows']): readonly PickerRow[] {
+  return rows.map(row => {
+    const title = row.title ?? row.member?.name ?? '未命名会话'
+    const ambiguous = rows.some(other => other.id !== row.id && other.title === row.title && JSON.stringify(other.workspace) === JSON.stringify(row.workspace))
+    const state = row.archived ? '已归档' : '普通'
+    const ownership = row.member === undefined ? '' : `${row.member.originTitle} · 成员 ${row.member.name}`
+    return {
+      value: `session:${row.id}`, label: title, current: false, group: '会话', oneLine: true,
+      meta: [state, ownership, row.workspace?.join(' · ') ?? '工作区未记录', ambiguous ? row.id.slice(0, 8) : ''].filter(Boolean).join(' · '),
+      keep: state,
+      detail: [`会话：${title}`, `工作区：${row.workspace?.join(' · ') ?? '未记录'}`, `状态：${state}`,
+        ...(ownership === '' ? [] : [`归属：${ownership}`]),
+        ...(ambiguous ? [`最近活动：${new Date(row.at).toLocaleString()}`, `会话身份：${row.id}`] : []),
+        '选入只加入草稿；引用范围在实际提交受理时固定'],
+    }
+  })
 }
 
 export function pathHint(input: {

@@ -293,7 +293,7 @@ import ServiceManagement
                 return
             }
             sessions.receive(response)
-        case .sessionsResult, .historyResult: sessions.receive(response)
+        case .sessionsResult, .historyResult, .memoryResult: sessions.receive(response)
         case .managed:
             sessions.receive(response); actionMessage = sessions.operationMessage; observer?.send(.refresh)
         case .stopped(let request, let session, let phase, let note):

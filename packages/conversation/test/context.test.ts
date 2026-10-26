@@ -122,6 +122,7 @@ describe('Context 装配 · 骨架', () => {
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: '看下目录' },
       { role: 'assistant', content: '好，我看下' },
+      { role: 'assistant', content: expect.stringContaining('本次材料来源位置') },
     ])
   })
 })
@@ -205,8 +206,9 @@ describe('Context 装配 · 工具往返', () => {
       'tool',
       'assistant',
       'tool',
+      'assistant', // 来源位置
     ])
-    expect(messages.slice(1).map(textOfMessage)).toEqual(['跑 ls', 'a.txt\n', '跑 pwd', '/w\n'])
+    expect(messages.slice(1, -1).map(textOfMessage)).toEqual(['跑 ls', 'a.txt\n', '跑 pwd', '/w\n'])
   })
 
   test('同轮多工具的次序＝条目序（三次调用按序配对，不串位）', async () => {
@@ -231,8 +233,8 @@ describe('Context 装配 · 工具往返', () => {
     // 配对键**两两不同**——同轮多调用共用一个键，供应商侧就分不清哪条回填配哪次调用
     const keys = calls.map((call) => call.id)
     expect(new Set(keys).size).toBe(3)
-    expect(messages.slice(2).map((m) => (m.role === 'tool' ? m.callId : ''))).toEqual(keys)
-    expect(messages.slice(2).map(textOfMessage)).toEqual(['出了 0', '出了 1', '出了 2'])
+    expect(messages.slice(2, -1).map((m) => (m.role === 'tool' ? m.callId : ''))).toEqual(keys)
+    expect(messages.slice(2, -1).map(textOfMessage)).toEqual(['出了 0', '出了 1', '出了 2'])
   })
 
   test('落单的 `tool-call`（无结果）不进上下文——在途调用的处置归阶段 2 恢复', async () => {
@@ -249,7 +251,7 @@ describe('Context 装配 · 工具往返', () => {
 
     // 带 toolCalls 而无对应 tool 消息的助手消息会被供应商拒——故落单调用不进上下文
     expect(messages[1]).toEqual({ role: 'assistant', content: '我跑一下' })
-    expect(messages).toHaveLength(2)
+    expect(messages).toHaveLength(3)
   })
 })
 
@@ -277,7 +279,7 @@ describe('Context 装配 · 摘要 ＋ 近段原文', () => {
     })
 
     // 次序：系统提示词 → 摘要 → 近段原文
-    expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'user'])
+    expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'user', 'assistant'])
     expect(textAt(messages, 0)).toBe(SYSTEM_PROMPT)
     expect(textAt(messages, 1)).toContain('此前在做 A')
     expect(messages[2]).toEqual({ role: 'user', content: '近段的交代' })
@@ -307,7 +309,7 @@ describe('Context 装配 · 摘要 ＋ 近段原文', () => {
       nearEntries: 2,
     })
 
-    expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'user', 'assistant'])
+    expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'user', 'assistant', 'assistant'])
     const sent = sentText(messages)
     expect(sent).toContain('第三件事')
     expect(sent).toContain('第三件答复')
@@ -335,7 +337,7 @@ describe('Context 装配 · 摘要 ＋ 近段原文', () => {
     })
 
     // 次序：系统提示词 → 摘要 → 近段原文（两条）→ 新增原文（两条）
-    expect(messages.slice(2)).toEqual([
+    expect(messages.slice(2, -1)).toEqual([
       { role: 'user', content: '近处的交代' },
       { role: 'assistant', content: '近处的答复' },
       { role: 'user', content: '压完接着问的' },
@@ -363,7 +365,7 @@ describe('Context 装配 · 摘要 ＋ 近段原文', () => {
     })
 
     // 第二份摘要在末尾、它前面留两条——第一份摘要落在**被顶掉**的那一侧
-    expect(farMessages).toHaveLength(4)
+    expect(farMessages).toHaveLength(5)
     expect(textAt(farMessages, 1)).toContain('第二份摘要')
     expect(sentText(farMessages)).not.toContain('第一份摘要')
 
@@ -419,7 +421,7 @@ describe('Context 装配 · blob 引用', () => {
     expect(messages[1]).toEqual({ role: 'assistant', content: '很长很长的正文' })
   })
 
-  test('工具结果：送模型的是**条目正文**（面向模型的截断文本），不是载荷里的记录形态', async () => {
+  test('未整理工具结果按原始载荷完整带入，展示节选不能冒充全文', async () => {
     const records = makeFauxRecords()
     // 记录形态是大输出（blob 全量）；面向模型的那份由工具域截好（两处**刻意不同**，
     // 好让断言能分辨装配取的是哪一份）
@@ -434,9 +436,9 @@ describe('Context 装配 · blob 引用', () => {
       systemPrompt: SYSTEM_PROMPT,
     })
 
-    expect(messages[2]).toMatchObject({ role: 'tool', ok: true, output: '截断后的输出' })
+    expect(messages[2]).toMatchObject({ role: 'tool', ok: true, output: '全量输出（记录形态，可能很大）' })
     // 顺带钉住「载荷里的记录形态不参与上下文」——取错源会拿到全量那句
-    expect(textOfMessage(messages[2] as ModelMessage)).not.toContain('全量输出')
+    expect(textOfMessage(messages[2] as ModelMessage)).not.toContain('截断后的输出')
   })
 
   /**
@@ -445,7 +447,7 @@ describe('Context 装配 · blob 引用', () => {
    * 判据没有放宽：省略处照样要报数（原文字数），且另加一条「怎么看全」的引导。
    * 尾部那半是这一改的**要害**（构建日志的报错在末尾），故它单独咬一句。
    */
-  test('blob 文本按策略截断——**头尾都留**，并留可读的截断标记（省略多少 ＋ 怎么看全）', async () => {
+  test('用户原文不受普通blob节选上限截断，有效要求逐字带入', async () => {
     const records = makeFauxRecords()
     const ref = await records.blobs.put('一二三四五六七八九十')
     records.appendEntry({ kind: 'user', content: { blob: ref }, at: AT })
@@ -458,12 +460,8 @@ describe('Context 装配 · blob 引用', () => {
     })
 
     const user = textOfMessage(messages[1] as ModelMessage)
-    expect(user.startsWith('一二')).toBe(true) // 头部那半（limit=4 → 2）
-    expect(user.endsWith('九十')).toBe(true) // 尾部那半——结论在这儿
-    expect(user).toContain('截断')
-    expect(user).toContain('10') // 原文长度——截断与否看得见
-    expect(user).toContain(`省略 ${10 - 4}`) // 省略了多少（说得出口的那个数）
-    expect(user).toContain('history_read') // 怎么看全（引导，不是干截）
+    expect(user).toBe('一二三四五六七八九十')
+    expect(user).not.toContain('截断')
   })
 
   /**
@@ -487,7 +485,7 @@ describe('Context 装配 · blob 引用', () => {
 
     const user = textOfMessage(messages[1] as ModelMessage)
     expect(user).toContain(answer)
-    expect(user).toContain('省略')
+    expect(user).not.toContain('省略')
   })
 
   test('不超限的 blob 文本原样——不无谓改写字面', async () => {

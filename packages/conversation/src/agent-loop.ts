@@ -1,3 +1,4 @@
+import { announceMemoryPlan } from './memory.ts'
 /**
  * 主循环 —— `agentLoop`：模型调用（流式）→ 工具调用 → 结果回填 → 往复，直到收束。
  *
@@ -70,7 +71,8 @@ import type {
   UsedSkill,
 } from '@magic/contracts'
 import type { Compactor } from './compact.ts'
-import { DEFAULT_NEAR_ENTRIES, assembleContext } from './context.ts'
+import { DEFAULT_NEAR_ENTRIES, assembleContext, rawTextOf } from './context.ts'
+import { KNOWLEDGE_MATERIAL_TOOLS, knowledgeOutputReferences } from './knowledge-material.ts'
 import type { TextRefEntry } from './context.ts'
 import type { EntryLog, ToolOutcome } from './entries.ts'
 import {
@@ -117,6 +119,7 @@ const STOPPED_TEXT =
  * 每个字段都是一件「不知道自己是谁的」依赖：模型 / 工具 / 记录皆经端口，实现在别处。
  */
 export type LoopRuntime = {
+  readonly knowledge?: import('@magic/contracts').KnowledgeRecords
   readonly collaboration?: CollaborationBoundary | undefined
   /** 会话——条目按会话读（信封的 `session` 由铸造器持，两处同源）。 */
   readonly session: SessionId
@@ -251,12 +254,13 @@ export async function agentLoop(
 
   // **这一轮引用了、却还没被读过的**（U63）——收束时报一声（见 `finish`）。
   const watch = createMaterialWatch(prepared.refs)
+  const inputFrom = prepared.entry ?? ((await runtime.records.readEntriesBack(runtime.session, undefined, 1)).at(-1)?.id ?? 0) + 1
 
   for (;;) {
     // 轮间中止——不再开新轮（「回到等待输入」）
     if (signal.aborted) return finish(runtime, watch, 'aborted')
 
-    const turn = await runTurn(runtime, signal, announce, watch)
+    const turn = await runTurn(runtime, signal, announce, watch, inputFrom, prepared.latestInput)
     if (turn.reason !== 'settled' || !turn.continues) return finish(runtime, watch, turn.reason)
   }
 }
@@ -267,7 +271,7 @@ export async function prepareInput(
   input: UserInput | undefined,
   accepted?: (entry: RecordId) => void|Promise<void>,
   signal?: AbortSignal,
-): Promise<{ refs: readonly InputRefEntry[]; skills: readonly UsedSkill[] } | undefined> {
+): Promise<{ refs: readonly InputRefEntry[]; skills: readonly UsedSkill[]; entry?: RecordId; latestInput?: string } | undefined> {
   signal?.throwIfAborted()
   const stored = input?.ref === undefined ? undefined : runtime.records.inputs.get(input.ref)
   if (input?.ref !== undefined && stored?.state !== 'pending') return undefined
@@ -317,6 +321,7 @@ export async function prepareInput(
   }
 
   signal?.throwIfAborted()
+  let acceptedEntry: RecordId | undefined
   try {
     // 用户输入落账——**轮外**（信封 `turn` 为 `null`：输入先于轮）
     //
@@ -339,6 +344,7 @@ export async function prepareInput(
         return latest?.state === 'pending' && latest.revision !== stored?.revision
           ? prepareInput(runtime, latest.input, accepted, signal) : undefined
       }
+      acceptedEntry = entryId
       runtime.sink.emit(runtime.stamper.stamp('message.user', { entry: entryId }))
       if(input.ref!==undefined)runtime.sink.emit(runtime.stamper.stamp('input.pending',{inputs:runtime.records.inputs.list()}))
       try { await accepted?.(entryId) }
@@ -372,7 +378,8 @@ export async function prepareInput(
   // 它的送达方式改成了「模型按需自读」：引用了**不等于**看过了，只有模型真用 `skill` 工具
   // 取回来、那一份进了下一趟请求，才谈得上「本次使用技能」（与「没读也要有痕迹」那一半
   // 同源，见 `createMaterialWatch`）。
-  return { refs: delivery.refs, skills: legacy.used }
+  return { refs: delivery.refs, skills: legacy.used, ...(acceptedEntry === undefined ? {} : { entry: acceptedEntry }),
+    ...(input === undefined || input.notice ? {} : { latestInput: input.text }) }
 }
 
 /**
@@ -469,11 +476,11 @@ function identityKeyOf(ref: TextRefEntry): string {
 }
 
 function skillKey(name: string): string {
-  return `skill ${name}`
+  return `skill\0${name}`
 }
 
 function placeKey(source: string): string {
-  return `place ${source}`
+  return `place\0${source}`
 }
 
 /**
@@ -718,6 +725,8 @@ async function runTurn(
   announce: Announcer,
   /** 「引用了、却没被读过」那份账（U63）——每次工具返回都记一笔，收束时问一次。 */
   watch: MaterialWatch,
+  inputFrom: RecordId,
+  initialInput: string | undefined,
 ): Promise<TurnOutcome> {
   const { gateway, tools, sink, stamper } = runtime
 
@@ -734,6 +743,8 @@ async function runTurn(
       await compact.run({ trigger: 'threshold', signal })
     }
 
+    let providedThrough = 0
+    let providedKnowledge: readonly import('@magic/contracts').KnowledgeReference[] = []
     let text = ''
     /** 思考通道的正文——随助手载荷保存，供同源模型回传。 */
     let thinking = ''
@@ -744,20 +755,29 @@ async function runTurn(
 
     // 一次调用 ＋ 消费（超限时整体重来：重装配 → 重发——这才是「压缩后重发」）
     for (;;) {
+      providedKnowledge = []
+      const provided = (references: readonly import('@magic/contracts').KnowledgeReference[]) => {
+        providedKnowledge = [...new Map([...providedKnowledge, ...references].map(reference => [`${reference.id}\0${reference.revision}`, reference])).values()]
+      }
       await runtime.collaboration?.consume()
       if (runtime.collaboration?.admit() !== undefined) return close(runtime, 'aborted', false)
       let included: readonly number[] = []
       let userEntries: readonly RecordId[] = []
       const messages = await assembleContext({
+        knowledge: runtime.knowledge,
+        onKnowledge: provided,
+        latestInput: runtime.records.inputs.list().filter(row => row.entry !== undefined && row.entry >= inputFrom
+          && !row.input.notice && (row.state === 'consumed' || row.state === 'included')).at(-1)?.input.text ?? initialInput,
         records: runtime.records,
         onIncluded: ids => { included = ids },
         onUserEntries: ids => { userEntries = ids },
+        onSourceRange: through => { providedThrough = through },
         session: runtime.session,
         // **项目规约 ＋ 技能目录 ＋ 后台命令**在装配这一步接上（U32 · U33 · U89）——
         // 都现取现接：改过的、跑完的，下一趟就是新的。次序＝环境块 → 规约块 → 技能目录块
         // → 后台命令块（见 `prompt/skills.ts` / `prompt/background.ts`）；
         // 规约那一趟还顺带记账「这一趟送出去哪几版」（预查据它判「拦不拦」）
-        systemPrompt: await collaborationPrompt(withBackground(runtime, (await withSkills(runtime, (await withRules(runtime, signal)), signal))), runtime.collaboration),
+        systemPrompt: await collaborationPrompt(withBackground(runtime, (await withSkills(runtime, (await withRules(runtime, signal)), signal))), runtime.collaboration, provided),
         blobTextLimit: runtime.blobTextLimit,
         // 近段条数取压缩器那个数（没接压缩器＝按缺省认，与策略缺省同源）
         nearEntries: runtime.compact?.nearEntries ?? DEFAULT_NEAR_ENTRIES,
@@ -865,6 +885,7 @@ async function runTurn(
             reasoning: thinking,
             ...(result.reasoningState === undefined ? {} : { reasoningState: result.reasoningState }),
           },
+          providedKnowledge,
         )
     if (assistantId !== undefined) {
       sink.emit(stamper.stamp('message.assistant', { entry: assistantId }))
@@ -902,7 +923,7 @@ async function runTurn(
       rejudging = (await runtime.collaboration?.consume()) === true || rejudging
       const refusal = runtime.collaboration?.admit(call)
       if (refusal !== undefined || rejudging) {
-        withholds(runtime, call, refusal ?? '收到新的协作交代，本次尚未执行的调用已暂停；先重新判断。')
+        withholds(runtime, call, refusal ?? '收到新的协作交代，本次尚未执行的调用已暂停；先重新判断。', providedKnowledge)
         continue
       }
 
@@ -910,16 +931,20 @@ async function runTurn(
         // 本批余下的**一件都不跑**——理由与「材料超限整批停批」同一条（`preflight` 那一段）：
         // 半批执行过的状态最难解释。且这一轮**本就不会再开下一轮**，让它们跑完也没人看
         // （结果要等下一次交代才会进模型眼前）——白做，还多留下几笔动过手脚的痕迹。
-        withholds(runtime, call, STOPPED_TEXT)
+        withholds(runtime, call, STOPPED_TEXT, providedKnowledge)
         continue
       }
 
       if (heldText !== undefined) {
-        withholds(runtime, call, heldText)
+        withholds(runtime, call, heldText, providedKnowledge)
         continue
       }
 
-      const outcome = await runToolCall(runtime, call, signal, announce, watch)
+      if (call.name === 'memory_update' && typeof call.args['inspectedThrough'] === 'number' && call.args['inspectedThrough'] > providedThrough) {
+        withholds(runtime, call, `不能确认尚未提供的来源；本次请求上界为 #${providedThrough}`, providedKnowledge)
+        continue
+      }
+      const outcome = await runToolCall(runtime, call, signal, announce, watch, providedKnowledge)
       if (outcome.halt === true) stopped = true
     }
 
@@ -949,17 +974,18 @@ async function runToolCall(
   signal: AbortSignal,
   announce: Announcer,
   watch: MaterialWatch,
+  knowledge: readonly import('@magic/contracts').KnowledgeReference[],
 ): Promise<ToolOutcome> {
   const log = entryLogOf(runtime)
 
   // 调用条目先落账——它与结果条目成对，「有调用无结果」＝在途（阶段 2 恢复按它找）
-  appendToolCallEntry(log, call)
+  const entry = appendToolCallEntry(log, call, knowledge)
 
   let outcome: ToolOutcome
   try {
     // `opts.onOutput` 留空：`tool.output.delta` 是**工具域**的产出（事件产出表）——
     // 本域不越俎；该位留给将来的消费方（如外壳侧的实时视图）。
-    outcome = toolOutcomeOf(await runtime.tools.invoke(call, { signal }))
+    outcome = toolOutcomeOf(await runtime.tools.invoke(call, { signal, entry: { sessionId: runtime.session, entryId: entry } }))
     // **模型自主取到一份技能主文**（U33）——记进回执账，等它进了下一趟请求再报
     // （身份由工具结构化给出，不从回填正文里认；取引用那一趟不带这一位）
     if (outcome.skill !== undefined) announce.deliver(outcome.skill)
@@ -973,8 +999,13 @@ async function runToolCall(
     outcome = { ok: false, text, content: { text } }
   }
 
-  const resultId = appendToolResultEntry(log, outcome)
+  const resultKnowledge = outcome.knowledge ?? (KNOWLEDGE_MATERIAL_TOOLS.has(call.name)
+    ? knowledgeOutputReferences(call.name, await rawTextOf(outcome.content, runtime.records)) : [])
+  const resultId = appendToolResultEntry(log, outcome, resultKnowledge)
   announcePlan(runtime, outcome, resultId)
+  if (call.name === 'memory_update' && outcome.ok) {
+    announceMemoryPlan(runtime, runtime.records.memory.read(), resultId)
+  }
 
   // **交回结果**（U72）——调用方据 `halt` 决定还开不开下一轮；别的字段它一个字都不读
   return outcome
@@ -1019,10 +1050,10 @@ function announcePlan(runtime: LoopRuntime, outcome: ToolOutcome, entry: RecordI
  * - **不宣称副作用已执行**：结果 `ok: false` ＋ `notExecuted`（见函数体），正文照
  *   `needsReviewText`（或超限那份 `overflowText`）说清**没执行 · 为什么 · 下一步怎么办**。
  */
-function withholds(runtime: LoopRuntime, call: ToolCall, text: string): void {
+function withholds(runtime: LoopRuntime, call: ToolCall, text: string, knowledge: readonly import('@magic/contracts').KnowledgeReference[]): void {
   const log = entryLogOf(runtime)
 
-  appendToolCallEntry(log, call)
+  appendToolCallEntry(log, call, knowledge)
   // **不成形时那段原文随行**（U84）——与工具域那一条同一形（见 `@magic/tools` 的
   // `toolCallEvent`）：本域不 import 工具域（域间只经契约），故这一位在两处各自成形，
   // 但字段名与判据只有契约那一份。扣下的这一批**同样**可能是坏参数——

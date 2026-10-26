@@ -260,6 +260,7 @@ export function AppView({ view, columns, rows, now = null, pulseAt = null }: App
     separatorOf(columns, 'rule:status'),
     h(StatusLine, {
       key: 'status',
+      activity: view.status.state !== 'lost' && view.compactions.some(one => one.session === view.sessionId && one.state.state === 'running') ? '正在压缩' : undefined,
       status: collaborationStatus(view),
       columns,
       // 锚之后那几格与上色开关——**从视图那一份配置取**（没配过＝默认那条）
@@ -989,7 +990,7 @@ export function TuiApp({ shell }: TuiAppProps) {
   // 整轮耗时、工具和计划复用按需时钟；减少动效仅关闭动画。
   const ticking =
     view.status.state !== 'lost' &&
-    ((view.round !== null && view.round.end === null) || (view.status.state !== 'waiting' && (view.rows.some(row=>row.kind==='tool'&&row.state==='running') || (!view.reducedMotion && (view.status.state==='working'||view.status.state==='retrying')) || breathingOf(view, plan) )) || pulsing)
+    ((view.round !== null && view.round.end === null) || (view.status.state !== 'waiting' && (view.rows.some(row=>row.kind==='tool'&&row.state==='running') || (!view.reducedMotion && (view.status.state==='working'||view.status.state==='retrying'||view.compactions.some(one => one.session === view.sessionId && one.state.state === 'running'))) || breathingOf(view, plan) )) || pulsing)
   const now = useLiveClock(ticking)
 
   /**

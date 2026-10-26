@@ -100,6 +100,30 @@ function payloadOf(row: { readonly payload: string | null }): {
   return JSON.parse(row.payload ?? '{}') as never
 }
 
+test.each([false, true])('真实受理回执与持久消费一致：提供引用=%s', async hasRefs => {
+  const stage = makeStage()
+  const assembly = stage.assemble({ turns: [{ text: '已完成' }] })
+  const shell = attachShell(assembly.shell)
+  try {
+    const source = realpathSync(put(stage.workspace, 'note.md', '原文'))
+    const refs: readonly InputRef[] = [{ kind: 'file', source, at: 2, marker: '@note.md' }]
+    await shell.submit({ text: hasRefs ? '查看@note.md' : '普通交代', ref: 'accepted-input', ...(hasRefs ? { refs } : {}) })
+    const accepted = shell.events.find(event => event.kind === 'input.settled' && event.data.stage === 'accepted')
+    expect(accepted?.kind).toBe('input.settled')
+    if (accepted?.kind !== 'input.settled') throw new Error('缺少受理回执')
+    expect(accepted.data.ok).toBe(true)
+    expect(Object.hasOwn(accepted.data, 'refs')).toBe(hasRefs)
+    if (hasRefs) expect(accepted.data.refs).toEqual(refs)
+    expect(shell.events.filter(event => event.kind === 'input.settled' && !event.data.ok)).toHaveLength(0)
+    expect(lastModel(stage).requests).toHaveLength(1)
+    const row = assembly.records.serviceFor(assembly.session!).inputs.get('accepted-input')!
+    expect(row.state).toBe('included')
+    expect(userRows(assembly)).toHaveLength(1)
+    expect(userRows(assembly)[0]?.id).toBe(row.entry)
+    expect(shell.events.filter(event => event.kind === 'turn.end')).toHaveLength(1)
+  } finally { assembly.close(); stage.dispose() }
+})
+
 // ══ 工单的示例场景 ════════════════════════════════════════════════════
 
 describe('「先读 @需求.md，再按 /review 检查 @src/login.ts」', () => {

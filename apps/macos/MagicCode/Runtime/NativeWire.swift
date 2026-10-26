@@ -164,7 +164,65 @@ struct NativeProjection: Codable, Equatable {
     var configuration: ConfigurationAdoption? = nil
 }
 
+struct MemorySource: Codable, Equatable, Hashable {
+    let session: String
+    let entry: Int
+    var part: Int? = nil
+    var offset: Int? = nil
+}
+struct MemoryItem: Codable, Equatable, Identifiable {
+    let id: String
+    let kind: String
+    let text: String
+    let detail: String?
+    let scope: String?
+    let evidence: String
+    let status: String
+    let sources: [MemorySource]
+    let revision: Int
+    let progress: String?
+}
+struct MemorySnapshot: Codable, Equatable {
+    let session: String
+    let revision: Int
+    let items: [MemoryItem]
+    let inspectedThrough: Int?
+    let summary: Int?
+    let coveredThrough: Int?
+}
+struct KnowledgeScope: Codable, Equatable {
+    let kind: String
+    let workspace: [String]?
+    var label: String { kind == "user" ? "用户通用" : "项目：" + (workspace ?? []).joined(separator: " · ") }
+}
+struct MemoryKnowledge: Codable, Equatable, Identifiable {
+    let id: String
+    let topic: String
+    let scope: KnowledgeScope
+    let conclusion: String
+    let conditions: String
+    let evidence: String
+    let status: String
+    let revision: Int
+    let sources: [MemorySource]
+}
+struct KnowledgePage: Codable, Equatable {
+    let items: [MemoryKnowledge]
+    let next: Int?
+}
+struct MaterialPage: Codable, Equatable {
+    let source: MemorySource
+    let speaker: String
+    let kind: String
+    let text: String
+    let total: Int
+    let complete: Bool
+    let next: Int?
+}
+
 enum NativeRequest: Codable, Equatable {
+    case memory(request: String, session: String, offset: Int?)
+    case memorySource(request: String, session: String, source: MemorySource, item: String?, knowledge: String?)
     case hello(role: String, protocol: Int, version: String, source: String, base: String)
     case refresh
     case engineStop(request: String, identity: ServiceIdentity, idleOnly: Bool?)
@@ -177,11 +235,13 @@ enum NativeRequest: Codable, Equatable {
     case sessions(request: String, archived: Bool?, workspace: [String]?, search: String?)
     case history(request: String, session: String, after: Int?, source: AttentionSource?)
     case manage(request: String, serviceInstance: String, items: [SessionManagement])
-    private enum Keys: String, CodingKey { case after, archived, items, search, workspace, t, role, `protocol`, version, source, base, request, session, notice, serviceInstance, gen, ids, name, identity, idleOnly }
+    private enum Keys: String, CodingKey { case offset, item, knowledge, after, archived, items, search, workspace, t, role, `protocol`, version, source, base, request, session, notice, serviceInstance, gen, ids, name, identity, idleOnly }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .t) {
         case "native.sessions": self = .sessions(request: try c.decode(String.self, forKey: .request), archived: try c.decodeOptional(Bool.self, forKey: .archived), workspace: try c.decodeOptional([String].self, forKey: .workspace), search: try c.decodeOptional(String.self, forKey: .search))
+        case "native.memory": self = .memory(request: try c.decode(String.self, forKey: .request), session: try c.decode(String.self, forKey: .session), offset: try c.decodeOptional(Int.self, forKey: .offset))
+        case "native.memory.source": self = .memorySource(request: try c.decode(String.self, forKey: .request), session: try c.decode(String.self, forKey: .session), source: try c.decode(MemorySource.self, forKey: .source), item: try c.decodeOptional(String.self, forKey: .item), knowledge: try c.decodeOptional(String.self, forKey: .knowledge))
         case "native.history": self = .history(request: try c.decode(String.self, forKey: .request), session: try c.decode(String.self, forKey: .session), after: try c.decodeOptional(Int.self, forKey: .after), source: try c.decodeOptional(AttentionSource.self, forKey: .source))
         case "native.session.manage": self = .manage(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), items: try c.decode([SessionManagement].self, forKey: .items))
 
@@ -207,6 +267,18 @@ enum NativeRequest: Codable, Equatable {
             try c.encodeIfPresent(archived, forKey: .archived)
             try c.encodeIfPresent(workspace, forKey: .workspace)
             try c.encodeIfPresent(search, forKey: .search)
+        case let .memory(request, session, offset):
+            try c.encode("native.memory", forKey: .t)
+            try c.encode(request, forKey: .request)
+            try c.encode(session, forKey: .session)
+            try c.encodeIfPresent(offset, forKey: .offset)
+        case let .memorySource(request, session, source, item, knowledge):
+            try c.encode("native.memory.source", forKey: .t)
+            try c.encode(request, forKey: .request)
+            try c.encode(session, forKey: .session)
+            try c.encode(source, forKey: .source)
+            try c.encodeIfPresent(item, forKey: .item)
+            try c.encodeIfPresent(knowledge, forKey: .knowledge)
         case let .history(request, session, after, source):
             try c.encode("native.history", forKey: .t)
             try c.encode(request, forKey: .request)
@@ -263,6 +335,7 @@ enum NativeRequest: Codable, Equatable {
 enum EngineStopPhase: String, Codable { case accepted, done, failed }
 
 enum NativeResponse: Codable, Equatable {
+    case memoryResult(request: String, serviceInstance: String, session: String, memory: MemorySnapshot?, unprocessed: Bool?, knowledge: KnowledgePage?, material: MaterialPage?, error: String?)
     case welcome(identity: ServiceIdentity, projection: NativeProjection)
     case projection(projection: NativeProjection)
     case inspected(request: String, work: NativeWork?, error: String?)
@@ -274,11 +347,12 @@ enum NativeResponse: Codable, Equatable {
     case sessionsResult(request: String, serviceInstance: String, sessions: [NativeSession]?, error: String?)
     case historyResult(request: String, serviceInstance: String, session: String, entries: [HistoryEntry]?, events: [HistoryEvent]?, next: Int?, done: Bool, error: String?)
     case managed(request: String, serviceInstance: String, results: [SessionManagementResult])
-    private enum Keys: String, CodingKey { case done, entries, events, next, results, sessions, t, identity, projection, request, work, error, session, phase, note, reason, serviceInstance, base, snapshot, mcp, canChangeData }
+    private enum Keys: String, CodingKey { case memory, unprocessed, knowledge, material, done, entries, events, next, results, sessions, t, identity, projection, request, work, error, session, phase, note, reason, serviceInstance, base, snapshot, mcp, canChangeData }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .t) {
         case "native.sessions.result": self = .sessionsResult(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), sessions: try c.decodeOptional([NativeSession].self, forKey: .sessions), error: try c.decodeOptional(String.self, forKey: .error))
+        case "native.memory.result": self = .memoryResult(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), session: try c.decode(String.self, forKey: .session), memory: try c.decodeOptional(MemorySnapshot.self, forKey: .memory), unprocessed: try c.decodeOptional(Bool.self, forKey: .unprocessed), knowledge: try c.decodeOptional(KnowledgePage.self, forKey: .knowledge), material: try c.decodeOptional(MaterialPage.self, forKey: .material), error: try c.decodeOptional(String.self, forKey: .error))
         case "native.history.result": self = .historyResult(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), session: try c.decode(String.self, forKey: .session), entries: try c.decodeOptional([HistoryEntry].self, forKey: .entries), events: try c.decodeOptional([HistoryEvent].self, forKey: .events), next: try c.decodeOptional(Int.self, forKey: .next), done: try c.decode(Bool.self, forKey: .done), error: try c.decodeOptional(String.self, forKey: .error))
         case "native.session.managed": self = .managed(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), results: try c.decode([SessionManagementResult].self, forKey: .results))
 
@@ -304,6 +378,16 @@ enum NativeResponse: Codable, Equatable {
             try c.encode(request, forKey: .request)
             try c.encode(serviceInstance, forKey: .serviceInstance)
             try c.encodeIfPresent(sessions, forKey: .sessions)
+            try c.encodeIfPresent(error, forKey: .error)
+        case let .memoryResult(request, serviceInstance, session, memory, unprocessed, knowledge, material, error):
+            try c.encode("native.memory.result", forKey: .t)
+            try c.encode(request, forKey: .request)
+            try c.encode(serviceInstance, forKey: .serviceInstance)
+            try c.encode(session, forKey: .session)
+            try c.encodeIfPresent(memory, forKey: .memory)
+            try c.encodeIfPresent(unprocessed, forKey: .unprocessed)
+            try c.encodeIfPresent(knowledge, forKey: .knowledge)
+            try c.encodeIfPresent(material, forKey: .material)
             try c.encodeIfPresent(error, forKey: .error)
         case let .historyResult(request, serviceInstance, session, entries, events, next, done, error):
             try c.encode("native.history.result", forKey: .t)

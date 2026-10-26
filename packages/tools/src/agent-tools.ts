@@ -65,10 +65,11 @@ export function defineAgentTools(client: CollaborationClient): readonly ToolDefi
         }
         return parse(args)
       },
-      async run(request) {
+      async run(request, context) {
         try {
-          const reply = await client.request(request)
+          const reply = await client.request({ ...request, ...(context.entry === undefined ? {} : { generatedFrom: context.entry }) })
           return reply.ok ? { ok: true, output: (request.action === 'consult' ? '咨询受理回执（不表示顾问已完成）：\n' : '') + JSON.stringify(reply.value),
+            ...(reply.knowledge === undefined ? {} : { knowledge: reply.knowledge }),
             ...(request.action === 'wait' && object(reply.value) && reply.value.ok === true
               && object(reply.value.wait) && reply.value.wait.state === 'waiting' ? { halt: true as const } : {}),
           } : { ok: false, output: reply.reason }

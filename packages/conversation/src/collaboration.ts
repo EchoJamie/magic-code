@@ -5,7 +5,7 @@ export type CollaborationBoundary = {
   /** 原子领取持久收件并追加来源引用；返回是否有需要重审的新交代。 */
   consume(): Promise<boolean>
   /** 当前职责、共同约束及未结束请求的可回查引用。每次请求重新取。 */
-  context(): Promise<string | undefined>
+  context(provided?: (references: readonly import('@magic/contracts').KnowledgeReference[]) => void): Promise<string | undefined>
   /** 停止准入、当前委派和角色工具范围由宿主检查。 */
   admit(call?: ToolCall): string | undefined
   /** 只在真正发出模型请求时记录带入，不能将消费冒称已带入。 */
@@ -29,8 +29,8 @@ export const COLLABORATION_GUIDANCE = `## 本次协作
 
 你仍对自己承接的整体结果负责。收到结果要核验并整合，不能把执行者退出、回复结束或自称完成当成验收。整体停止覆盖同项工作全部成员与继续委派，局部停止不影响他人的独立工作。整体收尾前处理仍在执行或等待的部分；停止后迟到结果不构成继续授权，明确继续也先核对事实，不重放未知效果。`
 
-export async function collaborationPrompt(base: string, boundary?: CollaborationBoundary): Promise<string> {
-  const context = await boundary?.context()
+export async function collaborationPrompt(base: string, boundary?: CollaborationBoundary, provided?: (references: readonly import('@magic/contracts').KnowledgeReference[]) => void): Promise<string> {
+  const context = await boundary?.context(provided)
   return context === undefined
     ? base
     : `${base}\n\n${COLLABORATION_GUIDANCE}\n\n${context}`

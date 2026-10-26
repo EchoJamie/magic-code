@@ -52,7 +52,7 @@ function refs(stage: Stage): readonly DraftRef[] {
  * （U37 起 `DraftRef` 是判别联合，见其类型注）。
  */
 function externalOf(ref: DraftRef | undefined): boolean | undefined {
-  return ref !== undefined && ref.kind !== 'skill' && ref.kind !== 'dir' ? ref.external === true : undefined
+  return ref !== undefined && (ref.kind === 'file' || ref.kind === 'image') ? ref.external === true : undefined
 }
 
 /** 一路选入一个文件引用：`@` → 答复 → 回车。 */
@@ -237,13 +237,59 @@ describe('几何：引用折到两行上也要上对色', () => {
 })
 
 describe('`@` 开候选：只在词边界，边上边问', () => {
+  test('同一查询的候选重排仍选中原身份，不按行号换材料', () => {
+    const stage = createStage()
+    stage.type('@')
+    feedPaths(stage, '', [row('a.txt'), row('b.txt')])
+    stage.press({ kind: 'down' })
+    feedPaths(stage, '', [row('b.txt'), row('a.txt')])
+    stage.press(ENTER)
+    expect(refs(stage).map(ref => ref.source)).toEqual(['/ws/b.txt'])
+    expect(submitted(stage)).toHaveLength(0)
+  })
+
+  test('原候选消失后回车不暗选同一行的新材料，明确移动后才可选入', () => {
+    const stage = createStage()
+    stage.type('参考 @')
+    feedPaths(stage, '', [row('a.txt'), row('b.txt')])
+    feedPaths(stage, '', [row('c.txt')])
+    stage.press(ENTER)
+    expect(refs(stage)).toEqual([])
+    expect(stage.shell.getView().draft).toBe('参考 @')
+    stage.press({ kind: 'down' })
+    stage.press(ENTER)
+    expect(refs(stage).map(ref => ref.source)).toEqual(['/ws/c.txt'])
+    expect(submitted(stage)).toHaveLength(0)
+  })
+
+  test('原候选消失后改查询可选择新结果，取消仍恢复原稿和引用', () => {
+    const stage = createStage()
+    stage.type('先读 ')
+    pickFile(stage, '原文😀.txt')
+    stage.type(' 再看')
+    stage.press(LEFT)
+    const before = stage.shell.getView()
+    stage.type(' @')
+    feedPaths(stage, '', [row('a.txt')])
+    feedPaths(stage, '', [])
+    stage.type('新')
+    feedPaths(stage, '新', [row('新é.txt')])
+    const dock = stage.shell.getView().dock
+    expect(dock.kind === 'picker' && dock.picker.selected).toBe(0)
+    stage.press(ESC)
+    expect(stage.shell.getView().draft).toBe(before.draft.slice(0, before.caret) + ' ' + before.draft.slice(before.caret))
+    expect(stage.shell.getView().refs).toEqual(before.refs)
+    expect(stage.shell.getView().caret).toBe(before.caret + 1)
+    expect(submitted(stage)).toHaveLength(0)
+  })
+
   test('打一个 `@` 就问一次候选（此时查询是空的）', () => {
     const stage = createStage()
 
     stage.type('看下 ')
     stage.press({ kind: 'char', char: '@' })
 
-    expect(stage.commands()).toEqual([{ type: 'paths.list', query: '' }])
+    expect(stage.commands()).toEqual([{ type: 'paths.list', query: '' }, { type: 'session.references', requestId: expect.any(String), query: '' }])
     expect(stage.shell.getView().draft).toBe('看下 @')
     expect(stage.shell.getView().dock.kind).toBe('picker')
   })
@@ -273,7 +319,7 @@ describe('`@` 开候选：只在词边界，边上边问', () => {
 
     // 草稿里那一串跟着长（`@` 之后就是查询），且每改一次问一次
     expect(stage.shell.getView().draft).toBe('@src/lo')
-    expect(stage.commands().slice(0, 3)).toEqual([
+    expect(stage.commands().filter(command => command.type === 'paths.list').slice(0, 3)).toEqual([
       { type: 'paths.list', query: '' },
       { type: 'paths.list', query: 's' },
       { type: 'paths.list', query: 'sr' },
@@ -298,7 +344,7 @@ describe('`@` 开候选：只在词边界，边上边问', () => {
     stage.press(BACKSPACE)
 
     expect(stage.shell.getView().draft).toBe('@sr')
-    expect(stage.commands().at(-1)).toEqual({ type: 'paths.list', query: 'sr' })
+    expect(stage.commands().filter(command => command.type === 'paths.list').at(-1)).toEqual({ type: 'paths.list', query: 'sr' })
   })
 
   test('查询退空了再退格 ⇒ **撤掉这一处查询**（草稿回到打 `@` 之前）', () => {
@@ -472,7 +518,7 @@ describe('选定：引用留在原位', () => {
     stage.press(TAB)
 
     expect(stage.shell.getView().draft).toBe('@src/')
-    expect(stage.commands().at(-1)).toEqual({ type: 'paths.list', query: 'src/' })
+    expect(stage.commands().filter(command => command.type === 'paths.list').at(-1)).toEqual({ type: 'paths.list', query: 'src/' })
     // 抽屉还开着（补全是接着打，不是选定）
     expect(stage.shell.getView().dock.kind).toBe('picker')
   })

@@ -15,6 +15,8 @@ import { createClientConnections, type ClientConn } from './connections.ts'
 import { createExecutorControl, sendToExecutor as send, type Executor } from './executor-control.ts'
 import { ARCHIVED_NOTE, createSessionManagement } from './session-management.ts'
 import { createRunStops } from './stopping.ts'
+import { createCompactController } from './compact.ts'
+import { memoryWorkspace, readMemory, readMemorySource, readReferenceSessions } from './memory.ts'
 /** App 所属的本机管理者：独占服务、只读观察、按需执行与有责收尾。
  * 记录事实通过 records 端口读取；控制连接本身不创建会话或执行者。
  * 执行者退出与其自有资源核销分开确认，宿主生命管道负责最终收尾。
@@ -43,7 +45,7 @@ import type {
   Wire,
 } from '@magic/contracts'
 import { NATIVE_PROTOCOL, SOFTWARE_VERSION } from '@magic/contracts'
-import { readSessionCatalog, readSessionDisplayHistory } from '@magic/conversation'
+import { bindSessionReferences, createPlanReader, readSessionCatalog, readSessionDisplayHistory } from '@magic/conversation'
 import { createProcessLedger } from '@magic/execution'
 import { createRecordsStore } from '@magic/records'
 import type { Socket } from 'bun'
@@ -69,7 +71,7 @@ export type { ExecutorLauncher, ExecutorRequest, SpawnedExecutor } from './launc
 import { projectWorks } from './native-projection.ts'
 import { createNativeServer } from './native-server.ts'
 import { noticeKey } from './notices.ts'
-import { query as observe } from './observation.ts'
+import { query as observe, workspaceOf } from './observation.ts'
 import type { RunPaths } from './paths.ts'
 import { ensureRunDir, normalizeDataDir, tightenSocket } from './paths.ts'
 import { softwareSource } from './runtime-launch.ts'
@@ -236,7 +238,9 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   try {
     savedRuns = readRuns(paths)
     initialConfig = loadConfig({ magic: options.magic })
-    store = createRecordsStore({ dataDir: options.magic.base, workspace: [] })
+    store = createRecordsStore({ dataDir: options.magic.base, workspace: [], onKnowledgeMemoryChanged: sessions => {
+      for (const session of sessions) void publishMemoryPlan(session).catch(error => options.log?.(`知识已变更，计划投影发布失败：${String(error)}`))
+    } })
   } catch (error) {
     server.stop(true)
     clearStale(paths.socket)
@@ -299,6 +303,22 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     },
   })
   const { workRoot, isArchived, canArchive, manageSession } = sessions
+
+  const compactions = createCompactController({
+    store, now,
+    publish: event => {
+      for (const conn of clients.values()) if (conn.selectedSession === event.session) conn.link.send({ t: 'ev', gen: null, event })
+    },
+  })
+
+  /** 知识提交可能改变多个会话；沿所选会话订阅发布，不依附请求者或 Agent 生命周期。 */
+  async function publishMemoryPlan(session: string): Promise<void> {
+    const records = store.serviceFor(session)
+    const plan = await createPlanReader({ records, session }).readPlan()
+    const event: KernelEvent = { id: records.nextId(), session, turn: null, at: now(), kind: 'plan.changed',
+      data: { ...plan, entry: plan.entry ?? 0 } }
+    for (const conn of clients.values()) if (conn.selectedSession === session) conn.link.send({ t: 'ev', gen: null, event })
+  }
 
   const environmentFor = (session: string): WorkEnvironment | undefined => environments.get(workRoot(session))
   function releaseEnvironments(): void {
@@ -1041,19 +1061,22 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       let entries: Entry[] = []
       const inputs: Extract<KernelEvent, { kind: 'input.local' }>[] = []
       const timing: TurnTimingEvent[] = []
+      const compactEvents: Extract<KernelEvent, { kind: 'compact.state' }>[] = []
       for await (const event of store.serviceFor(session).readEvents(session)) {
         if (event.kind === 'input.local') inputs.push(event)
         if (isTurnTimingEvent(event)) timing.push(event)
+        if (event.kind === 'compact.state') compactEvents.push(event)
       }
       // 子会话正文里的 `agent-message` 条目只带引用；正文随末块交给外壳并入正文。
       const agent = store.collaboration.agentForSession(session)
       const work = agent === undefined ? undefined : store.collaboration.collaborationForSession(session)
       const messages = agent === undefined || work === undefined || agent.agentId === work.coordinatorId
         ? [] : store.collaboration.listMessages(agent.agentId)
+      const plan = await createPlanReader({ records: store.serviceFor(session), session }).readPlan()
       const send = (done: boolean): void => {
         conn.link.send({
           t: 'ev', gen: null, event: {
-            id: 0, turn: null, at: now(), session, kind: 'session.history', data: { session, entries, done, ...(done ? { inputs, timing, ...(messages.length === 0 ? {} : { messages }) } : {}) },
+            id: 0, turn: null, at: now(), session, kind: 'session.history', data: { session, entries, done, ...(done ? { inputs, timing, plan, compactions: compactEvents, ...(messages.length === 0 ? {} : { messages }) } : {}) },
           }
         })
         entries = []
@@ -1083,10 +1106,98 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     }
     const root = session !== null && execution ? workRoot(session) : undefined
     const release = root === undefined ? undefined : sessions.admit(root)
-    try { await acceptCommand(conn, gen, command) }
+    try {
+      const input = command.type === 'input.submit' ? command : command.type === 'collaboration.input' ? command.input : undefined
+      if (input?.local !== true && input?.refs?.some(ref => ref.kind === 'session' || ref.kind === 'memory')) {
+        const target = command.type === 'collaboration.input' && command.member !== undefined
+          ? store.collaboration.getAgent(command.member)?.sessionId : session
+        try {
+          for (const ref of input.refs) if (ref.kind === 'memory' && ref.scope.kind === 'session') {
+            if (ref.scope.session !== target) throw new Error('纠正对象与发送目标不一致；请回到原目标交代')
+            if (target == null || !store.serviceFor(target).memory.read().items.some(item => item.id === ref.source)) throw new Error('所选事项已不可读取；请重新查看')
+          }
+          const existing = target == null || input.ref === undefined ? undefined : store.serviceFor(target).inputs.get(input.ref)
+          const bound = existing?.input ?? await bindSessionReferences(input, store)
+          if (conn.selectedSession !== session) throw new Error('输入目标已改变，未受理；原稿保留')
+          command = command.type === 'collaboration.input' ? { ...command, input: bound } : { ...bound, type: 'input.submit' }
+        } catch (error) {
+          conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: target ?? session ?? '', kind: 'input.settled', data: { ref: input.ref, ok: false, reason: String(error) } } })
+          return
+        }
+      }
+      await acceptCommand(conn, gen, command)
+    }
     finally { release?.() }
   }
   async function acceptCommand(conn: ClientConn, gen: number | null, command: Command): Promise<void> {
+    if (command.type === 'compact.request' || command.type === 'compact.query' || command.type === 'compact.cancel') {
+      const request = command
+      const state = request.type === 'compact.query' ? await compactions.query(request.session, request.requestId)
+        : request.type === 'compact.cancel' ? await compactions.cancel(request.session, request.requestId)
+        : await compactions.request(request, async (signal, started) => {
+          const release = sessions.admit(workRoot(request.session))
+          try {
+            signal.throwIfAborted()
+            if (stopped) throw new Error('Engine 正在停止')
+            const entries = await store.readEntriesBack(request.session, undefined, 1)
+            if (entries.length === 0) return { requestId: request.requestId, state: 'no-material', reason: '没有可压缩材料' }
+            const workspace = await memoryWorkspace(store, request.session, [])
+            signal.throwIfAborted()
+            const previous = lastRuns.get(request.session)
+            let executor = liveOf(request.session)
+            if (executor?.run.stopping || executor === undefined && previous !== undefined && (previous.ended === undefined || previous.reclaimPending || previous.reclaimNote !== undefined)) throw new Error('上一代工作责任尚未核销，未执行压缩')
+            executor ??= spawn({ session: request.session, explicit: true, cwd: workspace[0] ?? conn.cwd, environment: conn.environment })
+            if (executor === undefined) throw new Error('无法取得压缩执行责任')
+            for (const watcher of clients.values()) if (watcher.selectedSession === request.session && watcher.target !== executor) bind(watcher, executor)
+            return await control.compact(executor, request, signal, started)
+          } finally { release() }
+        })
+      if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: request.session, kind: 'compact.state', data: state } })
+      return
+    }
+    if (command.type === 'session.references') {
+      const data = await readReferenceSessions(store, command).catch(error => ({ requestId: command.requestId, query: command.query, offset: command.offset ?? 0, rows: [], error: String(error) }))
+      if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'session.references', data } })
+      return
+    }
+    if (command.type === 'memory.read') {
+      const data = await (async () => readMemory(store, command.session, await memoryWorkspace(store, command.session, command.session === undefined ? workspaceOf(loadConfig({ magic: options.magic }), conn.cwd).roots() : [])))().catch(error => ({ ...(command.session === undefined ? {} : { session: command.session }), workspace: [], error: String(error) }))
+      if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: command.session ?? '', kind: 'memory.state', data: { requestId: command.requestId, ...data } } })
+      return
+    }
+    if (command.type === 'memory.source') {
+      const result = await (async () => {
+        const workspace = await memoryWorkspace(store, command.session, command.session === undefined ? workspaceOf(loadConfig({ magic: options.magic }), conn.cwd).roots() : [])
+        return readMemorySource(store.forWorkspace(workspace), command)
+      })().then(page => ({ page }), error => ({ error: String(error) }))
+      if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: command.session ?? '', kind: 'memory.source', data: { requestId: command.requestId, ...(command.session === undefined ? {} : { session: command.session }), ...result } } })
+      return
+    }
+    if (command.type === 'knowledge.query' || command.type === 'knowledge.read') {
+      const data = await (async () => {
+        const workspace = await memoryWorkspace(store, command.session, command.session === undefined ? workspaceOf(loadConfig({ magic: options.magic }), conn.cwd).roots() : [])
+        const knowledge = store.forWorkspace(workspace).knowledge
+        if (command.type === 'knowledge.query') return { workspace, page: knowledge.search(command.query) }
+        const item = knowledge.read(command.id)
+        if (item === undefined) throw new Error('知识已不可读取或不在当前范围')
+        return { workspace, item }
+      })().catch(error => ({ workspace: [], error: String(error) }))
+      if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: command.session ?? '', kind: 'knowledge.state', data: { requestId: command.requestId, ...(command.session === undefined ? {} : { session: command.session }), ...data } } })
+      return
+    }
+    if (command.type === 'knowledge.forget' || command.type === 'knowledge.forget-result') {
+      const data = await (async () => {
+        const workspace = await memoryWorkspace(store, command.session, command.session === undefined ? workspaceOf(loadConfig({ magic: options.magic }), conn.cwd).roots() : [])
+        const knowledge = store.forWorkspace(workspace).knowledge
+        const current = knowledge.read(command.id)
+        if (current !== undefined && (current.scope.kind !== command.scope.kind || (current.scope.kind === 'project'
+          && command.scope.kind === 'project' && JSON.stringify(current.scope.workspace) !== JSON.stringify(command.scope.workspace)))) throw new Error('知识范围与所见对象不一致，未执行遗忘')
+        const request = { requestId: command.requestId, id: command.id, expectedRevision: command.expectedRevision }
+        return { result: command.type === 'knowledge.forget' ? knowledge.forget(request) : knowledge.forgetResult(request) }
+      })().catch(error => ({ error: String(error) }))
+      if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: command.session ?? '', kind: 'knowledge.forgotten', data: { requestId: command.requestId, ...(command.session === undefined ? {} : { session: command.session }), ...data } } })
+      return
+    }
     if (command.type === 'background.list' || command.type === 'background.stop') { backgroundCommand(conn, command); return }
     if (command.type === 'history.read') {
       const session = command.session ?? conn.selectedSession
@@ -1169,7 +1280,13 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       if (member?.purpose === 'consultation' && command.action !== 'list') { conn.link.send({ t: 'line', text: '咨询详情只供查看；相关纠正请补充给原工作' }); return }
       const inputs = store.serviceFor(session).inputs
       let note: string | undefined
-      if (command.action === 'edit') note = inputs.edit(command.ref, command.revision, command.input) ? '已保存未消费输入' : '输入已消费或已改变，未修改'
+      if (command.action === 'edit') {
+        try {
+          const input = await bindSessionReferences(command.input, store)
+          if (input.refs?.some(ref => ref.kind === 'memory' && ref.scope.kind === 'session' && ref.scope.session !== session)) throw new Error('纠正对象与发送目标不一致')
+          note = inputs.edit(command.ref, command.revision, input) ? '已保存未消费输入' : '输入已消费或已改变，未修改'
+        } catch (error) { note = `未修改输入：${String(error)}` }
+      }
       if (command.action === 'withdraw') note = inputs.withdraw(command.ref, command.revision) ? '已撤回未消费输入' : '输入已消费或已改变，未撤回'
       if (command.action === 'continue') {
         const row = inputs.get(command.ref)
@@ -1478,6 +1595,8 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   function onExecutorMessage(executor: Executor, message: ExecutorToManager): void {
 
     switch (message.t) {
+      case 'compact.started': control.compactStarted(executor, message.requestId); return
+      case 'compact.result': control.compactResult(executor, message.requestId, message.state); return
       case 'collaboration.request': {
         const session = executor.run.session
         if (session === null) { send(executor, { t: 'collaboration.reply', requestId: message.requestId, reply: { ok: false, reason: '执行身份尚未绑定' } }); return }
@@ -1811,7 +1930,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     }
     saveRuns(true)
     // 扩展收尾与所属工具回收并行，扩展不能阻止目标 Agent 取消。
-    const extension = Promise.resolve().then(() => options.lifecycle?.shutdown())
+    const extension = Promise.all([compactions.close(), Promise.resolve().then(() => options.lifecycle?.shutdown())])
     let extensionTimer: ReturnType<typeof setTimeout> | undefined
     const extensionResult = Promise.race([
       extension.then(() => undefined, (error: unknown) => String(error)),
@@ -1853,6 +1972,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   }
 
   await recovering
+  await compactions.recover()
   await Promise.all([...lastRuns.values()].map(async run => {
     if (run.ended === undefined) return
     const note = run.owned.length > 0 ? await reclaimRun(run) : undefined

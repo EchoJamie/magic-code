@@ -190,19 +190,19 @@ describe('压缩 · 摘要入库（阈值触发，真跑一遍循环）', () => 
     expect(deltas).not.toContain('内部摘要正文')
   })
 
-  /** 规格：「反复压缩——`summary` 条目可被再次摘要」（B6）。 */
-  test('摘要的摘要——旧摘要落在待压的旧段里，照旧喂给模型', async () => {
-    const stage = makeStage({ turns: [{ text: '第二份摘要正文' }] })
-    stage.records.appendEntry({ kind: 'user', content: { text: '老交代' }, at: FIXED_AT })
-    stage.records.appendEntry({ kind: 'summary', content: { text: '第一份摘要正文' }, at: FIXED_AT })
+  test('连续压缩从已发布覆盖范围合并前一摘要，原始记录保持可回查', async () => {
+    const stage = makeStage({ turns: [{ text: '第一份摘要正文' }, { text: '第二份摘要正文' }] })
+    const original = stage.records.appendEntry({ kind: 'user', content: { text: '老交代' }, at: FIXED_AT })
     stage.records.appendEntry({ kind: 'user', content: { text: '近处的交代' }, at: FIXED_AT })
-
-    // 近段 1 条 ⇒ 旧段 ＝〔老交代 · 第一份摘要〕——旧摘要就在里面
     const compact = makeCompactor(stage, { policy: { nearEntries: 1 } })
-    const outcome = await compact.run({ trigger: 'threshold' })
-
-    expect(outcome.ok).toBe(true)
-    expect(sentTextAt(stage.gateway.requests, 0)).toContain('第一份摘要正文')
+    expect((await compact.run({ trigger: 'threshold' })).ok).toBe(true)
+    expect(stage.records.memory.read().coveredThrough).toBe(original)
+    const next = stage.records.appendEntry({ kind: 'user', content: { text: '新的近段' }, at: FIXED_AT })
+    expect((await compact.run({ trigger: 'threshold' })).ok).toBe(true)
+    expect(sentTextAt(stage.gateway.requests, 1)).toContain('第一份摘要正文')
+    expect(sentTextAt(stage.gateway.requests, 1)).not.toContain('老交代')
+    expect(stage.records.memory.read().coveredThrough).toBeLessThan(next)
+    expect(stage.records.entries[0]?.content).toEqual({ text: '老交代' })
     expect(summariesOf(stage)).toHaveLength(2)
   })
 })
@@ -398,7 +398,7 @@ describe('压缩：图片只报名字，不说话过了', () => {
     // 摘要那一次调用（第 2 条请求）的正文——旧段渲染成的文本
     const asked = sentTextAt(stage.gateway.requests, 1)
 
-    expect(asked).toContain('@shot.png（图片）') // 报得出「带过一张图」
+    expect(asked).toContain('图片 @shot.png') // 报得出「带过一张图」
     expect(asked).not.toContain('iVBORw0KGgo') // 字节没被当文本铺进来
     expect(asked).not.toContain('已看见')
     expect(asked).not.toContain('已送达')

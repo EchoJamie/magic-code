@@ -103,6 +103,7 @@ export type SaveImage = (file: {
 }) => Promise<{ readonly ok: true; readonly path: string } | { readonly ok: false; readonly reason: string }>
 
 export type SessionHostDeps = {
+  readonly readPlan?: (session: SessionId) => Promise<import('@magic/contracts').PlanSnapshot>
   /**
    * **导出原图的落点**（U110）——见 `SaveImage`。缺省＝这一条命令照实回「导不了」。
    */
@@ -320,7 +321,7 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
 
     // 末块：`done: true`（一条都没有时也发——「这条会话是空的」是要说清楚的事实，
     // 否则外壳等不到收尾，屏上永远停在「正在重建」）
-    deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: true, inputs, timing }))
+    deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: true, inputs, timing, ...(deps.readPlan === undefined ? {} : { plan: await deps.readPlan(target) }) }))
     void seen
   }
 

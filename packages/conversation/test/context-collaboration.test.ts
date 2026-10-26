@@ -88,7 +88,7 @@ describe('协作上下文 · 权威材料投影', () => {
     ]), userSource: { sessionId: 'source-session', entryId: 7 } }, 20)
 
     const assembled = await f.assemble()
-    const delivered = assembled.at(-1)!
+    const delivered = assembled.findLast(message => message.role === 'user')!
     expect(delivered.role).toBe('user')
     if (delivered.role !== 'user') throw new Error('expected user material')
     expect(typeof delivered.content).not.toBe('string')
@@ -122,7 +122,7 @@ describe('协作上下文 · 权威材料投影', () => {
       { kind: 'entry', ref: { sessionId: 'source-session', entryId: 1 } },
       { kind: 'entry', ref: { sessionId: 'source-session', entryId: 2 } },
     ]), 20)
-    const last = (await f.assemble()).at(-1)!
+    const last = (await f.assemble()).findLast(message => message.role === 'user')!
     if (last.role !== 'user') throw new Error('expected material')
     expect(typeof last.content).toBe('string')
     expect(text(last.content)).toContain('旧技能步骤\n\n旧式交代')
@@ -139,7 +139,7 @@ describe('协作上下文 · 权威材料投影', () => {
     f.add(message(42, [{ kind: 'text', text: '两条工具记录之间的协作消息' }]), 4)
     f.sessions.get(self.sessionId)!.push({ id: 5, kind: 'tool-result', content: { text: '结果' }, payload: { ok: true, output: { text: '结果' } }, at: 1 })
     const assembled = await f.assemble()
-    expect(assembled.map(m => m.role)).toEqual(['system', 'assistant', 'tool', 'user', 'user'])
+    expect(assembled.map(m => m.role)).toEqual(['system', 'assistant', 'tool', 'user', 'user', 'assistant'])
     expect(assembled[1]).toMatchObject({ toolCalls: [{ id: pairingKeyOf(3), name: 'exec', args: { cmd: 'local' } }] })
     expect(assembled[2]).toMatchObject({ callId: pairingKeyOf(3), output: '结果' })
     expect(JSON.stringify(assembled)).not.toContain('must-not-replay')
@@ -182,7 +182,7 @@ describe('协作上下文 · 压缩与准确带入', () => {
     f.add(message(3, [{ kind: 'entry', ref: { sessionId: 'source-session', entryId: 1 } }]), 1)
     f.sessions.get(self.sessionId)!.push({ id: 2, kind: 'summary', content: { text: '摘要不含图片' }, at: 2 })
     const assembled = await f.assemble(0)
-    const delivered = assembled.at(-1)!
+    const delivered = assembled.findLast(message => message.role === 'user')!
     if (delivered.role !== 'user' || typeof delivered.content === 'string') throw new Error('image was lost')
     expect(delivered.content.find(p => p.type === 'image')).toEqual({ type: 'image', mime: 'image/png', data: bytes })
     expect(f.included).toEqual([[3]])

@@ -1,0 +1,131 @@
+import { expect, test } from 'bun:test'
+import { createRecordsStore } from '@magic/records'
+import { createConversationSession } from '@magic/conversation'
+import { createFauxGateway, makeFauxToolRuntime } from '@magic/faux'
+import type { KernelEvent, ModelGateway } from '@magic/contracts'
+import { createCompactController } from '../src/run/compact.ts'
+import { createStamper } from '../src/agent-assembly/events.ts'
+import { tempDir, removeDir } from './tmp.ts'
+
+function held(base: ModelGateway) {
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let calls = 0
+  const requests: Parameters<ModelGateway['stream']>[0][] = []
+  const gateway: ModelGateway = { stream(request, options) {
+    calls++; requests.push(request)
+    const stream = base.stream(request, options)
+    return { result: stream.result, events: (async function* () { await gate; yield* stream.events })() }
+  } }
+  return { gateway, release, requests, get calls() { return calls } }
+}
+async function until(check: () => boolean) {
+  const end = Date.now() + 2000
+  while (!check() && Date.now() < end) await Bun.sleep(2)
+  expect(check()).toBe(true)
+}
+function fixture() {
+  const dir = tempDir('magic-compact-control-')
+  const store = createRecordsStore({ dataDir: dir, workspace: [dir] })
+  const records = store.serviceFor('target')
+  let latest = 0
+  for (let n = 0; n < 6; n++) latest = records.appendEntry({ kind: n % 2 ? 'assistant' : 'user', content: { text: `旧阶段材料 ${n}` }, at: n + 1 })
+  records.memory.update({ expectedRevision: 0, inspectedThrough: latest, changes: [] })
+  const stamper = createStamper({ records, session: 'target', now: Date.now })
+  const events: KernelEvent[] = []
+  const sink = { emit(event: KernelEvent) { events.push(event); records.appendEvent(event) } }
+  const main = held(createFauxGateway({ stamper, turns: [{ text: '业务输出' }] }))
+  const cantrip = held(createFauxGateway({ stamper, turns: [{ text: '保留依据的阶段摘要' }] }))
+  const service = createConversationSession({ session: 'target', records, stamper, sink, gateway: main.gateway, tools: makeFauxToolRuntime(),
+    prompt: { cwd: dir, platform: 'darwin', date: '2026-10-26' }, compression: () => ({ gateway: cantrip.gateway }), context: { nearEntries: 3 } })
+  const published: KernelEvent[] = []
+  const controller = createCompactController({ store, now: Date.now, publish: event => published.push(event) })
+  const request = { type: 'compact.request' as const, session: 'target', requestId: 'request', focus: '保留已完成与未验证的区别' }
+  const run = (signal: AbortSignal, started: () => void) => service.compact(request, signal, started)
+  return { store, records, service, controller, request, run, main, cantrip, events, published,
+    async close() { main.release(); cantrip.release(); await service.shutdown(); await controller.close(); store.close(); removeDir(dir) } }
+}
+
+test('空闲主动压缩共用真实服务与摘要事务，不启动业务；同请求只调用一次，提交后取消仍完成', async () => {
+  const f = fixture()
+  try {
+    expect((await f.controller.request(f.request, f.run)).state).toBe('pending')
+    await until(() => f.cantrip.calls === 1)
+    await f.controller.request(f.request, f.run)
+    expect(f.main.calls).toBe(0)
+    expect(f.events.some(event => event.kind === 'agent.start' || event.kind === 'turn.start')).toBe(false)
+    f.cantrip.release()
+    await until(() => f.published.some(event => event.kind === 'compact.state' && event.data.state === 'completed'))
+    const result = await f.controller.cancel('target', 'request')
+    expect(result.state).toBe('completed')
+    expect(result.summary).toBe(f.records.memory.read().summary!)
+    expect(f.cantrip.calls).toBe(1)
+    expect(JSON.stringify(f.cantrip.requests[0]?.messages)).toContain(f.request.focus)
+    expect(f.service.busy()).toBe(false)
+    const persisted: KernelEvent[] = []
+    for await (const event of f.records.readEvents('target')) persisted.push(event)
+    expect(persisted.filter(event => event.kind === 'compact.state' && event.data.state === 'completed')).toHaveLength(1)
+  } finally { await f.close() }
+})
+
+test('忙时等完整模型边界再压缩，取消待执行请求不打断所属业务', async () => {
+  const f = fixture()
+  try {
+    f.service.submit({ text: '继续原工作', ref: 'input' })
+    await until(() => f.main.calls === 1)
+    await f.controller.request(f.request, f.run)
+    expect(f.cantrip.calls).toBe(0)
+    expect((await f.controller.cancel('target', 'request')).state).toBe('cancelled')
+    expect(f.cantrip.calls).toBe(0)
+    f.main.release()
+    await until(() => !f.service.busy())
+    expect(f.events.some(event => event.kind === 'turn.end' && event.data.reason === 'settled')).toBe(true)
+    expect(f.records.memory.read().summary).toBeNull()
+  } finally { await f.close() }
+})
+
+test('忙时压缩只在模型完整返回后开始，固定来源不会把新交代当控制重点', async () => {
+  const f = fixture()
+  try {
+    f.service.submit({ text: '继续业务', ref: 'input' })
+    await until(() => f.main.calls === 1)
+    await f.controller.request(f.request, f.run)
+    expect(f.cantrip.calls).toBe(0)
+    f.main.release()
+    await until(() => f.cantrip.calls === 1)
+    f.cantrip.release()
+    await until(() => !f.service.busy())
+    expect((await f.controller.query('target', 'request')).state).toBe('completed')
+    const entries = []
+    for await (const entry of f.records.readEntries('target')) entries.push(entry)
+    expect(entries.filter(entry => entry.kind === 'user' && 'text' in entry.content && entry.content.text.includes('保留已完成'))).toHaveLength(0)
+  } finally { await f.close() }
+})
+
+test('重启有受理无终态记中断且不重放；无会话和归档不创建执行责任', async () => {
+  const f = fixture()
+  try {
+    f.records.appendEvent({ id: f.records.nextId(), session: 'target', turn: null, at: 1, kind: 'compact.state', data: { requestId: 'orphan', accepted: true, state: 'running' } })
+    await f.controller.recover()
+    expect((await f.controller.query('target', 'orphan')).state).toBe('interrupted')
+    expect((await f.controller.request({ ...f.request, session: 'missing' }, f.run)).state).toBe('no-material')
+    f.store.setSessionArchived('target', true)
+    expect((await f.controller.request(f.request, f.run)).state).toBe('failed')
+    expect(f.main.calls + f.cantrip.calls).toBe(0)
+    expect(f.store.hasSession('missing')).toBe(false)
+  } finally { await f.close() }
+})
+
+test('无重点主动压缩省略可选字段，真实记录事件仍能通过JSON校验', async () => {
+  const f = fixture()
+  const request = { type: 'compact.request' as const, session: 'target', requestId: 'without-focus' }
+  try {
+    const accepted = await f.controller.request(request, (signal, started) => f.service.compact(request, signal, started))
+    expect(accepted.state).toBe('pending')
+    expect(Object.hasOwn(accepted, 'focus')).toBe(false)
+    f.cantrip.release()
+    await until(() => f.published.some(event => event.kind === 'compact.state' && event.data.state === 'completed'))
+    expect((await f.controller.query('target', request.requestId)).state).toBe('completed')
+    expect(f.main.calls).toBe(0)
+  } finally { await f.close() }
+})

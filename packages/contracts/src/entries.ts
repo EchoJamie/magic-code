@@ -26,6 +26,8 @@ export type EntryKind =
  */
 export type ToolCallPayload = {
   readonly name: string
+  /** 与助手正文同源：生成本次参数的实际请求所提供的知识。 */
+  readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[]
   /** 工具各自的参数模式。 */
   readonly args: Readonly<Record<string, unknown>>
 }
@@ -92,6 +94,10 @@ export type PlanNote = {
  * 前者为 `null`，后者有值。界面上「没有清单」与「刚清空」因此不会混。
  */
 export type PlanSnapshot = {
+  /** 计划投影中实际返回事项的知识关系。 */
+  readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[]
+  /** 工作记忆的修订；entry 仅作为来源定位。旧记录投影尚无此字段。 */
+  readonly revision?: number
   readonly entry: RecordId | null
   readonly plan: PlanNote | null
 }
@@ -101,6 +107,8 @@ export type PlanSnapshot = {
  * 不带 `call` 引用（同上）。
  */
 export type ToolResultPayload = {
+  /** 工具结果实际提供的知识身份；不表示工作事项已经采用。 */
+  readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[]
   readonly background?: import('./ports.ts').BackgroundWait | import('./ports.ts').BackgroundFinish
   readonly ok: boolean
   /** 内联或 blob 引用。 */
@@ -234,8 +242,13 @@ export type UsedSkillEntry = UsedSkill & {
  * 此处是**材料来源**。两个「来源」在同一张表上撞了名，但空格分明（同 `UserPayload.skills`
  * 那条注的老话）。
  */
-export type InputRefEntry = InputRefPlace &
+export type InputRefEntry = InputRefPlace & {
+  /** 本份引用实际展开材料的知识修订，按 part 保留来源关系。 */
+  readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[]
+} &
   (
+    | { readonly kind: 'session'; readonly source: SessionId; readonly through: RecordId; readonly label: string; readonly text: string }
+    | { readonly kind: 'memory'; readonly source: string; readonly scope: { readonly kind: 'session'; readonly session: SessionId } | import('./knowledge.ts').KnowledgeScope; readonly revision: number; readonly label: string; readonly text: string }
     | {
         readonly kind: 'skill'
         /** 技能名——`skill.used` 回执与模型取引用都用它（`UsedSkill.name`）。 */
@@ -351,13 +364,15 @@ export type UserPayload = {
  * （设计：「不转发给其它供应商」）。
  *
  * reasoning 保存思考文本；reasoningState 保存来源及供应商要求的回传数据。
- * 旧的仅含 reasoning 的记录继续可读；无思考时整个载荷缺席。
+ * 旧的仅含 reasoning 的记录继续可读；无思考时可仅保存本次请求提供的知识身份。
  */
 export type AssistantPayload = {
-  readonly reasoning: string
-  /** 思考的来源及供应商要求回传的协议数据；旧记录可缺。 */
-  readonly reasoningState?: ReasoningState
-}
+  /** 本次请求实际提供的知识；与工作事项实际采用分开记录。 */
+  readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[]
+} & (
+  | { readonly reasoning: string; readonly reasoningState?: ReasoningState }
+  | { readonly knowledge: readonly import('./knowledge.ts').KnowledgeReference[]; readonly reasoning?: never; readonly reasoningState?: never }
+)
 
 /** 仅回传给同一连接、同一模型；details 原样存储，不参与正文显示。 */
 export type ReasoningState = import('./model.ts').ModelSource & {
@@ -373,6 +388,7 @@ export type ReasoningState = import('./model.ts').ModelSource & {
  * `assistant` 条目自 U41 起有：供应商要求回传的那份思考，见 `AssistantPayload`）。
  */
 export type EntryPayload =
+  | import('./memory.ts').SummaryPayload
   | AgentMessagePayload
   | ToolCallPayload
   | ToolResultPayload

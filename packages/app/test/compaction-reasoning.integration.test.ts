@@ -1,7 +1,7 @@
 /** U113：辅助调用固定 Cantrip，按能力选择思考且与主选择隔离。 */
 
 import { describe, expect, test } from 'bun:test'
-import { attachShell } from '../src/index.ts'
+import { attachShell, type Assembly } from '../src/index.ts'
 import { eventsOfKind, makeStage, readDatabase, type Stage } from './support.ts'
 import { FAKE_API_KEY } from './ui/sandbox.ts'
 import { startFixture } from './ui/fixture.ts'
@@ -57,19 +57,27 @@ function stageOn(
 /** 压缩的触发阈值——压到 0（窗长已声明时走占比，故两个数都要压，见探针那条注）。 */
 const COMPACT_AT = { compactAtTokens: 1, compactAtFraction: 0, nearEntries: 1 } as const
 
-/** 一串还能用的剧本：第一轮 · 摘要 · 第二轮。 */
-function turnsOf(extra: readonly FixtureTurn[] = []): readonly FixtureTurn[] {
+/** 第一轮、当前模型受限整理、Cantrip 摘要、第二轮。 */
+function turnsOf(organizeArgs: Record<string, unknown>): readonly FixtureTurn[] {
   return [
     { kind: 'text', text: '答复一', chunks: 1, chunkDelayMs: 0 },
+    { kind: 'tool', name: 'memory_update', args: organizeArgs },
     { kind: 'text', text: '摘要：前一件事办完了', chunks: 1, chunkDelayMs: 0 },
     { kind: 'text', text: '答复二', chunks: 1, chunkDelayMs: 0 },
-    ...extra,
   ]
+}
+
+/** 待整理上界是刚完成的第一轮；只准备端点响应，不提前修改工作记忆。 */
+async function prepareOrganization(assembly: Assembly, args: Record<string, unknown>): Promise<void> {
+  const records = assembly.records.serviceFor(assembly.session!)
+  const latest = await records.readEntriesBack(assembly.session!, undefined, 1)
+  Object.assign(args, { expectedRevision: records.memory.read().revision, inspectedThrough: latest[0]!.id, changes: [] })
 }
 
 describe('压缩那一次调用带上了「关思考」', () => {
   test('① DeepSeek：压缩那次带 `thinking.type = disabled`；循环那几次一个字都没有', async () => {
-    const fixture = startFixture({ model: MODEL, turns: turnsOf() })
+    const organizeArgs = {}
+    const fixture = startFixture({ model: MODEL, turns: turnsOf(organizeArgs) })
     const stage = stageOn(fixture, { vendor: 'deepseek' })
     let assembly: ReturnType<Stage['assemble']> | undefined
 
@@ -81,15 +89,21 @@ describe('压缩那一次调用带上了「关思考」', () => {
       const handle = attachShell(assembly.shell)
 
       await handle.submit('第一件事')
+      await prepareOrganization(assembly, organizeArgs)
       await handle.submit('第二件事')
 
       const chats = chatsOf(fixture)
       const compact = chats.filter(isCompaction)
       const loop = chats.filter((one) => !isCompaction(one))
 
+      expect(eventsOfKind(handle.events, 'error').map(event => event.data.message)).toEqual([])
       // 压缩真发生过（没发生的话下面几条会「因为没得可查」而假绿）
       expect(compact.length).toBeGreaterThan(0)
       expect(eventsOfKind(handle.events, 'context.compacted').length).toBeGreaterThan(0)
+      expect(chats.map(request => isCompaction(request) ? 'compact'
+        : JSON.stringify(request.body['messages']).includes('这是当前工作的受限记忆整理') ? 'organize' : 'main'))
+        .toEqual(['main', 'organize', 'compact', 'main'])
+      expect(assembly.records.serviceFor(assembly.session!).memory.read().summary).not.toBeNull()
 
       // ① **要害**：官方文档的关闭形态
       for (const one of compact) expect(one.body['thinking']).toEqual({ type: 'disabled' })
@@ -113,7 +127,8 @@ describe('压缩那一次调用带上了「关思考」', () => {
   })
 
   test('④ 反面·中途切换主模型 ⇒ 压缩仍用 Cantrip', async () => {
-    const fixture = startFixture({ model: MODEL, turns: turnsOf() })
+    const organizeArgs = {}
+    const fixture = startFixture({ model: MODEL, turns: turnsOf(organizeArgs) })
     const stage = stageOn(fixture, { vendor: 'deepseek' })
     let assembly: ReturnType<Stage['assemble']> | undefined
 
@@ -124,12 +139,15 @@ describe('压缩那一次调用带上了「关思考」', () => {
       await handle.submit('第一件事')
       // 中途换模型（换的是接缝下游，对话域不知道发生过切换——照旧把开局那个名字送出去）
       expect(assembly.switchModel({ choice: 'spell' }).ok).toBe(true)
+      await prepareOrganization(assembly, organizeArgs)
       await handle.submit('第二件事')
 
       const chats = chatsOf(fixture)
       const compact = chats.filter(isCompaction)
       const loop = chats.filter((one) => !isCompaction(one))
       expect(compact.length).toBeGreaterThan(0)
+      expect(eventsOfKind(handle.events, 'error').map(event => event.data.message)).toEqual([])
+      expect(eventsOfKind(handle.events, 'context.compacted')).toHaveLength(1)
 
       // 主循环切换生效，压缩仍保持 Cantrip 的型号。
       const current = loop.at(-1)?.body['model']
@@ -143,7 +161,8 @@ describe('压缩那一次调用带上了「关思考」', () => {
   })
 
   test('③ 反面·循环那条路一个字没动：会话里设的档位照旧生效，压缩那次仍不思考', async () => {
-    const fixture = startFixture({ model: MODEL, turns: turnsOf() })
+    const organizeArgs = {}
+    const fixture = startFixture({ model: MODEL, turns: turnsOf(organizeArgs) })
     // 会话里那一档（配置里的默认思考设置 ⇒ 注册表按选中态补齐，与用户 `/model` 选的是同一条路）
     const stage = stageOn(fixture, { vendor: 'deepseek' })
     let assembly: ReturnType<Stage['assemble']> | undefined
@@ -154,6 +173,7 @@ describe('压缩那一次调用带上了「关思考」', () => {
       const handle = attachShell(assembly.shell)
 
       await handle.submit('第一件事')
+      await prepareOrganization(assembly, organizeArgs)
       await handle.submit('第二件事')
 
       const chats = chatsOf(fixture)
@@ -167,6 +187,8 @@ describe('压缩那一次调用带上了「关思考」', () => {
       // ⚠️ **「不看会话里那个设置」**：压缩那一跳说的是它自己的那一套（明确关闭），
       // 注册表**不覆盖调用方明说的那一份**（改前实测：这里跟着会话档走，仍是 high）
       expect(compact.length).toBeGreaterThan(0)
+      expect(eventsOfKind(handle.events, 'error').map(event => event.data.message)).toEqual([])
+      expect(eventsOfKind(handle.events, 'context.compacted')).toHaveLength(1)
       for (const one of compact) {
         expect(one.body['thinking']).toEqual({ type: 'disabled' })
         expect('reasoning_effort' in one.body).toBe(false)
@@ -179,7 +201,8 @@ describe('压缩那一次调用带上了「关思考」', () => {
   })
 
   test.each(['MiniMax-M2.7', 'MiniMax-M2.7-highspeed'])('② MiniMax %s 使用默认思考，同一 Cantrip 正常压缩', async model => {
-    const fixture = startFixture({ model, turns: turnsOf() })
+    const organizeArgs = {}
+    const fixture = startFixture({ model, turns: turnsOf(organizeArgs) })
     const stage = stageOn(fixture, { vendor: 'minimax', model })
     let assembly: ReturnType<Stage['assemble']> | undefined
 
@@ -188,6 +211,7 @@ describe('压缩那一次调用带上了「关思考」', () => {
       const handle = attachShell(assembly.shell)
 
       await handle.submit('第一件事')
+      await prepareOrganization(assembly, organizeArgs)
       await handle.submit('第二件事')
 
       const requests = chatsOf(fixture).filter(isCompaction)
@@ -195,6 +219,7 @@ describe('压缩那一次调用带上了「关思考」', () => {
       expect(requests[0]?.body['model']).toBe(model)
       expect(requests[0]?.body['thinking']).toBeUndefined()
       expect(requests[0]?.body['reasoning_effort']).toBeUndefined()
+      expect(eventsOfKind(handle.events, 'error').map(event => event.data.message)).toEqual([])
       expect(eventsOfKind(handle.events, 'context.compacted')).toHaveLength(1)
       const db = readDatabase(assembly.paths.database)
       expect(db.entries.filter(entry => entry.kind === 'summary')).toHaveLength(1)
@@ -208,11 +233,13 @@ describe('压缩那一次调用带上了「关思考」', () => {
   })
 
   test('⑤ 反面·关思考那一跳被拒 ⇒ 本轮不压缩、照常收束（失败不降级）', async () => {
+    const organizeArgs = {}
     const fixture = startFixture({
       model: MODEL,
-      // 第二跳就是压缩那一次：对面**不认关思考这个参数**（400）
+      // 整理之后的摘要请求被端点拒绝（400）。
       turns: [
         { kind: 'text', text: '答复一', chunks: 1, chunkDelayMs: 0 },
+        { kind: 'tool', name: 'memory_update', args: organizeArgs },
         { kind: 'http', status: 400, message: "Unsupported parameter: 'thinking'" },
         { kind: 'text', text: '答复二', chunks: 1, chunkDelayMs: 0 },
       ],
@@ -225,6 +252,7 @@ describe('压缩那一次调用带上了「关思考」', () => {
       const handle = attachShell(assembly.shell)
 
       await handle.submit('第一件事')
+      await prepareOrganization(assembly, organizeArgs)
       await handle.submit('第二件事')
 
       // **压不成 ≠ 整死**：那一轮照常收束（不是被压缩的错收的尾）

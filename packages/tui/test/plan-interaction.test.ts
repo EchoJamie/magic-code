@@ -24,7 +24,7 @@ import { createShell } from '../src/shell.ts'
 import { PALETTE } from '../src/components/lines.ts'
 import { logLines, rowLines } from '../src/components/log.ts'
 import { planStyleOf } from '../src/plan.ts'
-import { hasPlan, planFromEntries, withPlan } from '../src/view.ts'
+import { hasPlan, rebuild, createView, withPlan } from '../src/view.ts'
 import { createStage } from './screen.ts'
 import { blankRuns, duplicates, overflows } from './invariants.ts'
 import { event } from './events.ts'
@@ -132,36 +132,19 @@ describe('计划投影', () => {
     expect(stage.shell.getView().plan.entry).toBe(null)
   })
 
-  test('重建（切会话 / 重开）从条目里取——最后一条带 `plan` 字段的工具结果说了算', () => {
-    const entries = [
-      entry(1, 'user'),
-      entry(2, 'tool-call', { name: 'plan_update', args: {} }),
-      planEntry(3, note(step('第一步', 'completed'))),
-      entry(4, 'assistant'),
-      planEntry(5, note(step('第一步', 'completed'), step('第二步', 'in_progress'))),
-    ]
-
-    expect(planFromEntries(entries)).toEqual({
-      entry: 5,
-      plan: note(step('第一步', 'completed'), step('第二步', 'in_progress')),
-    })
+  test('重开读取实际工作记忆投影，不扫描旧工具结果', () => {
+    const old = [planEntry(900, note(step('过时步骤')))]
+    const plan = { revision: 3, entry: 5, plan: note(step('当前步骤', 'in_progress')) }
+    expect(rebuild(createView(), old, { plan }).plan).toEqual(plan)
+    expect(hasPlan(rebuild(createView(), old))).toBe(false)
   })
 
-  test('清空之后**不继续往前找**（清空那一条就是当前计划）', () => {
-    const entries = [planEntry(7, note(step('早就清掉的那份'))), planEntry(9, null)]
-
-    expect(planFromEntries(entries)).toEqual({ entry: 9, plan: null })
-  })
-
-  test('没有 `plan` 字段的结果**不冒充**计划；失败的不算更新', () => {
-    const plainResult = entry(4, 'tool-result', { ok: true, output: { text: 'ls 的输出' } })
-    const failed = entry(6, 'tool-result', { ok: false, output: { text: '写不进去' }, plan: note(step('没落账的')) })
-
-    expect(planFromEntries([plainResult])).toEqual({ entry: null, plan: null })
-    expect(planFromEntries([planEntry(5, note(step('落账的'))), plainResult, failed])).toEqual({
-      entry: 5,
-      plan: note(step('落账的')),
-    })
+  test('步骤清空的更高记忆修订盖掉旧计划，来源号较低也生效', () => {
+    const previous = withPlan(createView(), 900, note(step('旧步骤')), 2)
+    const cleared = rebuild(previous, [planEntry(950, note(step('不能拾回')))], { plan: { entry: 5, revision: 3, plan: null } })
+    expect(cleared.plan).toEqual({ entry: 5, revision: 3, plan: null })
+    expect(withPlan(cleared, 1000, note(step('迟到旧数据')), 2)).toBe(cleared)
+    expect(withPlan(cleared, 2000, note(step('旧格式事件')))).toBe(cleared)
   })
 
   test('重建晚到（比实时事件旧）⇒ 不覆盖手上那一份', () => {
@@ -183,7 +166,8 @@ describe('计划投影', () => {
     stage.feed([
       event('session.history', {
         session: 'session-test',
-        entries: [planEntry(8, note(step('还在这儿的第一步', 'completed'), step('没做完的第二步')))],
+        entries: [],
+        plan: { entry: 8, revision: 4, plan: note(step('还在这儿的第一步', 'completed'), step('没做完的第二步')) },
         done: true,
       }),
     ])

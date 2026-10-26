@@ -580,7 +580,7 @@ const DEEPSEEK_LISTED: readonly Record<string, unknown>[] = [
 async function outboundBodyOf(
   listed: readonly Record<string, unknown>[],
   model: string,
-): Promise<{ readonly body: Record<string, unknown>; readonly land: string }> {
+): Promise<{ readonly body: Record<string, unknown>; readonly land: string; readonly session: string }> {
   const land = stage()
   const vendor = fakeVendor(listed)
 
@@ -612,7 +612,7 @@ async function outboundBodyOf(
     assembly.close()
     // `land` 一并交回：临时工作区路径**就是请求体的一部分**（系统提示里写了它），
     // 对拍两条请求体时要把它抹平——否则红的是路径，不是产品行为
-    return { body: chat?.body ?? {}, land: land.workspace }
+    return { body: chat?.body ?? {}, land: land.workspace, session: assembly.session! }
   } finally {
     land.dispose()
   }
@@ -660,10 +660,11 @@ describe('输出上限取自模型信息', () => {
 
     // 把**那一格**（与临时工作区那条路径）抹掉之后，两份必须完全相同——
     // 多出 / 少了任何别的键，这里就红
-    const strip = (one: { body: Record<string, unknown>; land: string }): string =>
+    const strip = (one: { body: Record<string, unknown>; land: string; session: string }): string =>
       JSON.stringify(Object.fromEntries(Object.entries(one.body).filter(([key]) => key !== 'max_tokens')))
         .split(one.land)
         .join('<工作区>')
+        .split(one.session).join('<会话>')
 
     expect(strip(withIt)).toBe(strip(without))
   })

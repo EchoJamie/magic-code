@@ -61,3 +61,11 @@ export type { ContextPolicy } from './policy.ts'
 // 归应用层 `@magic/actions`；出在这儿的是它拿去用的那几个形态（`RebuildReport` 等）。
 
 export type { CollaborationBoundary } from './collaboration.ts'
+
+export { createMaterialReader, materialTextOf } from './material.ts'
+
+export { createMemoryAccess, projectMemoryPlan } from './memory.ts'
+export { createKnowledgeAccess, createKnowledgeOrganizer } from './knowledge.ts'
+
+export { bindSessionReferences } from './refs.ts'
+export { substantiveEntries } from './organize.ts'

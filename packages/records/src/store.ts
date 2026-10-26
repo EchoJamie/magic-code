@@ -1,3 +1,7 @@
+import { createMemoryRecords } from './memory.ts'
+import { createKnowledgeRecords } from './knowledge.ts'
+import { invalidateKnowledgeMemory } from './knowledge-memory.ts'
+import { initKnowledgeSchema } from './knowledge-schema.ts'
 import {initInputSchema,createInputRecords} from './inputs.ts'
 import type { CollaborationRecords } from '@magic/contracts'
 import { initCollaborationSchema } from './collaboration-schema.ts'
@@ -135,6 +139,8 @@ function parseWorkspace(column: string): readonly string[] {
 
 /** 装配期构造入参——数据目录与**本进程的工作区**（其余选择归装配根）。 */
 export type RecordsStoreOptions = {
+  /** 知识事务提交后通知实际变更的工作记忆会话；所有工作区视图共用。 */
+  readonly onKnowledgeMemoryChanged?: (sessions: readonly SessionId[]) => void
   /**
    * 数据落点。**须是字面路径**——前导 `~` 的展开归配置加载器
    * （`@magic/contracts` · `expandHome`），本库不展开（见 `assertPlainDataDir`）。
@@ -164,6 +170,8 @@ export type RecordsStoreOptions = {
  * 会话实例经 `serviceFor` 取（条目写入的会话来处，见文件头注）。
  */
 export type RecordsStore = {
+  /** 绑定该视图的规范工作区根集合；查询和遗忘不创建会话。 */
+  readonly knowledge: import('@magic/contracts').KnowledgeRecords
   /** 注意事项与记录共库；读取不标读，确认只作用于具体事项 id。 */
   readonly attention: AttentionStore
   readonly collaboration: CollaborationRecords
@@ -293,6 +301,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     db.exec('PRAGMA synchronous = NORMAL')
     initInputSchema(db)
     initCollaborationSchema(db)
+    initKnowledgeSchema(db)
   } catch (error) { db.close(); throw error }
   mkdirSync(blobsDir, { recursive: true })
   const ids = createIdSpace(db)
@@ -570,12 +579,14 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
 
   return {
     paths: { database: databasePath, blobs: blobsDir },
+    knowledge: createKnowledgeRecords(db, workspace, items => invalidateKnowledgeMemory(db, items), options.onKnowledgeMemoryChanged),
     attention,
     collaboration,
 
     serviceFor(session: SessionId): RecordsService {
       assertSessionId(session)
       return {
+        memory: createMemoryRecords(db, session, entry => appendEntry(session, entry), { nextId: () => ids.next(), appendEvent: event => appendEvent(session, event) }),
         inputs:createInputRecords(db,session,entry=>appendEntry(session,entry),at=>ensureSession.run(session,at,workspaceColumn)),
         collaboration,
         nextId: () => ids.next(),

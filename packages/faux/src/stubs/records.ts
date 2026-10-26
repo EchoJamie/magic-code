@@ -90,8 +90,26 @@ export function makeFauxRecords(options: FauxRecordsOptions = {}): FauxRecords {
     },
   }
 
+  let memory: import('@magic/contracts').MemorySnapshot = { session: 's', revision: 0, items: [], inspectedThrough: null, summary: null, coveredThrough: null }
   const pendingInputs = new Map<string, StoredInput>()
   return {
+    memory: {
+      read: () => structuredClone(memory),
+      update(input) {
+        if (input.expectedRevision !== memory.revision) return { ok: false, reason: 'revision conflict', snapshot: memory }
+        const items = new Map(memory.items.map(item => [item.id, item]))
+        for (const change of input.changes) items.set(change.id, { ...change, revision: (items.get(change.id)?.revision ?? 0) + 1 })
+        if (input.changes.length > 0 || input.inspectedThrough !== undefined) memory = { ...memory, revision: memory.revision + 1, items: [...items.values()], inspectedThrough: input.inspectedThrough ?? memory.inspectedThrough }
+        return { ok: true, snapshot: memory }
+      },
+      publishSummary(input) {
+        if (input.expectedRevision !== memory.revision || input.previousSummary !== memory.summary) return { ok: false, reason: 'revision conflict', snapshot: memory }
+        const id = next++
+        entries.push({ id, kind: 'summary', content: input.content, payload: input.coverage, at: input.at })
+        memory = { ...memory, summary: id, coveredThrough: input.coverage.coveredThrough }
+        return { ok: true, snapshot: memory }
+      },
+    },
     inputs:{
       accept(input,at){const old=pendingInputs.get(input.ref); if(old)return old; const row:StoredInput={ref:input.ref,input,purpose:input.purpose??'current',at,revision:0,state:'pending'};pendingInputs.set(input.ref,row);return row},
       get:ref=>pendingInputs.get(ref),list:()=>[...pendingInputs.values()],

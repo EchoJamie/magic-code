@@ -6,6 +6,7 @@ import type {
   InboxItem, MessagePart, OperationResult, SharedConstraint,
 } from '@magic/contracts'
 import { entryParamsOf } from './entries.ts'
+import { mergeKnowledgeReferences, sourceKnowledgeReferences } from './knowledge-memory.ts'
 import type { IdSpace } from './ids.ts'
 
 /** All mutations take the SQLite write lock before reading admission or inbox state. */
@@ -105,7 +106,9 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     const existing = get<{ id: number }>("SELECT id FROM entries WHERE session=? AND kind='agent-message' AND json_extract(payload,'$.messageId')=?", recipient.sessionId, m.messageId)
     if (existing) return existing.id
     const id = nextId()
-    const payload: AgentMessagePayload = { messageId: m.messageId, collaborationId: m.collaborationId, senderId: m.senderId }
+    const knowledge = mergeKnowledgeReferences(m.body.flatMap(part => part.knowledge ?? []))
+    const payload: AgentMessagePayload = { messageId: m.messageId, collaborationId: m.collaborationId, senderId: m.senderId,
+      ...(knowledge.length ? { knowledge } : {}) }
     const params = entryParamsOf(id, recipient.sessionId, { kind: 'agent-message', content: { text: '' }, payload, source: agent(m.senderId).sessionId, at })
     db.query(`INSERT INTO entries(id,session,kind,content_kind,content_text,content_blob,payload,at,source) VALUES ($id,$session,$kind,$contentKind,$contentText,$contentBlob,$payload,$at,$source)`).run(params)
     return id
@@ -118,6 +121,21 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     for (const constraint of api.listConstraints(a.collaborationId)) {
       if (constraint.active && (!constraint.affectedAgents || constraint.affectedAgents.includes(a.agentId))) enqueue(message(constraint.messageId), a.agentId)
     }
+  }
+  function messageBody(actor: string, body: readonly MessagePart[], generatedFrom?: EntryReference): AgentMessage['body'] {
+    if (generatedFrom !== undefined) {
+      if (generatedFrom.sessionId !== agent(actor).sessionId || !get("SELECT 1 FROM entries WHERE session=? AND id=? AND kind='tool-call'", generatedFrom.sessionId, generatedFrom.entryId)) throw new Error('message generation source is not the sender tool call')
+    }
+    const generated = generatedFrom === undefined ? [] : sourceKnowledgeReferences(db, [{ session: generatedFrom.sessionId, entry: generatedFrom.entryId }])
+    return body.map(part => {
+      const knowledge = part.kind === 'entry' ? mergeKnowledgeReferences([
+        ...sourceKnowledgeReferences(db, [{ session: part.ref.sessionId, entry: part.ref.entryId }]), ...(part.label === undefined ? [] : generated),
+      ]) : generated
+      // 显式构造正文，忽略发送方附加的依赖字段；关系只从实际来源取得。
+      const material: MessagePart = part.kind === 'entry' ? { kind: 'entry', ref: part.ref, ...(part.label === undefined ? {} : { label: part.label }) }
+        : part.kind === 'blob' ? { kind: 'blob', blob: part.blob } : { kind: 'text', text: part.text }
+      return { ...material, ...(knowledge.length ? { knowledge } : {}) }
+    })
   }
   function createMessage(actor: string, input: Omit<AgentMessage, 'messageId' | 'collaborationId' | 'senderId' | 'withdrawn'>, late = false, root = false): AgentMessage {
     const c = scopeFor(actor)
@@ -139,7 +157,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     }
     if (input.discussionRoot !== undefined && message(input.discussionRoot).discussionRoot !== input.discussionRoot) throw new Error('invalid discussion root')
     const id = nextId()
-    const m: AgentMessage = { ...input, recipients, messageId: id, collaborationId: c.collaborationId, senderId: actor, withdrawn: false, ...(root ? { discussionRoot: id } : {}) }
+    const m: AgentMessage = { ...input, body: messageBody(actor, input.body, input.generatedFrom), recipients, messageId: id, collaborationId: c.collaborationId, senderId: actor, withdrawn: false, ...(root ? { discussionRoot: id } : {}) }
     run('INSERT INTO collaboration_messages VALUES (?,?,?,?)', id, c.collaborationId, actor, JSON.stringify(m))
     appendReference(agent(actor), m, input.at)
     for (const recipient of recipients) enqueue(m, recipient)
@@ -148,7 +166,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       for (const w of waits(c.collaborationId)) {
         if (w.state !== 'waiting' || !recipients.includes(w.agentId) || !w.forAgents.includes(actor)) continue
         if (w.forMessageId !== undefined && m.replyTo !== w.forMessageId && m.delegationId !== w.forMessageId) continue
-        saveWait({ ...w, state: 'resolved', resultMessageId: id, reason: m.purpose })
+        saveWait({ ...w, state: 'resolved', resultMessageId: id, reason: m.purpose, reasonFrom: undefined })
       }
     }
     return m
@@ -187,15 +205,15 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       entry(ref, c, true)
       requireReference(actor, ref, c)
     }
-    const m = createMessage(actor, { recipients: [input.assigneeId], purpose: 'delegation', body: input.body, at: input.at })
+    const m = createMessage(actor, { recipients: [input.assigneeId], purpose: 'delegation', body: input.body, at: input.at, ...(input.generatedFrom === undefined ? {} : { generatedFrom: input.generatedFrom }) })
     const d: Delegation = { delegationId: m.messageId, collaborationId: c.collaborationId, delegatorId: actor, assigneeId: input.assigneeId, source: input.source, authorization, scope: input.scope, state: 'queued', at: input.at, ...(input.parentDelegationId === undefined ? {} : { parentDelegationId: input.parentDelegationId }) }
     saveMessage({ ...m, delegationId: d.delegationId })
     run('INSERT INTO collaboration_delegations VALUES (?,?,?,?,?,?)', d.delegationId, c.collaborationId, d.parentDelegationId ?? null, d.assigneeId, d.state, JSON.stringify(d))
     return d
   }
   const inbox = (id: string, after = 0): InboxItem[] => all<{ position: number; recipient: string; message: number; state: InboxItem['state']; entry: number | null; consumed_at: number | null; included_at: number | null }>('SELECT * FROM collaboration_inbox WHERE recipient=? AND position>? ORDER BY position', id, after).map(row => ({ position: row.position, recipientId: row.recipient, messageId: row.message, state: row.state, ...(row.entry === null ? {} : { entryId: row.entry }), ...(row.consumed_at === null ? {} : { consumedAt: row.consumed_at }), ...(row.included_at === null ? {} : { includedAt: row.included_at }) }))
-  function interrupt(agentId: string, reason: string): CollaborationWait[] {
-    const result = many<CollaborationWait>('collaboration_waits', "state='waiting'").filter(w => w.agentId === agentId || w.forAgents.includes(agentId)).map(w => ({ ...w, state: 'interrupted' as const, reason }))
+  function interrupt(agentId: string, reason: string, generatedFrom?: EntryReference): CollaborationWait[] {
+    const result = many<CollaborationWait>('collaboration_waits', "state='waiting'").filter(w => w.agentId === agentId || w.forAgents.includes(agentId)).map(w => ({ ...w, state: 'interrupted' as const, reason, reasonFrom: generatedFrom }))
     result.forEach(saveWait); return result
   }
   function closure(root: number): Delegation[] {
@@ -280,13 +298,13 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
         else next = { ...d, state: 'accepted', acceptedAt: input.at }
       } else {
         nonempty(input.reason ?? (input.body?.length ? 'body' : ''), 'response reason')
-        next = { ...d, state: input.response === 'reject' ? 'rejected' : 'clarification', ...(reason ? { reason } : {}) }
+        next = { ...d, state: input.response === 'reject' ? 'rejected' : 'clarification', ...(reason ? { reason, reasonFrom: input.generatedFrom } : {}) }
       }
       if (next !== d) {
         saveDelegation(next)
-        createMessage(actor, { recipients: [d.delegatorId], purpose: input.response === 'clarify' ? 'clarification' : input.response === 'reject' ? 'decision' : 'receipt', replyTo: d.delegationId, delegationId: d.delegationId, body: input.body ?? [{ kind: 'text', text: input.reason ?? input.response }], at: input.at }, input.response !== 'accept')
+        createMessage(actor, { recipients: [d.delegatorId], purpose: input.response === 'clarify' ? 'clarification' : input.response === 'reject' ? 'decision' : 'receipt', replyTo: d.delegationId, delegationId: d.delegationId, body: input.body ?? [{ kind: 'text', text: input.reason ?? input.response }], at: input.at, ...(input.generatedFrom === undefined ? {} : { generatedFrom: input.generatedFrom }) }, input.response !== 'accept')
         if (input.response === 'reject') for (const w of waits(d.collaborationId)) {
-          if (w.state === 'waiting' && w.forAgents.includes(actor) && (w.forMessageId === undefined || w.forMessageId === d.delegationId)) saveWait({ ...w, state: 'interrupted', reason: input.reason ?? 'delegation rejected' })
+          if (w.state === 'waiting' && w.forAgents.includes(actor) && (w.forMessageId === undefined || w.forMessageId === d.delegationId)) saveWait({ ...w, state: 'interrupted', reason: input.reason ?? 'delegation rejected', reasonFrom: input.generatedFrom })
         }
       }
       const accepted = next.state === 'accepted'
@@ -299,8 +317,8 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       const d = delegation(input.delegationId)
       if (d.assigneeId !== actor || d.acceptedAt === undefined || !['accepted', 'cancelled'].includes(d.state)) throw new Error('delegation not accepted by sender')
       if (d.deliveryMessageId !== undefined) throw new Error('delegation already delivered')
-      const m = createMessage(actor, { recipients: [d.delegatorId], purpose: 'delivery', body: input.body, replyTo: d.delegationId, delegationId: d.delegationId, at: input.at }, true)
-      saveDelegation({ ...d, state: d.state === 'cancelled' ? 'cancelled' : 'delivered', deliveryMessageId: m.messageId, deliveredAt: input.at, ...(input.reason === undefined ? {} : { reason: input.reason }) })
+      const m = createMessage(actor, { recipients: [d.delegatorId], purpose: 'delivery', body: input.body, replyTo: d.delegationId, delegationId: d.delegationId, at: input.at, ...(input.generatedFrom === undefined ? {} : { generatedFrom: input.generatedFrom }) }, true)
+      saveDelegation({ ...d, state: d.state === 'cancelled' ? 'cancelled' : 'delivered', deliveryMessageId: m.messageId, deliveredAt: input.at, ...(input.reason === undefined ? {} : { reason: input.reason, reasonFrom: input.generatedFrom }) })
       remember(input.operationId, actor, { kind: 'delivery', messageId: m.messageId }); return m
     }) },
     receiveDelivery(actor, id, at) { return tx(() => {
@@ -317,7 +335,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
         const d = delegation(input.delegationId)
         if (d.collaborationId !== scopeFor(actor).collaborationId || (d.assigneeId !== actor && d.delegatorId !== actor)) throw new Error('delegation reference not accessible')
       }
-      const m = createMessage(actor, { recipients: input.recipients, purpose: input.purpose, body: input.body, at: input.at, ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }), ...(input.discussionRoot === undefined ? {} : { discussionRoot: input.discussionRoot }), ...(input.delegationId === undefined ? {} : { delegationId: input.delegationId }) }, false, input.startDiscussion)
+      const m = createMessage(actor, { recipients: input.recipients, purpose: input.purpose, body: input.body, at: input.at, ...(input.generatedFrom === undefined ? {} : { generatedFrom: input.generatedFrom }), ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }), ...(input.discussionRoot === undefined ? {} : { discussionRoot: input.discussionRoot }), ...(input.delegationId === undefined ? {} : { delegationId: input.delegationId }) }, false, input.startDiscussion)
       remember(input.operationId, actor, { kind: 'message', messageId: m.messageId }); return m
     }) },
     readMessage(actor, id) { const m = one<AgentMessage>('collaboration_messages', id); return m && canRead(actor, m) ? m : undefined },
@@ -353,7 +371,12 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       const m = message(id)
       if (m.senderId !== actor) throw new Error('only sender can edit')
       if (m.withdrawn || ['delegation', 'delivery', 'constraint'].includes(m.purpose) || get("SELECT 1 FROM collaboration_inbox WHERE message=? AND state<>'pending'", id)) return false
-      validBody(body, collaboration(m.collaborationId), actor); saveMessage({ ...m, body }); return true
+      validBody(body, collaboration(m.collaborationId), actor)
+      const updated = { ...m, body: messageBody(actor, body, m.generatedFrom) }
+      saveMessage(updated)
+      const knowledge = mergeKnowledgeReferences(updated.body.flatMap(part => part.knowledge ?? []))
+      run("UPDATE entries SET payload=json_set(payload,'$.knowledge',json(?)) WHERE kind='agent-message' AND json_extract(payload,'$.messageId')=?", JSON.stringify(knowledge), id)
+      return true
     }) },
     withdrawMessage(actor, id) { return tx(() => {
       const m = message(id)
@@ -414,13 +437,13 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       for (const id of targets) { const cycle = pathToActor(id, [actor]); if (cycle) return { ok: false, cycle } }
       const unavailable = targets.find(id => agent(id).reachability === 'historical')
       const found = many<AgentMessage>('collaboration_messages', 'collaboration=? ORDER BY rowid DESC', c.collaborationId).find(m => !m.withdrawn && targets.includes(m.senderId) && m.recipients.includes(actor) && ['reply','delivery','clarification'].includes(m.purpose) && input.forMessageId !== undefined && (m.replyTo === input.forMessageId || m.delegationId === input.forMessageId))
-      const w: CollaborationWait = { waitId: nextId(), collaborationId: c.collaborationId, agentId: actor, forAgents: targets, expectation: input.expectation, deadline: input.deadline, at: input.at, state: unavailable ? 'interrupted' : found ? 'resolved' : 'waiting', ...(unavailable ? { reason: 'target is historical' } : {}), ...(found ? { resultMessageId: found.messageId } : {}), ...(input.delegationId === undefined ? {} : { delegationId: input.delegationId }), ...(input.forMessageId === undefined ? {} : { forMessageId: input.forMessageId }) }
+      const w: CollaborationWait = { waitId: nextId(), collaborationId: c.collaborationId, agentId: actor, forAgents: targets, expectation: input.expectation, deadline: input.deadline, at: input.at, ...(input.generatedFrom === undefined ? {} : { generatedFrom: input.generatedFrom }), state: unavailable ? 'interrupted' : found ? 'resolved' : 'waiting', ...(unavailable ? { reason: 'target is historical' } : {}), ...(found ? { resultMessageId: found.messageId } : {}), ...(input.delegationId === undefined ? {} : { delegationId: input.delegationId }), ...(input.forMessageId === undefined ? {} : { forMessageId: input.forMessageId }) }
       run('INSERT INTO collaboration_waits VALUES (?,?,?,?,?)', w.waitId, c.collaborationId, actor, w.state, JSON.stringify(w))
       remember(input.operationId, actor, { kind: 'wait', waitId: w.waitId }); return { ok: true, wait: w }
     }) },
     listWaits: waits,
     expireWaits(at) { return tx(() => {
-      const result = many<CollaborationWait>('collaboration_waits', "state='waiting'").filter(w => w.deadline <= at).map(w => ({ ...w, state: 'expired' as const, reason: 'deadline reached' }))
+      const result = many<CollaborationWait>('collaboration_waits', "state='waiting'").filter(w => w.deadline <= at).map(w => ({ ...w, state: 'expired' as const, reason: 'deadline reached', reasonFrom: undefined }))
       result.forEach(saveWait); return result
     }) },
     consumeWaitOutcomes(id, at) { return tx(() => {
@@ -436,7 +459,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
         if (w.includedAt === undefined) saveWait({ ...w, includedAt: at })
       }
     }) },
-    interruptWaits(id, reason) { return tx(() => interrupt(id, reason)) },
+    interruptWaits(id, reason, generatedFrom) { return tx(() => interrupt(id, reason, generatedFrom)) },
     checkAdmission(id, delegationId, mode = 'work') {
       const a = agent(id); const c = scopeFor(id)
       if (get<{ value: string }>("SELECT value FROM records_meta WHERE key='collaboration_host_stop'")?.value) return { allowed: false, reason: 'host admission closed' }
@@ -462,10 +485,10 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     }) },
     finishExecution(id, reason) { tx(() => {
       const e = required(one<ExecutionAdmission>('collaboration_executions', id), 'execution not found')
-      if (e.state !== 'finished') saveExecution({ ...e, state: 'finished', ...(reason ? { reason } : {}) })
+      if (e.state !== 'finished') saveExecution({ ...e, state: 'finished', ...(reason ? { reason, reasonFrom: undefined } : {}) })
     }) },
     listExecutions: executions,
-    stop(scope, reason, at) { return tx(() => {
+    stop(scope, reason, at, generatedFrom) { return tx(() => {
       nonempty(reason, 'stop reason')
       if (scope.kind === 'host') run("INSERT INTO records_meta(key,value) VALUES ('collaboration_host_stop',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", reason)
       const cs = scope.kind === 'host' ? many<Collaboration>('collaborations', '1=1') : [scope.kind === 'collaboration' ? collaboration(scope.collaborationId) : collaboration(delegation(scope.delegationId).collaborationId)]
@@ -479,20 +502,20 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
           e.delegationId !== undefined ? ids.has(e.delegationId)
             : scopeAgents.has(e.agentId) && !acceptedElsewhere.has(e.agentId)
         )),
-      ).map(e => ({ ...e, state: 'cancel-requested' as const, cancelledAt: e.cancelledAt ?? at, reason }))
+      ).map(e => ({ ...e, state: 'cancel-requested' as const, cancelledAt: e.cancelledAt ?? at, reason, reasonFrom: generatedFrom }))
       // 只撤回 queued B 时，A 的成员和执行者均不属于取消目标；此判据与接受共事务。
       const affected = new Set(scope.kind === 'delegation'
         ? [...ds.filter(d => d.state === 'accepted').map(d => d.assigneeId), ...es.map(e => e.agentId)]
           .filter(id => !acceptedElsewhere.has(id))
         : cs.flatMap(c => members(c.collaborationId).map(a => a.agentId)))
-      for (const c of cs) if (scope.kind !== 'delegation' && c.state !== 'closed') saveCollaboration({ ...c, state: 'stopped', reason })
-      for (const d of ds) if (!['received', 'rejected', 'cancelled'].includes(d.state)) saveDelegation({ ...d, state: 'cancelled', reason })
+      for (const c of cs) if (scope.kind !== 'delegation' && c.state !== 'closed') saveCollaboration({ ...c, state: 'stopped', reason, reasonFrom: generatedFrom })
+      for (const d of ds) if (!['received', 'rejected', 'cancelled'].includes(d.state)) saveDelegation({ ...d, state: 'cancelled', reason, reasonFrom: generatedFrom })
       es.forEach(saveExecution)
       for (const id of affected) {
         if (scope.kind !== 'delegation' && agent(id).reachability !== 'historical') saveAgent({ ...agent(id), reachability: 'suspended' })
       }
       for (const c of cs) for (const w of waits(c.collaborationId)) {
-        if (w.state === 'waiting' && (scope.kind !== 'delegation' || (w.delegationId !== undefined && ids.has(w.delegationId)) || (w.forMessageId !== undefined && ids.has(w.forMessageId)))) saveWait({ ...w, state: 'interrupted', reason })
+        if (w.state === 'waiting' && (scope.kind !== 'delegation' || (w.delegationId !== undefined && ids.has(w.delegationId)) || (w.forMessageId !== undefined && ids.has(w.forMessageId)))) saveWait({ ...w, state: 'interrupted', reason, reasonFrom: generatedFrom })
       }
       return { agents: [...affected], delegations: [...ids], executions: es }
     }) },
@@ -502,14 +525,14 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
         const c = collaboration(scope.collaborationId)
         if (c.state === 'closed') throw new Error('closed collaboration cannot resume')
         if (executions(c.collaborationId).some(e => e.state !== 'finished')) throw new Error('execution effects still unsettled')
-        saveCollaboration({ ...c, state: 'open', reason: undefined })
+        saveCollaboration({ ...c, state: 'open', reason: undefined, reasonFrom: undefined })
         saveAgent({ ...agent(c.coordinatorId), reachability: 'active' }); return
       }
       const root = delegation(scope.delegationId); requireOpen(collaboration(root.collaborationId))
       const ds = closure(root.delegationId)
       if (executions(root.collaborationId).some(e => e.state !== 'finished' && ds.some(d => d.delegationId === e.delegationId))) throw new Error('execution effects still unsettled')
       for (const d of ds) if (d.state === 'cancelled') {
-        saveDelegation({ ...d, state: d.deliveryMessageId === undefined ? 'queued' : 'delivered', reason: undefined })
+        saveDelegation({ ...d, state: d.deliveryMessageId === undefined ? 'queued' : 'delivered', reason: undefined, reasonFrom: undefined })
         saveAgent({ ...agent(d.assigneeId), reachability: 'active' })
         enqueueConstraints(agent(d.assigneeId))
       }

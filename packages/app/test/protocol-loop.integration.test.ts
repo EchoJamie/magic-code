@@ -68,14 +68,14 @@ function frames(protocol: ModelProtocol, first: boolean): object[] {
 }
 
 type Wire = Record<string, any>
-type WireRequest = { protocol: ModelProtocol; url: string; headers: Headers; body: Wire }
-function fixture() {
+type WireRequest = { protocol: ModelProtocol; url: string; headers: Headers; body: Wire; sources: readonly { session: string; id: number; kind: string }[] }
+function fixture(readSources: () => WireRequest['sources']) {
   const requests: WireRequest[] = []
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     const protocol = protocols.find(p => new URL(request.url).pathname === pathOf(p))
     if (protocol === undefined || request.method !== 'POST') return new Response('unexpected request', { status: 404 })
     const first = !requests.some(r => r.protocol === protocol)
-    requests.push({ protocol, url: request.url, headers: request.headers, body: await request.json() as Wire })
+    requests.push({ protocol, url: request.url, headers: request.headers, body: await request.json() as Wire, sources: readSources() })
     const data = frames(protocol, first).map(frame => `data: ${JSON.stringify(frame)}\n\n`).join('')
     return new Response(data, { headers: { 'content-type': 'text/event-stream' } })
   } })
@@ -87,10 +87,26 @@ function contentText(content: any): string {
   return typeof content === 'string' ? content : (content ?? []).filter((p: Wire) => ['text', 'input_text', 'output_text'].includes(p.type)).map((p: Wire) => p.text).join('')
 }
 
+// 本例没有压缩或记忆写入：每次请求的待整理来源须精确对应当刻已落库的全部业务记录。
+// 只移除核验过的末尾来源提示，任何其他 assistant 正文仍参与历史与配对检查。
+function conversationOf(request: WireRequest): Wire[] {
+  const messages: Wire[] = request.body.input ?? request.body.messages
+  expect(request.sources.length).toBeGreaterThan(0)
+  const session = request.sources[0]!.session
+  expect([...new Set(request.sources.map(source => source.session))]).toEqual([session])
+  const text = `〔本次材料来源位置 · 会话 ${session}〕\n${request.sources.map(source => `#${source.id} ${source.kind}`).join(' · ')}\n以上材料尚未确认整理；更新工作记忆时按原始来源引用，仅对已检查范围确认 inspectedThrough。`
+  const notice = messages.at(-1)!
+  expect(notice.role).toBe('assistant')
+  expect(contentText(notice.content)).toBe(text)
+  expect(notice.tool_calls ?? []).toEqual([])
+  if (Array.isArray(notice.content)) expect(notice.content.every((part: Wire) => ['text', 'output_text'].includes(part.type))).toBe(true)
+  return messages.slice(0, -1)
+}
+
 // 只归一公开对话与工具配对，以比较跨协议历史；私有状态另按原始请求体逐字段断言。
 function historyOf(request: WireRequest): Wire[] {
   const history: Wire[] = []
-  for (const message of request.body.input ?? request.body.messages) {
+  for (const message of conversationOf(request)) {
     if (message.role === 'system' || message.role === 'developer' || message.type === 'reasoning') continue
     const text = contentText(message.content)
     if (text && message.role !== 'tool') history.push({ role: message.role, text })
@@ -143,12 +159,17 @@ function storedCalls(database: string): string[] {
 }
 
 for (const protocol of protocols) test(`真装配 ${protocol}：exec 执行、回填、正文${protocol === 'responses' ? '及同会话协议往返切换' : ''}`, async () => {
-  const endpoint = fixture()
+  let assembly: Assembly | undefined, shell: ShellHandle | undefined
+  const endpoint = fixture(() => {
+    if (assembly === undefined) throw new Error('模型请求早于装配完成')
+    const db = readDatabase(assembly.paths.database)
+    try { return db.entries.map(({ session, id, kind }) => ({ session, id, kind })) }
+    finally { db.close() }
+  })
   const stage = makeStage({ config: {
     providers: { local: { baseURL: endpoint.baseURL, protocol, auth: authOf(protocol), apiKey: key } },
     models: Object.fromEntries(['default', 'cantrip', 'spell', 'arcane'].map(choice => [choice, { provider: 'local', model }])),
   } })
-  let assembly: Assembly | undefined, shell: ShellHandle | undefined
   try {
     assembly = stage.assemble({ modelGateway: undefined,
       environment: { PATH: '/usr/bin:/bin', SHELL: '/bin/sh', OPENAI_API_KEY: 'ENV_SENTINEL', ANTHROPIC_API_KEY: 'ENV_SENTINEL', MAGIC_LOCAL_API_KEY: 'ENV_SENTINEL' },
@@ -170,8 +191,8 @@ for (const protocol of protocols) test(`真装配 ${protocol}：exec 执行、�
     const pair = storedCalls(assembly.paths.database)[0]!
     const completed = [{ role: 'user', text: prompt }, { call: pair, name: 'exec', args: command }, { result: pair, text: 'U126\n' }]
     expect(historyOf(second)).toEqual(completed)
-    const firstHistory = first.body.input ?? first.body.messages
-    expect((second.body.input ?? second.body.messages).slice(0, firstHistory.length)).toEqual(firstHistory)
+    const firstHistory = conversationOf(first)
+    expect(conversationOf(second).slice(0, firstHistory.length)).toEqual(firstHistory)
     assertPrivate(second)
 
     const db = readDatabase(assembly.paths.database)
@@ -179,6 +200,7 @@ for (const protocol of protocols) test(`真装配 ${protocol}：exec 执行、�
     try {
       expect(db.sessions).toHaveLength(1)
       session = db.sessions[0]!.id
+      expect(db.entries.filter(entry => entry.content_text?.includes('〔本次材料来源位置'))).toEqual([])
       const assistants = db.entries.filter(e => e.kind === 'assistant')
       expect(assistants.at(-1)?.content_text).toBe(answer)
       const payload = JSON.parse(assistants[0]!.payload!)

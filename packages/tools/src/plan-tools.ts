@@ -1,36 +1,4 @@
-/**
- * 计划与历史三件 —— `plan_read` · `plan_update` · `history_read`（U34）。
- *
- * 出处：设计 · 长任务计划与进度辅助（「数据与工具契约」那张表）。三件是**同一个功能的三面**：
- * 读当前笔记、写当前笔记、回查会话记录——故一个文件、一处造，不拆三家。
- *
- * ## 这一域只做「把参数摆对、把结果摆成模型读得懂的文本」
- *
- * 真正的判据全在**对话域**（`PlanReader`）：
- * - 当前计划 ＝ 最近一条成功且含 `plan` 的工具结果（**记录即真源**，本域不缓存、不推断）；
- * - 历史缺位置时从**活动窗口之前**读起（窗口边界是上下文那件事）。
- * 本域拿到的是一对**会话绑定的只读回调**——它不认识记录、不认识上下文，
- * 更不碰文件系统（「不经 shell 访问数据库」是纪律，不是分寸）。
- *
- * ## 更新那件的载荷怎么走（**本域不自行先写记录**）
- *
- * `plan_update` 只把 `PlanNote`（或 `null` ＝ 清空）**交回分发**（`ToolRunResult.plan`），
- * 由对话域随工具结果**一次**落进条目载荷、落账之后才发 `plan.changed`。故「先写计划、
- * 再写工具结果」这条错法在这一域**结构上无处发生**——这里根本没有写的口子。
- *
- * ## 参数校验的限度（设计明写）
- *
- * 只查**可读取的结构与状态取值**：步骤是不是对象、`text` 是不是非空字符串、
- * `status` 在不在那三格里。**不做**长度检查、步数检查、「只能有一个进行中」、
- * 「必须照某个模板」——步骤文本的「建议二十个字左右」**只写在参数说明里**
- * （见 `STEP_TEXT`），不另加统计、截断、警告或拒绝。
- *
- * ## 权限
- *
- * 三件的静态归类都是 `light`（只读同会话记录 / 只写协作笔记，不碰工作区），
- * 但**判定不在这儿**：权限域的分析表要显式认这三格，装配另按名字追加放行规则
- * （见 `@magic/permission` · `analyze.ts` 与 `@magic/app` · `assembly.ts`）。
- */
+/** 计划投影与历史读取；事项写入由 memory_update 负责。 */
 
 import type {
   HistoryEntry,
@@ -41,100 +9,32 @@ import type {
   PlanSnapshot,
   PlanStep,
 } from '@magic/contracts'
-import { isText } from './args.ts'
 import { defineTool } from './registry.ts'
 import type { ToolDefinition, ToolRunResult } from './registry.ts'
 import { refused, reasonOf } from './toolkit.ts'
 
 /**
- * 三个名字——**归属明确**（装配按它追加放行规则、权限域按它认这三格）。
+ * 两个读工具名字——**归属明确**（装配按它追加放行规则、权限域按它认这三格）。
  *
  * 挂在工具定义旁边而不是散在各处：改名时改一处就够（另一处漏了，放行规则会静默失效，
  * 而那正是「每次都弹卡」或「悄悄免审」两头之一）。
  */
 export const PLAN_READ_TOOL = 'plan_read'
-export const PLAN_UPDATE_TOOL = 'plan_update'
 export const HISTORY_READ_TOOL = 'history_read'
 
-/** 三个名字齐——装配与权限域共用的一处清单。 */
+/** 两个读工具名字齐——装配与权限域共用的一处清单。 */
 export const PLAN_TOOL_NAMES: readonly string[] = [
   PLAN_READ_TOOL,
-  PLAN_UPDATE_TOOL,
   HISTORY_READ_TOOL,
 ]
 
 // ══ 参数模式 ══════════════════════════════════════════════════════════
-
-/**
- * 步骤文本那一格——**「建议二十个字左右」只在这里**（设计明写：不加字数检查、
- * `maxLength`、警告或拒绝；界面按终端宽度正常换行，不按二十字裁切）。
- */
-const STEP_TEXT = {
-  type: 'string',
-  description: '简短说明这一步要做成什么，建议二十个字左右。',
-} as const
-
-const STEP_STATUS = {
-  type: 'string',
-  enum: ['pending', 'in_progress', 'completed'],
-  description: '这一步的进展：未开始 / 进行中 / 已完成',
-} as const
-
-/**
- * 目标那一格（U90）——**用户看得见**：清单顶上顶格那一行「这件事是什么」。
- *
- * ⚠️ **说明必须说清它是新的一格**（「模型读得到才会填」）：不写清，模型会照提示词把目标
- * 混在辅助笔记里（那是 U90 之前的写法），而这一行**不从 `notes` 里猜**——没填就是没有。
- * 故这句里点明三件：**是什么**（这件事要得到的结果）· **给谁看**（用户会看到）· **可选**
- * （没有就整个不给，别用空串凑）。
- */
-const PLAN_GOAL = {
-  type: 'string',
-  description:
-    '这件事要得到的结果，一句话，用户会看到它顶在清单上方（步骤挂在它下面）。' +
-    '没有明确的目标就整个不给这一项——不要用空串或随手写一句凑上。',
-} as const
 
 export const PLAN_READ_PARAMETERS = {
   type: 'object',
   description: '取当前会话的计划笔记（目标、步骤清单与辅助笔记）。没有建立过就如实说没有。',
   properties: {},
   required: [],
-  additionalProperties: false,
-} as const
-
-export const PLAN_UPDATE_PARAMETERS = {
-  type: 'object',
-  description:
-    '更新当前计划笔记：给 plan 就整体替换（目标 ＋ 步骤清单 ＋ 辅助笔记），给 null 就清空。' +
-    '它保存你的判断，不验证工作是否完成、也不控制执行。',
-  properties: {
-    plan: {
-      type: ['object', 'null'],
-      description: '新的计划内容；null ＝ 清空当前计划笔记（过程仍在会话记录里）',
-      properties: {
-        goal: PLAN_GOAL,
-        steps: {
-          type: 'array',
-          description: '有序步骤清单——用户会看到它，按你要得到的结果拆',
-          items: {
-            type: 'object',
-            properties: { text: STEP_TEXT, status: STEP_STATUS },
-            required: ['text', 'status'],
-            additionalProperties: false,
-          },
-        },
-        notes: {
-          type: 'string',
-          description:
-            '辅助笔记：目标、关键约束、已确认事实、未解决问题与回查线索；没有就留空串',
-        },
-      },
-      required: ['steps'],
-      additionalProperties: false,
-    },
-  },
-  required: ['plan'],
   additionalProperties: false,
 } as const
 
@@ -192,7 +92,7 @@ export function planTextOf(plan: PlanNote): string {
 }
 
 /** 没建立过计划时的回执——**如实说没有**，不编一份空的。 */
-const NO_PLAN = '这个会话还没有计划笔记。需要时用 plan_update 建立一份（目标 ＋ 步骤清单 ＋ 辅助笔记）。'
+const NO_PLAN = '这个会话还没有计划笔记。需要时用 memory_update 增量维护目标与步骤事项。'
 
 /**
  * 读的回执（`plan_read`）。
@@ -263,16 +163,14 @@ function kindLabelOf(entry: HistoryEntry): string {
   return '【摘要】'
 }
 
-// ══ 三件 ═════════════════════════════════════════════════════════════
+// ══ 读面 ═════════════════════════════════════════════════════════════
 
 /**
- * 造三件工具。`reader` 是**会话绑定**的（装配按会话各造一份）——故三个工具实例
+ * 造计划与历史读取工具。`reader` 是**会话绑定**的（装配按会话各造一份）——故两个工具实例
  * 也按会话各造一份：它们手里的读写范围就是那一条会话，模型给不出第二条。
  */
 export function definePlanTools(reader: PlanReader): readonly ToolDefinition[] {
-  // ⚠️ 更新那件**不接读面**：它只核对参数、交回载荷（写记录归对话域）——
-  // 手里没有读口子，也就没有「先读旧计划再拼一份新的」这条歧路可走。
-  return [readTool(reader), updateTool(), historyTool(reader)]
+  return [readTool(reader), historyTool(reader)]
 }
 
 function readTool(reader: PlanReader): ToolDefinition {
@@ -287,92 +185,13 @@ function readTool(reader: PlanReader): ToolDefinition {
     prepare: args => args,
     async run(): Promise<ToolRunResult> {
       try {
-        return { ok: true, output: readReceipt(await reader.readPlan()) }
+        const snapshot = await reader.readPlan()
+        return { ok: true, output: readReceipt(snapshot), ...(snapshot.knowledge === undefined ? {} : { knowledge: snapshot.knowledge }) }
       } catch (error) {
         return refused(`计划读取失败：${reasonOf(error)}`)
       }
     },
   })
-}
-
-function updateTool(): ToolDefinition {
-  return defineTool({
-    spec: {
-      name: PLAN_UPDATE_TOOL,
-      summary: '整体替换当前计划笔记，或清空它（只保存判断，不控制执行）',
-      parameters: PLAN_UPDATE_PARAMETERS,
-      danger: { level: 'light' },
-    },
-
-    prepare(args) {
-      if (!('plan' in args)) throw new Error('参数错误：要更新就给 plan（对象），要清空就给 plan: null')
-      const parsed = args.plan === null ? null : planOf(args.plan)
-      if (typeof parsed === 'string') throw new Error(parsed)
-      return { plan: parsed }
-    },
-    run({ plan: parsed }): ToolRunResult {
-      if (parsed === null) return { ok: true, output: '计划笔记已清空。过程仍在会话记录里（history_read 可回查，排障时用得上）。', plan: null }
-      return {
-        ok: true,
-        // **回执里带上完整正文**：它是模型此后判断「手上有没有最新计划」的那一份
-        // （上下文装配按「这条结果完整落在窗口里没有」判，见 `readReceipt` 的注）
-        output: `计划笔记已更新：\n${planTextOf(parsed)}`,
-        plan: parsed,
-      }
-    },
-  })
-}
-
-/**
- * 参数 → 计划笔记（`undefined` 之外的一切都由这里收口）。
- *
- * 只查结构（见文件头注）：一有不合就**整条拒绝**——半份计划比没有更坏
- * （步骤少了一条，读的人不会知道少的是哪一条）。
- */
-function planOf(raw: unknown): PlanNote | string {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    return '参数错误：plan 须是 { steps, notes }（另可给 goal）对象，或 null（清空）'
-  }
-
-  const fields = raw as Record<string, unknown>
-  const steps = fields['steps']
-  if (!Array.isArray(steps)) return '参数错误：plan.steps 须是数组（没有步骤就给空数组）'
-
-  const parsed: PlanStep[] = []
-  for (const [index, item] of steps.entries()) {
-    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
-      return `参数错误：第 ${index + 1} 个步骤须是对象（形如 { text, status }）`
-    }
-
-    const step = item as Record<string, unknown>
-    if (!isText(step['text'])) {
-      return `参数错误：第 ${index + 1} 个步骤缺 text（须是非空字符串）`
-    }
-
-    const status = step['status']
-    if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') {
-      return `参数错误：第 ${index + 1} 个步骤的 status 须是 pending / in_progress / completed 之一`
-    }
-
-    parsed.push({ text: step['text'], status })
-  }
-
-  const notes = fields['notes']
-  if (notes !== undefined && typeof notes !== 'string') {
-    return '参数错误：plan.notes 须是字符串（没有就留空串）'
-  }
-
-  // 目标那一格（U90）——**可选**，且**空白的收成「不给」**：整份计划里那一格只有两种样子，
-  // 「有一句目标」或「压根没有这个键」。留一个空串在场，界面上就是一条空表头
-  // （「没有目标时那一行不出现」——那一行的判据是**键在不在场**，故空串不能放进来）。
-  const goal = fields['goal']
-  if (goal !== undefined && typeof goal !== 'string') {
-    return '参数错误：plan.goal 须是一句短文本（没有目标就整个不给这一项）'
-  }
-
-  const want = (goal ?? '').trim()
-
-  return { ...(want === '' ? {} : { goal: want }), steps: parsed, notes: notes ?? '' }
 }
 
 function historyTool(reader: PlanReader): ToolDefinition {
@@ -391,7 +210,8 @@ function historyTool(reader: PlanReader): ToolDefinition {
     },
     async run(query): Promise<ToolRunResult> {
       try {
-        return { ok: true, output: historyReceipt(await reader.readHistory(query)) }
+        const page = await reader.readHistory(query)
+        return { ok: true, output: historyReceipt(page), knowledge: page.entries.flatMap(entry => entry.knowledge ?? []) }
       } catch (error) {
         return refused(`历史读取失败：${reasonOf(error)}`)
       }

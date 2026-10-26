@@ -117,11 +117,13 @@ exports[`场景 11 · \`/help\`（纯输出型） 输出进记录区（dim 块�
 
 › /help
 使用帮助
-输入任务描述开始工作；/ 查找命令，@ 引用文件。
+输入任务描述开始工作；/ 查找命令，@ 引用文件或会话。
 命令：
   /connect  重连当前会话并刷新，保留草稿
   /clear    新建会话并清屏，保留历史记录
   /ps       查看协作成员与后台命令
+  /memory   查看工作记忆与适用知识
+  /compact  压缩当前会话，可附本次重点
   /resume   查看记录或接回工作
   /rename   修改当前会话名称
   /exit     停止当前工作并退出界面
@@ -133,7 +135,7 @@ exports[`场景 11 · \`/help\`（纯输出型） 输出进记录区（dim 块�
   /web      选择网页查询与搜索使用的连接
   /help     显示帮助
 参数用法：
-  /rename <名称> · /skills [关键词]
+  /rename <名称> · /skills [关键词] · /compact [本次重点]
   /model connect              接入模型连接
   /model manage               管理连接与档位
   /model refresh [连接]       刷新模型列表

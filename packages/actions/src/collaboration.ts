@@ -25,6 +25,7 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
         const actor = records.getAgent(actorId)
         if (actor === undefined) throw new Error('执行身份不存在')
         if (actor.purpose === 'consultation') throw new Error('咨询执行者不能调用协作或再次咨询')
+        const generated = request.generatedFrom === undefined ? {} : { generatedFrom: request.generatedFrom }
         if ('operationId' in request) request = { ...request, operationId: `${actorId}:${request.operationId}` }
         const at = deps.now()
         let collaboration = actor.collaborationId === undefined ? undefined : records.getCollaboration(actor.collaborationId)
@@ -62,6 +63,7 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
         const authorization = accepted?.authorization ?? [collaboration.origin]
         const scope = accepted === undefined ? {} : { parentDelegationId: accepted.delegationId }
         let value: unknown
+        let knowledge: readonly import('@magic/contracts').KnowledgeReference[] = []
         switch (request.action) {
           case 'consult':
           case 'spawn': {
@@ -81,6 +83,7 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
               }),
             })
             const spawned = records.spawn(actorId, {
+              ...generated,
               operationId: request.operationId, at, sessionId: crypto.randomUUID(),
               ...(request.action === 'consult' ? {
                 name: '咨询 Arcane', role: '', purpose: 'consultation' as const, responsibility: '只读查证并提供建议，原执行者负责核验和实施',
@@ -115,6 +118,7 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
           }
           case 'delegate': {
             const delegation = records.delegate(actorId, { operationId: request.operationId, at,
+              ...generated,
               assigneeId: request.recipient, scope: request.scope, body: request.body, source, authorization, ...scope })
             deps.wake(request.recipient)
             value = delegation
@@ -130,10 +134,12 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
               for (const recipient of message.recipients) deps.wake(recipient)
             }
             value = { message, delivery: message.recipients.map(agentId => ({ agentId, state: 'received' })) }
+            knowledge = message.body.flatMap(part => part.knowledge ?? [])
             break
           }
           case 'respond': {
             const response = records.respondToDelegation(actorId, {
+              ...generated,
               operationId: request.operationId, at, delegationId: request.delegation,
               response: request.response, ...(request.reason === undefined ? {} : { reason: request.reason }),
             })
@@ -146,18 +152,24 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
               conclusion: request.conclusion, artifacts: request.artifacts, verified: request.verified, unresolved: request.unresolved,
             }) }]
             const message = records.deliver(actorId, { operationId: request.operationId, at,
-              delegationId: request.delegation, body })
+              ...generated, delegationId: request.delegation, body })
             for (const recipient of message.recipients) deps.wake(recipient)
             value = message
+            knowledge = message.body.flatMap(part => part.knowledge ?? [])
             break
           }
           case 'receive': value = records.receiveDelivery(actorId, request.delegation, at); break
-          case 'read': value = request.discussion === true
-            ? records.listDiscussion(actorId, request.message)
-            : records.readMessage(actorId, request.message); break
+          case 'read': {
+            const messages = request.discussion === true ? records.listDiscussion(actorId, request.message)
+              : [records.readMessage(actorId, request.message)].filter((message): message is import('@magic/contracts').AgentMessage => message !== undefined)
+            value = request.discussion === true ? messages : messages[0]
+            knowledge = messages.flatMap(message => message.body.flatMap(part => part.knowledge ?? []))
+            break
+          }
           case 'wait':
             if (!Number.isFinite(request.deadline) || request.deadline <= at) throw new Error('等待截止时间必须在未来')
             value = records.registerWait(actorId, { operationId: request.operationId, at,
+              ...generated,
               forAgents: request.agents, expectation: request.expectation, deadline: request.deadline,
               ...(request.message === undefined ? {} : { forMessageId: request.message }),
               ...(accepted === undefined ? {} : { delegationId: accepted.delegationId }),
@@ -174,7 +186,7 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
             }
             const stopped = records.stop(request.delegation === undefined
               ? { kind: 'collaboration', collaborationId: id }
-              : { kind: 'delegation', delegationId: request.delegation }, request.reason, at)
+              : { kind: 'delegation', delegationId: request.delegation }, request.reason, at, request.generatedFrom)
             await deps.cancel(stopped)
             value = stopped
             break
@@ -187,7 +199,7 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
             break
         }
         deps.changed()
-        return { ok: true, value }
+        return { ok: true, value, ...(knowledge.length ? { knowledge } : {}) }
       } catch (error) {
         deps.changed()
         return { ok: false, reason: messageOf(error) }

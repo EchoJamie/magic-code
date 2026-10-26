@@ -7,7 +7,11 @@ import type { ModelUsage } from './ports.ts'
 import type { ReasoningSetting } from './model.ts'
 
 /** 模型入口不接受 sender、工作区、授权来源或当前委派覆盖值。它们由宿主绑定。 */
-export type CollaborationRequest =
+export type CollaborationRequest = CollaborationOperation & {
+  /** 执行宿主注入的本次调用记录；不在模型参数 schema 中。 */
+  readonly generatedFrom?: import('./collaboration.ts').EntryReference
+}
+type CollaborationOperation =
   | { readonly action: 'list' }
   | { readonly action: 'consult'; readonly operationId: string; readonly question: string; readonly body?: readonly MessagePart[]; readonly reasoning?: ReasoningSetting }
   | { readonly action: 'spawn'; readonly operationId: string; readonly name: string; readonly role?: string; readonly responsibility: string; readonly scope: string; readonly body: readonly MessagePart[]; readonly model?: ModelSwitchRequest; readonly modelReason?: string }
@@ -21,7 +25,7 @@ export type CollaborationRequest =
   | { readonly action: 'stop'; readonly delegation?: DelegationId; readonly reason: string }
   | { readonly action: 'close' }
 
-export type CollaborationReply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly reason: string }
+export type CollaborationReply = { readonly ok: true; readonly value: unknown; readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[] } | { readonly ok: false; readonly reason: string }
 export type CollaborationClient = { request(input: CollaborationRequest): Promise<CollaborationReply> }
 
 /** 仅从实际模型事件汇总；任一调用未报告的字段保持未知。 */

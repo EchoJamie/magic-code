@@ -265,6 +265,11 @@ export function makeCompactor(
     records: stage.records,
     session: DEFAULT_TEST_SESSION,
     compression: options.compression ?? (() => ({ gateway: stage.gateway })),
+    // 压缩器单元用例的前置材料由受控整理器确认；真实整理接线另在应用层覆盖。
+    organize: async (_entries, through) => {
+      const result = stage.records.memory.update({ expectedRevision: stage.records.memory.read().revision, changes: [], inspectedThrough: through })
+      if (!result.ok) throw new Error(result.reason)
+    },
     sink: stage.sink,
     stamper: stage.stamper,
     now: () => FIXED_AT,

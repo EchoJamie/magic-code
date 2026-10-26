@@ -14,6 +14,9 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { createFauxGateway, type FauxTurn } from '@magic/faux'
 import type { KernelEvent, ModelMessage, SessionId, UserMessageContent } from '@magic/contracts'
 import type { Assembly } from '../src/assembly.ts'
 import { attachShell, runShellScript } from '../src/shell.ts'
@@ -27,6 +30,43 @@ const PLAIN: readonly { readonly text: string }[] = [{ text: '好' }]
 
 const T0 = 1_700_000_000_000
 const WORKSPACE_CALL = { name: 'exec', args: { cmd: 'mkdir -p src/new' } }
+
+test('真实写入后模型失败，重开保留执行事实与事项，明确接续不重放副作用', async () => {
+  const stage = makeStage()
+  let first!: Assembly; let calls = 0
+  first = stage.assemble({ modelGateway: stamper => ({ stream(request, options) {
+    calls += 1
+    const source = Number(JSON.stringify(request.messages).match(/#(\d+) user/)?.[1])
+    const turn: FauxTurn = calls === 1 ? { toolCalls: [
+      { name: 'memory_update', args: { expectedRevision: 0, changes: [{ id: 'verify', kind: 'verification', text: '写入完成后仍需核对结果，不能重做已执行动作', evidence: 'unresolved', status: 'active', sources: [{ session: first.session!, entry: source }] }] } },
+      { name: 'write', args: { path: 'result.txt', content: '已执行一次' } },
+    ] } : { error: { tier: 'terminal', message: '工具完成后受控断流' } }
+    return createFauxGateway({ stamper, turns: [turn] }).stream(request, options)
+  } }) })
+  const shell = attachShell(first.shell)
+  try {
+    await shell.submit('只执行一次写入，再核对结果')
+    const path = join(stage.workspace, 'result.txt')
+    expect(readFileSync(path, 'utf8')).toBe('已执行一次')
+    const session = first.session!
+    shell.dispose(); first.close()
+    writeFileSync(path, '用户后续改动必须保留')
+    const resumed = stage.assemble({ session, turns: [{ text: '先核对当前实际结果' }] })
+    const again = attachShell(resumed.shell)
+    try {
+      await resumed.boot()
+      expect(stage.models.at(-1)!.requests).toHaveLength(0)
+      expect(readFileSync(path, 'utf8')).toBe('用户后续改动必须保留')
+      expect(resumed.records.serviceFor(session).memory.read().items[0]?.id).toBe('verify')
+      await again.submit('明确继续核对')
+      const messages = stage.models.at(-1)!.requests.at(-1)!.messages
+      expect(messages.map(textOf).join('\n')).toContain('不能重做已执行动作')
+      expect(messages.some(message => message.role === 'tool' && message.name === 'write' && message.ok)).toBe(true)
+      expect(eventsOfKind(again.events, 'tool.call')).toHaveLength(0)
+      expect(readFileSync(path, 'utf8')).toBe('用户后续改动必须保留')
+    } finally { again.dispose(); resumed.close() }
+  } finally { shell.dispose(); first.close(); stage.dispose() }
+})
 
 /** 一条模型消息的正文——`role:'tool'` 那支不带 `content`（正文在 `output`），按判别取。 */
 function textOf(message: ModelMessage): string {

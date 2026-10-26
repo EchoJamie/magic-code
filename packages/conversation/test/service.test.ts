@@ -254,6 +254,7 @@ describe('ConversationService · 兜底', () => {
 /** 记录桩：写入即炸——验内核自身异常的就近兜底（库坏掉时不许静默）。 */
 function brokenRecords(base: FauxRecords): RecordsService {
   return {
+    get memory() { return base.memory },
     get inputs() { return base.inputs },
     get collaboration() { return base.collaboration },
     get blobs() {
@@ -271,3 +272,35 @@ function brokenRecords(base: FauxRecords): RecordsService {
     listSessions: () => base.listSessions(),
   }
 }
+
+for (const finish of ['completed', 'failed', 'stop'] as const) test(`阶段知识整理等待期间受理补充：${finish}`, async () => {
+  const stage = makeStage({ turns: [{ text: '阶段完成' }, { text: '继续处理补充' }] })
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let started = false
+  let calls = 0
+  const service = createConversationSession(depsOf(stage, { organizeKnowledge: async () => {
+    if (++calls === 1) { started = true; await gate }
+    return { status: finish === 'failed' ? 'failed' : 'completed', reason: '受控失败' }
+  } }))
+  try {
+    service.submit({ text: '原任务' })
+    await waitFor(() => started ? true : undefined, '阶段整理开始')
+    service.submit({ text: '整理中新增补充', purpose: 'current', ref: 'during-organize' })
+    if (finish === 'stop') service.interrupt()
+    release()
+    await waitFor(() => !service.busy() ? true : undefined, '消费结束')
+    const row = stage.records.inputs.get('during-organize')!
+    expect(row.state).toBe(finish === 'stop' ? 'pending' : 'included')
+    if (finish === 'stop') {
+      expect(row.reason).toContain('明确继续')
+      expect(stage.gateway.requests).toHaveLength(1)
+      service.manage({ type: 'input.manage', action: 'continue', ref: row.ref, revision: row.revision })
+      await waitFor(() => !service.busy() ? true : undefined, '消费结束')
+      expect(stage.gateway.requests).toHaveLength(2)
+    } else {
+      expect(stage.gateway.requests).toHaveLength(2)
+      expect(JSON.stringify(stage.gateway.requests[1])).toContain('整理中新增补充')
+    }
+  } finally { release(); await service.shutdown() }
+})

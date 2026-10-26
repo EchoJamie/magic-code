@@ -28,6 +28,7 @@ import type {
 
 /** 执行体拿到的现场——沙箱（场所）＋ 本次调用的流式 / 取消面。 */
 export type ToolRunContext = {
+  readonly entry?: import('@magic/contracts').EntryReference
   readonly sandbox: Sandbox
   /** 取消——中止在途（本域已把它交给沙箱）。 */
   readonly signal: AbortSignal | undefined
@@ -64,6 +65,7 @@ export type ToolRunContext = {
 
 /** 执行体的产出——终值（`ok` 与**面向模型的文本**）。记录侧形态由分发按大块转存定。 */
 export type ToolRunResult = {
+  readonly knowledge?: readonly import('@magic/contracts').KnowledgeReference[]
   readonly ok: boolean
   readonly output: string
   /**

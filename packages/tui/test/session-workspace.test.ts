@@ -21,9 +21,33 @@ import type { KernelEvent, SessionSummary } from '@magic/contracts'
 import { createStage } from './screen.ts'
 import type { Frame } from './screen.ts'
 import { event } from './events.ts'
+import { sessionRows } from '../src/view/sessions.ts'
 
 const HERE = '/work/alpha'
 const ELSEWHERE = '/work/beta'
+
+describe('会话候选辨认', () => {
+  const catalog: readonly SessionSummary[] = [
+    { id: 'source-a-123', title: '认证调查😀', workspace: ['/work/项目甲'], at: 1, archived: false },
+    { id: 'source-b-456', title: '认证调查😀', workspace: ['/work/项目甲'], at: 2, archived: true },
+    { id: 'source-c-789', title: '认证调查😀', workspace: ['/work/项目乙'], at: 3, archived: false },
+  ]
+  test('同名同工作区补充身份与活动，同名不同工作区仍按真实范围分组', () => {
+    const rows = sessionRows({ catalog, active: null, runs: [], scope: 'all', query: '认证' })
+    expect(rows.map(row => row.value)).toEqual(catalog.map(session => session.id))
+    expect(rows[0]?.meta).toContain('source-a')
+    expect(rows[1]?.meta).toContain('source-b')
+    expect(rows[0]?.detail).toContain('会话身份：source-a-123')
+    expect(rows[1]?.detail).toContain('状态：已归档')
+    expect(rows[0]?.detail?.some(text => text.startsWith('最近活动：'))).toBe(true)
+    expect(rows[0]?.group).not.toBe(rows[2]?.group)
+    expect(rows[2]?.detail?.some(text => text.startsWith('会话身份：'))).toBe(false)
+  })
+  test('中文工作区查询保留稳定身份，不以同标题匹配其他项目', () => {
+    const rows = sessionRows({ catalog, active: null, runs: [], scope: 'all', query: '项目乙' })
+    expect(rows.map(row => row.value)).toEqual(['source-c-789'])
+  })
+})
 
 /** 色板里的两档（断言用字面量，与实现各自独立——色板改动时这里当场红）。 */
 const DIM = '#8b93a1'

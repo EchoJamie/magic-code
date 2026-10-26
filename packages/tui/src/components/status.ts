@@ -38,6 +38,7 @@ import { MARKS } from '../marks.ts'
 import { PALETTE, displayWidth, truncate, usageLabel } from './lines.ts'
 
 export type StatusLineProps = {
+  readonly activity?: string
   readonly status: ShellStatus
   /** 终端列数——降级按它算。 */
   readonly columns: number
@@ -72,6 +73,7 @@ const SEP = ` ${MARKS.sep} `
 
 export function StatusLine({
   status,
+  activity,
   columns,
   cells,
   color,
@@ -82,7 +84,8 @@ export function StatusLine({
   // **上色开关**那一处出口——关掉时不传色（`undefined` ＝ 继承终端前景色）。
   const tint = (value: string | undefined): string | undefined => (color ? value : undefined)
 
-  const { fixed, left, hint, base } = statusLineLayout({ status, columns, cells, workspace })
+  const { fixed, left, hint, base } = statusLineLayout({ status, activity, columns, cells, workspace })
+  const activityStatus: ShellStatus = activity === undefined ? status : { ...status, state: 'working' }
 
   return h(
     Box,
@@ -91,8 +94,8 @@ export function StatusLine({
       Text,
       null,
       // ① **状态**——形状 ＋ 词 ＋ 量（**量挂状态后面**）。它**永不省**（视觉锚）。
-      h(Text, { color: tint(stateColor(status, now, pulseAt)) }, stateMark(status.state)),
-      h(Text, { color: tint(stateColor(status, now, pulseAt)) }, ` ${stateText(status.state)}`),
+      h(Text, { color: tint(stateColor(activityStatus, now, pulseAt)) }, stateMark(activity === undefined ? status.state : 'working')),
+      h(Text, { color: tint(stateColor(activityStatus, now, pulseAt)) }, ` ${activity ?? stateText(status.state)}`),
       status.amount === null ? '' : h(Text, { color: tint(stateColor(status, null, null)) }, ` ${status.amount}`),
       // ② **全放行**——`warn` 色：它与那几格不是一类（那几格是**在报什么**，这一格是
       // **在报此刻有多放得开**），故不吃 `faint`；也不必吃 `danger`（那不是出错）
@@ -106,10 +109,10 @@ export function StatusLine({
 }
 
 /** 原生示例与真正终端共享字段、省略及列宽规则。 */
-export function statusLineLayout({ status, columns, cells, workspace }: Pick<StatusLineProps, 'status' | 'columns' | 'cells' | 'workspace'>) {
+export function statusLineLayout({ status, activity, columns, cells, workspace }: Pick<StatusLineProps, 'status' | 'activity' | 'columns' | 'cells' | 'workspace'>) {
   // U129 起没有「全放行」那一格；`fixed` 这一跳留给将来同样不参与让位的东西。
   const fixed: readonly string[] = []
-  const stateWidth = displayWidth(`${stateMark(status.state)} ${stateText(status.state)}${status.amount === null ? '' : ` ${status.amount}`}`)
+  const stateWidth = displayWidth(`${stateMark(activity === undefined ? status.state : 'working')} ${activity ?? stateText(status.state)}${status.amount === null ? '' : ` ${status.amount}`}`)
   const base = columns - 2 - stateWidth
   const texts = cellTexts(status, cells, workspace)
   const hint = fits([...fixed, ...texts.slice(0, 1)], base, status.hint) ? status.hint : ''

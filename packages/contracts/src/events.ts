@@ -111,6 +111,7 @@ export type EventKind =
   | 'model.call.start'
   | 'model.call.end'
   | 'model.usage'
+  | 'memory.model'
   | 'model.error'
   // model · 实时——供渲染订阅；**不落库**（落库收束为调用级）
   | 'model.delta'
@@ -135,7 +136,6 @@ export type EventKind =
   | 'input.settled'
   // 控制 · 输入——**本次交代里引用了、却没被读过的材料**（U63）；**不落库**
   | 'input.unread'
-  // 计划——**当前计划笔记变了**（U34）：更新 / 清空落账之后那一条；**不落库**
   | 'plan.changed'
   // 控制 · 模型——**读侧命令（`model.list`）的答复**：连接与模型信息缓存的一屏；**不落库**
   | 'model.catalog'
@@ -143,6 +143,12 @@ export type EventKind =
   | 'provider.catalog'
   // session——会话面（阶段 2 · U16）：此刻有哪些会话、当前在哪条；**不落库**
   | 'session.state'
+  | 'session.references'
+  | 'memory.state'
+  | 'memory.source'
+  | 'knowledge.state'
+  | 'knowledge.forgotten'
+  | 'compact.state'
   | 'session.changed'
   | 'session.managed'
   | 'collaboration.view'
@@ -412,6 +418,7 @@ export type EventDataOf = {
     readonly inputBudget?: number
   }
   'model.call.end': EmptyPayload
+  'memory.model': { readonly purpose: 'organize' | 'compact' | 'knowledge'; readonly model?: string; readonly provider?: string; readonly durationMs: number; readonly usage?: import('./ports.ts').ModelUsage; readonly ok: boolean }
   'model.usage': {
     /** 宿主在本次请求开始时绑定的委派；缺省表示当时没有已接受的委派。 */
     readonly delegationId?: DelegationId
@@ -584,6 +591,9 @@ export type EventDataOf = {
   // **分块**推：长会话一次塞一个事件＝一个巨型载荷；块大小**实现级**。末块 `done: true`。
   // **不落库**：它是**读出来的**（条目本来就在库里），落库＝把同一段内容存第二遍。
   'session.history': {
+    readonly compactions?: readonly Extract<KernelEvent, { kind: 'compact.state' }>[]
+    /** 末块附实际当前计划；工作记忆投影按 revision 比较。 */
+    readonly plan?: import('./entries.ts').PlanSnapshot
     readonly error?: string
     /** 这批条目属于哪条会话——外壳据以丢弃**切走之后才到**的块（分块会跨切换）。 */
     readonly session: SessionId
@@ -670,6 +680,8 @@ export type EventDataOf = {
   'input.local': { readonly text: string; readonly refs: readonly import('./control.ts').InputRef[]; readonly ref: string }
   'input.pending': { readonly inputs: readonly StoredInput[]; readonly note?: string }
   'input.settled': {
+    /** 受理时实际冻结的引用；重投回的是原输入的范围。 */
+    readonly refs?: readonly import('./control.ts').InputRef[]
     readonly stage?: 'accepted' | 'included'
     /** 配对键——外壳在 `UserInput.ref` 上给的那一个；没给就不在此带键（不编）。 */
     readonly ref?: string
@@ -714,33 +726,10 @@ export type EventDataOf = {
      */
     readonly markers: readonly string[]
   }
-  // 计划——**当前计划笔记变了**（U34）。两种时机共用这一个 kind：
-  // **更新落账** 与 **清空落账**（`plan: null`）——同一个动作的两面，各报各的。
-  //
-  // ⚠️ **它只覆盖「实时」那一路**（设计 · 终端投影：初始与切会话走既有 `session.history`
-  // 重建，实时走 `plan.changed`）：重建那一路的交条目的通道本来就带着**条目载荷**
-  // （`ToolResultPayload.plan` 就在里面），外壳据它认回当前计划——那一条**要用
-  // 条目 id 比较新旧**（历史晚到不能盖掉更新或清空）。
-  // 故本事件**不在切会话时补发**：补发要挑一个「外壳已经订上」的时刻，而重建发生在放开输入
-  // **之前**（装配纪律），那一刻的补发只会丢。
-  //
-  // **不落库**：内容本来就在条目载荷里（`ToolResultPayload.plan`，一次更新一条记录），
-  // 落库＝把同一件事存第二遍；重放要的是「当时计划是什么」（读条目就有），
-  // 不是「屏上闪了一下」。
+  /** 实际当前计划投影，来源记录号不充当工作记忆修订。 */
   'plan.changed': {
-    /**
-     * 这份内容落在**哪条记录**上（更新 / 清空的那条 `tool-result` 条目）。
-     *
-     * 外壳以它**比较新旧**：历史晚到不能盖掉更新的那一条（换会话时也据它先清旧清单）。
-     * 它同时是回查线索（模型要复核时按它翻记录）。
-     */
     readonly entry: RecordId
-    /**
-     * 变化之后的当前计划：**有值** ＝ 就是它；**`null`** ＝ 清空。
-     *
-     * ⚠️ 与条目载荷同一条口径（见 `ToolResultPayload.plan`）：`null` 与「没有这一位」
-     * 是两件事——这一条**必在位**，清空也要报出来（界面据以移除清单）。
-     */
+    readonly revision?: number
     readonly plan: PlanNote | null
   }
   // 控制 · 模型——**读侧命令（`model.list`）的答复**（缺陷 D10 · 第 3 样）。
@@ -820,6 +809,27 @@ export type EventDataOf = {
      */
     readonly note?: string
   }
+  'session.references': {
+    readonly requestId: string
+    readonly query: string
+    readonly offset: number
+    readonly rows: readonly (SessionSummary & { readonly member?: { readonly name: string; readonly originSession: SessionId; readonly originTitle: string } })[]
+    readonly next?: number
+    readonly error?: string
+  }
+  'memory.state': {
+    readonly requestId: string
+    readonly session?: SessionId
+    readonly workspace: readonly string[]
+    readonly memory?: import('./memory.ts').MemorySnapshot
+    readonly unprocessed?: boolean
+    readonly references?: readonly { readonly inputRef: string; readonly title: string; readonly source: SessionId; readonly through: RecordId; readonly sources: readonly import('./memory.ts').MemorySource[] }[]
+    readonly error?: string
+  }
+  'memory.source': { readonly requestId: string; readonly session?: SessionId; readonly page?: import('./memory.ts').MaterialPage; readonly error?: string }
+  'knowledge.state': { readonly requestId: string; readonly session?: SessionId; readonly workspace: readonly string[]; readonly page?: import('./knowledge.ts').KnowledgePage; readonly item?: import('./knowledge.ts').Knowledge; readonly error?: string }
+  'knowledge.forgotten': { readonly requestId: string; readonly session?: SessionId; readonly result?: import('./knowledge.ts').KnowledgeForgetResult; readonly error?: string }
+  'compact.state': import('./control.ts').CompactState
   // 控制 · 技能——**技能目录**（U33 · 终端入口）。`skills.list` 的答复。
   // **不落库**：与 `model.catalog` / `grants.catalog` 同一条——它是**读出来的**
   // （技能目录本来就在盘上），落库＝把同一张表存 N 遍；且 `/skills` 是**反复看**的动作
@@ -1081,6 +1091,11 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // （目录本来就在盘上），且是**边打边问**的动作（每改一个字问一次），留痕只会把观测淹掉。
   // 当时带了哪份材料**另有痕**：`user` 条目的载荷 `refs`（位置 · 来源 · 实际交付内容）。
   'paths.catalog',
+  'session.references',
+  'memory.state',
+  'memory.source',
+  'knowledge.state',
+  'knowledge.forgotten',
   // 选定那一条的认出结果同列的理由（U62）：与 `paths.catalog` 同一条——它是**读出来的**
   // （内容就在盘上），且这一问只是「这一条是什么」的当场答复（问几次都不混）。
   // 那一处引用到底带了什么材料同样**另有痕**（`user` 条目的载荷 `refs`：位置 · 来源 ·

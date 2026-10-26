@@ -21,6 +21,17 @@ import AppKit
     @Published private(set) var route: NoticeRoute?
     @Published private(set) var detailWork: NativeWork?
     @Published private(set) var done = false
+    @Published var memoryFocus: String?
+    @Published var memoryExpanded = false
+    @Published private(set) var memory: MemorySnapshot?
+    @Published private(set) var knowledge: [MemoryKnowledge] = []
+    @Published private(set) var memoryUnprocessed = false
+    @Published private(set) var memoryReading = false
+    @Published private(set) var memoryError: String?
+    @Published private(set) var materialPages: [MaterialPage] = []
+    @Published private(set) var knowledgeNext: Int?
+    private var memoryRequest: String?
+    private var materialTarget: (source: MemorySource, item: String?, knowledge: String?)?
     @Published var historyExpanded = false
     @Published private(set) var memberSession: String?
     @Published var rename: String?
@@ -64,12 +75,14 @@ import AppKit
     }
     func disconnect() {
         online = false; loading = false; reading = false; busy = false
+        memoryRequest = nil; memoryReading = false
         catalogRequest = nil; historyRequest = nil; inspectRequest = nil; manageRequest = nil
         visibleNotice = nil
     }
     func open(route: NoticeRoute? = nil) {
         opened = true
         if let route {
+            resetMemory()
             compactDetail = true
             self.route = route; readNotice = nil; visibleNotice = nil; historyExpanded = true
             search = ""; workspace = []; selection = [route.session]; selectionAfterRefresh = nil
@@ -102,11 +115,13 @@ import AppKit
         if selection.isEmpty { showCatalog() }
         if route != nil && selection == Set([route!.session]) { return }
         if route?.session != selected?.id { route = nil; detailWork = nil }
+        resetMemory()
         inspectRequest = nil; readNotice = nil; memberSession = nil
         entries = []; events = []; next = nil; done = false; historyError = nil; historyRequest = nil; reading = false; rename = nil; visibleNotice = nil
         detailWork = selection.count == 1 ? selection.first.flatMap { works[$0] } : nil
         inspectSelection()
         if historyExpanded, selected != nil { history() }
+        if memoryExpanded { readMemory() }
     }
     func history(refreshCurrent: Bool = false) {
         guard online, !reading, let session = selected?.id ?? route?.session else { return }
@@ -115,9 +130,43 @@ import AppKit
         expire(request)
     }
     func chooseMember(_ session: String?) {
+        resetMemory()
         memberSession = session; route = nil; entries = []; events = []; next = nil; done = false
         historyRequest = nil; reading = false; visibleNotice = nil; readNotice = nil; historyExpanded = true
         history()
+        if memoryExpanded { readMemory() }
+    }
+    var memorySession: String? { memberSession ?? route?.notice.source?.session ?? selected?.id ?? route?.session }
+    private func resetMemory() {
+        memoryRequest = nil; memoryReading = false; memory = nil; knowledge = []; knowledgeNext = nil
+        materialPages = []; materialTarget = nil; memoryError = nil; memoryUnprocessed = false; memoryFocus = nil
+    }
+    func readMemory(offset: Int? = nil) {
+        guard online, !memoryReading, let session = memorySession else { return }
+        let request = UUID().uuidString; memoryRequest = request; memoryReading = true; memoryError = nil
+        if offset == nil { materialPages = []; materialTarget = nil }
+        send?(.memory(request: request, session: session, offset: offset)); expire(request)
+    }
+    func readSource(_ source: MemorySource, item: String? = nil, knowledge: String? = nil, next: Bool = false) {
+        guard online, !memoryReading, let session = memorySession else { return }
+        if !next { materialPages = [] }
+        materialTarget = (source, item, knowledge)
+        let request = UUID().uuidString; memoryRequest = request; memoryReading = true; memoryError = nil
+        send?(.memorySource(request: request, session: session, source: source, item: item, knowledge: knowledge)); expire(request)
+    }
+    func nextSource() {
+        guard let target = materialTarget, let offset = materialPages.last?.next else { return }
+        var source = target.source; source.offset = offset
+        readSource(source, item: target.item, knowledge: target.knowledge, next: true)
+    }
+    func retrySource() {
+        guard let target = materialTarget else { readMemory(); return }
+        readSource(target.source, item: target.item, knowledge: target.knowledge, next: true)
+    }
+    func backSource() {
+        memoryRequest = nil; memoryReading = false; memoryError = nil
+        if materialPages.count > 1 { materialPages.removeLast() }
+        else { materialPages = []; materialTarget = nil }
     }
     private func inspectSelection() {
         guard route == nil, online, let selected, inspectRequest == nil else { return }
@@ -159,6 +208,7 @@ import AppKit
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(8))
             guard let self else { return }
+            if self.memoryRequest == request { self.memoryRequest = nil; self.memoryReading = false; self.memoryError = "读取超时，已读内容保留，请重试。" }
             if self.catalogRequest == request { self.catalogRequest = nil; self.loading = false; self.error = "目录读取超时，请重试。" }
             if self.historyRequest == request || self.inspectRequest == request {
                 self.historyRequest = nil; self.inspectRequest = nil; self.reading = false; self.historyError = "内容读取超时，目标已保留，请重试。"
@@ -168,6 +218,15 @@ import AppKit
     }
     func receive(_ response: NativeResponse) {
         switch response {
+        case let .memoryResult(request, service, session, memory, unprocessed, knowledge, material, error):
+            guard request == memoryRequest, service == identity?.serviceInstance, session == memorySession, online else { return }
+            memoryRequest = nil; memoryReading = false; memoryError = error
+            if let memory { self.memory = memory; memoryUnprocessed = unprocessed ?? false }
+            if let knowledge { self.knowledge = knowledge.items; knowledgeNext = knowledge.next }
+            if let material {
+                if materialPages.last?.source == material.source { materialPages[materialPages.count - 1] = material }
+                else { materialPages.append(material) }
+            }
         case let .sessionsResult(request, service, sessions, error):
             guard request == catalogRequest, service == identity?.serviceInstance, online else { return }
             catalogRequest = nil; loading = false; self.error = error
@@ -261,6 +320,7 @@ struct SessionWindow: View {
         .onChange(of: model.workspace) { _, _ in model.refresh() }
         .onChange(of: model.search) { _, _ in model.refresh() }
         .onChange(of: model.selection) { _, _ in model.choose() }
+        .onChange(of: model.memoryExpanded) { _, expanded in if expanded, model.memory == nil { model.readMemory() } }
         .onChange(of: model.historyExpanded) { _, expanded in if expanded, model.entries.isEmpty { model.history() } }
         .background(Button("") { model.showCatalog(); searchFocused = true }.keyboardShortcut("f", modifiers: .command).hidden())
     }
@@ -404,6 +464,7 @@ struct SessionWindow: View {
                             ForEach(members) { member in Button(member.name) { model.chooseMember(member.session) } }
                         }
                     }
+                    memoryReading
                     DisclosureGroup(isExpanded: $model.historyExpanded) {
                         LazyVStack(alignment: .leading, spacing: 16) {
                             ForEach(model.entries) { entry in
@@ -421,10 +482,72 @@ struct SessionWindow: View {
             .onDisappear { model.detailVisible(session: row.id, visible: false) }
             .onChange(of: model.active) { _, active in if active { model.detailVisible(session: row.id, visible: true) } }
             .onChange(of: model.readingNotice?.id) { _, _ in model.detailVisible(session: row.id, visible: true) }
+            .onChange(of: model.materialPages.count) { _, count in if count == 0, let focus = model.memoryFocus { proxy.scrollTo("memory:" + focus, anchor: .center) } }
             .onChange(of: model.entries.map(\.id)) { previous, ids in
                 if let target = model.route?.notice.source?.entry, !previous.contains(target), ids.contains(target) { proxy.scrollTo(target, anchor: .center) }
             }
         }
+    }
+    private var memoryReading: some View {
+        DisclosureGroup(isExpanded: $model.memoryExpanded) {
+            VStack(alignment: .leading, spacing: 12) {
+                if !model.online { Text("当前离线；以下为此前已读内容，可能已过期。").foregroundStyle(.secondary) }
+                if let page = model.materialPages.last {
+                    Button("返回") { model.backSource() }
+                    Text("来源 · " + (memorySpeaker(page.speaker) == memoryKind(page.kind) ? memorySpeaker(page.speaker) : memorySpeaker(page.speaker) + " · " + memoryKind(page.kind))).font(.headline)
+                    Text(page.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    Text(page.complete ? "已读至材料末尾" : "当前为节选").foregroundStyle(.secondary)
+                    if page.next != nil { Button("继续阅读") { model.nextSource() }.disabled(!model.online || model.memoryReading) }
+                } else {
+                    if let memory = model.memory {
+                        if memory.items.isEmpty { Text("尚无已整理事项").foregroundStyle(.secondary) }
+                        if model.memoryUnprocessed { Text("有尚未整理的新内容").foregroundStyle(.secondary) }
+                        ForEach(memory.items) { item in
+                            DisclosureGroup(isExpanded: Binding(get: { model.memoryFocus == item.id }, set: { model.memoryFocus = $0 ? item.id : nil })) {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(item.detail ?? item.text).textSelection(.enabled)
+                                    Text(memoryNature(item.evidence, item.status) + " · 修订 \(item.revision)").foregroundStyle(.secondary)
+                                    if let progress = item.progress { Text("进展：" + (["pending": "待进行", "in_progress": "进行中", "completed": "已完成"][progress] ?? progress)) }
+                                    ForEach(Array(item.sources.enumerated()), id: \.offset) { index, source in
+                                        Button("来源 \(index + 1) · 记录 \(source.entry)") { model.readSource(source, item: item.id) }.disabled(!model.online || model.memoryReading)
+                                    }
+                                }.padding(.top, 6)
+                            } label: { Text(item.text) }
+                            .id("memory:" + item.id)
+                        }
+                        ForEach(model.knowledge) { item in
+                            DisclosureGroup(isExpanded: Binding(get: { model.memoryFocus == item.id }, set: { model.memoryFocus = $0 ? item.id : nil })) {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(item.conclusion).textSelection(.enabled)
+                                    Text("适用条件：" + item.conditions).textSelection(.enabled)
+                                    Text(memoryNature(item.evidence, item.status) + " · 修订 \(item.revision)").foregroundStyle(.secondary)
+                                    ForEach(Array(item.sources.enumerated()), id: \.offset) { index, source in
+                                        Button("来源 \(index + 1) · 记录 \(source.entry)") { model.readSource(source, knowledge: item.id) }.disabled(!model.online || model.memoryReading)
+                                    }
+                                }.padding(.top, 6)
+                            } label: { Text(item.topic + " · " + item.scope.label) }
+                            .id("memory:" + item.id)
+                        }
+                        if let next = model.knowledgeNext { Button("更多适用知识") { model.readMemory(offset: next) }.disabled(!model.online || model.memoryReading) }
+                        Text("维护记忆请复制接回命令，在终端使用 /memory。").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button("刷新记忆") { model.readMemory() }.disabled(!model.online || model.memoryReading)
+                }
+                if model.memoryReading { ProgressView("正在读取记忆…") }
+                if let error = model.memoryError { Text(error).foregroundStyle(.secondary); Button("重新读取") { model.retrySource() }.disabled(!model.online || model.memoryReading) }
+            }.padding(.top, 8)
+        } label: { Label("记忆与适用知识", systemImage: "text.book.closed").font(.headline).padding(.vertical, 8) }
+    }
+    private func memoryKind(_ kind: String) -> String {
+        ["user": "用户", "assistant": "助手", "tool-call": "工具调用", "tool-result": "工具结果", "agent-message": "协作消息", "summary": "会话摘要", "system-notice": "系统通知"][kind] ?? kind
+    }
+    private func memorySpeaker(_ speaker: String) -> String {
+        speaker.hasPrefix("agent:") ? "协作成员 " + speaker.dropFirst(6) : memoryKind(speaker)
+    }
+    private func memoryNature(_ evidence: String, _ status: String) -> String {
+        let nature = ["fact": "事实", "hypothesis": "假设", "unresolved": "未决"][evidence] ?? evidence
+        let state = ["active": "有效", "resolved": "已解决", "invalid": "失效", "pending": "待确认", "forgotten": "已遗忘"][status] ?? status
+        return nature + " · " + state
     }
     private func eventContent(_ event: HistoryEvent) -> some View {
         Text(event.text).textSelection(.enabled)

@@ -232,10 +232,16 @@ test('executor 已发出的交付 RPC 在 stop 后经原通道处理：保存原
     if (packet.message.t !== 'collaboration.request' || packet.message.request.action !== 'deliver') throw new Error('不是交付 RPC')
     const requestId = packet.message.requestId
     expect(packet.forwarded).toBeUndefined()
-    expect(packet.message.request).toEqual({ action: 'deliver', operationId: 'inflight-delivery', delegation: delegationOf(f).delegationId, ...delivery })
+    const { generatedFrom, ...request } = packet.message.request
+    expect(request).toEqual({ action: 'deliver', operationId: 'inflight-delivery', delegation: delegationOf(f).delegationId, ...delivery })
     const owner = f.launches.find(one => one.gen === packet.gen)!
     expect(owner.session).toBe(memberOf(f).sessionId)
     expect(owner.exited).toBeUndefined()
+    expect(generatedFrom).toBeDefined()
+    const source = (await Array.fromAsync(f.store.readEntries(generatedFrom!.sessionId, { from: generatedFrom!.entryId })))[0]
+    expect(source).toMatchObject({ kind: 'tool-call', payload: { name: 'agent_message' } })
+    expect(generatedFrom).toEqual({ sessionId: memberOf(f).sessionId, entryId: source!.id })
+    expect(source?.payload && 'args' in source.payload ? source.payload.args : undefined).toEqual(request)
     f.pick('stop-work')
     const stop = await stopped(f)
     expect(packet.order).toBeLessThan(stop.order)

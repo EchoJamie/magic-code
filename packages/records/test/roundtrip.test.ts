@@ -346,8 +346,7 @@ describe('判据 1 · 落取回环', () => {
       //
       // 由头（U41）：DeepSeek 的思考模式在带 tools 时要求把历史轮的 `reasoning_content`
       // 原样回传（不回则 400）——那份思考**确实是重放真源**，故它在表里该有位置。
-      // ⚠️ **核准的只有这一形**：`{ reasoning: string }`。这条表仍是「重放真源」，
-      // 不是杂物抽屉——多一个键、换个类型、给个空对象，**一条都不放行**。
+      // 思考回传与知识来源独立保存，不为知识元数据补造 reasoning。
       const reasoning = { reasoning: '先看清路径再动手' }
       records.appendEntry({ kind: 'assistant', content: { text: '看完了' }, at, payload: reasoning })
       const protocolReasoning: AssistantPayload = { reasoning: '', reasoningState: {
@@ -357,11 +356,21 @@ describe('判据 1 · 落取回环', () => {
       records.appendEntry({ kind: 'assistant', content: { text: '工具前的正文' }, at, payload: protocolReasoning })
       // 不带载荷的 `assistant` 照旧（**既有条目一字不动**：旧写入路径产出的行与新路径逐字同形）
       records.appendEntry({ kind: 'assistant', content: { text: '没有思考的一轮' }, at })
+      const knowledgeOnly: AssistantPayload = { knowledge: [{ id: 'known', revision: 2 }] }
+      records.appendEntry({ kind: 'assistant', content: { text: '根据提供的知识作答' }, at, payload: knowledgeOnly })
+      const both = { ...reasoning, ...knowledgeOnly }
+      records.appendEntry({ kind: 'assistant', content: { text: '思考与知识同时存在' }, at, payload: both })
 
       for (const broken of [
         { foo: 1 }, // 别的东西——载荷不是杂物抽屉
         {}, // 空载荷＝「没有载荷」写错了地方（与 `user` 那条同一姿势）
         { reasoning: 3 }, // 形状不对：那一格是**文字**
+        { knowledge: [] },
+        { knowledge: [{ id: '', revision: 1 }] },
+        { knowledge: [{ id: 'known', revision: 0 }] },
+        { knowledge: [{ id: 'known', revision: '2' }] },
+        { knowledge: [{ id: 'known', revision: 1, extra: true }] },
+        { knowledge: [{ id: 'known', revision: 2 }], reasoningState: { provider: 'local', model: 'm' } },
         { reasoning: '想过了', reasoningState: {} },
         { reasoning: '想过了', reasoningState: { provider: 'mm', model: '', details: [] } },
         { reasoning: '想过了', reasoningState: { provider: 'mm', model: 'm', details: ['bad'] } },
@@ -385,8 +394,9 @@ describe('判据 1 · 落取回环', () => {
       const afterAssistant: Entry[] = []
       for await (const entry of records.readEntries(SESSION)) afterAssistant.push(entry)
       const landed = afterAssistant.filter((entry) => entry.kind === 'assistant')
-      expect(landed.map((entry) => entry.payload)).toEqual([reasoning, protocolReasoning, undefined])
-      expect(landed.map((entry) => entry.content)).toEqual([{ text: '看完了' }, { text: '工具前的正文' }, { text: '没有思考的一轮' }])
+      expect(landed.map((entry) => entry.payload)).toEqual([reasoning, protocolReasoning, undefined, knowledgeOnly, both])
+      expect(landed[3]?.payload).not.toHaveProperty('reasoning')
+      expect(landed.map((entry) => entry.content)).toEqual([{ text: '看完了' }, { text: '工具前的正文' }, { text: '没有思考的一轮' }, { text: '根据提供的知识作答' }, { text: '思考与知识同时存在' }])
       expect(() =>
         records.appendEntry({
           kind: 'tool-result',
@@ -656,4 +666,28 @@ describe('判据 5 · 独立验证（直读库表）', () => {
       removeDataDir(dir)
     }
   })
+})
+
+test('工具结果的知识引用随正文或blob原样落取，无效引用拒绝且不从正文推断', async () => {
+  const dataDir = tempDataDir()
+  const store = createRecordsStore({ dataDir, workspace: ROOTS })
+  try {
+    const records = store.serviceFor(SESSION)
+    const knowledge = [{ id: 'known', revision: 2 }, { id: 'context-only', revision: 1, provided: true as const }]
+    const blob = await records.blobs.put('工具的完整正文，不解析其中的知识关系')
+    const payloads: ToolResultPayload[] = [
+      { ok: true, output: { text: '精读结果' }, knowledge },
+      { ok: true, output: { blob }, knowledge },
+      { ok: true, output: { text: JSON.stringify({ knowledge }) } },
+    ]
+    for (const payload of payloads) records.appendEntry({ kind: 'tool-result', content: { text: '展示正文' }, payload, at: 1 })
+    for (const invalid of [[], [{ id: 'known', revision: 0 }], [{ id: 'known', revision: 2, extra: true }], [{ id: 'known', revision: 2, provided: false }]]) {
+      expect(() => records.appendEntry({ kind: 'tool-result', content: { text: '' },
+        payload: { ok: true, output: { blob }, knowledge: invalid } as unknown as ToolResultPayload, at: 2 })).toThrow(/tool-result/)
+    }
+    const saved: Entry[] = []
+    for await (const entry of records.readEntries(SESSION)) saved.push(entry)
+    expect(saved.map(entry => entry.payload)).toEqual(payloads)
+    expect(saved[2]!.payload).not.toHaveProperty('knowledge')
+  } finally { store.close(); removeDataDir(dataDir) }
 })
