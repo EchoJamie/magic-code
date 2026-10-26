@@ -4,11 +4,12 @@ import { renderToString } from 'ink'
 import type { CollaborationView } from '@magic/contracts'
 import { createShell, type Shell, type ShellOptions } from '../src/shell.ts'
 import { AppView } from '../src/components/app.ts'
+import { logLines } from '../src/components/log.ts'
 import { collaborationSummary, currentMember, memberRows, memberState } from '../src/collaboration.ts'
 import { createSpyTransport } from './fakes.ts'
 import { event } from './events.ts'
 import { plain } from './screen.ts'
-import { collaborationFixture, memberEntries, memberMessages, memberSessionView } from './collaboration-fixture.ts'
+import { collaborationFixture, memberEntries, memberMessages, memberSessionView, nestedFixture, originEntries } from './collaboration-fixture.ts'
 
 const shells: Shell[] = []
 afterEach(() => { for (const shell of shells.splice(0)) shell.dispose() })
@@ -29,7 +30,7 @@ export function collaborationStage(options: Omit<ShellOptions, 'magicBase'> = {}
       active = command.session === 'member' ? 'member' : 'origin'
       spy.emit(event('session.state', { active, sessions: [{ archived: false, id: 'origin', title: '修复回调', at: 0 }, { archived: false, id: 'member', at: 0 }] }, { session: active }))
       spy.emit(event('session.history', {
-        session: active, done: true, entries: active === 'member' ? memberEntries : [],
+        session: active, done: true, entries: active === 'member' ? memberEntries : originEntries,
         ...(active === 'member' ? { messages: memberMessages } : {}),
       }, { session: active }))
       spy.emit(event('collaboration.view', snapshot()))
@@ -146,6 +147,98 @@ test('Enter 进入子会话：走会话历史分片，讨论消息按来源并�
   app.pick('coordinator')
   expect(app.view().sessionId).toBe('origin')
   expect(app.view().draft).toBe('整体草稿')
+})
+
+test('子会话正文是它自己的历史；Ctrl+O 跟随当前会话而不是入口', () => {
+  const app = collaborationStage()
+  app.enter()
+  const rows = (): readonly import('../src/view.ts').LogRow[] => [...app.view().settled, ...app.view().rows]
+  const bodyText = (text: string): boolean => rows().some(row => (row.kind === 'user' || row.kind === 'assistant') && row.text === text)
+  expect(bodyText('按入口要求核对回调。')).toBe(true)
+  expect(bodyText('入口历史一句。')).toBe(false)
+  expect(app.shell.key({ kind: 'ctrl+o' })).toEqual({ exit: false, screen: true })
+  expect(app.view().sessionId).toBe('member')
+
+  app.key('tab'); app.pick('coordinator')
+  expect(app.view().sessionId).toBe('origin')
+  expect(bodyText('入口历史一句。')).toBe(true)
+  expect(bodyText('按入口要求核对回调。')).toBe(false)
+  expect(app.shell.key({ kind: 'ctrl+o' })).toEqual({ exit: false, screen: true })
+  expect(app.view().sessionId).toBe('origin')
+})
+
+test('子会话里工具行实时追加；默认折叠，Ctrl+O 那一屏才能看全文', () => {
+  const app = collaborationStage()
+  app.enter()
+  const output = Array.from({ length: 40 }, (_, index) => `行${index} 输出`).join('\n')
+  app.spy.emit(event('tool.call', { name: 'exec', args: { cmd: 'bun test' } }, { id: 70, session: 'member' }))
+  app.spy.emit(event('tool.result', { call: 70, ok: true, output: { text: output } }, { id: 270, session: 'member' }))
+  const rows = app.view().rows
+  expect(rows.some(row => row.kind === 'tool' && row.name === 'exec')).toBe(true)
+  const collapsed = logLines(rows, { columns: 100, expanded: false })
+  const expanded = logLines(rows, { columns: 100, expanded: true })
+  // 折叠只留标题、状态与结果摘要（摘要取末行）；正文中间那几行要 Ctrl+O 那一屏才有。
+  expect(collapsed.some(line => line.segments.some(piece => piece.text.includes('行39')))).toBe(true)
+  expect(collapsed.some(line => line.segments.some(piece => piece.text.includes('行20 输出')))).toBe(false)
+  expect(expanded.some(line => line.segments.some(piece => piece.text.includes('行20 输出')))).toBe(true)
+})
+
+test('协作列表只保留工作级动作：不再有成员记录／讨论入口，也不打开阅读器', () => {
+  const app = collaborationStage()
+  app.key('tab')
+  const dock = app.view().dock
+  if (dock.kind !== 'picker') throw new Error('没有协作列表')
+  const values = dock.picker.rows.map(row => row.value)
+  expect(values).toEqual(expect.arrayContaining(['worker', 'whole', 'constraints', 'default-model', 'stop-work']))
+  for (const gone of ['records', 'discussions', 'input', 'member-model', 'stop-member']) {
+    expect(values).not.toContain(gone)
+  }
+  expect(dock.picker.reader).toBeUndefined()
+  app.pick('worker')
+  expect(app.view().sessionId).toBe('member')
+  expect(app.view().dock.kind).toBe('input')
+})
+
+test('从子会话仍能执行整件工作动作：共同补充、带入情况、停止整件', () => {
+  const app = collaborationStage()
+  app.enter()
+  app.key('tab')
+  // 「向整件工作补充」回到入口会话（用整体草稿发送）。
+  app.pick('whole')
+  expect(app.view().sessionId).toBe('origin')
+
+  app.key('tab')
+  app.pick('constraints')
+  let dock = app.view().dock
+  if (dock.kind !== 'picker') throw new Error('带入情况没有打开')
+  expect(dock.picker.reader?.title).toContain('共同补充')
+  expect(dock.picker.reader?.rows.some(row => row.kind === 'output' && row.lines.some(line => line.includes('已带入后续请求')))).toBe(true)
+  app.key('escape')
+
+  // 工作级停止仍可发现并可用；子会话里按标准停止键才是局部停止。
+  const list = app.view().dock
+  if (list.kind !== 'picker' || list.picker.source !== 'collaboration') throw new Error('没有回到协作列表')
+  app.pick('stop-work')
+  expect(app.spy.commands.at(-1)).toEqual({ type: 'collaboration.stop' })
+})
+
+test('继续派生仍是平铺展示：子会话行只标“由 xx 派生”', () => {
+  const rows = memberRows(nestedFixture, 'origin')
+  const descendant = rows.find(row => row.value === 'descendant')
+  expect(descendant?.label).toBe('复核')
+  expect(descendant?.meta).toContain('由 实现 派生')
+  expect(descendant?.meta).not.toContain('主会话')
+  expect(rows.every(row => !row.label.startsWith(' '))).toBe(true)
+  expect(rows.some(row => row.value === 'coordinator')).toBe(false)
+})
+
+test('子会话里真实断线仍显式呈现，草稿保留', () => {
+  const app = collaborationStage()
+  app.enter()
+  app.text('子会话未发稿')
+  app.shell.disconnected('受控断线')
+  expect(app.screen()).toContain('连接已断开')
+  expect(app.view().draft).toBe('子会话未发稿')
 })
 
 test('子会话打开协作视图：当前子会话不在列表里，主会话预选，Enter 返回', () => {

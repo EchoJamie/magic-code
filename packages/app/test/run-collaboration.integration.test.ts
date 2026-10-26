@@ -663,3 +663,164 @@ test('U130：成员运行中切进子会话，正文实时追加；返回入口�
     expect(f.events.filter(one => one.kind === 'error')).toEqual([])
   } finally { memberReply.release(); await f.close() }
 }, 30000)
+
+test('D68：入口与子会话往返不重连、不复用当前会话当成员、不重放请求', async () => {
+  const memberReply = latch()
+  const f = await collaborationRuntime('d68-round-trip', async call => {
+    if (call.model === 'entry-model') return call.index === 0 ? spawnMember : { text: '入口本轮结束。' }
+    if (call.index === 0) {
+      await memberReply.promise
+      return { tool: 'agent_message', args: { action: 'respond', operationId: 'accept', delegation: f.delegation()!.delegationId, response: 'accept' } }
+    }
+    return { text: '成员结果。' }
+  })
+  try {
+    f.shell.key({ kind: 'paste', text: '分出检查，切换期间成员保持运行。' }); f.shell.key({ kind: 'enter' })
+    await f.wait('入口会话已开张', () => f.session() !== null)
+    const origin = f.session()!
+    // 等入口这一轮自己收束（它的第二次调用），成员停在受控屏障上；此后切屏不该再发请求。
+    await f.wait('入口空闲、成员在跑', () => f.member() !== undefined
+      && f.requests().length === 2 && f.requests('member-model').length === 1
+      && f.manager.runs().find(one => one.session === origin)?.state === 'idle')
+    const member = f.member()!
+    const calls = f.calls.length
+    const clients = f.manager.clients()
+
+    await f.openMember()
+    expect(f.shell.getView().sessionId).toBe(member.sessionId)
+    // 管理侧保护：把当前子会话自身当成员读，不重读、不重发它的完整历史。
+    const viewsBefore = f.events.filter(one => one.kind === 'collaboration.view').length
+    f.client.send({ type: 'collaboration.read', member: member.agentId })
+    await f.wait('自读回执', () => f.events.filter(one => one.kind === 'collaboration.view').length > viewsBefore)
+    const views = f.events.flatMap(one => one.kind === 'collaboration.view' ? [one.data] : [])
+    expect(views.filter(view => view.entries !== undefined)).toEqual([])
+    expect(views.every(view => view.selectedMember === undefined)).toBe(true)
+
+    // 返回入口：同一条连接、成员仍在跑、切换本身不触发模型调用。
+    f.shell.key({ kind: 'tab' })
+    await f.wait('子会话列表', () => { const dock = f.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'collaboration' })
+    f.pick(f.collaboration()!.coordinatorId)
+    await f.wait('返回入口', () => f.shell.getView().sessionId === origin)
+    expect(f.manager.clients()).toBe(clients)
+    expect(f.calls.length).toBe(calls)
+    expect(f.manager.runs().some(one => one.session === member.sessionId)).toBe(true)
+
+    // 再往返一次：记录行键不重复（不因打开子会话重发或叠行）。
+    await f.openMember()
+    f.shell.key({ kind: 'tab' })
+    await f.wait('再次打开子会话列表', () => { const dock = f.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'collaboration' })
+    f.pick(f.collaboration()!.coordinatorId)
+    await f.wait('再次返回入口', () => f.shell.getView().sessionId === origin)
+    const rows = [...f.shell.getView().settled, ...f.shell.getView().rows]
+    expect(new Set(rows.map(row => row.key)).size).toBe(rows.length)
+    expect(f.errors).toEqual([])
+    expect(f.events.filter(one => one.kind === 'error')).toEqual([])
+  } finally { memberReply.release(); await f.close() }
+}, 30000)
+
+test('U130：子会话里的模型入口只改该成员的身份与执行者', async () => {
+  const f = await collaborationRuntime('subsession-model', call => {
+    if (call.model === 'entry-model') return call.index === 0 ? spawnMember : { text: '入口本轮结束。' }
+    if (call.index === 0) return { tool: 'agent_message', args: { action: 'respond', operationId: 'accept', delegation: f.delegation()!.delegationId, response: 'accept' } }
+    return { text: '成员已完成。' }
+  })
+  try {
+    f.shell.key({ kind: 'paste', text: '分出检查，随后在子会话里换模型。' }); f.shell.key({ kind: 'enter' })
+    await f.wait('成员接受并空闲', () => f.delegation()?.state === 'accepted'
+      && f.manager.runs().every(one => one.state === 'idle'))
+    const member = f.member()!
+    const coordinator = f.members().find(one => one.agentId === f.collaboration()!.coordinatorId)!
+    expect(member.model.model).toBe('member-model')
+    await f.openMember()
+
+    f.shell.key({ kind: 'paste', text: '/model ' }); f.shell.key({ kind: 'enter' })
+    await f.wait('模型选择器', () => { const dock = f.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'model' })
+    f.pick('choose')
+    await f.wait('模型档位', () => { const dock = f.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'model-choice' })
+    f.pick('arcane')
+    await f.wait('成员身份已换档', () => f.store.collaboration.getAgent(member.agentId)?.model.model === 'descendant-model')
+    expect(f.store.collaboration.getAgent(coordinator.agentId)?.model.model).toBe('entry-model')
+    expect(f.commands.filter(one => one.type === 'collaboration.configure')).toEqual([
+      expect.objectContaining({ type: 'collaboration.configure', member: member.agentId, model: { choice: 'arcane' } }),
+    ])
+    expect(f.commands.some(one => one.type === 'model.switch')).toBe(false)
+
+    // 下一次成员请求实际用新档；入口仍是自己的模型。
+    f.shell.key({ kind: 'paste', text: '换档后再做一步。' }); f.shell.key({ kind: 'enter' })
+    await f.wait('成员用新档请求', () => f.requests('descendant-model').length >= 1)
+    // 换档后不再用旧成员档；入口仍走自己的档。
+    expect(f.requests('member-model')).toHaveLength(2)
+    expect(f.calls.length).toBeGreaterThanOrEqual(3)
+    expect(f.errors).toEqual([])
+    expect(f.events.filter(one => one.kind === 'error')).toEqual([])
+  } finally { await f.close() }
+}, 30000)
+
+test('U130：子会话的标准停止只停这份委派及其派生闭包，整件工作仍开放', async () => {
+  const memberReply = latch()
+  const f = await collaborationRuntime('subsession-stop', async call => {
+    if (call.model === 'entry-model') return call.index === 0 ? spawnMember : { text: '入口本轮结束。' }
+    if (call.index === 0) return { tool: 'agent_message', args: { action: 'respond', operationId: 'accept', delegation: f.delegation()!.delegationId, response: 'accept' } }
+    if (call.index === 1) { await memberReply.promise; return { text: '成员这一步不该跑完。' } }
+    return { text: '成员后续。' }
+  })
+  try {
+    f.shell.key({ kind: 'paste', text: '分出检查，随后只停这份委派。' }); f.shell.key({ kind: 'enter' })
+    await f.wait('成员已接受并在跑', () => f.delegation()?.state === 'accepted'
+      && f.requests('member-model').length >= 2)
+    const member = f.member()!
+    const work = f.collaboration()!
+    await f.openMember()
+
+    f.shell.key({ kind: 'ctrl+c' })
+    await f.wait('停止这份委派菜单', () => { const dock = f.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'task' })
+    const dock = f.shell.getView().dock
+    if (dock.kind !== 'picker') throw new Error('停止菜单没有打开')
+    expect(dock.picker.rows[0]?.label).toBe('停止这份委派')
+    expect(dock.picker.rows[0]?.meta).toContain('派生闭包')
+    f.pick('stop')
+
+    await f.wait('只取消这份委派', () => f.delegation()?.state === 'cancelled')
+    await f.wait('停止回执写明范围', () => [...f.shell.getView().settled, ...f.shell.getView().rows]
+      .some(row => row.kind === 'receipt' && row.text.includes('委派「回调兼容」及派生闭包')))
+    expect(f.store.collaboration.getCollaboration(work.collaborationId)?.state).toBe('open')
+    expect(f.manager.executors().some(one => one.session === member.sessionId)).toBe(false)
+    expect(f.errors).toEqual([])
+    expect(f.events.filter(one => one.kind === 'error')).toEqual([])
+  } finally { memberReply.release(); await f.close() }
+}, 30000)
+
+test('D68：成员长历史不进协作视图，切会话不重发全量', async () => {
+  // 1.2MB 正文：旧路径会把整段显示历史塞进 collaboration.view 并在每次变化时重发。
+  const huge = 'LARGE_BODY_'.repeat(120_000)
+  const f = await collaborationRuntime('d68-large-history', call => {
+    if (call.model === 'entry-model') return call.index === 0 ? spawnMember : { text: '入口本轮结束。' }
+    if (call.index === 0) return { tool: 'agent_message', args: { action: 'respond', operationId: 'accept', delegation: f.delegation()!.delegationId, response: 'accept' } }
+    return { text: huge }
+  })
+  try {
+    f.shell.key({ kind: 'paste', text: '分出检查，成员产生长正文。' }); f.shell.key({ kind: 'enter' })
+    await f.wait('成员长正文落库且双方空闲', () => f.member() !== undefined
+      && f.requests('member-model').length >= 2
+      && (f.store.collaboration.agentForSession(f.member()!.sessionId) !== undefined)
+      && f.manager.runs().every(one => one.state === 'idle'))
+    const origin = f.collaboration()!.originSessionId
+    const start = f.events.length
+    await f.openMember()
+    f.shell.key({ kind: 'tab' })
+    await f.wait('子会话列表', () => { const dock = f.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'collaboration' })
+    f.pick(f.collaboration()!.coordinatorId)
+    await f.wait('返回入口', () => f.shell.getView().sessionId === origin)
+
+    const views = f.events.slice(start).flatMap(one => one.kind === 'collaboration.view' ? [one.data] : [])
+    expect(views.length).toBeGreaterThan(0)
+    for (const view of views) {
+      expect(view.entries).toBeUndefined()
+      expect(JSON.stringify(view)).not.toContain('LARGE_BODY_')
+      expect(JSON.stringify(view).length).toBeLessThan(200_000)
+    }
+    expect(f.manager.clients()).toBe(1)
+    expect(f.errors).toEqual([])
+    expect(f.events.filter(one => one.kind === 'error')).toEqual([])
+  } finally { await f.close() }
+}, 30000)

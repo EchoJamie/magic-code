@@ -23,6 +23,12 @@ export const collaborationFixture: CollaborationView = {
   waits: [], constraints: [{ messageId: 20, states: [{ agentId: 'worker', state: 'pending' }, { agentId: 'coordinator', state: 'included' }] }],
 }
 
+/** 入口会话自己的历史（与子会话正文互不混入）。 */
+export const originEntries: readonly Entry[] = [
+  { id: 10, kind: 'user', at: 1, content: { text: '入口历史一句。' } },
+  { id: 11, kind: 'assistant', at: 2, content: { text: '入口已分出检查。' } },
+]
+
 /** 子会话自己的历史：讨论消息在正文里是一条 `agent-message` 引用条目。 */
 export const memberEntries: readonly Entry[] = [
   { id: 60, kind: 'user', at: 4, content: { text: '按入口要求核对回调。' } },
@@ -38,6 +44,17 @@ export const memberMessages = [
 
 /** 从子会话看到的同一份协作快照（消息只带这条子会话可读的那些）。 */
 export const memberSessionView: CollaborationView = { ...collaborationFixture, messages: memberMessages }
+
+/** 允许继续派生：第二条由成员自己派生，展示仍是平铺一行、只标「由 xx 派生」。 */
+export const nestedFixture: CollaborationView = {
+  ...collaborationFixture,
+  members: [
+    ...collaborationFixture.members,
+    { agent: { agentId: 'descendant', sessionId: 'child', name: '复核', role: '复核结果', model: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', createdBy: 'worker', at: 0 },
+      pendingDecisions: 0,
+      delegation: { delegationId: 12, collaborationId: 'work', delegatorId: 'worker', assigneeId: 'descendant', source: { messageId: 12 }, authorization: [], scope: '复核结论', state: 'accepted', at: 0 } },
+  ],
+}
 
 export function collaborationDetail(member?: string): CollaborationView {
   if (member === undefined) return collaborationFixture
