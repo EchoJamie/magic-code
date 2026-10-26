@@ -98,7 +98,6 @@ export type ScreenHost = {
   /** 开屏时从第几行起（阅读位置记着——设计：「退出保留原来的阅读位置」）。 */
   readonly title?: string
   readonly retry?: (() => void) | undefined
-  readonly memberAction?: ((kind: 'input' | 'menu', top:number) => void) | undefined
   readonly startTop?: number | undefined
   /**
    * **加入本次输入**（U110）——把选中的那一处材料放回输入行。
@@ -170,7 +169,6 @@ export async function runScreen(host: ScreenHost): Promise<number> {
 
       for (const key of keys) {
         if (key.kind === 'accept' && notice !== undefined && host.retry !== undefined && state.asking === null && state.picked === null) { host.retry(); break }
-        if (host.memberAction !== undefined && state.asking === null && state.picked === null && key.kind === 'text' && (key.text === 'i' || key.text === 'm')) { host.memberAction(key.text === 'i' ? 'input' : 'menu', state.top); closing = true; break }
         const step = screenKey(state, key, layout)
         if (step.kind === 'state') state = step.state
         if (step.kind === 'close') closing = true
@@ -191,7 +189,7 @@ export async function runScreen(host: ScreenHost): Promise<number> {
       if (closing) break
 
       if (host.interrupted?.()) break
-      const frame = screenFrame({ layout, state, columns, footer, hits: matchesOf(layout.lines, state.term),...(host.memberAction===undefined?{}:{hint:'↑↓ / PgUp PgDn · / 搜索 · i 补充 · m 操作 · Esc 返回'}) })
+      const frame = screenFrame({ layout, state, columns, footer, hits: matchesOf(layout.lines, state.term) })
       stdout.write(title === undefined ? frame : `\x1b[H\x1b[0m${clip(title, columns)}\x1b[K\r\n` + frame.slice(3) )
 
       // 按过键（或按键那会儿底下又变了）⇒ 立刻再走一圈；否则等下一个动静

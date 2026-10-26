@@ -12,7 +12,7 @@ export const collaborationFixture: CollaborationView = {
   members: [
     { agent: { agentId: 'coordinator', sessionId: 'origin', name: '协调', role: '整合结果', model: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', at: 0 },
       runtime: { session: 'origin', state: 'idle', since: 0, startedAt: 0, workspace: ['/project'], holds: true }, pendingDecisions: 0 },
-    { agent: { agentId: 'worker', sessionId: 'member', name: '实现', role: '调整校验', model: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', at: 0 },
+    { agent: { agentId: 'worker', sessionId: 'member', name: '实现', role: '调整校验', model: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', createdBy: 'coordinator', at: 0 },
       runtime: { session: 'member', state: 'running', action: '检查回调兼容', since: 0, startedAt: 0, workspace: ['/project'], holds: true }, pendingDecisions: 0,
       delegation: { delegationId: 10, collaborationId: 'work', delegatorId: 'coordinator', assigneeId: 'worker', source: { messageId: 10 }, authorization: [], scope: '回调校验', state: 'accepted', at: 0 } },
   ],
@@ -21,6 +21,39 @@ export const collaborationFixture: CollaborationView = {
     { delegationId: 11, collaborationId: 'work', delegatorId: 'coordinator', assigneeId: 'worker', source: { messageId: 11 }, authorization: [], scope: '补充复核', state: 'queued', at: 0 },
   ],
   waits: [], constraints: [{ messageId: 20, states: [{ agentId: 'worker', state: 'pending' }, { agentId: 'coordinator', state: 'included' }] }],
+}
+
+/** 入口会话自己的历史（与子会话正文互不混入）。 */
+export const originEntries: readonly Entry[] = [
+  { id: 10, kind: 'user', at: 1, content: { text: '入口历史一句。' } },
+  { id: 11, kind: 'assistant', at: 2, content: { text: '入口已分出检查。' } },
+]
+
+/** 子会话自己的历史：讨论消息在正文里是一条 `agent-message` 引用条目。 */
+export const memberEntries: readonly Entry[] = [
+  { id: 60, kind: 'user', at: 4, content: { text: '按入口要求核对回调。' } },
+  { id: 61, kind: 'agent-message', at: 5, content: { text: '' }, source: 'origin',
+    payload: { messageId: 41, collaborationId: 'work', senderId: 'coordinator' } },
+  { id: 62, kind: 'assistant', at: 6, content: { text: '保留原状态码，继续核对兼容性。' } },
+]
+
+export const memberMessages = [
+  { messageId: 40, collaborationId: 'work', senderId: 'worker', recipients: ['coordinator'], purpose: 'question' as const, body: [{ kind: 'text' as const, text: '失败响应应保留原状态码吗？' }, { kind: 'entry' as const, ref: { sessionId: 'origin', entryId: 1 }, label: '原始要求' }], discussionRoot: 40, at: 0, withdrawn: false },
+  { messageId: 41, collaborationId: 'work', senderId: 'coordinator', recipients: ['worker'], purpose: 'decision' as const, body: [{ kind: 'text' as const, text: '保留原状态码；未解决的兼容性疑点继续记录。' }], discussionRoot: 40, replyTo: 40, at: 1, withdrawn: false },
+]
+
+/** 从子会话看到的同一份协作快照（消息只带这条子会话可读的那些）。 */
+export const memberSessionView: CollaborationView = { ...collaborationFixture, messages: memberMessages }
+
+/** 允许继续派生：第二条由成员自己派生，展示仍是平铺一行、只标「由 xx 派生」。 */
+export const nestedFixture: CollaborationView = {
+  ...collaborationFixture,
+  members: [
+    ...collaborationFixture.members,
+    { agent: { agentId: 'descendant', sessionId: 'child', name: '复核', role: '复核结果', model: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', createdBy: 'worker', at: 0 },
+      pendingDecisions: 0,
+      delegation: { delegationId: 12, collaborationId: 'work', delegatorId: 'worker', assigneeId: 'descendant', source: { messageId: 12 }, authorization: [], scope: '复核结论', state: 'accepted', at: 0 } },
+  ],
 }
 
 export function collaborationDetail(member?: string): CollaborationView {

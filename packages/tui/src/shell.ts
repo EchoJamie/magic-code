@@ -29,11 +29,11 @@ import type {
 } from '@magic/contracts'
 import {
   collaborationRow,
-  delegationState,
-  discussionRecords,
-  memberRecords,
+  currentMember,
+  memberForSession,
   memberRows,
   memberState,
+  messageRows,
 } from './collaboration.ts'
 import { lineSpan, stepLeft, stepRight } from './components/composer.ts'
 import type { DraftRef } from './components/inline.ts'
@@ -233,7 +233,6 @@ type Layer = {
   readonly dock: Dock
   readonly model: ModelNavigation
   readonly asking: Ask | null
-  readonly collaborationAt?: AgentId
   readonly draft: string; readonly caret: number; readonly refs: readonly DraftRef[]
   readonly inputPurpose: ShellView['inputPurpose']
 }
@@ -530,9 +529,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     get prompt() { return prompt },
   })
 
-  let collaborationAt: AgentId | undefined
   let collaborationQuery: { readonly member?: AgentId } | null = null
-  const memberViews = new Map<AgentId, CollaborationView>()
   const reading = new Map<string, number>()
 
   const prompt = createPrompt({
@@ -560,7 +557,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     dock: view.dock,
     model: models.snapshot(),
     asking: prompt.snapshot(),
-    collaborationAt,
     draft:view.draft, caret:view.caret, refs:view.refs, inputPurpose:view.inputPurpose,
   })
 
@@ -582,7 +578,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const restoreLayer = (layer: Layer): void => {
     models.restore(layer.model)
     prompt.restore(layer.asking)
-    collaborationAt = layer.collaborationAt
     view = {...view,draft:layer.draft,caret:layer.caret,refs:layer.refs,inputPurpose:layer.inputPurpose}
     if(layer.dock.kind==='input'){commit({...view,dock:layer.dock});return}
 
@@ -975,45 +970,33 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
     if (event.kind === 'collaboration.view') {
       const data = event.data
-      if (view.sessionId !== null && data.originSession !== view.sessionId) return
-      if (data.selectedMember !== undefined) memberViews.set(data.selectedMember, data)
+      // 同一份协作里的任何一条会话（入口或子会话）都认这份快照；别的会话的不串线。
+      const sameWork = data.originSession === view.sessionId
+        || data.members.some(one => one.agent.sessionId === view.sessionId)
+        || view.collaboration?.originSession === data.originSession
+      if (view.sessionId !== null && !sameWork) return
       const previous = view.collaboration
-      commit({ ...view, collaboration: data })
+      commit({ ...view, collaboration: data, ...(data.messages === undefined ? {} : { messages: data.messages }) })
+      appendCollaborationMessages(data)
       for (const member of data.members) {
         if (member.agent.purpose !== 'consultation' || member.delegation?.deliveryMessageId === undefined) continue
         if (previous?.members.some(one => one.delegation?.deliveryMessageId === member.delegation?.deliveryMessageId)) continue
-        commit(appendReceipt(view, `咨询 Arcane · 来自顾问 · ${memberState(member)} · Tab 查看原始建议与查证过程`))
+        commit(appendReceipt(view, `咨询 Arcane · 来自顾问 · ${memberState(member)} · 打开该子会话查看原始建议`))
       }
       if (data.note !== undefined) commit(appendReceipt(view, data.note))
-      const requested = collaborationQuery
-      if (requested !== null && requested.member === data.selectedMember) {
+      if (collaborationQuery !== null) {
         collaborationQuery = null
-        if (requested.member === undefined) { if (view.dock.kind !== 'picker' || view.dock.picker.source !== 'background') openCollaboration() }
-        else {
-          const member = data.members.find(one => one.agent.agentId === requested.member)
-          collaborationAt = requested.member
-          if (member !== undefined) openRecords(`${requested.member}:records`, `${member.agent.name} · 对话与工具`, memberRecords(data, requested.member))
-        }
-      } else if (view.dock.kind === 'picker') {
-        const picker = view.dock.picker
-        if (picker.source === 'collaboration') openCollaboration(picker.rows[picker.selected]?.value)
-        else if (picker.source === 'collaboration-member' && collaborationAt !== undefined) openMember(collaborationAt, picker.rows[picker.selected]?.value)
-        else if (picker.reader !== undefined && data.selectedMember !== undefined) {
-          const reader = picker.reader
-          const member = data.selectedMember
-          const discussion = reader.key.startsWith(`${member}:discussion:`) ? reader.key.slice(`${member}:discussion:`.length) : undefined
-          const rows = reader.key === `${member}:records` && data.entries !== undefined ? memberRecords(data, member)
-            : discussion !== undefined && data.messages !== undefined
-              ? discussionRecords(data, data.messages.filter(message => String(message.discussionRoot ?? message.messageId) === discussion)) : undefined
-          if (rows !== undefined) commit({ ...view, dock: { kind: 'picker', picker: { ...picker, reader: { ...reader, rows } } } })
-        }
+        if (view.dock.kind !== 'picker' || view.dock.picker.source !== 'background') openCollaboration()
+      } else if (view.dock.kind === 'picker' && view.dock.picker.source === 'collaboration') {
+        openCollaboration(view.dock.picker.rows[view.dock.picker.selected]?.value)
       }
       return
     }
 
-    // 成员运行事件不混进原会话正文；审批与输入回执仍按唯一 id 接收。
-    if (view.collaboration?.members.some((one) => one.agent.sessionId === event.session && event.session !== view.collaboration?.originSession)
-      && event.kind !== 'tool.decision' && event.kind !== 'input.settled') return
+    // 别的成员的事件不混进当前会话正文；会话级事实（切换、目录、输入回执）仍要收。
+    const controlFact = event.kind === 'session.state' || event.kind === 'input.settled'
+    if (memberForSession(view.collaboration, event.session) !== undefined
+      && event.session !== view.sessionId && !controlFact) return
 
     if (event.kind === 'session.history') {
       if (preview?.session === event.data.session) {
@@ -1068,18 +1051,25 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (event.kind === 'session.state') {
 
       if (before !== (event.data.active||null)) {
+        // 切会话那一下已把这一屏收起：等待中的读面答复不再替用户重开列表。
         collaborationQuery = null
-        collaborationAt = undefined
+        layers = []
+        // 晚到的读面答复可能在切换后才把协作那一屏重新打开——它属于旧会话，一并收起。
+        if (view.dock.kind === 'picker' && (view.dock.picker.source === 'collaboration' || view.dock.picker.source === 'collaboration-records')) {
+          view = { ...view, dock: { kind: 'input' } }
+        }
         backgroundAt = undefined
         psPositions.clear()
         models.clearTarget()
-        const sameCollaboration = prior.collaboration?.originSession === event.data.active
-        if (!sameCollaboration) memberViews.clear()
+        // 入口与子会话同属一份协作时，快照与审批继续沿用；换到别的会话才清。
+        const sameCollaboration = prior.collaboration !== undefined
+          && (prior.collaboration.originSession === event.data.active
+            || prior.collaboration.members.some(one => one.agent.sessionId === event.data.active))
         inputContexts.clear()
         const saved=workContexts.get(event.data.active||null)??(before===null&&(lastSubmit!==null||turn===null)?workContexts.get(null):undefined)
         if(saved!==undefined)for(const [member,context] of saved.members)inputContexts.set(member,context)
         history=saved?.current.history??[];historyAt=saved?.current.historyAt??-1;browsing=saved?.current.browsing??null;lastSubmit=saved?.current.lastSubmit??null
-        commit({...view,background:undefined,collaboration:sameCollaboration ? prior.collaboration : undefined,inputMember:saved?.member,inputPurpose:saved?.purpose??'current',draft:saved?.current.draft??'',refs:saved?.current.refs??[],caret:saved?.current.caret??0})
+        commit({...view,background:undefined,collaboration:sameCollaboration ? prior.collaboration : undefined,messages:undefined,inputMember:saved?.member,inputPurpose:saved?.purpose??'current',draft:saved?.current.draft??'',refs:saved?.current.refs??[],caret:saved?.current.caret??0})
         if (event.data.active !== '') readHistory(event.data.active)
       }
       if (waiting === 'session') {
@@ -1210,7 +1200,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       history.push({text:entry.content.text,refs:refs.map(({at,...ref})=>({...ref,start:at,end:at+ref.marker.length}))})
     }
     const unconfirmed = [...view.settled, ...view.rows].filter(row => row.kind === 'user' && row.inputState !== undefined && !view.pendingInputs.some(input => input.ref === row.inputRef && input.entry !== undefined))
-    const rebuilt = rebuild(view, rebuildEntries, { ...(data.timing === undefined ? {} : { timing: data.timing }) })
+    const rebuilt = rebuild(view, rebuildEntries, {
+      ...(data.timing === undefined ? {} : { timing: data.timing }),
+      ...(data.messages === undefined ? {} : { messages: data.messages }),
+    })
     commit({ ...rebuilt, rows: [...rebuilt.rows, ...unconfirmed] })
     rebuildFor = null
     rebuildEntries = []
@@ -1329,7 +1322,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
    */
   options.stopped?.((report) => {
     if (disposed) return
-    const title = nameOfSession(report.session)
+    // 子会话里的标准停止止于这份委派及其派生闭包——回执要把范围写明。
+    const sub = currentMember(view)
+    const title = sub !== undefined && report.session === view.sessionId
+      ? `${sub.agent.name} · 委派「${sub.delegation?.scope ?? sub.agent.responsibility ?? sub.agent.role}」及派生闭包`
+      : nameOfSession(report.session)
     const said = appendReceipt(
       view,
       stopReceiptOf({
@@ -1355,7 +1352,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   // 仅保留当前工作的提醒来源；真实内容呈现后确认，不追加同义摘要。
   options.notices?.((notice) => {
     if (disposed || !notice.unread) return
-    if (notice.session !== view.sessionId && notice.session !== view.collaboration?.originSession) return
+    if (notice.session !== view.sessionId && notice.session !== view.collaboration?.originSession
+      && view.collaboration?.members.some(one => one.agent.sessionId === notice.session) !== true) return
     const next = { ...view, notice }
     // 历史记录不重建错误事件；接回或执行者退出时保留唯一的失败说明。
     if (notice.kind === 'failed' && presentedNoticeOf(next) === undefined) {
@@ -1856,37 +1854,42 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const inputContexts = new Map<AgentId | undefined, InputContext>()
   const workContexts=new Map<SessionId|null,{member:AgentId|undefined;current:InputContext;members:Map<AgentId|undefined,InputContext>;purpose:ShellView['inputPurpose']}>()
   const currentInput=(from:ShellView):InputContext=>({draft:from.draft,caret:from.caret,refs:from.refs,history,historyAt,browsing,lastSubmit})
-  const switchInput = (member?: AgentId): void => {
-    if (member !== undefined && view.collaboration?.members.find(one => one.agent.agentId === member)?.agent.purpose === 'consultation') return
-    if (member === view.inputMember) { layers=[];commit(closePicker(view)); return }
-    inputContexts.set(view.inputMember,currentInput(view))
-    const saved = inputContexts.get(member)
-    history = saved?.history ?? []
-    historyAt = saved?.historyAt ?? -1
-    browsing = saved?.browsing ?? null
-    lastSubmit = saved?.lastSubmit ?? null
-    imageNames = new Map()
-    adoptImageNames(saved?.refs ?? [])
-    layers=[]
-    draft({ ...closePicker(view),pendingInputs:[], inputPurpose:'current', inputMember: member, draft: saved?.draft ?? '', caret: saved?.caret ?? 0, refs: saved?.refs ?? [] })
-    manageInput({type:'input.manage',action:'list'})
-  }
 
-  const showCollaborationPicker = (source: 'collaboration' | 'collaboration-member' | 'collaboration-stop', rows: readonly PickerRow[], hint: string, selected?: string): void => {
-    commit(openPicker(view, { source, rows, hint: sanitizeForDisplay(hint), selected: Math.max(0, rows.findIndex((row) => row.value === selected)) }))
-  }
+  /** 协作视图：整件工作摘要与操作 ＋ 平铺子会话列表（当前会话不在列表里）。 */
   const openCollaboration = (selected?: string): void => {
     const snapshot = view.collaboration
-    collaborationAt = undefined
+    const member = currentMember(view)
     const rows = [
-      ...(snapshot?.collaboration ? memberRows(snapshot) : []),
+      ...(snapshot?.collaboration ? memberRows(snapshot, view.sessionId) : []),
       ...(snapshot?.collaboration ? [collaborationRow('whole', '向整件工作补充', '恢复整体草稿；共同要求送达相关成员'),
       collaborationRow('constraints', '共同补充的带入情况'),
       collaborationRow('default-model', '后续派生的默认模型', '按需配置'),
       collaborationRow('stop-work', '停止整件工作', '覆盖全部成员及继续委派'),
       ...(snapshot.collaboration.state === 'stopped' ? [collaborationRow('resume-work', '明确继续整件工作', '先核对停点')] : [])] : []),
     ]
-    commit(openPicker(view, { source: 'collaboration', title: '[协作成员]  │  后台命令', rows, selected: Math.max(0, rows.findIndex(row => row.value === selected)), hint: `${snapshot?.collaboration ? '查看记录不改变输入目标' : '没有协作成员'}\nTab/Shift+Tab 切换 · ↑↓ 选择 · Enter 查看 · Esc 返回` }))
+    // 从子会话打开时主会话在列表里并预选（Enter 返回）；在主会话时它不出现。
+    const preselected = selected ?? (member === undefined ? undefined : snapshot?.collaboration?.coordinatorId)
+    commit(openPicker(view, {
+      source: 'collaboration', title: '[协作] 整件工作 · 子会话', rows,
+      selected: Math.max(0, rows.findIndex(row => row.value === preselected)),
+      hint: `${snapshot?.collaboration ? '浏览列表不切输入 · Enter 进入子会话或执行操作' : '没有协作成员'}\nTab/Shift+Tab 切换 · ↑↓ 选择 · Enter 打开 · Esc 返回`,
+    }))
+  }
+  /** 把新到的协作消息并入当前子会话正文；同一 messageId 只落一次。 */
+  const appendCollaborationMessages = (snapshot: CollaborationView): void => {
+    if (snapshot.messages === undefined || currentMember({ collaboration: snapshot, sessionId: view.sessionId }) === undefined) return
+    const known = new Set([...view.settled, ...view.rows].map(row => row.key))
+    const fresh = messageRows(snapshot, snapshot.messages).filter(row => !known.has(row.key))
+    if (fresh.length === 0) return
+    commit({ ...view, settled: [...view.settled, ...fresh.map(row => ({ kind: 'output' as const, key: row.key, lines: row.lines }))] })
+  }
+  /** 进入会话（子会话或返回主会话）——与 `/resume` 同一条切换路径，不新增快捷键。 */
+  const openSession = (session: SessionId, label: string): void => {
+    if (session === view.sessionId) { commit(closePicker(view)); return }
+    turn = { kind: 'open', label }
+    // 先收起这一屏再发切换：答复可能是一串同步事件，别让它之后的老视图盖回去。
+    commit(closePicker(view))
+    send({ type: 'session.open', session })
   }
   const psPositions = new Map<string, { selected?: string; detailTop?: number }>()
   let backgroundAt: { command: BackgroundCommand; result?: BackgroundView['result'] } | undefined
@@ -1910,90 +1913,44 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (source === 'collaboration') send({ type: 'collaboration.read' })
     return true
   }
-  const openMember = (member: AgentId, selected?: string): void => {
-    const snapshot = view.collaboration
-    const found = snapshot?.members.find((one) => one.agent.agentId === member)
-    if (found === undefined) return
-    collaborationAt = member
-    showCollaborationPicker('collaboration-member', [
-      collaborationRow('whole', '返回整体'),
-      ...(found.agent.purpose === 'consultation' ? [] : [collaborationRow('input', `向「${found.agent.name}」补充`, '仅本次委派；共同约束请给整件工作')]),
-      collaborationRow('stop-member', '停止该份工作', '下一步点名具体委派'),
-      collaborationRow('records', '查看完整对话与工具'),
-      collaborationRow('discussions', '查看关联讨论与结果'),
-      ...(found.agent.purpose === 'consultation' ? [] : [collaborationRow('member-model', '模型与思考设置', '仅这个成员')]),
-    ], `${found.agent.name} · ${found.agent.purpose === 'consultation' ? '只读咨询' : found.agent.role} · ${memberState(found)} · ${found.delegation?.scope ?? '协调与整合'}`, selected)
-  }
-  const readCollaboration = (member?: AgentId): void => {
-    if (member === undefined) { enterLayer(); openCollaboration(); send({ type: 'background.list' }) }
-    collaborationQuery = member === undefined ? {} : { member }
-    send({ type: 'collaboration.read', ...(member === undefined ? {} : { member }) })
+  const readCollaboration = (): void => {
+    enterLayer()
+    openCollaboration()
+    send({ type: 'background.list' })
+    collaborationQuery = {}
+    send({ type: 'collaboration.read' })
   }
   const openRecords = (key: string, title: string, rows: readonly import('./view.ts').LogRow[]): void => {
     enterLayer()
     commit(openPicker(view, { source: 'collaboration-records', rows: [], selected: 0,
       reader: { key, title, rows, top: reading.get(key) ?? 0 } }))
   }
-  const configureCollaboration = (member?: AgentId): void => {
+  const configureCollaboration = (): void => {
     enterLayer()
-    models.target(member)
+    models.target()
     waiting = null
     send(models.request('model'))
   }
   const collaborationAction = (row: PickerRow): void => {
     const snapshot = view.collaboration
     if (snapshot?.collaboration === undefined || view.dock.kind !== 'picker') return
-    const source = view.dock.picker.source
-    if (source === 'collaboration-stop') {
-      const delegation = snapshot.delegations.find((one) => String(one.delegationId) === row.value)
-      if (delegation !== undefined) { commit(closePicker(view)); send({ type: 'collaboration.stop', delegation: delegation.delegationId }) }
+    const member = snapshot.members.find((one) => one.agent.agentId === row.value)
+    // 列表里的一行就是一条会话：Enter 切进去（从子会话选主会话即返回）。
+    if (member !== undefined) { openSession(member.agent.sessionId, member.agent.name); return }
+    if (row.value === 'whole') {
+      // 「向整件工作补充」＝回到入口会话，用它的整体草稿发送（共同补充）。
+      openSession(snapshot.originSession, snapshot.members.find((one) => one.agent.agentId === snapshot.collaboration?.coordinatorId)?.agent.name ?? '整件工作')
       return
     }
-    if (row.value === 'whole') { switchInput(); return }
-    if (source === 'collaboration') {
-      if (row.value === 'default-model') configureCollaboration()
-      else if (row.value === 'stop-work' || row.value === 'resume-work') {
-        commit(closePicker(view))
-        send({ type: row.value === 'stop-work' ? 'collaboration.stop' : 'collaboration.resume' })
-      } else if (row.value === 'constraints') {
-        openRecords('constraints', '共同补充 · 带入不代表已遵守', snapshot.constraints.map((constraint, index) => ({
-          kind: 'output', key: String(constraint.messageId), lines: [`共同补充 ${index + 1}`, ...constraint.states.map((state) =>
-            `${snapshot.members.find((one) => one.agent.agentId === state.agentId)?.agent.name ?? '成员'}：${state.state === 'included' ? '已带入后续请求' : '已接收 / 待带入'}`)],
-        })))
-      } else readCollaboration(row.value)
-      return
-    }
-    const member = collaborationAt
-    const found = snapshot.members.find((one) => one.agent.agentId === member)
-    if (member === undefined || found === undefined) return
-    if (source==='collaboration-discussions') {
-      const detail=memberViews.get(member)
-      const messages=(detail?.messages??[]).filter(message=>String(message.discussionRoot??message.messageId)===row.value)
-      if(detail!==undefined)openRecords(`${member}:discussion:${row.value}`,`${found.agent.name} · 讨论 #${row.value} · ${row.label}`,discussionRecords(detail,messages))
-      return
-    }
-    if (row.value === 'input' && found.agent.purpose !== 'consultation') switchInput(member)
-    else if (row.value === 'member-model' && found.agent.purpose !== 'consultation') configureCollaboration(member)
-    else if (row.value === 'stop-member') {
-      enterLayer()
-      const delegations = snapshot.delegations.filter((one) => one.assigneeId === member && !['received', 'rejected', 'cancelled'].includes(one.state))
-      showCollaborationPicker('collaboration-stop', delegations.map((one) => collaborationRow(String(one.delegationId),
-        `停止「${one.scope}」`, delegationState[one.state])), `${found.agent.name}：只撤回选中委派及其继续分出的部分；其他委派保留`)
-    } else {
-      const detail = memberViews.get(member)
-      if (detail === undefined) { readCollaboration(member); return }
-      if (row.value === 'records') openRecords(`${member}:records`, `${found.agent.name} · 对话与工具`, memberRecords(detail, member))
-      if (row.value === 'discussions') {
-        enterLayer()
-        const roots = [...new Set((detail.messages??[]).map(message=>message.discussionRoot??message.messageId))]
-        commit(openPicker(view,{source:'collaboration-discussions',title:`${found.agent.name} · 关联讨论与结果`,selected:0,
-          rows:roots.map(root=>{
-            const messages=(detail.messages??[]).filter(message=>(message.discussionRoot??message.messageId)===root)
-            const text=messages[0]?.body.find(part=>part.kind==='text')?.text??`讨论 #${root}`
-            const title=text.split('\n')[0]!
-            return {...collaborationRow(String(root),title,`讨论 #${root} · ${messages.length} 条`),oneLine:true,detail:[text]}
-          }),hint:'Enter 阅读整份讨论 · Esc 返回'}))
-      }
+    if (row.value === 'default-model') configureCollaboration()
+    else if (row.value === 'stop-work' || row.value === 'resume-work') {
+      commit(closePicker(view))
+      send({ type: row.value === 'stop-work' ? 'collaboration.stop' : 'collaboration.resume' })
+    } else if (row.value === 'constraints') {
+      openRecords('constraints', '共同补充 · 带入不代表已遵守', snapshot.constraints.map((constraint, index) => ({
+        kind: 'output', key: String(constraint.messageId), lines: [`共同补充 ${index + 1}`, ...constraint.states.map((state) =>
+          `${snapshot.members.find((one) => one.agent.agentId === state.agentId)?.agent.name ?? '成员'}：${state.state === 'included' ? '已带入后续请求' : '已接收 / 待带入'}`)],
+      })))
     }
   }
 
@@ -2051,6 +2008,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
   const sendInput = (text: string, refs: readonly DraftRef[]): ShellEffect => {
     if (!connected) { commit(appendReceipt(view, 'Engine 未连接，草稿未发送。')); return NONE }
+    // 咨询子会话只供查看；纠正与补充要给原工作。
+    if (currentMember(view)?.agent.purpose === 'consultation') {
+      commit(appendReceipt(view, '咨询子会话只供查看；相关纠正请补充给原工作'))
+      return NONE
+    }
     submits += 1
     const ref = crypto.randomUUID()
     lastSubmit = { ref, text, refs }
@@ -2068,8 +2030,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     const echoed = view.inputMember === undefined ? appendEcho(cleared,text,userImages(refs)) : cleared
     draft({...echoed,rows:echoed.rows.map((row,index)=>row.kind==='user'&&index===echoed.rows.length-1?{...row,inputRef:ref,inputState:'提交中'}:row)})
     const input = { text, ref, purpose, ...(refs.length === 0 ? {} : { refs: wire(refs) }) }
+    // 子会话里输入只发给这一条子会话；入口会话里是整件工作的共同补充。
+    const sub = currentMember(view)
     send(view.collaboration?.collaboration === undefined ? { type: 'input.submit', ...input }
-      : { type: 'collaboration.input', input, ...(view.inputMember === undefined ? { shared: true } : { member: view.inputMember }) })
+      : sub !== undefined ? { type: 'collaboration.input', member: sub.agent.agentId, input }
+        : { type: 'collaboration.input', input, ...(view.inputMember === undefined ? { shared: true } : { member: view.inputMember }) })
 
     return NONE
   }
@@ -2246,10 +2211,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     { label: '停止并退出', meta: '停止当前任务并退出 Magic', current: false, value: 'stop-exit', oneLine: true },
   ]
 
+  /** 子会话里的标准停止键止于这份委派及其派生闭包；入口会话仍是整件工作。 */
+  const taskRowsOf = (): readonly PickerRow[] => currentMember(view) === undefined ? TASK_ROWS : [
+    { label: '停止这份委派', meta: '停止该委派及其派生闭包；其他委派保留', current: false, value: 'stop', oneLine: true },
+    { label: '转到后台', meta: '退出界面，任务继续运行', current: false, value: 'background', oneLine: true },
+    { label: '停止并退出', meta: '停止这份委派并退出 Magic', current: false, value: 'stop-exit', oneLine: true },
+  ]
   const taskPickerOf = (asked: boolean, selected = 0): Picker => ({
     source: 'task',
     title: asked ? '当前任务正在等待你' : '当前任务仍在运行',
-    rows: TASK_ROWS,
+    rows: taskRowsOf(),
     selected,
   })
 
@@ -2510,7 +2481,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       preview = { session, entries: [] }; commit({ ...view, flash: null }); send({ type: 'history.read', session }); return NONE
     }
     if (view.dock.kind === 'picker' && view.dock.picker.reader !== undefined
-      && !['left', 'escape', 'ctrl+c', 'memberInput', 'memberMenu', 'ctrl+o', 'tab'].includes(input.kind)) return NONE
+      && !['left', 'escape', 'ctrl+c', 'ctrl+o', 'tab'].includes(input.kind)) return NONE
 
     if (view.dock.kind === 'picker' && ['paths','skills','session','config'].includes(view.dock.picker.source)) {
       const picker=view.dock.picker, query=picker.filter??''
@@ -2568,13 +2539,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         if(view.dock.kind!=='input')return NONE
         layers=[...layers,layerNow()]
         commit(openPicker(view,{source:'input-purpose',title:'本条输入用途',selected:view.inputPurpose==='next'?1:0,rows:[collaborationRow('current','当前补充','当前工具结束、下一工具前带入'),collaborationRow('next','下一件','前项工具、委派及待答结束后开始'),collaborationRow('pending','待处理输入','查看、编辑、撤回或明确继续')],hint:'选择用途不发送 · Esc 返回'}))
-        return NONE
-
-      case 'memberInput':
-        if (collaborationAt !== undefined) switchInput(collaborationAt)
-        return NONE
-      case 'memberMenu':
-        if (collaborationAt !== undefined) { enterLayer(); openMember(collaborationAt, 'records') }
         return NONE
 
       case 'ctrl+o':
@@ -2832,7 +2796,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         return NONE
       }
 
-      if (['collaboration', 'collaboration-member', 'collaboration-stop', 'collaboration-discussions'].includes(view.dock.picker.source)) {
+      if (view.dock.picker.source === 'collaboration') {
         collaborationAction(row)
         return NONE
       }
@@ -2841,8 +2805,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
       if (view.dock.picker.source === 'config') {
         if (row.value === 'model') {
-          // 共用 /model 设置入口，工作选择的作用对象为当前会话。
-          models.sessionScope()
+          // 共用 /model 设置入口；子会话里作用对象是这条子会话的成员。
+          const member = currentMember(view)
+          if (member === undefined) models.sessionScope()
+          else models.target(member.agent.agentId)
           enterLayer()
           waiting = null
           send(models.request('model'))
@@ -3133,7 +3099,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (word === '/ps') {
       if (arg) return only(appendReceipt(cleared, '用法：/ps'))
       collaborationQuery = {}
-      return only(openPicker(cleared, { source: 'collaboration', title: '[协作成员]  │  后台命令', rows: [], selected: 0, hint: '正在读取 · Tab/Shift+Tab 切换 · Esc 返回' }), { type: 'collaboration.read' }, { type: 'background.list' })
+      return only(openPicker(cleared, { source: 'collaboration', title: '[协作] 整件工作 · 子会话  │  后台命令', rows: [], selected: 0, hint: '正在读取 · Tab/Shift+Tab 切换 · Esc 返回' }), { type: 'collaboration.read' }, { type: 'background.list' })
     }
 
     if (word === '/resume') {
@@ -3192,9 +3158,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
 
     if (word === '/model') {
-      if (from.dock.kind !== 'picker' || from.dock.picker.source !== 'model') models.clearTarget()
-
-      if (from.dock.kind !== 'picker' || from.dock.picker.source !== 'model') models.sessionScope()
+      if (from.dock.kind !== 'picker' || from.dock.picker.source !== 'model') {
+        models.clearTarget()
+        // 子会话里这个入口只改该成员；入口会话仍是当前工作。
+        const member = currentMember(from)
+        if (member === undefined) models.sessionScope()
+        else models.target(member.agent.agentId)
+      }
 
       // 先登记开页意图，外层落下草稿后再发送；同步回执不能被旧视图覆盖。
       waiting = null
@@ -3310,7 +3280,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
   return {
     getView: () => view,
-    exitNote: () => view.sessionId === null || view.archived ? null : `恢复此会话：\n${resumeCommandOf(view.sessionId)}`,
+    // 子会话不占顶层：退出时给主会话的恢复命令，恢复后由协作视图再进来。
+    exitNote: () => view.sessionId === null || view.archived ? null
+      : `恢复此会话：\n${resumeCommandOf(currentMember(view) === undefined ? view.sessionId : view.collaboration!.originSession)}`,
 
     subscribe: (listener) => {
       watchers.add(listener)

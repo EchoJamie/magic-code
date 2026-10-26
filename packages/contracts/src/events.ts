@@ -21,6 +21,7 @@ import type { BlobRef, DelegationId, RecordId, SessionId, Timestamp, TurnId } fr
 // 模型面的两格（U41）——连线与缓存读数自 `model.ts`（两边都是 `import type`，编译期擦除）
 import type { ModelInfoRead, ReasoningSetting, VendorInfo } from './model.ts'
 import type { CollaborationView } from './collaboration-control.ts'
+import type { AgentMessage } from './collaboration.ts'
 
 // —— 标量与枚举 ——
 
@@ -592,6 +593,13 @@ export type EventDataOf = {
     readonly timing?: readonly TurnTimingEvent[]
     /** 本地命令的持久事件，仅供历史显示与召回。 */
     readonly inputs?: readonly Extract<KernelEvent, { kind: 'input.local' }>[]
+    /**
+     * 子会话的协作消息（末块才给）。
+     *
+     * `agent-message` 条目只带引用；正文由这里按 `messageId` 并回正文，避免为一条
+     * 讨论重读成员完整历史（D68 / U130）。主会话与普通会话不给。
+     */
+    readonly messages?: readonly AgentMessage[]
     /** **末块**为 `true`——外壳据此知道重建收尾了。 */
     readonly done: boolean
   }

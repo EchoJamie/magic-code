@@ -1,7 +1,6 @@
-import {readSessionDisplayHistory} from '@magic/conversation'
 import type {
   AgentIdentity, AgentModelConfig, CollaborationCommand, CollaborationReply, CollaborationRequest,
-  CollaborationView, CollaborationUsage, Entry, MagicHome, ModelUsage, RunRow, StopResult, UserInput,
+  CollaborationView, CollaborationUsage, MagicHome, ModelUsage, RunRow, StopResult, UserInput,
 } from '@magic/contracts'
 import { createCollaborationActions } from '@magic/actions'
 import type { RecordsStore } from '@magic/records'
@@ -163,11 +162,16 @@ export function createManagedCollaboration(host: CollaborationHost) {
       ?? delegations.filter(d => d.assigneeId === agent).at(-1)
     const memberWait = (agent: string) => waits.find(w => w.agentId === agent && w.state === 'waiting')
       ?? waits.filter(w => w.agentId === agent && w.handledAt === undefined).at(-1)
-    const selected = member === undefined ? undefined : members.find(a => a.agentId === member)
-    if (member !== undefined && selected === undefined) throw new Error('成员不属于这份工作')
-    const entries: Entry[] = []
-    if (selected !== undefined) for await (const entry of readSessionDisplayHistory(host.store,selected.sessionId)) entries.push(entry)
-    const messages = selected === undefined ? [] : records.listMessages(selected.agentId)
+    // 当前会话本身若就是某个成员，不能再当「查看这个成员」——那条路会重读并重发
+    // 它自己的完整历史（D68）。当前会话的内容走会话历史分片与实时事件。
+    const current = records.agentForSession(session)
+    const selfRequest = member !== undefined && member === current?.agentId
+    const selected = member === undefined || selfRequest ? undefined : members.find(a => a.agentId === member)
+    if (member !== undefined && !selfRequest && selected === undefined) throw new Error('成员不属于这份工作')
+    // 子会话正文里的讨论消息按来源并入；主会话不在这里携带成员历史。
+    const owner = selected ?? (current !== undefined && current.collaborationId !== undefined
+      && current.agentId !== collaboration.coordinatorId ? current : undefined)
+    const messages = owner === undefined ? [] : records.listMessages(owner.agentId)
     return {
       originSession: collaboration.originSessionId, collaboration, usage: sumUsage(usage),
       members: members.map((agent, index) => ({ agent, usage: usage[index]!,
@@ -177,7 +181,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
         pendingDecisions: host.decisions(agent.sessionId),
       })), delegations, waits,
       constraints: records.listConstraints(id).filter(c => c.active).map(c => ({ messageId: c.messageId, states: records.constraintStatus(c.messageId) })),
-      ...(selected === undefined ? {} : { selectedMember: selected.agentId, entries, messages }),
+      ...(messages.length === 0 ? {} : { messages }),
       ...(note === undefined ? {} : { note }),
     }
   }
@@ -261,7 +265,8 @@ export function createManagedCollaboration(host: CollaborationHost) {
         }
       }
       changed()
-      return view(collaboration.originSessionId)
+      // 从子会话发来的命令要回给这条子会话（它的正文消息只属于它自己）。
+      return view(session)
     },
     /** 宿主停止受理时同步关闭持久准入，随后由管理者核销实际执行者。 */
     shutdown(reason: string) {

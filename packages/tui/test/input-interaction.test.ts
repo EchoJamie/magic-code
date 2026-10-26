@@ -68,22 +68,6 @@ function collaborationStage(consultation=false){
 }
 import {displayWidth} from '../src/components/lines.ts'
 
-test('成员 Enter 阅读，m 默认阅读并保存位置；i 仅切目标恢复独立稿',()=>{
- const s=collaborationStage();s.text('整体稿');s.member()
- let dock=s.shell.getView().dock
- expect(dock.kind==='picker'&&dock.picker.reader?.title).toBe('实现 · 对话与工具')
- expect(s.shell.getView().inputMember).toBeUndefined()
- s.shell.key({kind:'readerTop',top:7});s.shell.key({kind:'memberMenu'})
- dock=s.shell.getView().dock
- expect(dock.kind==='picker'&&dock.picker.rows[dock.picker.selected]?.value).toBe('records')
- s.key('escape');dock=s.shell.getView().dock
- expect(dock.kind==='picker'&&dock.picker.reader?.top).toBe(7)
- s.shell.key({kind:'memberInput'});expect(s.shell.getView().inputMember).toBe('worker')
- expect(s.shell.getView().draft).toBe('');s.text('成员稿')
- s.key('tab');s.pick('whole');expect(s.shell.getView().draft).toBe('整体稿')
- s.member();s.shell.key({kind:'memberInput'});expect(s.shell.getView().draft).toBe('成员稿')
- expect(s.spy.commands.some(c=>c.type==='input.submit'||c.type==='collaboration.input')).toBe(false)
-})
 test('菜单按真实行高，长详情逐页可读且不挤掉焦点',()=>{
  const text=Array.from({length:40},(_,i)=>`详情${i} 中文🙂é ${'a'.repeat(150)}`)
  const picker={source:'skills',selected:2,title:'技能名称与来源',rows:Array.from({length:6},(_,i)=>({current:false,label:`技能${i}`,value:String(i),meta:'用途说明',detail:i===2?text:[]})),hint:'Enter 选定 · Esc 返回'} as const
@@ -138,25 +122,9 @@ test('延迟受理与拒绝如实还稿，已受理也保留配对身份且不�
 })
 
 
-test('与咨询集成：Enter 仍阅读，i 不切只读顾问，m 只保留只读动作',()=>{
- const s=collaborationStage(true);s.text('原工作稿');s.member()
- const before=s.shell.getView();expect(before.dock.kind==='picker'&&before.dock.picker.reader?.title).toBe('实现 · 对话与工具')
- s.shell.key({kind:'memberInput'});expect(s.shell.getView()).toEqual(before)
- s.shell.key({kind:'memberMenu'});const dock=s.shell.getView().dock
- expect(dock.kind).toBe('picker')
- if(dock.kind!=='picker')throw Error('没有操作页')
- expect(dock.picker.rows.map(row=>row.value)).not.toContain('input')
- expect(dock.picker.rows.map(row=>row.value)).not.toContain('member-model')
- expect(dock.picker.rows[dock.picker.selected]?.value).toBe('records')
- s.key('escape');s.key('escape');expect(s.shell.getView().draft).toBe('原工作稿')
- expect(s.shell.getView().inputMember).toBeUndefined()
- expect(s.spy.commands.some(command=>command.type==='collaboration.input'||command.type==='model.switch')).toBe(false)
-})
-
-
-test('成员阅读取消只退真实层，成员列表不重复压栈，原稿光标保持',()=>{
+test('协作列表取消只退真实层，不重复压栈，原稿光标保持',()=>{
  const s=collaborationStage();s.text('整体完整草稿');s.shell.key({kind:'left'});const original=s.shell.getView()
- s.member();s.key('escape');let dock=s.shell.getView().dock
+ s.key('tab');let dock=s.shell.getView().dock
  expect(dock.kind==='picker'&&dock.picker.source).toBe('collaboration')
  s.key('escape');expect(s.shell.getView().dock.kind).toBe('input')
  expect(s.shell.getView().draft).toBe(original.draft);expect(s.shell.getView().caret).toBe(original.caret)

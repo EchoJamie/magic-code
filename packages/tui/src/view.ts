@@ -1,6 +1,7 @@
 import type { InputPurpose, MagicConfig, StoredInput } from '@magic/contracts'
 import { isTurnTimingEvent, type TurnTimingEvent } from '@magic/contracts'
 import { foldRound, type RoundTiming } from './round.ts'
+import { messageRows } from './collaboration.ts'
 import type { McpCatalog } from './view/mcp.ts'
 import { modelLabel } from './view/models.ts'
 
@@ -8,6 +9,7 @@ import type { ModelSelectionRef } from '@magic/contracts'
 
 import type {
   AgentId,
+  AgentMessage,
   BlobRef,
   CollaborationView,
   Entry,
@@ -289,10 +291,7 @@ export type Picker = {
     | 'background'
     | 'background-detail'
     | 'collaboration'
-    | 'collaboration-member'
-    | 'collaboration-stop'
     | 'collaboration-records'
-    | 'collaboration-discussions'
     | 'session'
     | 'session-actions'
     | 'session-history'
@@ -670,6 +669,13 @@ export type ShellView = {
   readonly sessionId: SessionId | null
   /** 会话目录（`session.list` 的答复）。 */
   readonly catalog: readonly SessionSummary[]
+  /**
+   * 当前会话可读的协作消息（子会话正文用）。
+   *
+   * 只随当前子会话的协作快照与历史到达；条目里的 `agent-message` 只带引用，
+   * 正文从这里取（见 `rebuildRows`）。主会话不列成员历史，这一格留空。
+   */
+  readonly messages?: readonly AgentMessage[]
 
   readonly runs: readonly RunRow[]
 
@@ -1205,7 +1211,12 @@ function reduceSessionState(view: ShellView, data: SessionStateData, turn: PageT
   const active = data.active || null
   const switched = view.sessionId !== null && view.sessionId !== active
   const turned = data.note === undefined && (turn === 'new' || (turn === 'open' ? view.sessionId !== active : switched))
-  const title = data.sessions.find((row) => row.id === data.active)?.title ?? (active === view.sessionId ? view.status.session : null)
+  // 子会话不在顶层目录里时，状态行用成员名——不把一条派生会话报成「新会话」。
+  const member = view.collaboration?.members.find((one) => one.agent.sessionId === active
+    && one.agent.agentId !== view.collaboration?.collaboration?.coordinatorId)
+  const title = data.sessions.find((row) => row.id === data.active)?.title
+    ?? member?.agent.name
+    ?? (active === view.sessionId ? view.status.session : null)
 
   const base: ShellView = {
     ...view,
@@ -1323,7 +1334,7 @@ function appendSettled(view: ShellView, row: LogRow): ShellView {
   return { ...view, settled: [...view.settled, row] }
 }
 
-export function rebuild(view: ShellView, entries: readonly Entry[], options: { readonly collapseTools?: boolean; readonly timing?: readonly TurnTimingEvent[] } = {}): ShellView {
+export function rebuild(view: ShellView, entries: readonly Entry[], options: { readonly collapseTools?: boolean; readonly timing?: readonly TurnTimingEvent[]; readonly messages?: readonly AgentMessage[] } = {}): ShellView {
 
   const plan = planFromEntries(entries)
   const fresh = plan.entry !== null && (view.plan.entry === null || plan.entry > view.plan.entry)
@@ -1342,7 +1353,8 @@ export function rebuild(view: ShellView, entries: readonly Entry[], options: { r
   }
   return {
     ...view,
-    settled: [...pageHeaderOf(view), ...rebuildRows(entries, options.collapseTools, rounds)],
+    ...(options.messages === undefined ? {} : { messages: options.messages }),
+    settled: [...pageHeaderOf(view), ...rebuildRows(entries, options.collapseTools, rounds, options.messages ?? view.messages, view.collaboration)],
     round,
     rows: [],
     // **比手上的新才落**——这一趟读库比实时事件慢，晚到的那一份旧内容不许把
@@ -1359,7 +1371,10 @@ export function rebuild(view: ShellView, entries: readonly Entry[], options: { r
  * 「末尾 `RECENT_GROUPS` 组展开」——最近那几组工具保持逐条行，更早的组并成摘要
  * （原型 · 场景 12；收的判据见 `collapseToolGroups`）。
  */
-function rebuildRows(entries: readonly Entry[], collapseTools = true, rounds: readonly RoundTiming[] = []): readonly LogRow[] {
+function rebuildRows(
+  entries: readonly Entry[], collapseTools = true, rounds: readonly RoundTiming[] = [],
+  messages?: readonly AgentMessage[], snapshot?: CollaborationView,
+): readonly LogRow[] {
   const rows: LogRow[] = []
   /** 待配对的那条工具行在 `rows` 里的下标（`-1` ＝ 没有）。 */
   let pendingAt = -1
@@ -1368,6 +1383,16 @@ function rebuildRows(entries: readonly Entry[], collapseTools = true, rounds: re
   for (const entry of timeline) {
     if (entry.kind === 'round') {
       rows.push({ kind: 'round', key: entry.timing.key, timing: entry.timing }); pendingAt = -1; continue
+    }
+    if (entry.kind === 'agent-message') {
+      // 讨论与交付按来源并入正文；条目只带引用，正文从当前会话的协作消息里取。
+      // 拿不到正文（入口会话不带成员消息）就不编一行——空行会在屏上占位却说不清来源。
+      const payload = entry.payload as { readonly messageId?: number } | undefined
+      const message = messages?.find((one) => one.messageId === payload?.messageId)
+      const body = message === undefined ? undefined : messageRows(snapshot, [message])[0]
+      if (body !== undefined) rows.push({ kind: 'output', key: `am:${payload?.messageId ?? entry.id}`, lines: body.lines })
+      pendingAt = -1
+      continue
     }
     if (entry.kind === 'tool-call') {
       const payload = entry.payload as { readonly name?: string; readonly args?: unknown } | undefined

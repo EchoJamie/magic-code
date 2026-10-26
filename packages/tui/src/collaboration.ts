@@ -1,7 +1,6 @@
-import type { AgentId, AgentMessage, CollaborationMemberView, CollaborationView, Delegation } from '@magic/contracts'
+import type { AgentId, AgentMessage, CollaborationMemberView, CollaborationView, Delegation, SessionId } from '@magic/contracts'
 import { sanitizeForDisplay } from '@magic/contracts'
-import { createView, rebuild } from './view.ts'
-import type { LogRow, PickerRow, ShellStatus, ShellView } from './view.ts'
+import type { PickerRow, ShellStatus, ShellView } from './view.ts'
 
 const clean = (text: string): string => sanitizeForDisplay(text).replace(/\s+/g, ' ').trim()
 export const collaborationRow = (value: string, label: string, meta = ''): PickerRow => ({
@@ -61,12 +60,33 @@ export function collaborationSummary(snapshot: CollaborationView | undefined): s
   return clean(`${label} · ${facts.join(' · ') || '暂无执行，结果待整合'}`)
 }
 
+const workState: Record<'open' | 'closing' | 'stopped' | 'closed', string> = {
+  open: '进行中', closing: '收尾中', stopped: '已停止', closed: '已收尾',
+}
+
 export function collaborationHeader(view: ShellView): readonly string[] {
   const summary = collaborationSummary(view.collaboration)
   const background = view.background?.unknown ? ['后台命令数量待确认 · /ps'] : view.background?.commands.length ? [`${view.background.commands.length} 个后台命令运行中 · /ps`] : []
   if (summary === undefined) return background
-  const target = view.collaboration?.members.find((one) => one.agent.agentId === view.inputMember)
-  return [...background, summary, clean(`输入给：${view.inputMember === undefined ? '整件工作（共同补充）' : target?.agent.name ?? '成员已不可用'}${view.dock.kind === 'input' ? ' · Tab 查看工作详情' : ''}`)]
+  const snapshot = view.collaboration!
+  const tabHint = view.dock.kind === 'input' ? ' · Tab 查看工作详情' : ''
+  const member = currentMember(view)
+  if (member !== undefined) {
+    const parent = snapshot.members.find((one) => one.agent.agentId === member.agent.createdBy)?.agent.name
+    const delegation = member.delegation === undefined ? '' : ` · 委派：${member.delegation.scope}（${delegationState[member.delegation.state]}）`
+    const state = snapshot.collaboration === undefined ? '' : ` · 整件：${workState[snapshot.collaboration.state]}`
+    return [
+      ...background,
+      clean(`子会话 · 由 ${parent ?? '主会话'} 派生 · ${member.agent.name}（${member.agent.role}）· 模型 ${member.agent.model.provider}/${member.agent.model.model}`),
+      clean(`${delegation.replace(/^ · /, '')} · 运行：${memberState(member)}${state}`),
+      summary,
+      clean(`输入给：${member.agent.name}（由 ${parent ?? '主会话'} 派生）${tabHint}`),
+    ]
+  }
+  const delivered = snapshot.members.filter((one) =>
+    one.agent.agentId !== snapshot.collaboration?.coordinatorId && one.agent.purpose !== 'consultation'
+    && one.agent.reachability === 'active').length
+  return [...background, summary, clean(`输入给：整件工作（共同补充）${delivered > 0 ? ` · 将送达 ${delivered} 位成员` : ''}${tabHint}`)]
 }
 
 /** 仅投影屏上的整体状态；控制范围仍由明确命令决定。 */
@@ -84,26 +104,62 @@ export function collaborationStatus(view: ShellView): ShellStatus {
   return status
 }
 
-export function memberRows(snapshot: CollaborationView): readonly PickerRow[] {
+/**
+ * 当前会话若是派生出来的子会话，返回它对应的成员。
+ *
+ * 主会话（协作入口）不算子会话——它的成员行就是协调者本身，切换与返回都由
+ * `session.open` 完成（见 `shell.ts` 的 `openSession`）。
+ */
+export function currentMember(view: Pick<ShellView, 'collaboration' | 'sessionId'>): CollaborationMemberView | undefined {
+  const snapshot = view.collaboration
+  if (snapshot?.collaboration === undefined || view.sessionId === null) return undefined
+  const member = snapshot.members.find((one) => one.agent.sessionId === view.sessionId)
+  return member === undefined || member.agent.agentId === snapshot.collaboration.coordinatorId ? undefined : member
+}
+
+/** 某一会话是否是一条派生子会话（入口／协调者不算）。 */
+export function memberForSession(snapshot: CollaborationView | undefined, session: SessionId | null): CollaborationMemberView | undefined {
+  if (snapshot?.collaboration === undefined || session === null) return undefined
+  const member = snapshot.members.find((one) => one.agent.sessionId === session)
+  return member === undefined || member.agent.agentId === snapshot.collaboration.coordinatorId ? undefined : member
+}
+
+/**
+ * 协作视图里的平铺列表。
+ *
+ * 当前会话**不在列表里**（D68）：主会话时不列主会话，子会话时不列当前子会话；
+ * 当前会话用 `Ctrl+O` 看。派生关系只用「由 xx 派生」写在副文案里，不缩进。
+ */
+export function memberRows(snapshot: CollaborationView, currentSession?: SessionId | null): readonly PickerRow[] {
+  const coordinator = snapshot.collaboration?.coordinatorId
+  const nameOf = (id: AgentId | undefined): string =>
+    snapshot.members.find((one) => one.agent.agentId === id)?.agent.name ?? '协调'
   const priority = (member: CollaborationMemberView): number => member.pendingDecisions > 0 ? 0 : member.waiting || member.delegation?.state === 'clarification' ? 1 : 2
-  return [...snapshot.members].sort((a, b) => priority(a) - priority(b)).map((one) => collaborationRow(
-    one.agent.agentId, one.agent.name, `${memberState(one)} · ${one.delegation?.scope ?? one.agent.role}`,
-  ))
+  return [...snapshot.members]
+    .filter((one) => currentSession == null || one.agent.sessionId !== currentSession)
+    .sort((a, b) => priority(a) - priority(b))
+    .map((one) => {
+      const origin = one.agent.agentId === coordinator || one.agent.createdBy === undefined
+        ? '主会话'
+        : `由 ${nameOf(one.agent.createdBy)} 派生`
+      return collaborationRow(
+        one.agent.agentId, one.agent.name, `${memberState(one)} · ${origin} · ${one.delegation?.scope ?? one.agent.role}`,
+      )
+    })
 }
 
-export function memberRecords(snapshot: CollaborationView, member: AgentId): readonly LogRow[] {
-  if (snapshot.selectedMember !== member || snapshot.entries === undefined) return []
-  return rebuild(createView(), snapshot.entries.filter((entry) => entry.kind !== 'agent-message'), { collapseTools: false }).settled
-}
-
-export function discussionRecords(snapshot: CollaborationView, messages: readonly AgentMessage[]): readonly LogRow[] {
+/** 协作消息的正文行——按来源标识，并入会话正文（不再有单独讨论入口）。 */
+export function messageRows(snapshot: CollaborationView | undefined, messages: readonly AgentMessage[]): readonly {
+  readonly key: string; readonly lines: readonly string[]
+}[] {
   const purpose: Record<AgentMessage['purpose'], string> = { inform: '告知', question: '提问', reply: '回复', delegation: '委派', clarification: '澄清', delivery: '交付', receipt: '收悉', constraint: '用户共同要求', decision: '决定' }
   return messages.map((message) => ({
-    kind: 'output', key: String(message.messageId),
+    key: `am:${message.messageId}`,
     lines: [
-      `${message.userSource === undefined ? snapshot.members.find((one) => one.agent.agentId === message.senderId)?.agent.name ?? '协作成员' : '用户'} · ${purpose[message.purpose]}${message.withdrawn ? '（已撤回）' : ''}`,
+      `${message.userSource === undefined ? snapshot?.members.find((one) => one.agent.agentId === message.senderId)?.agent.name ?? '协作成员' : '用户'} · ${purpose[message.purpose]}${message.withdrawn ? '（已撤回）' : ''}`,
       ...message.body.flatMap((part) => part.kind === 'text' ? part.text.split('\n').map(sanitizeForDisplay)
         : part.kind === 'entry' ? [`记录引用：${part.label ?? part.ref.sessionId} #${part.ref.entryId}`] : ['附件引用（正文未展开）']),
     ],
   }))
 }
+

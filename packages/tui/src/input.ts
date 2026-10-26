@@ -20,8 +20,6 @@ export type ShellKey =
   | { readonly kind: 'ctrl+p' }
   | { readonly kind: 'ctrl+n' }
   | { readonly kind: 'pickerDetailTop'; readonly top: number }
-  | { readonly kind: 'memberInput' }
-  | { readonly kind: 'memberMenu' }
   | { readonly kind: 'alt+enter' }
   | { readonly kind: 'up'; readonly columns?: number }
   | { readonly kind: 'down'; readonly columns?: number }
