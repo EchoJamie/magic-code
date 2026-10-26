@@ -289,7 +289,6 @@ describe('接回的那一份「此刻」', () => {
     turnOpen: true,
     text: '这一段是接回来的一半',
     tools: [],
-    decisions: [],
   }
 
   test('在飞的正文画回屏上（记录里根本没有它——流式增量不落库）', () => {
@@ -298,22 +297,17 @@ describe('接回的那一份「此刻」', () => {
     expect(said).toContain('这一段是接回来的一半')
   })
 
-  test('在跑的工具与挂着的卡也画回去', () => {
+  test('在跑的工具也画回去', () => {
     const view = applyResume(createView(), {
       ...snapshot,
       text: undefined,
       tools: [{ call: 7, name: 'bash', args: { cmd: 'pytest' }, at: 1_000, output: ['running…'] }],
-      decisions: [
-        { id: 9, call: 8, name: 'bash', material: 'rm -rf build', weight: 'heavy' },
-      ],
     })
 
     const tool = view.rows.find((row) => row.kind === 'tool')
     expect(tool?.kind === 'tool' ? tool.state : '').toBe('running')
     // 接回时每一行**按行接**（末行后那个换行让它多出一个空尾行）——判据是**头一行对得上**
     expect(tool?.kind === 'tool' ? tool.output[0] : '').toBe('running…')
-    expect(view.dock.kind).toBe('decision')
-    expect(view.dock.kind === 'decision' ? view.dock.pending.id : null).toBe(9)
   })
 
   test('截断的那一段如实标出来（不冒充完整回复）', () => {

@@ -201,56 +201,6 @@ describe('真光标 · 抽屉接管与关闭', () => {
     expect(frame.screen.cursor).toEqual({ x: 3, y: row })
   })
 
-  test('裁决接管中——真光标不在输入行上（那一下打不进草稿）', async () => {
-    const stage = createStage()
-    stage.feed([
-      event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
-      event('tool.decision.request', { call: 71, name: '跑测试', material: '命令 bun test', weight: 'light' }, { id: 88 }),
-    ])
-
-    const frame = await stage.screen({ columns: 200, rows: 40 })
-
-    // 原锚＝`rowOf('等你的答复')` 不是光标所在行（D29 那一行整个没了，`rowOf` 会当场抛）。
-    // 新锚与上面那条**抽屉接管**同一姿势（两处都是「输入行让位」）：真光标送回帧下。
-    expect(frame.screen.cursor.y).toBeGreaterThan(frame.rowOf('◊ 等你定夺'))
-  })
-
-  /**
-   * ⚠️ **返工轮改过这条断言的锚**（首轮验收退回 ②）——
-   *
-   * - **原锚**：`stage.type('半句话')`（插入点本来就在末尾）＋「草稿归还，真光标回到它的
-   *   **末尾**」——那会儿 `undock` 一律把插入点摆到 `draft.length`，这条断言量的其实是
-   *   **那条实现**，不是规格。
-   * - **为何变**：交接面（裁决）的接管**不经过用户**，草稿连同它的插入点都得原样还回来——
-   *   一律摆到末尾＝**把用户打到一半的位置改掉**（`abcd` ←← 接管批准 打 `X` ⇒ `abcdX`，
-   *   应为 `abXcd`）。用户真跑报的就是这一条。
-   * - **新锚**：中间编辑过（`←←`）再被接管，答完**回到原来那个插入点**：草稿不变、
-   *   插入点也不变，接着打的字进在原来的位置，真光标跟着落在那一列。
-   */
-  test('答完裁决（接管解除）——草稿连同**原插入点**一起归还', async () => {
-    const stage = createStage()
-    stage.type('abcd') // 接管**之前**打的草稿（接管期间打不进去）
-    stage.press({ kind: 'left' })
-    stage.press({ kind: 'left' }) // ab|cd
-    stage.feed([
-      event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
-      event('tool.decision.request', { call: 71, name: '跑测试', material: '命令 bun test', weight: 'light' }, { id: 88 }),
-    ])
-    stage.press({ kind: 'char', char: 'y' }) // 答「批准」
-    stage.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 300 }, { id: 88 })])
-
-    expect(draftOf(stage)).toBe('abcd') // 草稿原样归还
-    expect(at(stage)).toBe(2) // **插入点也原样**（原锚：一律摆到末尾）
-
-    stage.type('X') // 接着打——字进在原来的位置
-    expect(draftOf(stage)).toBe('abXcd')
-
-    const frame = await stage.screen({ columns: 200, rows: 40 })
-    const row = frame.rowOf('abXcd')
-
-    // 1（左留白）＋ 2（`› `）＋ `abX` 3 列 ＝ 6（打在 `b` 与 `c` 之间那个位置）
-    expect(frame.screen.cursor).toEqual({ x: 6, y: row })
-  })
 })
 
 describe('插入点 · 复位（清空 / 提交 / 历史 / 补全）', () => {
@@ -285,11 +235,11 @@ describe('插入点 · 复位（清空 / 提交 / 历史 / 补全）', () => {
 
   test('`Tab` 补全——插入点落在补出来的那条之后', () => {
     const stage = createStage()
-    stage.type('/gr')
+    stage.type('/sk')
     stage.press({ kind: 'tab' })
 
-    expect(draftOf(stage)).toBe('/grants ')
-    expect(at(stage)).toBe('/grants '.length)
+    expect(draftOf(stage)).toBe('/skills ')
+    expect(at(stage)).toBe('/skills '.length)
   })
 })
 

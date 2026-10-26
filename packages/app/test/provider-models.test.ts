@@ -132,7 +132,6 @@ describe('一条连接的闭环', () => {
         cwd: land.workspace,
         config: loadConfig({ path: land.configPath, magic: magicAt(land.root) }),
         modelFetch: vendor.fetch,
-        grantsFile: join(land.root, 'magic', 'grants.json'),
         magic: magicAt(land.root),
         prompt: { platform: 'darwin', date: '2026-09-23' },
       })
@@ -223,7 +222,6 @@ describe('一条连接的闭环', () => {
         cwd: land.workspace,
         config: loadConfig({ path: land.configPath, magic: magicAt(land.root) }),
         modelFetch: vendor.fetch,
-        grantsFile: join(land.root, 'magic', 'grants.json'),
         magic: magicAt(land.root),
         prompt: { platform: 'darwin', date: '2026-09-23' },
       })
@@ -237,7 +235,6 @@ describe('一条连接的闭环', () => {
         cwd: land.workspace,
         config: loadConfig({ path: land.configPath, magic: magicAt(land.root) }),
         modelFetch: vendor.fetch,
-        grantsFile: join(land.root, 'magic', 'grants.json'),
         magic: magicAt(land.root),
         prompt: { platform: 'darwin', date: '2026-09-23' },
       })
@@ -271,7 +268,6 @@ describe('一条连接的闭环', () => {
         cwd: land.workspace,
         config: loadConfig({ path: land.configPath, magic: magicAt(land.root) }),
         modelFetch: vendor.fetch,
-        grantsFile: join(land.root, 'magic', 'grants.json'),
         magic: magicAt(land.root),
         prompt: { platform: 'darwin', date: '2026-09-23' },
       })
@@ -341,7 +337,6 @@ describe('一条连接的闭环', () => {
         cwd: land.workspace,
         config: loadConfig({ path: configPath, magic: magicAt(land.root) }),
         modelFetch: vendor.fetch,
-        grantsFile: join(land.root, 'magic', 'grants.json'),
         magic: magicAt(land.root),
         prompt: { platform: 'darwin', date: '2026-09-23' },
       })
@@ -376,7 +371,6 @@ describe('一条连接的闭环', () => {
         cwd: land.workspace,
         config: loadConfig({ path: land.configPath, magic: magicAt(land.root) }),
         modelFetch: vendor.fetch,
-        grantsFile: join(land.root, 'magic', 'grants.json'),
         magic: magicAt(land.root),
         prompt: { platform: 'darwin', date: '2026-09-23' },
       })
@@ -431,7 +425,6 @@ describe('一条连接的闭环', () => {
         cwd: land.workspace,
         config: loadConfig({ path: configPath, magic: magicAt(land.root) }),
         modelFetch: vendor.fetch,
-        grantsFile: join(land.root, 'magic', 'grants.json'),
         magic: magicAt(land.root),
         prompt: { platform: 'darwin', date: '2026-09-23' },
       })
@@ -504,7 +497,6 @@ describe('一条连接的闭环', () => {
         cwd: land.workspace,
         config: loadConfig({ path: configPath, magic: magicAt(land.root) }),
         modelFetch: vendor.fetch,
-        grantsFile: join(land.root, 'magic', 'grants.json'),
         magic: magicAt(land.root),
         prompt: { platform: 'darwin', date: '2026-09-23' },
       })
@@ -597,7 +589,6 @@ async function outboundBodyOf(
       cwd: land.workspace,
       config: loadConfig({ path: land.configPath, magic: magicAt(land.root) }),
       modelFetch: vendor.fetch,
-      grantsFile: join(land.root, 'magic', 'grants.json'),
       magic: magicAt(land.root),
       prompt: { platform: 'darwin', date: '2026-09-23' },
     })

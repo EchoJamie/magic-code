@@ -267,32 +267,6 @@ describe('差距 3 · 进度感——工具跑动 / 等待模型 / 退避重试�
     expect(frame.record.some((line) => /\d+(?:\.\d+)?(?:ms|s)\b/.test(line.text))).toBe(false)
   })
 
-  /**
-   * 真跑留帧时当场看出来的：**答完裁决之后，状态行还停在「等你定夺」**——
-   * 而那一刻球已经回到内核那边（工具在跑）。输入行说「交代一件事」（常态），
-   * 底行却说「等你定夺」，两处**互相打架**；状态行的规矩是「只放此刻」。
-   */
-  test('答完裁决——状态行**回到「工作中」**（不赖在「等你定夺」上）', async () => {
-    const stage = live()
-    stage.feed([
-      event('turn.start', {}),
-      event('tool.call', { name: 'exec', args: { cmd: 'sleep 3' } }, { id: 71 }),
-      event(
-        'tool.decision.request',
-        { call: 71, name: 'exec', material: '命令 sleep 3', weight: 'light' },
-        { id: 88 },
-      ),
-    ])
-    expect((await stage.screen(WIDE)).statusLine).toContain('◊ 等你定夺')
-
-    stage.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 300 })])
-
-    const frame = await stage.screen(WIDE)
-    expect(frame.statusLine).toContain('● 工作中')
-    expect(frame.statusLine).not.toContain('等你定夺')
-    expect(frame.has('想插话可以打')).toBe(false) // 输入行与它同口径
-  })
-
   test('**等模型**与**工具在跑**——输入行两句话分开（不必看状态行才分得出）', async () => {
     const waiting = live()
     waiting.feed([event('turn.start', {})])

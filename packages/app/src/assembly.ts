@@ -2,12 +2,10 @@
  * 共享配置不携带 Agent 选择；当前展示只指向一条会话链。
  * 调用方先订阅 shell，再 boot/恢复，最后放开输入。
  */
-import { createAssemblyGrants, type GrantsView } from './agent-assembly/grants.ts'
 import { createModelConfiguration } from './agent-assembly/model-configuration.ts'
 import { createAgentSession, type AgentSession, type EnvironmentVars } from './agent-assembly/session.ts'
 import { noticesOf, providerRemovedNote } from './run/observation.ts'
 import { createWorkEnvironment, type WorkEnvironment } from './work-environment.ts'
-export type { GrantsView } from './agent-assembly/grants.ts'
 export type { EnvironmentVars } from './agent-assembly/session.ts'
 export { createStamper } from './agent-assembly/events.ts'
 export { workspaceOf } from './run/observation.ts'
@@ -35,11 +33,12 @@ import type {
   SessionId,
   SkillCatalog,
   StatusLineConfig,
+  SudoAuth,
   Timestamp,
   UserInput,
   WebSource,
 } from '@magic/contracts'
-import { GRANTS_FILE_NAME, TRANSIENT_EVENT_KINDS, expandHome } from '@magic/contracts'
+import { TRANSIENT_EVENT_KINDS } from '@magic/contracts'
 import { createControlHub, createInProcessTransportPair } from '@magic/control'
 import type { ContextPolicy, SessionInstance } from '@magic/conversation'
 import { createConversationService } from '@magic/conversation'
@@ -59,8 +58,6 @@ import type { McpServers } from '@magic/mcp'
 import { createMcpServers } from '@magic/mcp'
 import type { FetchLike, ModelInfoService, ModelRegistry, ModelSwitchResult } from '@magic/model'
 import { selectModel } from '@magic/model'
-import type { PermissionRule, RuleProblem } from '@magic/permission'
-import { parseRules } from '@magic/permission'
 import type { RecordsStore } from '@magic/records'
 import { createRecordsStore } from '@magic/records'
 import type { ToolDefinition } from '@magic/tools'
@@ -72,7 +69,6 @@ import { loadConfig } from '@magic/config'
 import { saveImageFile } from './image-file.ts'
 import type { ModelCatalogReader } from './run/observation.ts'
 import {
-  grantsCatalog,
   mcpCatalog,
   modelCatalog,
   pathsCatalog,
@@ -118,12 +114,6 @@ export type AssembleOptions = {
   readonly context?: Partial<ContextPolicy> | undefined
   /** 提示词的环境注入项（见 `EnvironmentVars`）。 */
   readonly prompt?: EnvironmentVars | undefined
-  /**
-   * **授权文件的落点**——缺省 `<基础目录>/grants.json`（`~` 在此展开）。
-   *
-   * 与 config.json 同属基础目录；覆盖参数只供显式注入使用。
-   */
-  readonly grantsFile?: string | undefined
   /** 入口已确定的系统家目录与 Magic 基础目录；装配不读取环境补位置。 */
   readonly magic: MagicHome
 
@@ -131,7 +121,11 @@ export type AssembleOptions = {
   | { readonly connectTimeoutMs?: number; readonly callTimeoutMs?: number }
   | undefined
 
-  readonly allowAll?: boolean | undefined
+  /**
+   * **sudo 专用认证端口**（U129）——由执行者（经 UI 通道）提供。
+   * 不给 ＝ 这次装配没有认证通道，`exec` 遇到 sudo 时如实回一句「用不了」。
+   */
+  readonly sudoAuth?: SudoAuth | undefined
 }
 
 /** 装配产物——外壳侧一端 ＋ 自检 / 验收要用的把手。 */
@@ -186,22 +180,6 @@ export type Assembly = {
   readonly records: RecordsStore
   /** 数据落点（`records.db` 与 `blobs/` 的绝对路径）。 */
   readonly paths: { readonly database: string; readonly blobs: string }
-  /**
-   * 本次生效的**权限规则**（配置 `permissions.rules` 经权限域 `parseRules` 的落地）——
-   * 自检 / 验收据以确认「规则真的接进闸门了」。
-   */
-  readonly permissionRules: readonly PermissionRule[]
-  /**
-   * **被拒的规则条目**（连同缘由）——解析从严：读不懂的**不生效**（而不是退化成更宽的规则）。
-   * 缘由交回装配是**给用户看的**：静默丢弃会让人对着一条不生效的规则发呆。
-   */
-  readonly rejectedRules: readonly RuleProblem[]
-
-  readonly grantsPath: string
-
-  readonly grantsView: () => GrantsView
-
-  readonly grantsUnreadable: string | undefined
 
   notices(): Promise<readonly string[]>
 
@@ -307,13 +285,6 @@ export function assemble(options: AssembleOptions): Assembly {
 
   const materials = createMaterials({ workspace })
 
-  const grantState = createAssemblyGrants({
-    path: options.grantsFile === undefined
-      ? `${magic.base}/${GRANTS_FILE_NAME}`
-      : expandHome(options.grantsFile, magic.home),
-    workspace: workspace.defaultRoot(), now,
-  })
-
   const recordsStore = options.records?.forWorkspace(workspace.roots()) ?? createRecordsStore({
     dataDir: magic.base,
     workspace: workspace.roots(),
@@ -333,9 +304,6 @@ export function assemble(options: AssembleOptions): Assembly {
       if (!TRANSIENT.has(event.kind)) recordsStore.appendEvent(event)
     },
   }
-
-  // 解析结果供自检读取；会话闸门在裁决时读取最新配置。
-  const parsedRules = parseRules(loaded.config.permissions?.rules ?? [])
 
   /** 当前展示会话的控制面事件使用转发铸造器；执行链使用自己的铸造器。 */
   const forwardStamper: EventStamper = {
@@ -404,10 +372,10 @@ export function assemble(options: AssembleOptions): Assembly {
     }
     const opened = createAgentSession({
       session, magic, context: options.context, prompt: options.prompt,
-      webSource: options.webSource, modelGateway: options.modelGateway, allowAll: options.allowAll,
+      webSource: options.webSource, modelGateway: options.modelGateway,
       collaboration: options.collaboration, collaborationChanged: options.collaborationChanged,
-      loaded, recordsStore, workspace, grantState, sink, now,
-      signal, network, executionId, backgroundRuns, backgroundDir,
+      loaded, recordsStore, workspace, sudoAuth: options.sudoAuth, sink, now,
+      signal, network, executionId, backgroundRuns,
       sandbox, projectRules, skills, materials, mcpTools,
       model: {
         create: (selection, stamper) => {
@@ -644,37 +612,6 @@ export function assemble(options: AssembleOptions): Assembly {
     return registry.capacityOf(current.provider, current.model)?.inputBudget ?? null
   }
 
-  const listGrants = async (note?: string): Promise<void> => {
-    if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
-    sink.emit(requireActiveStamper().stamp('grants.catalog', grantsCatalogOf(note)))
-  }
-
-  const grantsCatalogOf = (note?: string): EventDataOf['grants.catalog'] =>
-    grantsCatalog(grantState.view(), active().gate.tally(), recordsStore.decisionHistory(), note, grantState.trouble(), grantState.writeError)
-
-  const revokeGrants = async (section?: string, index?: number): Promise<void> => {
-    const target = section ?? workspace.defaultRoot()
-
-    if (index === undefined) {
-      const dropped = await grantState.ledger.dropSection(target)
-      listGrants(
-        dropped === 0
-          ? `没撤成：${target} 那一节不在名录里`
-          : `已撤销整节：${target}（${dropped} 条）`,
-      )
-      return
-    }
-
-    // 回执要报出**撤掉的是哪一条**——名录得在撤销**之前**取（撤完它就没了）。
-    // 只有撤**本工作区**时才取得到：`view()` 读的就是本工作区那一节，
-    // 撤别处（陈旧节那条路走的是 index 缺省，到不了这里）时如实说「那一条」而不编名字
-    const named =
-      target === workspace.defaultRoot() ? grantState.ledger.view()[index]?.describe : undefined
-    const done = await grantState.ledger.revoke(target, index)
-
-    listGrants(done ? `已撤销：${named ?? '那一条'}` : '没撤成：那一条已经不在了')
-  }
-
   const listMcp = async (note?: string): Promise<void> => {
     if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
     sink.emit(requireActiveStamper().stamp('mcp.catalog', mcpCatalogOf(note)))
@@ -838,10 +775,6 @@ export function assemble(options: AssembleOptions): Assembly {
       conversation.submit(input)
     },
     onInterrupt: () => conversation.interrupt(),
-    // 答复**原样转手**（含「总是允许」位）——装配不解释它，落地归权限域。
-    // 闸门**按会话各一份**（在途询问与裁决的账各归各的），故取当下这束的；
-    // 而它记下的授权进的是**工作区级**账本（跨会话那个），两者不是一回事
-    onDecision: async (id, decision, opts) => (await active().gate.resolve(id, decision, opts)),
     // 换模型（阶段 2）——**判别式处置**（技术方案 · 领域划分：「切不动就不动」）
     onModelSwitch: (request) => switchModel(request),
     onSession: (command) => conversation.handle(command),
@@ -860,8 +793,6 @@ export function assemble(options: AssembleOptions): Assembly {
     onProviderSave: (request) => saveModelSettings({ ...request, type: 'provider.save' }),
     onProviderRemove: (provider) => removeProviderCommand(provider),
 
-    onGrantsList: () => listGrants(),
-    onGrantsRevoke: (workspace, index) => revokeGrants(workspace, index),
     // 技能目录（读侧 · U33）——**归装配**（执行域的发现面是它组起来的，同 `model.list`
     // 之于注册表、`grants.list` 之于授权文件）；答复走事件（`skills.catalog`，不落库）
     onSkillList: () => listSkills(),
@@ -886,8 +817,6 @@ export function assemble(options: AssembleOptions): Assembly {
       statusLineConfig = current.config.statusLine
       turnDuration = current.config.turnDuration ?? 'elapsed'
       reducedMotion = current.config.motion?.reduced === true
-      grantState.refresh()
-      grantState.discardHits()
     },
     reconnectMcp,
     hasPendingInput: () => [...chains.values()].some(one => one.service.busy()),
@@ -910,22 +839,12 @@ export function assemble(options: AssembleOptions): Assembly {
     applyModel,
     records: recordsStore,
     paths: recordsStore.paths,
-    permissionRules: parsedRules.rules,
-    rejectedRules: parsedRules.rejected,
-    grantsPath: grantState.path,
-    grantsView: grantState.view,
-    get grantsUnreadable(): string | undefined {
-      return grantState.unreadable
-    },
     readRules,
     readSkills,
     // **现读**（见 `Assembly.notices` 的注）：外部服务器连不上那一条要等 `ready()` 才落定，
     // 而这一位在放开输入之前（`boot`）与自检（`--check`）两处都会被读——快照会在前一处漏话。
     async notices(): Promise<readonly string[]> {
       return noticesOf(
-        parsedRules.rejected,
-        grantState.notes(),
-        loaded.path,
         (await readRules()).problems,
         mcp.connections,
       )
@@ -962,7 +881,6 @@ export function assemble(options: AssembleOptions): Assembly {
           if (!stopped.ok) throw new Error(stopped.reason)
         }) ?? []),
       ])
-      await grantState.flush()
       if (options.network === undefined) await network.close()
       const failures = results.filter((one): one is PromiseRejectedResult => one.status === 'rejected')
       if (failures.length) throw new AggregateError(failures.map(one => one.reason), '执行实例未完成收尾')

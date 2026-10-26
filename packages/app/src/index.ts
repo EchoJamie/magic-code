@@ -48,8 +48,6 @@ export type { EditConfigInput, SaveOutcome } from '@magic/config'
 export { attachShell, runShellScript } from './shell.ts'
 export type {
   AttachShellOptions,
-  ShellDecision,
-  ShellDecisionRequest,
   ShellHandle,
   ShellScript,
   ShellStep,

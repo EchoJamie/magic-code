@@ -18,7 +18,7 @@ async function until(check: () => boolean): Promise<void> {
   }
 }
 
-test('当前来源替换不累积历史，实际呈现才已读且审批已读不等于答复', async () => {
+test('当前来源替换不累积历史，实际呈现才已读且失败停点如实呈现', async () => {
   const evidence = join(tmpdir(), 'magic-resident-cli-evidence', `presentation-${crypto.randomUUID()}`)
   mkdirSync(evidence, { recursive: true })
   const fixture = startFixture({ turns: [
@@ -79,30 +79,7 @@ test('当前来源替换不累积历史，实际呈现才已读且审批已读�
     expect((await window.screen()).lines.join('\n')).not.toContain('本轮已完成')
     await window.capture({ label: '新结果实际呈现后已读，旧来源不再累积' })
     save('current-result-presented')
-    await window.send('第四条：等我批准')
-    await window.key('enter')
-    await window.wait({ text: '批准这一次' })
-    await until(() => facts().some(one => one.kind === 'needs-you' && !one.unread))
-    expect((await window.screen()).lines.join('\n')).not.toContain('需要你决定')
-    // 自动展开与未选择时按 Enter/旧字母均不能批准。
-    await window.key('enter')
-    await window.send('yan')
-    await window.capture({ label: '待答呈现后已读，未选择和旧快捷键均未批准' })
-    expect(fixture.requests()).toHaveLength(4)
-    const db = readDatabase(join(sandbox.dataDir, 'records.db'))
-    try { expect(db.events.filter((event) => event.kind === 'tool.decision')).toHaveLength(0) } finally { db.close() }
-    expect(facts()).toHaveLength(1)
-    expect(facts()[0]).toMatchObject({ session, kind: 'needs-you', unread: false })
-    expect(facts()[0]!.id).not.toBe(liveDone.id)
-    save('pending-read-not-answered')
-    // 已读只确认呈现；先退出审批层，再走任务菜单停止，不产生工具批准。
-    await window.key('esc', { until: { text: 'Tab 进入决策' } })
-    await window.key('ctrl+c', { until: { text: '当前任务正在等待你' }, timeoutMs: 15_000 })
-    await window.key('enter')
-    await window.wait({ text: '停了' }, { timeoutMs: 30_000 })
-    await until(() => facts().length === 0)
-    const stopped = readDatabase(join(sandbox.dataDir, 'records.db'))
-    try { expect(stopped.events.filter(event => event.kind === 'tool.decision' && JSON.parse(event.data).decider === 'user')).toHaveLength(0) } finally { stopped.close() }
+    await window.wait({ text: '○ 空闲' })
     await window.send('第五条：展示失败')
     await window.key('enter')
     await window.wait({ text: '模型错误' })

@@ -3,26 +3,17 @@ import { createSettings } from '../settings.ts'
 import { createWorkEnvironment } from '../work-environment.ts'
 import { configStamp } from '@magic/config'
 import { loadConfig } from '@magic/config'
-import { createWorkspaceService } from '@magic/execution'
-import { modelCatalog, providerCatalog, readGrantView, grantsTrouble } from './observation.ts'
+import { modelCatalog, providerCatalog } from './observation.ts'
 
 /** 文件动作在 TUI 执行；运行命令继续使用原连接。 */
-export function terminalSettings(transport: ControlTransport, magic: MagicHome, workspace: WorkspaceService, initial?: ModelSwitchRequest, settingsOnly = false): ControlTransport {
+export function terminalSettings(transport: ControlTransport, magic: MagicHome, _workspace: WorkspaceService, initial?: ModelSwitchRequest, settingsOnly = false): ControlTransport {
   const listeners = new Set<(event: KernelEvent) => void>()
   const environment = Object.freeze({ ...process.env })
   let selection: ModelSelectionRef | undefined
   let session = ''
   let queue = Promise.resolve()
-  let grants: EventDataOf['grants.catalog'] | undefined
-  let grantStamp: string | null = null
   let unsubscribe: (() => void) | undefined
   const receive = (event: KernelEvent) => {
-    if (event.kind === 'session.state') {
-      const active = event.data.active
-      if (session !== active) grants = undefined
-      const roots = event.data.sessions.find(one => one.id === active)?.workspace
-      if (roots?.length) workspace = createWorkspaceService({ roots })
-    }
     session = event.session
     if (event.kind === 'model.catalog') selection = event.data.current
     if (event.kind === 'model.switched' && event.data.ok && event.data.provider && event.data.model && event.data.protocol && event.data.endpoint) selection = {
@@ -30,21 +21,13 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
       protocol: event.data.protocol, endpoint: event.data.endpoint,
       ...(event.data.reasoning === undefined ? {} : { reasoning: event.data.reasoning }),
     }
-    if (event.kind === 'grants.catalog') {
-      const path = `${magic.base}/grants.json`, before = configStamp(path)
-      const local = readGrantView(magic, createWorkspaceService({ roots: [event.data.workspace] }))
-      if (configStamp(path) === before) {
-        grantStamp = before; grants = { ...event.data, ...local.view }
-        event = { ...event, data: grants }
-      }
-    }
     for (const listener of listeners) listener(event)
   }
   const emit = <K extends EventKind>(kind: K, data: EventDataOf[K]) => {
     const event = { id: 0, turn: null, at: Date.now(), session, kind, data } as KernelEvent
     for (const listener of listeners) listener(event)
   }
-  const local = new Set<Command['type']>(['model.list', 'provider.list', 'provider.save', 'provider.remove', 'model.configure', 'model.override', 'model.refresh', 'prefs.set', 'web.list', 'web.configure', 'grants.list', 'grants.revoke'])
+  const local = new Set<Command['type']>(['model.list', 'provider.list', 'provider.save', 'provider.remove', 'model.configure', 'model.override', 'model.refresh', 'prefs.set', 'web.list', 'web.configure'])
   if (settingsOnly) local.add('mcp.list')
   async function handle(command: Command) {
     // 读的是盘上配置——**不建网络环境**（浏览不发起网页或模型调用）。
@@ -77,11 +60,6 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
           if (!provider) throw new Error('尚未选择可刷新的供应商')
           action = { type: 'model.refresh', provider }; break
         }
-        case 'grants.revoke': {
-          const workspace = command.workspace ?? grants?.workspace
-          if (!workspace) throw new Error('请先读取要撤销的工作区授权')
-          action = { ...command, workspace, grantStamp }; break
-        }
       }
       if (action) {
         const expected = 'expectedStamp' in command && command.expectedStamp !== undefined
@@ -102,15 +80,6 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
           ...(saved === undefined ? {} : { saved }),
           ...(note === undefined ? {} : { note }),
         })
-      } else if (command.type === 'grants.list' || command.type === 'grants.revoke') {
-          const path = `${magic.base}/grants.json`, before = configStamp(path)
-          const local = readGrantView(magic, grants ? createWorkspaceService({ roots: [grants.workspace] }) : workspace)
-          if (configStamp(path) !== before) throw new Error('授权在读取期间已改变，请重新读取')
-          const problem = [note, grantsTrouble(local.path, local.unreadable), local.note].filter(Boolean).join('；')
-          grantStamp = before; grants = { ...local.view,
-            ...(grants?.decisions ? { decisions: grants.decisions } : {}),
-            ...(grants?.history ? { history: grants.history } : {}), ...(problem ? { note: problem } : {}) }
-          emit('grants.catalog', grants)
       } else {
         const reader = await settings.catalog(selection, selection ? undefined : initial)
         const result = { stamp: reader.stamp, ...(saved === undefined ? {} : { saved }) }
@@ -126,7 +95,6 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
     offlineCommands: [...local],
     send(command) {
       if (!local.has(command.type)) { transport.send(command); return }
-      if (command.type === 'grants.list' && !settingsOnly) transport.send(command)
       queue = queue.then(() => handle(command)).catch(error => emit('provider.catalog', { entries: [], vendors: [], note: String(error) }))
     },
     subscribe(listener) {

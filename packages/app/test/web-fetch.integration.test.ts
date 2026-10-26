@@ -110,13 +110,6 @@ describe('配好了的那一趟：取回 → 提炼 → 只交答案', () => {
       const handle = attachShell(assembly.shell)
 
       handle.send({ type: 'input.submit', text: '查一下它的定价' })
-      // 卡是真弹的（外发必闸）——批准
-      await waitFor(handle, '卡挂上', (events) => events.some((event) => event.kind === 'tool.decision.request'))
-      // 取网页那一张卡上有域名
-      const card = eventsOfKind(handle.events, 'tool.decision.request')[0]
-      expect(card?.data.host).toBe('example.com')
-      answer(handle, card?.id as number, 'approve')
-
       await waitIdle(handle, 1)
 
       const chats = chatsOf(fixture)
@@ -170,16 +163,8 @@ describe('配好了的那一趟：取回 → 提炼 → 只交答案', () => {
     try {
       const handle = attachShell(stage.assemble({ modelGateway: undefined, webSource: fakeWeb() }).shell)
 
-      // ⚠️ 等的是**第 n 张卡挂上来**（不是「有过卡」）：第二趟若不这么等，
-      // 拿到的是上一趟那张早已答过的卡——答复打在一个已了结的 id 上，这一轮就挂住了。
       for (const round of [1, 2]) {
         handle.send({ type: 'input.submit', text: '问一件事' })
-        await waitFor(
-          handle,
-          `第 ${round} 张卡挂上`,
-          () => eventsOfKind(handle.events, 'tool.decision.request').length >= round,
-        )
-        answer(handle, eventsOfKind(handle.events, 'tool.decision.request')[round - 1]?.id as number, 'approve')
         // 这一轮**走完**了再问下一件（上一轮还在跑时提交，走的是排队那条路——
         // 那与「接着说一句」不是同一件事，本用例不测它）
         await waitIdle(handle, round)
@@ -226,8 +211,6 @@ describe('没配的那一趟：这一轮停住', () => {
       const handle = attachShell(assembly.shell)
 
       handle.send({ type: 'input.submit', text: '查一下它的定价' })
-      await waitFor(handle, '卡挂上', (events) => events.some((event) => event.kind === 'tool.decision.request'))
-      answer(handle, eventsOfKind(handle.events, 'tool.decision.request')[0]?.id as number, 'approve')
       await waitIdle(handle, 1)
 
       // ⚠️ **硬判据**：这一轮**就地收束**——只发过主轮那一次请求
@@ -277,8 +260,6 @@ describe('照报错那句走一遍：配上之后**不用重启**就通了', () 
 
       // —— ① 报错指路的那一句：去 `/model` 挑一个 ——
       handle.send({ type: 'input.submit', text: '查一下它的定价' })
-      await waitFor(handle, '卡挂上', (events) => events.some((event) => event.kind === 'tool.decision.request'))
-      answer(handle, eventsOfKind(handle.events, 'tool.decision.request')[0]?.id as number, 'approve')
       await waitIdle(handle, 1)
 
       const results = JSON.stringify(
@@ -316,12 +297,6 @@ describe('照报错那句走一遍：配上之后**不用重启**就通了', () 
 
       // —— ⑤ 配完接着说一句就能继续：**没有重启**，同一条会话再跑一次 ——
       handle.send({ type: 'input.submit', text: '现在再查一次' })
-      await waitFor(
-        handle,
-        '第二张卡挂上',
-        () => eventsOfKind(handle.events, 'tool.decision.request').length >= 2,
-      )
-      answer(handle, eventsOfKind(handle.events, 'tool.decision.request')[1]?.id as number, 'approve')
       await waitIdle(handle, 2)
 
       // **这一次不再报「还没配」**：它真取回了、真提炼了
@@ -391,9 +366,4 @@ async function waitFor(
     if (Bun.nanoseconds() > until) throw new Error(`等「${what}」超时`)
     await Bun.sleep(10)
   }
-}
-
-/** 答一次裁决（`id` 是那一条询问事件）。 */
-function answer(handle: ShellHandle, id: number, decision: 'approve' | 'reject'): void {
-  handle.send({ type: 'decision.answer', id: id as never, decision })
 }

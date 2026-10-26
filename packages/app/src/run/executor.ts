@@ -10,8 +10,8 @@ import type {
   MagicHome,
   ModelSwitchRequest,
   RunSnapshot,
-  SnapshotDecision,
 } from '@magic/contracts'
+import { createSudoAuth } from './sudo-auth.ts'
 import { assemble } from '../assembly.ts'
 import type { Assembly } from '../assembly.ts'
 import { loadConfig } from '@magic/config'
@@ -71,13 +71,6 @@ export type ExecutorOptions = {
   readonly magic: MagicHome
   /** **开局的换模型请求**（`--model`）——装配之后、开工之前落地。 */
   readonly switch?: ModelSwitchRequest | undefined
-  /**
-   * **全放行**（U73）——命令行 `--allow-all` 在这一个窗口上定下的那个布尔。
-   *
-   * ⚠️ **它必须赶在装配之前**（不像 `switch` 能等装配之后落地）：闸门是**装配期造的**，
-   * 造完就没有改它的口——它正是「对话期间切不进去」那条规矩在代码里的形状。
-   */
-  readonly allowAll?: boolean | undefined
   /** 诊断——缺省不打印（这条线上不写业务日志）。 */
   readonly log?: ((line: string) => void) | undefined
 }
@@ -98,16 +91,22 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   const link = options.link
   const disconnected = new Promise<void>(resolve => link.onClose(() => resolve()))
   const requests = new Map<string, (reply: CollaborationReply) => void>()
+  const sudo = createSudoAuth({ link, cwd: options.cwd, env: options.environment })
   link.onMessage(message => {
-    if (message.t !== 'collaboration.reply') return
-    const done = requests.get(message.requestId)
-    requests.delete(message.requestId)
-    done?.(message.reply)
+    if (message.t === 'collaboration.reply') {
+      const done = requests.get(message.requestId)
+      requests.delete(message.requestId)
+      done?.(message.reply)
+      return
+    }
+    if (message.t === 'sudo.answer') sudo.answer(message)
   })
   link.onClose(() => {
     for (const done of requests.values()) done({ ok: false, reason: '管理者连接已断开；请求结果可按原 operationId 查询，不自动重做' })
     requests.clear()
+    sudo.cancelAll()
   })
+
   let diagnosticLog: DiagnosticLog | undefined
   let assembly: Assembly
   try {
@@ -145,8 +144,8 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
       magic,
       // **显式接续**：给了 id 就是那条会话；不给＝一个会话都不开（D5）
       ...(options.session === null ? {} : { session: options.session }),
-      // 全放行——**造闸门用的那一跳**（见 `ExecutorOptions.allowAll`）
-      ...(options.allowAll === true ? { allowAll: true } : {}),
+      // sudo 专用认证（U129）——密码通道由这一代执行者自己的 UI 连接承载
+      sudoAuth: sudo.auth,
     })
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
@@ -188,10 +187,8 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     workspace: assembly.workspaceRoots,
   })
 
-  // 收缩只认执行责任：在途轮次、待答裁决和后台命令；观察连接不保活。
+  // 收缩只认执行责任：在途轮次、sudo 认证和后台命令；观察连接不保活。
   let busy = false
-  /** 待答的裁决——按**那次工具调用**记（请求与答复两头都带 `call`，配对键就是它）。 */
-  const pendingDecisions = new Set<number>()
 
   /**
    * **此刻这一轮长什么样**（U49）——**接回快照**的取材（设计 · 状态可信度、独占与重新连接 ③）。
@@ -217,8 +214,6 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     thinkingTrimmed: false,
     /** 在飞的工具调用（有 `tool.call`、还没有 `tool.result`）——输出按**末尾一截**攒。 */
     tools: new Map<number, LiveTool>(),
-    /** 还挂着的裁决卡（有请求、还没答复）——答复了／轮收束了就撤。 */
-    decisions: new Map<number, SnapshotDecision>(),
     /** 最近一次可确认进展与最近一次输出（与管理者那一侧同一份口径）。 */
     progress: undefined as { readonly at: number; readonly what: string } | undefined,
     output: undefined as { readonly at: number; readonly sample: string } | undefined,
@@ -263,16 +258,10 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
         at: tool.at,
         output: tool.output.split('\n').slice(-SNAPSHOT_OUTPUT_LINES),
       })),
-      decisions: [...live.decisions.values()],
       ...(live.progress === undefined ? {} : { progress: live.progress }),
       ...(live.output === undefined ? {} : { output: live.output }),
       ...(live.model === undefined ? {} : { model: live.model }),
       ...(live.window === undefined ? {} : { window: live.window }),
-      // **这一代的它**（U73）——**由这一代自己报**，不押窗口那一侧的 argv：
-      // 挂上一条**已经活着**的那一代时，那一代带的是它起手带的那个布尔，与此刻这个窗口
-      // 敲的命令行无关（同一个会话可能正被两个窗口看着）。窗口据它画状态行那一格——
-      // 「报的是闸门此刻真的怎么判」，不是「我以为我带没带那个参数」。
-      ...(options.allowAll === true ? { allowAll: true } : {}),
     }
   }
 
@@ -301,27 +290,14 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
         live.turnOpen = true
         resetStream()
         live.tools.clear()
-        live.decisions.clear()
         return
 
       case 'turn.end': {
         live.turnOpen = false
         resetStream()
         live.tools.clear()
-        live.decisions.clear()
-        /**
-         * **轮收束 ⇒ 悬着的裁决作废**——与外壳那一侧**同一个口径**（`view.ts` 的
-         * `turn.end`：「悬着的裁决作废（那件工具跑不成了）：撤卡 ＋ 归还草稿」）。
-         *
-         * ⚠️ **不清这一下，会漏一个永远收不掉的执行者**（实测跑出来的）：卡挂在半路、
-         * 这一轮被中断（Ctrl+C）或出错时，**裁决答复那一条事件不会来**——于是这个集合里
-         * 那一格永远留着，而「有在途调用或待答项」是**不收**的一条判据 ⇒ 它就此钉在那儿，
-         * 管理者也跟着不走（它以为手上还压着一件待办）。
-         *
-         * 清了之后设计那一条不受影响：**卡还挂着**的时候这一轮没结束，`turn.end` 就不会来
-         * ——「等待用户的有效工作可保留事件阻塞的执行者」照旧成立。
-         */
-        pendingDecisions.clear()
+        // 轮收束 ⇒ 还没答的 sudo 认证作废（命令不再启动）
+        sudo.cancelAll()
         return
       }
 
@@ -367,25 +343,6 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
         live.tools.delete(event.data.call)
         return
 
-      case 'tool.decision.request':
-        pendingDecisions.add(event.data.call)
-        live.decisions.set(event.id, {
-          id: event.id,
-          call: event.data.call,
-          name: event.data.name,
-          material: event.data.material,
-          weight: event.data.weight,
-          ...(event.data.external === true ? { external: true } : {}),
-        })
-        return
-
-      case 'tool.decision':
-        pendingDecisions.delete(event.data.call)
-        for (const [id, one] of live.decisions) {
-          if (one.call === event.data.call) live.decisions.delete(id)
-        }
-        return
-
       default:
         return
     }
@@ -397,7 +354,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   /** 合并相邻事件后再确认无责任，避免当前调用链尚未派完就释放进程。 */
   function considerShrink(): void {
     if (closing) return
-    if (busy || assembly.hasPendingInput() || live.turnOpen || pendingDecisions.size > 0 || (assembly.background?.running().length ?? 0) > 0) {
+    if (busy || assembly.hasPendingInput() || live.turnOpen || (assembly.background?.running().length ?? 0) > 0) {
       if (shrinkTimer !== undefined) {
         clearTimeout(shrinkTimer)
         shrinkTimer = undefined
@@ -408,7 +365,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
 
     shrinkTimer = setTimeout(() => {
       shrinkTimer = undefined
-      if (closing || busy || assembly.hasPendingInput() || live.turnOpen || pendingDecisions.size > 0 || (assembly.background?.running().length ?? 0) > 0) return
+      if (closing || busy || assembly.hasPendingInput() || live.turnOpen || (assembly.background?.running().length ?? 0) > 0) return
 
       // **持久化状态后释放**（设计 · 收缩）：收尾那两跳里就有「把没落完的落完」
       // ——故它是释放，不是丢下。

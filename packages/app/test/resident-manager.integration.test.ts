@@ -88,7 +88,7 @@ for (const recognition of ['bound', 'event.session', 'session.state.active'] as 
         kind: 'agent.state', data: { state: 'waiting' } }
       executor.send({ t: 'ev', event: buffered })
       const snapshotRequest = requests.find((message) => message.t === 'snapshot')!
-      const snapshot: RunSnapshot = { watermark: 1, turnOpen: false, tools: [], decisions: [] }
+      const snapshot: RunSnapshot = { watermark: 1, turnOpen: false, tools: [] }
       executor.send({ t: 'snapshot', seq: snapshotRequest.seq, snapshot })
       await waitFor(() => resumed.length === 1 && received.some((event) => event.id === 2))
       // 快照回执是处理屏障；旧实现红在实际 target 值，不靠等 target 超时。

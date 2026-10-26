@@ -39,7 +39,7 @@ if (process.argv.includes('--terminal')) {
     if (call.index === 1) return { text: 'evidence.txt:1 给出初始化证据-426。建议对照注册顺序核对；当前文件可能变化，采纳前再读。尚未验证修复。' }
     await failure.promise
     return { text: '半截内容', finish: 'length' }
-  }, { allowAll: true })
+  })
   writeFileSync(join(f.workspace, 'evidence.txt'), '初始化证据-426')
   let ui: Awaited<ReturnType<typeof createUiSession>> | undefined
   const captures: string[] = []

@@ -271,7 +271,7 @@ test('同gen真实target认领保留快照缓存、Shell历史与草稿；客户
   const server = fakeApp(g)
   const client = (await connectManager(g.discovery.socket))!
   const targets: (string | null)[] = []
-  const snapshot: RunSnapshot = { watermark: 10, turnOpen: true, text: '正在输出的正文', tools: [], decisions: [] }
+  const snapshot: RunSnapshot = { watermark: 10, turnOpen: true, text: '正在输出的正文', tools: [] }
   const shell = createShell(clientTransport(client), { magicBase: '/test/.magic', resumed: { subscribe: (listener) => client.onResumed(listener) } })
   client.onTarget((session) => targets.push(session))
   try {

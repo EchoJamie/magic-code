@@ -14,33 +14,11 @@
 
 import { describe, expect, test } from 'bun:test'
 import { event } from './events.ts'
-import { dockHeightOf } from '../src/components/app.ts'
 import { createStage } from './screen.ts'
-import type { Cell, Frame, Stage } from './screen.ts'
+import type { Frame } from './screen.ts'
+import { collaborationFixture } from './collaboration-fixture.ts'
 
 const WIDE = { columns: 200, rows: 40 } as const
-
-/**
- * 一条挂着裁决的现场——`weight` 决定轻 / 重（黄线 / 红线 · `a` 给不给）。
- *
- * ⚠️ `draft` 是**接管之前**打好的草稿——顺序要紧：接管挂上之后打的字**本来就该被拒**
- * （「先答复」那条兜底），拿那时候的输入当「草稿」是测错了对象。
- */
-function asked(weight: 'light' | 'heavy' = 'light', draft = ''): Stage {
-  const stage = createStage()
-  if (draft !== '') stage.type(draft)
-
-  stage.feed([
-    event('tool.call', { name: weight === 'heavy' ? '覆盖写' : '跑测试', args: {} }, { id: 71 }),
-    event(
-      'tool.decision.request',
-      { call: 71, name: weight === 'heavy' ? '覆盖写' : '跑测试', material: '命令 bun test', weight },
-      { id: 88 },
-    ),
-  ])
-
-  return stage
-}
 
 /**
  * **输入行那句话**在不在这几行里——问的是「占位换成了哪一句」。
@@ -57,16 +35,6 @@ function asked(weight: 'light' | 'heavy' = 'light', draft = ''): Stage {
  */
 const saysInComposer = (frame: Frame, text: string): boolean =>
   frame.dock.some((line) => line.text.replace(/\s+/gu, ' ').includes(`› ${text}`))
-
-/** 一行的第 `col` 格——行找不到会当场抛（带整屏）。 */
-function cellAt(frame: Frame, needle: string, col: number): Cell | undefined {
-  return frame.cellsOf(frame.rowOf(needle))[col]
-}
-
-/** 屏上 `needle` 出现几次（「只出现一次」那类判据用它）。 */
-function count(frame: Frame, needle: string): number {
-  return frame.screen.lines.filter((line) => line.includes(needle)).length
-}
 
 // ══ 五 · 状态行（栏位固定，不随状态漂）═══════════════════════════════
 
@@ -144,7 +112,15 @@ describe('状态行 · 栏位固定', () => {
     working.feed([event('turn.start', {})])
     expect((await working.screen(WIDE)).statusLine).toContain('● 工作中')
 
-    const waiting = asked()
+    const waiting = createStage()
+    waiting.feed([
+      event('collaboration.view', {
+        ...collaborationFixture,
+        members: collaborationFixture.members.map((member, index) =>
+          index === 0 ? { ...member, pendingDecisions: 1 } : member,
+        ),
+      }),
+    ])
     expect((await waiting.screen(WIDE)).statusLine).toContain('◊ 等你定夺') // U112：等你与工作中**分形状**
 
     const retrying = createStage()
@@ -171,151 +147,6 @@ describe('状态行 · 栏位固定', () => {
     //    「换模型」这件事在屏上只剩记录区那一行回执——下面那条就是它的落点。
     // ⚠️ **U112 换形**：回执行不再以 `· ` 起头（那个字形只做行内分隔），改靠**缩进一级 ＋ 最弱色**
     expect(frame.record.some((line) => line.text === '  已选择 Default')).toBe(true)
-  })
-})
-
-// ══ 六 · 裁决卡 ══════════════════════════════════════════════════════
-
-describe('裁决卡 · 不套框 · 键位只出现一次 · 必闸类划掉', () => {
-  test('**不套框**——只有左边一条竖线，轻黄 · 重红', async () => {
-    const light = await asked('light').screen(WIDE)
-    const heavy = await asked('heavy').screen(WIDE)
-
-    // 卡那几行都以左竖线起头，且**只有这一条**（没有右竖线、没有上下横边）
-    const bars = (frame: Frame) => frame.screen.lines.filter((line) => line.includes('│'))
-    for (const frame of [light, heavy]) {
-      const rows = bars(frame)
-      expect(rows.length).toBeGreaterThanOrEqual(3) // 标题 · 材料 · 键位
-      expect(rows.every((line) => line.trimStart().startsWith('│'))).toBe(true)
-      expect(frame.screen.lines.some((line) => /[┌┐└┘├┤┬┴┼╭╮╰╯]/.test(line))).toBe(false)
-    }
-
-    // 竖线**着色**（这就是「不套框但仍有轻重之分」的落法）
-    expect(cellAt(light, '│ 跑测试 · 待决策', 1)).toMatchObject({ text: '│', fg: '#e5c07b' })
-    expect(cellAt(heavy, '│ 覆盖写 · 待决策', 1)).toMatchObject({ text: '│', fg: '#e06c75' })
-    // 标题也吃这个色（轻 / 重一眼可分）——第 0 格是左内边距、第 1 格是竖线、第 2 格是它后面的空格
-    expect(cellAt(light, '│ 跑测试 · 待决策', 3)).toMatchObject({ text: '跑', fg: '#e5c07b' })
-    expect(cellAt(heavy, '│ 覆盖写 · 待决策', 3)).toMatchObject({ text: '覆', fg: '#e06c75' })
-  })
-
-  test('**键位只出现一次**（在卡上）——接管态**不画输入提示行**（D29）', async () => {
-    const frame = await asked('light').screen(WIDE)
-
-    expect(count(frame, '批准')).toBe(1)
-    expect(count(frame, '本工作区总是允许')).toBe(1)
-    expect(count(frame, '拒绝')).toBe(1)
-    // 原锚＝`saysInComposer(frame, '等你的答复')`（接管那行占位，D29 整行收走）。
-    // 新锚：交互区里**没有输入行**，键位只在卡上那一处。
-    expect(frame.dock.some((line) => line.text.trimStart().startsWith('›'))).toBe(false)
-    expect(count(frame, '等你的答复')).toBe(0)
-  })
-
-  /**
-   * **账与屏同源**——`dockHeightOf` 给活动区算预算、`dockOf` 照着画，两处差一行，
-   * 矮窗上动态帧就顶满终端 ⇒ Ink 省掉末尾换行 ⇒ **真光标高一行**（U31 三轮那条老病）。
-   * 材料宽过窗时，两处都得按**实际折了几行**记。
-   */
-  test('**账与屏一致**——接管态画出来的行数 ＝ `dockHeightOf` 数的那几行', async () => {
-    const material = `影响面：${'很长的一段说明'.repeat(12)}`
-    const stage = createStage()
-    stage.feed([
-      event('tool.call', { name: 'write', args: {} }, { id: 71 }),
-      event('tool.decision.request', { call: 71, name: 'write', material, weight: 'heavy' }, { id: 88 }),
-    ])
-    const view = stage.shell.getView()
-
-    for (const columns of [200, 100]) {
-      const frame = await stage.screen({ columns, rows: 40 })
-
-      // **U59 起两边都只数交互区**（卡 ＋ 闪一句）：下沿那条线挪到「输入区与状态行之间」之后，
-      // `frame.dock` 切到下线为止、不含状态行，`dockHeightOf` 数的也还是这些行——**不必再 `+1`**
-      expect(frame.dock.length).toBe(dockHeightOf(view, columns, 40))
-    }
-  })
-
-  test('必闸类 **`a` 划掉**（不是藏起来）——轻的那件不划', async () => {
-    const heavy = await asked('heavy').screen(WIDE)
-    const light = await asked('light').screen(WIDE)
-
-    expect(heavy.has('总是允许')).toBe(false)
-    expect(light.has('本工作区总是允许此类操作')).toBe(true)
-    expect(heavy.has('○ 批准这一次')).toBe(true)
-    expect(heavy.has('○ 拒绝这一次')).toBe(true)
-  })
-})
-
-// ══ 七 · 输入接管（三条兜底 ＋ 多件逐件问）═══════════════════════════
-
-describe('输入接管', () => {
-  test('**看得见**——卡就在那儿、输入行被收走（草稿此刻不在屏上）', async () => {
-    const stage = asked('light', '打了一半')
-
-    const frame = await stage.screen(WIDE)
-
-    // 原锚＝那句占位（接管**看得见**这条兜底靠它，D29 整行收走）；**看得见**这条规格不变，
-    // 改由**卡本身**背书：材料 ＋ 键位 ＋ 状态行都在屏上。
-    expect(frame.has('│ 跑测试 · 待决策')).toBe(true)
-    expect(frame.has('○ 批准这一次')).toBe(true)
-    expect(frame.statusLine).toContain('◊ 等你定夺')
-    expect(frame.dock.some((line) => line.text.trimStart().startsWith('›'))).toBe(false)
-    expect(frame.has('打了一半')).toBe(false) // 收起来了，不是丢了（下一条把它要回来）
-  })
-
-  test('**草稿不丢**——答完原样归还、**不自动发送**', async () => {
-    const stage = asked('light', '打了一半')
-
-    stage.press({ kind: 'down' }); stage.press({ kind: 'enter' })
-    stage.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 900 })])
-
-    const frame = await stage.screen(WIDE)
-
-    expect(frame.dock.some((line) => line.text.includes('› 打了一半'))).toBe(true) // 归还
-    expect(frame.has('等你的答复')).toBe(false) // 接管解除
-    // **不自动发送**：记录区没有多出用户行，也没发过 `input.submit`
-    expect(frame.record.some((line) => line.text.startsWith('› 打了一半'))).toBe(false)
-    expect(stage.commands().some((command) => command.type === 'input.submit')).toBe(false)
-  })
-
-  test('**不静默吞键**——非答复键忽略，但当场说一句', async () => {
-    const stage = asked()
-    stage.press({ kind: 'char', char: 'x' })
-
-    const frame = await stage.screen(WIDE)
-
-    const said = frame.dock.find((line) => line.text.startsWith('▲'))
-    expect(said?.text).toContain('先答复')
-    expect(said?.text).toContain('「x」') // 说的是**哪一个键**（不静默 ≠ 只说一句套路话）
-    expect(frame.dock.some((line) => line.text.trimStart().startsWith('›'))).toBe(false) // 那一下没进草稿
-  })
-
-  test('`esc` **无动作**——屏上一格都不变', async () => {
-    const stage = asked()
-    const before = await stage.screen(WIDE)
-
-    stage.press({ kind: 'escape' })
-    const after = await stage.screen(WIDE)
-
-    expect(after.screen.lines).not.toEqual(before.screen.lines)
-    expect(stage.shell.getView().dock.kind).toBe('input')
-    expect(stage.commands().filter(command => command.type === 'decision.answer')).toEqual([])
-    stage.press({ kind: 'tab' })
-    expect((await stage.screen(WIDE)).dock.map(line => line.text)).toEqual(before.dock.map(line => line.text))
-  })
-
-  test('**多件逐件问**——件数报两处（卡上 · 底行），且**只有一张卡**', async () => {
-    const stage = createStage()
-    stage.feed([
-      event('tool.call', { name: 'write', args: {} }, { id: 71 }),
-      event('tool.call', { name: 'write', args: {} }, { id: 72 }),
-      event('tool.call', { name: 'write', args: {} }, { id: 73 }),
-      event('tool.decision.request', { call: 72, name: '整写文件', material: '目标 README.md', weight: 'light' }, { id: 88 }),
-    ])
-
-    const frame = await stage.screen(WIDE)
-
-    expect(frame.has('│ 整写文件 · 待决策 · 1/1')).toBe(true) // 报数之一：卡的标题
-    expect(frame.statusLine).toContain('◊ 等你定夺 1/1') // 报数之二：底行
-    expect(count(frame, '○ 批准这一次')).toBe(1) // 不并列、不堆积——你永远只面对一件
   })
 })
 
@@ -492,9 +323,7 @@ describe('slash 的两种走法', () => {
  * **新锚**：
  * - **空草稿**：真光标在占位那一行的第 3 列（左留白 1 ＋ `› ` 2 列）——落点不变，
  *   只是由终端自己画；那一行**不再有反色格**；
- * - **有草稿**：真光标紧跟在草稿末尾之后（`1 ＋ 2 ＋ 草稿的显示宽度`）；
- * - **接管中**（裁决挂着）：**没有插入点** ⇒ 真光标不在输入行上（藏起来），
- *   屏上也没有反色格。
+ * - **有草稿**：真光标紧跟在草稿末尾之后（`1 ＋ 2 ＋ 草稿的显示宽度`）。
  */
 describe('输入行 · 光标落在哪', () => {
   test('**空草稿**：真光标在 `› ` 之后、**占位之前**——不在灰字后面', async () => {
@@ -521,12 +350,4 @@ describe('输入行 · 光标落在哪', () => {
     expect(frame.rawCellsOf(row).some((cell) => cell.inverse)).toBe(false)
   })
 
-  test('**接管中**——输入行让位，真光标不留在屏上冒充落点', async () => {
-    const frame = await asked('light', '草稿').screen(WIDE)
-
-    // 原锚＝`rowOf('等你的答复')` 那一行不是光标所在行（D29 那一行整个没了，`rowOf` 会当场抛）。
-    // 新锚与**抽屉接管**同一姿势（见下一节「抽屉开着」那条）：输入行不在 ⇒ 真光标送回帧下。
-    expect(frame.dock.some((line) => line.text.trimStart().startsWith('›'))).toBe(false)
-    expect(frame.screen.cursor.y).toBeGreaterThan(frame.rowOf('◊ 等你定夺'))
-  })
 })

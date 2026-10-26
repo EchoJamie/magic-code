@@ -657,14 +657,6 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
   const provider = providerId === undefined ? undefined : providers[providerId]
   const agentRoles = raw['agentRoles'] === undefined ? undefined : asAgentRoles(raw['agentRoles'], path, home)
 
-  // 权限段（阶段 2）：`rules` 的值**原样带过**——条目形态的权威是权限域的 `parseRules`
-  // （连「整个值不是数组」都由它给缘由），故加载器**不在这里另做一套校验**，只把它递下去。
-  // ⚠️ 漏带＝配置里写了规则而闸门一条也收不到——**静默失效**（U14 合入后第一次接线就踩过，
-  // 由 app 的权限用例当场抓住）。故这一段有测试钉着，别顺手删。
-  const permissions = raw['permissions'] === undefined
-    ? undefined
-    : asObject(raw['permissions'], path, 'permissions')
-
   // 工作区根列表（阶段 3）——形制与 `~` 展开在此判、语义归执行域（见 `asWorkspaceRoots` 头注）。
   // ⚠️ **漏带＝静默失效**（同上面权限段那条教训）：配置里写了多根而这里不接，
   // 工作区就悄悄退回启动目录单根——**且不报错**，用户对着一个少了一半的作用域发呆。
@@ -710,7 +702,6 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
       ...(configuredModels === undefined ? {} : { models: configuredModels }),
       providers,
       ...(web === undefined ? {} : { web }),
-      ...(permissions === undefined ? {} : { permissions: { rules: permissions['rules'] } }),
       ...(workspaceRoots === undefined ? {} : { workspaceRoots }),
       ...(ruleSources === undefined && ruleLinkSources === undefined
         ? {}

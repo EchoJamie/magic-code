@@ -21,13 +21,11 @@ export function settingsAction(v: unknown): boolean {
     case 'role.save': return text(v.id) && object(v.role)
     case 'role.remove': return text(v.id)
     case 'workspace.set': return v.roots === null || strings(v.roots)
-    case 'permissions.set': return Array.isArray(v.rules)
-    case 'grants.revoke': return text(v.workspace) && optional(v.index, x => typeof x === 'number' && Number.isInteger(x) && x >= 0) && (v.grantStamp === null || text(v.grantStamp))
     default: return false
   }
 }
 export function settingsSnapshot(v: unknown): boolean {
-  return object(v) && text(v.configPath) && text(v.base) && (v.stamp === null || text(v.stamp)) && object(v.configuration) && object(v.preview) && ['catalog', 'vendors', 'sources', 'grants'].every(k => Array.isArray(v[k])) && (v.grantStamp === null || text(v.grantStamp))
+  return object(v) && text(v.configPath) && text(v.base) && (v.stamp === null || text(v.stamp)) && object(v.configuration) && object(v.preview) && ['catalog', 'vendors', 'sources'].every(k => Array.isArray(v[k]))
 }
 
 export function settingsRequest(v: unknown): boolean {

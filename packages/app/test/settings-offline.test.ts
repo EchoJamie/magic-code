@@ -76,28 +76,18 @@ test('断连 TUI 可读、选、清除网页服务引用；删除被引用的连
   } finally { shell.dispose(); g.close() }
 })
 
-test('断连 TUI 可查询并撤销授权、保存偏好，普通草稿保留且不创建业务库', async () => {
+test('断连 TUI 可保存偏好，普通草稿保留且不创建业务库', async () => {
   const g = ground(), workspace = createWorkspaceService({ roots: [g.home] })
   const forwarded: Command[] = [], events: KernelEvent[] = []
   const transport = terminalSettings({ send(command) { forwarded.push(command) }, subscribe() { return () => {} } }, { home: g.home, base: g.base }, workspace)
   transport.subscribe(event => events.push(event))
   const shell = createShell(transport, { magicBase: g.base })
-  const grantsPath = join(g.base, 'grants.json')
-  writeFileSync(grantsPath, JSON.stringify({ version: 1, workspaces: { [workspace.defaultRoot()]: [{ tool: 'web_fetch', host: 'example.com', grantedAt: 1 }] } }))
   try {
     shell.releaseInput(); shell.hostGone()
-    shell.key({ kind: 'paste', text: '/grants ' }); shell.key({ kind: 'enter' })
-    await waitFor(() => shell.getView().dock.kind === 'picker')
-    const catalog = events.find(event => event.kind === 'grants.catalog')!
-    expect(catalog.kind === 'grants.catalog' && catalog.data.grants).toHaveLength(1)
-    expect(catalog.data).not.toHaveProperty('decisions'); expect(catalog.data).not.toHaveProperty('history')
-    transport.send({ type: 'grants.revoke', index: 0 })
-    await waitFor(() => events.filter(event => event.kind === 'grants.catalog').length === 2)
-    expect(JSON.parse(readFileSync(grantsPath, 'utf8')).workspaces[workspace.defaultRoot()]).toBeUndefined()
     transport.send({ type: 'prefs.set', reducedMotion: true })
     await waitFor(() => events.some(event => event.kind === 'prefs.state'))
     expect(JSON.parse(readFileSync(g.configPath, 'utf8')).motion.reduced).toBe(true)
-    shell.key({ kind: 'escape' }); shell.key({ kind: 'paste', text: '重连之前不发送' }); shell.key({ kind: 'enter' })
+    shell.key({ kind: 'paste', text: '重连之前不发送' }); shell.key({ kind: 'enter' })
     expect(shell.getView().draft).toBe('重连之前不发送')
     expect(forwarded.filter(command => command.type === 'input.submit')).toEqual([])
     expect(existsSync(join(g.base, 'records.db'))).toBe(false)

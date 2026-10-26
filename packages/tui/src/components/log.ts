@@ -947,7 +947,7 @@ function toolLines(
    */
   if (running) {
     // **等裁决**与**失联**都不报那一条读数：前者是「人在想」，后者是「不知道」
-    if (row.awaitingDecision === true || lost) return [...head, ...body]
+    if (lost) return [...head, ...body]
 
     // **跑动中报真秒数**——起算时刻（`startedAt`：发起，或者**批准那一刻**——见
     // `view.ts` 的 `reduceVerdict`）到此刻，`now` 由活壳给 ⇒ 这一个是**量出来的**，
@@ -1039,7 +1039,7 @@ function statusBit(
   if (running) {
     return {
       mark: MARKS.dot,
-      color: now === null || row.awaitingDecision === true ? PALETTE.dim : breathColor(PALETTE.dim, breathOf(now)),
+      color: now === null ? PALETTE.dim : breathColor(PALETTE.dim, breathOf(now)),
     }
   }
 
@@ -1335,7 +1335,7 @@ const DIFF_PREVIEW = 16
  *
  * ⚠️ 起算时刻不是「发起」那么简单了（U66）：人工批准那一档，它被挪到**批准那一刻**
  * ——故这个数就是**真跑的那一段**（见 `view.ts` 的 `reduceVerdict`）。
- * **在等裁决的行根本走不到这儿**（`toolLines` 先按 `awaitingDecision` 停表）。
+
  */
 function liveClock(row: Extract<LogRow, { kind: 'tool' }>, now: number | null): string | null {
   if (now === null || row.startedAt === null) return null

@@ -8,7 +8,7 @@
  *   ——同一张图拿同一个号，`@` 选进来的那张也一样）；
  * - **没取到** ⇒ **不产生块** ＋ **落一句回执**（这一条是**反向判据**：改之前按下去
  *   什么都不发生，屏上一个字都没有）；
- * - **分寸与文本粘贴同一套**：接管着（裁决卡）不收、抽屉开着不收。
+ * - **分寸与文本粘贴同一套**：抽屉开着不收。
  *
  * 走的是**真按键 → 外壳**那条路（与真终端同形）；「那一张真到了模型那一头」在
  * `packages/app/scripts/verify/clipboard-images.ts`（那边才有真装配、真出站请求体与真屏）。
@@ -153,21 +153,6 @@ describe('剪贴板取图', () => {
     expect(
       receiptOf(stage, '剪贴板里没有图（只有文字或文件那一类）——复制一张图，或直接用 @ 引用一个图片文件。'),
     ).toBe(true)
-  })
-
-  test('**接管着（裁决卡）不收**：按下去只说一句话，不发命令、不动草稿', () => {
-    const stage = createStage({ inputReady: true })
-    // 一张待答的裁决卡（带材料与轻重）——它一挂上，输入区就归它
-    stage.feed([
-      event('tool.decision.request', { call: 71, name: 'exec', material: 'ls -la', weight: 'light' }, { id: 88 }),
-    ] as readonly KernelEvent[])
-    expect(stage.shell.getView().dock.kind).toBe('decision')
-
-    stage.press(CTRL_V)
-
-    expect(asks(stage)).toBe(0)
-    // 接管期间那一句走的是**那一刻回执**（`flash`，裁决卡上那一行），与文本粘贴同一处置
-    expect(stage.shell.getView().flash).toBe('先答复——此刻贴不了图（这一轮在等你）。答完接着贴。')
   })
 
   test('**抽屉开着不收**（`@` 那一栏开着时，取图不能从旁路插一刀）', () => {

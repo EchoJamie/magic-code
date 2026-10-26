@@ -77,13 +77,12 @@ describe('接回（真窗口）', () => {
     }
   }, 150_000)
 
-  test('两个窗口看同一条会话：一张卡只答一次，答完另一处**当场撤掉**', async () => {
+  test('两个窗口看同一条会话：默认放行的工具只真跑一次', async () => {
     const runs = tempDir('magic-u49-decide-runs-')
-    // chmod 会要求审批；批准后仅修改隔离工作区权限并输出记号，验证跨窗只执行一次。
     const fixture = startFixture({
       turns: [
-        { kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 . && echo u49-只跑一次' } },
-        { kind: 'text', text: '跑完了' },
+        { kind: 'tool', name: 'exec', args: { cmd: 'printf u49-只跑一次' } },
+        { kind: 'text', text: '收工收工' },
       ],
     })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
@@ -95,39 +94,23 @@ describe('接回（真窗口）', () => {
       windows.push(one)
 
       await one.send('跑一条命令', { until: { text: '跑一条命令' }, timeoutMs: 10_000 })
-      // 审批自动展开，无默认批准；两个窗口都应呈现同一待答事项。
-      await one.key('enter', { until: { text: '批准这一次' }, timeoutMs: 20_000 })
+      await one.key('enter', { until: { text: 'u49-只跑一次' }, timeoutMs: 20_000 })
 
-      // 第二扇窗接回同一条会话——那一张卡**也在它屏上**（快照带回来的「待答项」）
-      const two = await createUiSession({ label: '乙窗', artifacts: runs, sandbox, fixture })
+      const db = readDatabase(join(sandbox.dataDir, 'records.db'))
+      let session: string
+      try { session = db.sessions[0]!.id } finally { db.close() }
+
+      // 第二扇窗接回同一条会话——看到的仍是同一条事实，不是另起一次执行。
+      const two = await createUiSession({ label: '乙窗', artifacts: runs, sandbox, fixture, argv: ['resume', session] })
       windows.push(two)
-
-      await two.send('/resume ', { until: { text: '/resume' }, timeoutMs: 10_000 })
-      await two.key('enter', { until: { text: '打字筛' }, timeoutMs: 20_000 })
-
-      // 列表上那一条写着「需要你」（U49 的第一段）
-      const asking = await two.capture({ label: '01-列表上那一条在等你' })
-      expect(asking.text).toContain('需要你')
-
-      await two.key('enter')
-      await two.wait({ text: '批准这一次' }, { timeoutMs: 20_000 })
+      await two.wait({ text: 'u49-只跑一次' }, { timeoutMs: 20_000 })
+      await two.wait({ text: '○ 空闲' })
 
       expect(host.executorStarts()).toBe(1)
-      const both = await two.capture({ label: '01-两个窗口都挂着这张卡' })
-      expect(both.text).toContain('批准这一次')
-
-      // **甲窗答复**——乙窗那张卡应当**当场撤掉**（同一件事实，两个窗口各画一份）
-      await one.key('down', { until: { text: '› 批准这一次' } })
-      await one.key('enter')
-      await two.wait({ absent: '批准这一次' }, { timeoutMs: 20_000 })
-
-      const gone = await two.capture({ label: '02-另一处已撤掉' })
-      expect(gone.text).not.toContain('批准这一次')
-      // 而那一件工具**真跑了一次**（结果在屏上）
-      await two.wait({ text: 'u49-只跑一次' }, { timeoutMs: 20_000 })
-
-      await two.wait({ text: '○ 空闲' })
       expect(fixture.requests().length).toBe(2)
+      const seen = await two.capture({ label: '02-接回之后' })
+      const calls = seen.history.join('\n').match(/✓ exec\(printf/g)?.length ?? 0
+      expect(calls).toBe(1)
     } finally {
       for (const window of windows) await window.close().catch(() => {})
       try { await host.close() } finally {

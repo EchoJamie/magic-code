@@ -61,7 +61,7 @@ function setup(rolePatch: Partial<AgentRoleConfig> = {}, image?: boolean) {
   const { agent, delegation } = store.collaboration.spawn(coordinator.agentId, { operationId: 'spawn', sessionId: 'member', name: '成员', role: 'reader', responsibility: 'PERSISTED_RESPONSIBILITY', model: { choice: 'default', provider: 'mm', model: 'member-model', protocol: 'chat-completions', endpoint: providers.mm.baseURL, reasoning: { mode: 'default' } }, body: [{ kind: 'text', text: '按职责审查' }], scope: '只读工作', source: origin, authorization: [origin], at: 4 })
   store.collaboration.respondToDelegation(agent.agentId, { operationId: 'accept', delegationId: delegation.delegationId, response: 'accept', at: 5 })
   const open = (session = 'member', coordinate = true, collaborationChanged?: () => void) => assemble({
-    cwd: changed, session, magic, config: loadConfig({ path: configPath, magic }), allowAll: true,
+    cwd: changed, session, magic, config: loadConfig({ path: configPath, magic }),
     collaborationChanged,
     ...(coordinate ? { collaboration: async (): Promise<CollaborationReply> => ({ ok: false, reason: '本用例不发送协作请求' }) } : {}),
   })
@@ -179,7 +179,7 @@ describe('成员主机装配', () => {
     })
   }
 
-  test('即使绕过协作循环准入和 allowAll，隐藏的 write 也不能执行', async () => {
+  test('即使绕过协作循环准入，隐藏的 write 也不能执行', async () => {
     const f = setup()
     const app = f.open('member', false)
     const shell = attachShell(app.shell)

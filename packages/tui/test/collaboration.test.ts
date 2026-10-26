@@ -186,28 +186,6 @@ test('从成员设置编辑全局档位时，焦点和当前标记取该映射�
   expect(app.spy.commands.at(-1)).toEqual({ type: 'model.configure', choice: 'cantrip', ...mapping })
 })
 
-test('不同成员审批逐份排队；重复通知与重复按键不重复裁决；答完返回阅读位置', () => {
-  const app = collaborationStage()
-  app.member(); app.pick('records'); app.shell.key({ kind: 'readerTop', top: 5 })
-  const ask = event('tool.decision.request', { call: 50, name: 'exec', material: '修改回调', weight: 'light' }, { id: 100, session: 'member' })
-  app.spy.emit(ask); app.spy.emit(ask)
-  app.spy.emit(event('tool.decision.request', { call: 51, name: 'write', material: '更新说明', weight: 'light' }, { id: 101, session: 'origin' }))
-  expect(app.screen()).toContain('实现 · exec')
-  app.key('escape'); expect(app.shell.getView().dock.kind).toBe('picker')
-  app.key('tab'); expect(app.shell.getView().dock.kind).toBe('decision')
-  app.spy.emit(event('turn.end', { reason: 'settled' }, { session: 'origin' }))
-  expect(app.shell.getView().dock.kind).toBe('decision')
-  app.shell.key({kind:'down'}); app.shell.key({kind:'enter'}); app.shell.key({kind:'enter'})
-  expect(app.spy.commands.filter((one) => one.type === 'decision.answer')).toHaveLength(1)
-  app.spy.emit(event('tool.decision', { call: 50, decision: 'approve', decider: 'user', elapsedMs: 1 }, { session: 'member' }))
-  expect(app.shell.getView().dock.kind).toBe('picker')
-  expect(app.shell.getView().dock.kind).toBe('picker') // root turn.end 使该卡失效
-  app.spy.emit(event('tool.decision', { call: 51, decision: 'reject', decider: 'user', elapsedMs: 1 }, { session: 'origin' }))
-  const dock = app.shell.getView().dock
-  expect(dock.kind === 'picker' && dock.picker.reader?.top).toBe(5)
-  expect(app.shell.getView().status.state).toBe('working') // 成员仍有真实 runtime
-})
-
 test('等待查询时取消保留草稿，晚到快照不重新打开成员界面', () => {
   const spy = createSpyTransport()
   const shell = createShell(spy.transport, { magicBase: '/test/.magic' })
@@ -273,56 +251,11 @@ test('入口退出只恢复入口的未接收输入，不提前恢复成员仍�
   expect(app.shell.getView().draft).toBe('入口未接收输入')
 })
 
-test('入口 detached 不撤成员审批，答完仍回原阅读位置与各自草稿', () => {
-  let detached: (why: string) => void = () => {}
-  const app = collaborationStage({ detached: listener => { detached = listener } })
-  app.text('整体草稿')
-  app.member(); app.pick('input'); app.text('成员草稿')
-  app.member(); app.pick('records'); app.shell.key({ kind: 'readerTop', top: 5 })
-  const ask = event('tool.decision.request', { call: 50, name: 'exec', material: '成员校验', weight: 'light' }, { id: 100, session: 'member' })
-  const rootAsk = event('tool.decision.request', { call: 51, name: 'write', material: '入口修改', weight: 'light' }, { id: 101, session: 'origin' })
-  app.spy.emit(ask); app.spy.emit(rootAsk)
-  detached('入口这一代执行者已退出')
-  const dock = app.shell.getView().dock
-  expect(dock.kind === 'decision' && dock.pending.id).toBe(100)
-  expect(app.shell.getView().sessionId).toBe('origin')
-  expect(app.shell.getView().inputMember).toBe('worker')
-  app.spy.emit(ask); app.spy.emit(rootAsk)
-  app.shell.key({kind:'down'}); app.shell.key({kind:'enter'}); app.shell.key({kind:'enter'})
-  expect(app.spy.commands.filter(one => one.type === 'decision.answer')).toEqual([{ type: 'decision.answer', id: 100, decision: 'approve' }])
-  app.spy.emit(event('tool.decision', { call: 50, decision: 'approve', decider: 'user', elapsedMs: 1 }, { session: 'member' }))
-  const reader = app.shell.getView().dock
-  expect(reader.kind === 'picker' && reader.picker.reader?.top).toBe(5)
-  expect(app.shell.getView().draft).toBe('成员草稿')
-  app.key('escape'); app.key('tab'); app.pick('whole')
-  expect(app.shell.getView().draft).toBe('整体草稿')
-})
-
-test('入口审批失效后接续成员审批，selectedSession 只读重发不重置输入目标', () => {
-  let detached: (why: string) => void = () => {}
-  const app = collaborationStage({ detached: listener => { detached = listener } })
-  app.member(); app.pick('input'); app.text('成员待发送')
-  app.spy.emit(event('tool.decision.request', { call: 60, name: 'write', material: '入口修改', weight: 'light' }, { id: 110, session: 'origin' }))
-  app.spy.emit(event('tool.decision.request', { call: 61, name: 'exec', material: '成员校验', weight: 'light' }, { id: 111, session: 'member' }))
-  detached('入口已核销，当前选择仍在')
-  app.spy.emit(event('session.state', { active: 'origin', sessions: [{ archived: false, id: 'origin', at: 0 }] }, { session: 'origin' }))
-  app.spy.emit(event('collaboration.view', collaborationFixture))
-  const dock = app.shell.getView().dock
-  expect(dock.kind === 'decision' && dock.pending.id).toBe(111)
-  expect(app.shell.getView().inputMember).toBe('worker')
-  app.shell.key({kind:'down'}); app.shell.key({kind:'enter'})
-  expect(app.spy.commands.filter(one => one.type === 'decision.answer')).toEqual([{ type: 'decision.answer', id: 111, decision: 'approve' }])
-  expect(app.spy.commands.some(one => one.type === 'input.submit' || one.type === 'collaboration.input' || one.type === 'session.open')).toBe(false)
-})
-
-test('宿主退出清掉协作失效审批，明确重开保留目标草稿且不自动发送', async () => {
+test('宿主退出后明确重开保留目标草稿且不自动发送', async () => {
   let opens = 0
   const app = collaborationStage({ reopen: async () => { opens++ } })
   app.text('整体保留稿'); app.member(); app.pick('input'); app.text('成员保留稿')
-  const ask = event('tool.decision.request', { call: 70, name: 'exec', material: '旧成员操作', weight: 'light' }, { id: 120, session: 'member' })
-  app.spy.emit(ask)
   app.shell.hostGone()
-  app.spy.emit(ask)
   app.key('enter')
   expect(app.shell.getView().dock.kind).toBe('input')
   expect(app.shell.getView().draft).toBe('成员保留稿')
@@ -332,11 +265,7 @@ test('宿主退出清掉协作失效审批，明确重开保留目标草稿且�
   await Bun.sleep(0)
   expect(opens).toBe(1)
   expect(app.spy.commands.filter(one => one.type === 'history.read')).toHaveLength(2)
-  expect(app.spy.commands.some(one => one.type === 'input.submit' || one.type === 'collaboration.input' || one.type === 'decision.answer')).toBe(false)
-  app.member(); app.pick('input')
-  app.spy.emit(event('tool.decision.request', { call: 71, name: 'exec', material: '新成员操作', weight: 'light' }, { id: 121, session: 'member' }))
-  expect(app.screen()).toContain('新成员操作')
-  app.spy.emit(event('tool.decision', { call: 71, decision: 'reject', decider: 'user', elapsedMs: 1 }, { session: 'member' }))
+  expect(app.spy.commands.some(one => one.type === 'input.submit' || one.type === 'collaboration.input')).toBe(false)
   expect(app.shell.getView().draft).toBe('成员保留稿')
   app.key('tab'); app.pick('whole')
   expect(app.shell.getView().draft).toBe('整体保留稿')

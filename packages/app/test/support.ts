@@ -56,9 +56,9 @@ export type StageAssembleOptions = Omit<AssembleOptions, 'cwd' | 'config' | 'mag
   readonly stepDelayMs?: number
 }
 
-/** 沙地的可调项——目前只有配置：权限规则等用例要在**真配置**里加键。 */
+/** 沙地的可调项——目前只有配置。 */
 export type StageOptions = {
-  /** 配置字段覆盖（形制照冻结的字面）——如 `{ permissions: { rules: [...] } }`。 */
+  /** 配置字段覆盖（形制照冻结的字面）。 */
   readonly config?: Record<string, unknown>
 }
 
@@ -84,18 +84,10 @@ export function makeStage(options: StageOptions = {}): Stage {
       const { turns = SMOKE_TURNS, stepDelayMs, ...rest } = options
       return assemble({
         cwd: workspace,
-        // **授权文件也落沙地**（U22）：缺省 `GRANTS_FILE` 是 `~/.magic/grants.json`——
-        // 那是**用户真的那份**。装配级用例默认全在沙地里跑（同 dataDir / 配置的姿势），
-        // 要另指别处就在 `options` 里覆盖（`...rest` 在后，覆盖得起）。
-        //
-        // ⚠️ 这一条是**踩出来的**：`U22` 头一轮漏了它，`permission.test.ts` 那条
-        // 「按 `a`」的用例直接把测试的临时工作区**写进了用户的真文件**（6 节全是
-        // `/private/var/folders/…/magic-app-*/ws`）——测试污染真实数据，是这一层总该防住的。
-        grantsFile: join(root, 'magic', 'grants.json'),
         // **家目录也落沙地**（U33）：用户那一类技能来源是 `<基础目录>/skills` 与
         // `<家目录>/.agents/skills`——不给这一条，每个 app 用例都会去扫**用户真的**
         // 那两个目录（读到了什么全看这台机器上装了什么，用例当场不可复现）。
-        // 与 `grantsFile` 同一条纪律：装配级用例一律沙地化，不碰真东西。
+        // 装配级用例一律沙地化，不碰真东西。
         //
         // **显式给基址而不是靠 `MAGIC_HOME`**（U42）：`magicAt(root)` 走的是同一个解析
         // 出口，但**空环境**——跑测试那个 shell 里万一设了 `MAGIC_HOME`，用例的落点

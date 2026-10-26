@@ -61,7 +61,7 @@ const runRow = (extra: Partial<RunRow> = {}): RunRow => ({
  *   「替用户选中第一项」正是设计明文禁的（「没有倒计时或自动确认」），故旧锚钉的行为
  *   恰恰是被撤掉的那一个。
  * - **新锚**：那一下开三选那一屏；**打开本身不停、不暂停、不退出**（一个命令都不发）；
- *   标题按打开那一刻的事实挑（在跑 / 待答两版）；菜单里再按一下只**返回**。
+ *   菜单里再按一下只**返回**。
  */
 describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本身不改变执行）', () => {
   /** 这一轮跑起来了（工具在跑 ⇒ 状态行报 `ctrl+c 停或离开`）。 */
@@ -70,21 +70,6 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     stage.feed([
       event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
       event('turn.start', {}),
-    ])
-
-    return stage
-  }
-
-  /** 一张挂着的裁决卡（工具在跑 ＋ 这一轮在等你答）。 */
-  const asked = (): Stage => {
-    const stage = createStage({ stop: () => {} })
-    stage.feed([
-      event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
-      event(
-        'tool.decision.request',
-        { call: 71, name: '跑测试', material: '命令 bun test', weight: 'light' },
-        { id: 88 },
-      ),
     ])
 
     return stage
@@ -109,19 +94,6 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     expect(frame.has(HINT_EXIT_ARMED)).toBe(false)
   })
 
-  test('待答时：标题改成「当前任务正在等待你」，且**照样不发中断**', async () => {
-    const stage = asked()
-
-    expect(stage.press(ARM).exit).toBe(false)
-    const frame = await stage.screen(WIDE)
-
-    expect(frame.has('当前任务正在等待你')).toBe(true)
-    expect(stage.commands()).toEqual([]) // **不替用户拒、也不替用户中断**
-    // 那张卡被这一屏压下去了（`←` / `esc` 返回时照原样摆回来，见下一条）。
-    // ⚠️ 锚用卡上那句键位（内置件是 `○ 批准这一次`）——**不是**标题或材料：那些是全屏都可能有的话
-    expect(frame.has('○ 批准这一次')).toBe(false)
-  })
-
   test('菜单里再按 Ctrl+C ⇒ **只返回**，不隐式执行任何一项', async () => {
     const stage = working()
     stage.press(ARM)
@@ -134,20 +106,6 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     expect(stage.stops()).toEqual([]) // 一个动作都没执行
     expect(stage.commands()).toEqual([])
     expect(stage.shell.getView().leaving).toBe(false)
-  })
-
-  test('`esc` 返回：待答那一屏**照原样摆回来**（审批不丢、也不被答掉）', async () => {
-    const stage = asked()
-    stage.press(ARM)
-
-    expect(stage.press({ kind: 'escape' }).exit).toBe(false)
-    const frame = await stage.screen(WIDE)
-
-    expect(frame.has('○ 批准这一次')).toBe(true) // 卡回来了
-    expect(frame.has('当前任务正在等待你')).toBe(false)
-    expect(stage.commands()).toEqual([]) // 一个字都没替用户答
-    // 状态行那一格也跟着回来（`● 等你定夺`）——两处不能各说各的
-    expect(frame.statusLine).toContain('等你定夺')
   })
 
   test('「停止任务」⇒ **走 那条停止通路**（这条会话 · **整体**那一档），界面留下', () => {
@@ -416,147 +374,6 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
   })
 
   /**
-   * **过期的审批不许从屏栈复活**（U100 合前复核 · 返修二）——两条实测路：
-   * ① 菜单开着时那一代**核销了**；② 菜单开着时**连接断了**。
-   * 两条都要求：回来之后**没有那张卡**、**不发任何命令**，且 `ctrl+c` 回到**离开**那条路。
-   */
-  describe('过期的审批不许从屏栈复活', () => {
-    const parked = (): { stage: Stage; push: (rows: readonly RunRow[]) => void } => {
-      const feed = createRunsFeed([runRow({ state: 'waiting' })])
-      const stage = createStage({ stop: () => {}, runsFeed: feed })
-      stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲' }] })])
-      // **卡之前**录一段独立、未提交的草稿（卡接管时收进 `stashed`）
-      stage.type('半截草稿')
-      stage.feed([
-        event('message.user', { entry: 101 }, { id: 101 }),
-        event('turn.start', {}),
-        event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
-        event('tool.decision.request', { call: 71, name: '跑测试', material: '命令', weight: 'light' }, { id: 88 }),
-      ])
-      stage.press(ARM) // 卡被三选罩住
-
-      ;(stage.spy.commands as Command[]).splice(0)
-      return { stage, push: (rows) => stage.pushRuns(rows) }
-    }
-
-    test('那一代**核销了** ⇒ `esc` 回来没有卡、不发命令，`ctrl+c` 走离开那条路', () => {
-      const { stage, push } = parked()
-      push([runRow({ state: 'stopped' })])
-
-      stage.press({ kind: 'escape' })
-
-      expect(stage.shell.getView().dock.kind).toBe('input') // 卡没回来
-      expect(stage.stops()).toEqual([])
-      expect(stage.commands()).toEqual([])
-      expect(stage.press(ARM).exit).toBe(false)
-      expect(stage.shell.getView().exitArmed).toBe(false) // 先清空归还的草稿
-      expect(stage.press(ARM).exit).toBe(false)
-      expect(stage.shell.getView().exitArmed).toBe(true) // **离开**那条路（不是又进三选）
-    })
-
-    test('**连接断了** ⇒ `esc` 回来仍是失联、没有卡、不发命令，`ctrl+c` 走离开那条路', () => {
-      const { stage } = parked()
-      stage.shell.disconnected()
-      expect(stage.shell.getView().status.state).toBe('lost')
-
-      stage.press({ kind: 'escape' })
-
-      expect(stage.shell.getView().status.state).toBe('lost') // **失联不许被改成「等你定夺」**
-      expect(stage.shell.getView().dock.kind).toBe('input')
-      expect(stage.commands()).toEqual([])
-      expect(stage.press(ARM).exit).toBe(false)
-      expect(stage.shell.getView().exitArmed).toBe(true)
-    })
-
-    /**
-     * **两件同时为真：失联优先**（U100 合前复核补的那一条）——审批 → 三选 → 同一运行
-     * `stopped` → 断开 → `esc`。顺序不能反：走 `gone` 那一支会把状态那一格改回「空闲」，
-     * 于是**失联被抹掉**、输入行又开始承诺「回车发送」✗。判据直接量那一格。
-     */
-    test('**已核销 ＋ 失联**同时为真 ⇒ `esc` 之后仍是失联（状态那格不许被改成空闲）', () => {
-      const { stage, push } = parked()
-      push([runRow({ state: 'stopped' })])
-      stage.shell.disconnected()
-
-      stage.press({ kind: 'escape' })
-
-      expect(stage.shell.getView().status.state).toBe('lost')
-      expect(stage.shell.getView().dock.kind).toBe('input')
-      expect(stage.commands()).toEqual([])
-      // 而离开那扇门照旧开着
-      expect(stage.press(ARM).exit).toBe(false)
-      expect(stage.shell.getView().exitArmed).toBe(true)
-    })
-
-    test('失联时**裁决键一个答复都不发**（不向内核代答）', () => {
-      const { stage } = parked()
-      stage.press({ kind: 'escape' }) // 卡丢了（连接断了）
-      stage.shell.disconnected()
-
-      for (const char of ['y', 'a', 'n']) stage.press({ kind: 'char', char })
-
-      expect(stage.commands()).toEqual([])
-    })
-
-    /**
-     * **裁决有人答了 / 那一轮收束了 ⇒ 屏栈里那张卡的快照作废**（U100 合前复核 · 返修二补）。
-     *
-     * 由头：菜单把卡罩住时 `undock` 只撤**当前那一屏**（`dock` 不是 decision 就直接返回 ✗）
-     * ——快照没人撤，裁决早答过、那一轮都收完了（运行也回到空闲），`esc` 一返回照样把旧卡
-     * 摆回来、状态改回「等你定夺」✗。故这一条量**从产生处撤**（两条事件各撤一次）：
-     * `tool.decision` 与 `turn.end`。
-     */
-    test('**裁决已答 ＋ 那一轮收束** ⇒ 菜单收起、**草稿当场归还**、状态是空闲', () => {
-      const { stage, push } = parked()
-      // 卡接管前录的那一段草稿（在被它收进 `stashed` 之前）
-      expect(stage.shell.getView().stashed).not.toBeNull()
-
-      stage.feed([
-        event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 120 }, { id: 89 }),
-        event('tool.result', { call: 71, ok: true, output: { text: 'done' } }, { id: 90 }),
-        event('turn.end', { reason: 'settled' }, { id: 91 }),
-      ])
-      push([runRow({ state: 'idle' })])
-
-      // ⚠️ **不按任何键**：这一条量的是「事件一被消费，那一格上是什么」（菜单此时已按原设计
-      // 收起；再按 `esc` 是**正常语义**「清草稿」，那就把要验的东西自己擦掉了）
-      const view = stage.shell.getView()
-      expect(view.dock.kind).toBe('input')
-      expect(view.draft).toBe('半截草稿') // **草稿当场归还**（不是留在 `stashed` 里）
-      expect(view.stashed).toBeNull()
-      expect(view.status.state).toBe('idle')
-      expect(stage.commands()).toEqual([])
-      expect(stage.press(ARM).exit).toBe(false)
-      expect(stage.shell.getView().exitArmed).toBe(false) // 先清空归还的草稿
-      expect(stage.press(ARM).exit).toBe(false)
-      expect(stage.shell.getView().exitArmed).toBe(true) // 离开那条路
-    })
-
-    test('**只有裁决落地**（工具还在跑）⇒ 卡作废、菜单收起、状态转**工作中**', () => {
-      const { stage } = parked()
-      stage.feed([
-        event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 120 }, { id: 89 }),
-      ])
-
-      const view = stage.shell.getView()
-      expect(view.dock.kind).toBe('input') // 卡作废、菜单收起
-      // **状态由「等你定夺」转「工作中」**（裁决给了、那件工具正在跑）——不是停在等你定夺，
-      // 也不是「空闲」
-      expect(view.status.state).toBe('working')
-      expect(stage.commands()).toEqual([])
-    })
-
-    test('**有效**的审批照旧照原样回来（两条路都只挡过期的那一档）', () => {
-      const { stage } = parked()
-      stage.press({ kind: 'escape' })
-
-      const back = stage.shell.getView().dock
-      expect(back.kind).toBe('decision')
-      expect(stage.commands()).toEqual([])
-    })
-  })
-
-  /**
    * **没有停止来路时如实说**（用例 / 演示那种空壳：`options.stop` 没接上）——
    * 不留一个按下去没反应的选项（同 `/resume` 那两个键那条先例）。
    */
@@ -609,38 +426,6 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     expect((await stage.screen(WIDE)).has('停止任务')).toBe(false) // 菜单也收了
   })
 
-  /**
-   * **菜单开着的时候新卡到了 ⇒ 卡不顶掉菜单**（U100 · `parkDecision`）。
-   *
-   * 由头：那一刻正是**最想按停**的时候（模型一个接一个地要工具），而这一屏是唯一能把
-   * 在途工作停下来的入口——它一被顶掉，用户手上那点意图就没处落了（回车只会换来
-   * 「先答复」）。卡本身不急着看：它挂在那件工具上不会过期、这一轮照旧卡着等答复。
-   *
-   * 判据三条：**菜单还在**（标题换成「正在等待你」）· 卡压在下层**没画出来** ·
-   * `esc` 之后**卡照原样回来**（审批不丢、也没被答掉）。
-   */
-  test('菜单开着时新卡到了 ⇒ 卡压在菜单之下，`esc` 之后照原样回来', async () => {
-    const stage = withSession(working())
-    stage.press(ARM)
-
-    stage.feed([
-      event(
-        'tool.decision.request',
-        { call: 71, name: '跑测试', material: '命令 bun test', weight: 'light' },
-        { id: 88 },
-      ),
-    ])
-
-    const held = await stage.screen(WIDE)
-    expect(held.has('○ 批准这一次')).toBe(true)
-    expect(stage.commands()).toEqual([])
-    stage.press({ kind: 'escape' })
-    const back = await stage.screen(WIDE)
-    expect(back.has('停止任务')).toBe(true)
-    expect(back.has('Tab 进入决策')).toBe(true)
-    expect(stage.commands()).toEqual([])
-
-  })
 })
 
 
@@ -833,32 +618,6 @@ describe('连接断了 ⇒ 留在界面如实说', () => {
     expect(stage.shell.getView().draft).toBe('写了一半') // **草稿一个字没动**
     expect(stage.commands()).toEqual([{ type:'history.read',session:'s1' }])
     expect((await stage.screen(WIDE)).has('草稿未发送')).toBe(true)
-  })
-
-  /**
-   * **那一代核销了 ⇒ 悬着的卡作废**（U100）——真帧上撞到的死角：整体停完，执行者没了，
-   * `turn.end` 不会再来 ⇒ 卡永远挂着 ⇒ `ctrl+c` 永远走「有在途工作」那条路，
-   * **想按两次 ctrl+c 离开都走不掉** ✗。判据取运行事实（管理者说「已核销」）。
-   */
-  test('那一代核销了 ⇒ 悬着的卡作废（否则「按两次 ctrl+c 离开」这条路走不掉）', async () => {
-    const feed = createRunsFeed([runRow({ state: 'waiting' })])
-    const stage = createStage({ stop: () => {}, runsFeed: feed })
-    stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲的事' }] })])
-    stage.feed([
-      event('message.user', { entry: 101 }, { id: 101 }),
-      event('turn.start', {}),
-      event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
-      event('tool.decision.request', { call: 71, name: '跑测试', material: '命令', weight: 'light' }, { id: 88 }),
-    ])
-    expect(stage.shell.getView().dock.kind).toBe('decision')
-
-    stage.pushRuns([runRow({ state: 'stopped' })]) // 那一代核销了
-
-    expect(stage.shell.getView().dock.kind).toBe('input') // 卡作废
-    expect((await stage.screen(WIDE)).has('○ 批准这一次')).toBe(false)
-    // 而**离开那扇门**此刻是开着的：那一下走的是「按两次退出」那条路
-    expect(stage.press(ARM).exit).toBe(false)
-    expect(stage.shell.getView().exitArmed).toBe(true)
   })
 
   test('`ctrl+c` 走**离开**那条路（不是三选——此刻停不了，也不假装能停）', async () => {

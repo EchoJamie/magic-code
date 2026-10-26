@@ -46,7 +46,7 @@ export function callKindOf(body: Record<string, unknown>): CallKind {
   return 'internal'
 }
 
-export async function collaborationRuntime(name: string, respond: (call: HttpCall) => ModelReply | Promise<ModelReply>, options: { readonly allowAll?: true; readonly launch?: ExecutorLauncher } = {}) {
+export async function collaborationRuntime(name: string, respond: (call: HttpCall) => ModelReply | Promise<ModelReply>, options: { readonly launch?: ExecutorLauncher } = {}) {
   const root = realpathSync(tempDir('magic-collab-run-'))
   /** 这块沙地的目录名；系统提示词里带着它，可据此认出来的是不是自己人。 */
   const runtimeMarker = root.split('/').pop()!
@@ -105,7 +105,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
   const paths = runPathsOf(magic, tmpdir())
   const launcher = options.launch ?? createAgentLauncher()
   const started = await startManager({ paths, magic, launch: { spawn(request) {
-    const child = launcher.spawn({ ...request, ...(options.allowAll === true ? { allowAll: true } : {}) })
+    const child = launcher.spawn({ ...request })
     agentStarts.push({ gen: request.gen, session: request.session, at: Date.now() })
     child.onExit(reason => agentExits.push({ gen: request.gen, at: Date.now(), reason }))
     return child
@@ -125,17 +125,11 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
   const shell = createShell({ ...transport, send(command) { commands.push(command); transport.send(command) } }, terminal)
   terminal.onGone?.(() => shell.hostGone())
   const windows: { readonly shell: ReturnType<typeof createShell>; readonly client: NonNullable<Awaited<ReturnType<typeof connectManager>>>; readonly events: KernelEvent[]; readonly commands: Command[] }[] = []
-  const answered = new Set<number>()
   client.onLine(text => lines.push(text))
   client.onEvent(item => {
     events.push(item)
     if (item.kind === 'collaboration.view' && item.data.collaboration?.state === 'closed') {
       closedViews.push({ at: Date.now(), liveGenerations: manager.executors().map(one => one.gen), exitedGenerations: agentExits.map(one => one.gen) })
-    }
-    // 测试用户仅批准控制工具，普通工具仍由测试步骤明确裁决。
-    if (item.kind === 'tool.decision.request' && item.data.name.startsWith('agent_') && !answered.has(item.id)) {
-      answered.add(item.id)
-      client.send({ type: 'decision.answer', id: item.id, decision: 'approve' })
     }
   })
   const session = () => shell.getView().sessionId
@@ -198,7 +192,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
       const evidence = process.env['MAGIC_COLLAB_RUN_EVIDENCE']
       if (evidence) {
         const dir = resolve(evidence); mkdirSync(dir, { recursive: true })
-        writeFileSync(join(dir, `${name}.json`), JSON.stringify({ proof: 'real-manager-socket-executor-controlled-http', allowAll: options.allowAll === true, calls, foreign, events, commands, errors, lines, agentExits, closedViews,
+        writeFileSync(join(dir, `${name}.json`), JSON.stringify({ proof: 'real-manager-socket-executor-controlled-http', calls, foreign, events, commands, errors, lines, agentExits, closedViews,
           windows: windows.map(window => ({ conn: window.client.conn, events: window.events, commands: window.commands })),
           agentStarts, remainingToolProcesses: Bun.spawnSync(['/bin/ps', '-axo', 'pid=,ppid=,pgid=,lstart=,args=']).stdout.toString().split('\n').filter(line => line.includes(root)).map(line => line.replace(/--token \S+/g, '--token [redacted]')),
           inputFacts:members().map(member=>({session:member.sessionId,inputs:store.serviceFor(member.sessionId).inputs.list()})), remainingExecutors: manager.executors(), socket: manager.socketPath }, null, 2))

@@ -217,12 +217,12 @@ describe('终端是客户端', () => {
    *   **停止任务**（这条会话 · 整体那一档）⇒ 回执「停了」⇒ 客户端干净退场、零残留。
    *   判据本身（悬着的卡不许把执行者钉住、两组进程都要收干净）**一个字没松**。
    */
-  test('悬着的裁决卡随轮收束作废——那一代执行者收得掉，管理者也跟着退', async () => {
+  test('在途一轮被停止后——那一代执行者收得掉，管理者也跟着退', async () => {
     const runs = tempDir('magic-u48-cancel-runs-')
     // ⚠️ **原锚**：`exec echo hi`（判轻）；**为何变**（U76）：判轻的调用**默认通、不弹卡**
     // ——这一条要的正是一张**悬着的卡**，夹具换成**名单里**的删除（必问，且没人答它）；
     // **新锚**：卡落在**重**那一档，到达直接显示无预选动作（见下）。
-    const fixture = startFixture({ turns: [{ kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 .' } }] })
+    const fixture = startFixture({ turns: [{ kind: 'text', text: '受控等待中', chunks: 200, chunkDelayMs: 100 }] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
     const host = await startResidentHost(sandbox, join(runs, 'host'))
     let window: UiSession | undefined
@@ -231,14 +231,11 @@ describe('终端是客户端', () => {
       window = await createUiSession({ label: '中断卡', artifacts: runs, sandbox, fixture })
 
       await window.send('跑一条命令')
-      // 内置 chmod 走重档审批，等待选择提示。⚠️ `HINT_DECIDE_HEAVY` **没出包**
-      // （`@magic/tui` 只出去包的常量），故这里按**字面量**锚——与 `ui/scenarios.ts`
-      // 里 `COPY.decideHint` 同一条先例：真要改那处文案，判据会红，那正是该有的反应。
-      await window.key('enter', { until: { text: '↑↓ 选择 · Enter 确认' }, timeoutMs: 20_000 })
+      // U129：没有逐次授权卡——这一轮在真跑一段长流；等它开始再停。
+      await window.key('enter', { until: { text: '受控等待中' }, timeoutMs: 20_000 })
 
-      // **卡还挂着的时候停这一轮**（U100 起这条路是「三选 → 停止任务」）——
-      // 答复永远不会来（那正是这个用例要的那条边）
-      await window.key('ctrl+c', { until: { text: '当前任务正在等待你' }, timeoutMs: 15_000 })
+      // **这一轮还在跑的时候停它**（U100 起这条路是「三选 → 停止任务」）。
+      await window.key('ctrl+c', { until: { text: '当前任务仍在运行' }, timeoutMs: 15_000 })
       await window.key('enter')
       // **核销那一拍的回执**（「停了」）——它是「资源确认退出了」的物证：
       // 悬着的那张卡随轮收束作废，而这一代执行者也就到此为止（卡若还钉着，收摊那两跳

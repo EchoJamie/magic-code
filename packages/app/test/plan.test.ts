@@ -81,7 +81,6 @@ describe('模型真的能写计划（写 → 落账 → 通报 → 进上下文�
       expect(sent).toContain('约束：保留已输入内容')
 
       // —— ④ 权限：三件走自动放行，不留卡 ——
-      expect(eventsOfKind(shell.events, 'tool.decision.request')).toEqual([])
       expect(
         eventsOfKind(shell.events, 'tool.decision').map((one) => one.data.decider),
       ).toEqual(['auto'])

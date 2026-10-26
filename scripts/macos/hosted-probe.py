@@ -62,7 +62,7 @@ def probe(app):
                 reader = client.makefile('rb')
                 def send(message): client.sendall((json.dumps(message)+'\n').encode())
                 send({'t': 'hello', 'role': 'client', **{k: discovery[k] for k in ['protocol', 'version', 'source']},
-                      'cwd': str(room), 'openRequest': 'hosted-probe-open', 'allowAll': True})
+                      'cwd': str(room), 'openRequest': 'hosted-probe-open'})
                 client.settimeout(10)
                 while json.loads(reader.readline())['t'] != 'welcome': pass
                 send({'t': 'cmd', 'gen': None, 'environment': env,

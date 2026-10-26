@@ -213,7 +213,7 @@ async function open(g: Ground, manager: Manager): Promise<ManagerClient> {
 const rowOf = (client: ManagerClient, session: string): RunRow | undefined =>
   client.runs().find((row) => row.session === session)
 
-describe('那六行在真管理者上逐行走一遍', () => {
+describe('那五行在真管理者上逐行走一遍', () => {
   test('同一代上把状态推着走——每一步读到的都是事实说的那一行', async () => {
     const g = ground('states')
     seed(g, ['s-1'])
@@ -248,20 +248,7 @@ describe('那六行在真管理者上逐行走一遍', () => {
       const call = fake.toolCall('bash', 's-1')
       await waitFor('在跑工具', () => rowOf(client, 's-1')?.action === '正在跑 bash')
 
-      // ⑤ **等待你**——卡挂上了
-      const request = fake.emit(
-        'tool.decision.request',
-        { call, name: 'bash', material: 'rm -rf build', weight: 'heavy' },
-        's-1',
-      )
-      await waitFor('等待你', () => rowOf(client, 's-1')?.state === 'waiting')
-      expect(rowOf(client, 's-1')?.action).toBe('等你定夺：bash')
-
-      // 答复落地 ⇒ 回到执行中
-      fake.emit('tool.decision', { call, decision: 'approve', decider: 'user', elapsedMs: 12 }, 's-1')
-      await waitFor('答复后回到执行中', () => rowOf(client, 's-1')?.state === 'running')
-
-      // ⑥ **当前空闲**——一轮好好收束
+      // ⑤ **当前空闲**——一轮好好收束
       fake.emit('tool.result', { call, ok: true, output: { text: 'ok' } }, 's-1')
       fake.emit('turn.end', { reason: 'settled' }, 's-1')
       fake.emit('agent.state', { state: 'waiting' }, 's-1')
@@ -269,16 +256,15 @@ describe('那六行在真管理者上逐行走一遍', () => {
       expect(rowOf(client, 's-1')?.progress?.what).toBe('这一轮收束了')
       expect(asked).toBeGreaterThan(0)
 
-      // ⑦ **停止中**——它受理了停止，资源还没退完
+      // ⑥ **停止中**——它受理了停止，资源还没退完
       fake.stopping('没人看了，手上也没有在跑的事')
       await waitFor('停止中', () => rowOf(client, 's-1')?.state === 'stopping')
       expect(rowOf(client, 's-1')?.holds).toBe(true)
 
-      // ⑧ **当前空闲**——它自己走完了（上一轮是好好收的）
+      // ⑦ **当前空闲**——它自己走完了（上一轮是好好收的）
       fake.exit('进程正常退出')
       await waitFor('收摊', () => rowOf(client, 's-1')?.state === 'idle')
       expect(rowOf(client, 's-1')?.holds).toBe(false)
-      expect(request).toBeGreaterThan(0)
     } finally {
       client.close()
       await b.dispose()
@@ -440,7 +426,6 @@ describe('接回＝快照 ＋ 水位', () => {
           turnOpen: true,
           text: '正在想……',
           tools: [],
-          decisions: [],
         },
       })
 
@@ -457,61 +442,6 @@ describe('接回＝快照 ＋ 水位', () => {
       expect(seen).toEqual([early, later])
 
       client.close()
-    } finally {
-      await b.dispose()
-    }
-  }, 30_000)
-})
-
-describe('裁决只有一份', () => {
-  test('两个窗口看同一代：第一个答复下行，第二个拿到「已处理」且不再往下送', async () => {
-    const g = ground('decision')
-    seed(g, ['s-dec'])
-    const b = await bench(g)
-    const one = await open(g, b.manager)
-    const two = await open(g, b.manager)
-
-    try {
-      one.send({ type: 'session.open', session: 's-dec' })
-      one.send({ type: 'input.submit', text: '受控执行者测试输入' })
-      await waitFor('发车', () => b.requests.length === 1)
-      const fake = await b.attach(0)
-      fake.ready('s-dec')
-      await waitFor('开张', () => rowOf(one, 's-dec') !== undefined)
-
-      // 第二个窗口也接到同一条会话上——**同一代**
-      two.send({ type: 'session.open', session: 's-dec' })
-      await waitFor('两个窗口同一代', () => two.gen() !== null && two.gen() === one.gen())
-
-      fake.emit('turn.start', {}, 's-dec')
-      fake.emit('agent.state', { state: 'resumed' }, 's-dec')
-      const call = fake.toolCall('bash', 's-dec')
-      const request = fake.emit(
-        'tool.decision.request',
-        { call, name: 'bash', material: 'rm -rf build', weight: 'heavy' },
-        's-dec',
-      )
-      await waitFor('两条都看得见那一行', () => rowOf(one, 's-dec')?.state === 'waiting')
-
-      one.send({ type: 'decision.answer', id: request, decision: 'approve' })
-      await waitFor('答复送到了那一头', () => fake.got.some((m) => m.t === 'cmd' && m.cmd.type === 'decision.answer'))
-
-      // 内核回一句「答复落地」——两条窗口那一行都回到执行中（卡在两处都撤了）
-      fake.emit('tool.decision', { call, decision: 'approve', decider: 'user', elapsedMs: 8 }, 's-dec')
-      await waitFor('两个窗口都撤了卡', () => rowOf(one, 's-dec')?.state === 'running' && rowOf(two, 's-dec')?.state === 'running')
-
-      // **晚到的那一条答复**——只有回声，**不往下送**
-      const lines: string[] = []
-      two.onLine((text) => lines.push(text))
-      const before = fake.got.filter((m) => m.t === 'cmd').length
-      two.send({ type: 'decision.answer', id: request, decision: 'approve' })
-
-      await waitFor('晚到的那条有回声', () => lines.some((text) => text.includes('已经处理过了')))
-      await Bun.sleep(80)
-      expect(fake.got.filter((m) => m.t === 'cmd').length).toBe(before) // 一条都没多送
-
-      one.close()
-      two.close()
     } finally {
       await b.dispose()
     }
@@ -651,9 +581,10 @@ test('同会话终端接收具体事项；离线事项持久保留且未投递',
     await waitFor('A 的第二窗口已脱离', () => b.manager.clients() === 1)
     first.emit('turn.start', {}, 'a')
     first.emit('agent.state', { state: 'resumed' }, 'a')
-    first.emit('tool.decision.request', { call: 3, name: 'write', material: '写文件', weight: 'heavy' }, 'a')
-    await waitFor('剩余窗口显示待答', () => notices.length === 2)
-    expect(attentionFacts(g.dataDir, g.ws).filter(one => one.session === 'a').map(one => one.kind)).toEqual(['needs-you'])
+    first.emit('turn.end', { reason: 'error' }, 'a')
+    first.emit('agent.state', { state: 'waiting' }, 'a')
+    await waitFor('剩余窗口显示失败事项', () => notices.length === 2)
+    expect(attentionFacts(g.dataDir, g.ws).filter(one => one.session === 'a').map(one => one.kind)).toEqual(['failed'])
     a.close()
     await waitFor('A 最后窗口已脱离', () => b.manager.clients() === 0)
     first.emit('turn.end', { reason: 'error' }, 'a')

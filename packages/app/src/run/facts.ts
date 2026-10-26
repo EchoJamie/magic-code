@@ -103,22 +103,6 @@ export type RunRecord = {
   backgroundView?: import('@magic/contracts').BackgroundView
   /** 这一轮开着（`turn.start` 之后、`turn.end` 之前）。 */
   turnActive: boolean
-  /**
-   * **还没答复的裁决**——`决策请求事件的 id → 那次工具调用`。
-   *
-   * 两个键都要：答复（`decision.answer`）带的是**请求事件的 id**，而轮收束 /
-   * 答复落地那两条事件认的是**调用**（`tool.decision.call`）。留一份对应关系，
-   * 「这条答复还作不作数」才判得出来（见 `manager.ts` 里那一跳）。
-   */
-  readonly decisions: Map<number, number>
-  /**
-   * **这一轮里已经答复过的裁决**（请求事件的 id）——「晚到答复明确已处理」那一句的判据。
-   *
-   * 留着它的代价是几个数；不留的代价是**一个窗口按了半天没反应**（它手里那张卡其实
-   * 早被别的窗口答掉了）。清了它的时机是**下一轮开始**（`turn.start`）——一轮之内
-   * 的答复终归都能被认出来，而不必留住整段历史。
-   */
-  readonly resolvedDecisions: Set<number>
   /** **已受理停止**、资源尚未全部退出（`bye` 发出 / 执行者自己说 `stopping`）。 */
   stopping: boolean
   /** 核销的缘由与时刻——**有它就说明这一代结束了**。 */
@@ -173,8 +157,6 @@ export function newRunRecord(input: {
      */
     busy: false,
     turnActive: false,
-    decisions: new Map(),
-    resolvedDecisions: new Set(),
     stopping: false,
     ended: undefined,
     action: '正在起执行者',
@@ -210,7 +192,6 @@ export function runStateOf(record: RunRecord): RunState {
 
   if (record.ended === undefined && record.everConnected && !record.connected) return 'unknown'
 
-  if (record.decisions.size > 0) return 'waiting'
   // **还没起来也算在跑**：从起进程到 `ready` 那一段是在把这件活支起来——显示成「当前空闲」
   // 是错的（它此刻既不能收交代，也没有一份可以看的最近结果）
   //
@@ -390,9 +371,6 @@ export function actionOf(event: KernelEvent): string | null | undefined {
       return `正在跑 ${event.data.name}`
     case 'tool.result':
       return null
-    case 'tool.decision.request':
-      // 卡挂着的这一刻就是「等你」——这一格与 `waiting` 那一行是同一件事实的两种说法
-      return `等你定夺：${event.data.name}`
     case 'tool.decision':
       return null
     default:
@@ -606,5 +584,5 @@ export function storedRunOf(record: RunRecord): StoredRun | undefined {
 export function canArchiveRun(run: RunRecord): boolean {
   if (run.reclaimPending || run.reclaimNote !== undefined || run.owned.length > 0) return false
   if (run.ended !== undefined) return !blocksNewRun(run.state)
-  return run.ready && run.connected && !run.stopping && !run.busy && !run.turnActive && backgroundOf(run) === 0 && run.decisions.size === 0 && !blocksNewRun(run.state)
+  return run.ready && run.connected && !run.stopping && !run.busy && !run.turnActive && backgroundOf(run) === 0 && !blocksNewRun(run.state)
 }

@@ -63,19 +63,6 @@ export type ClientToManager =
        */
       readonly switch?: ModelSwitchRequest
       /**
-       * **全放行**（U73）——命令行 `--allow-all` 在**这一个窗口**上定下的那个布尔。
-       *
-       * 由窗口在这一跳说、随窗口走到**管理者发车那一刻**，与 `switch` 同一个道理：
-       * 它要落在执行者**造闸门之前**（闸门是装配期造的，造完就没有改它的口），
-       * 晚一步说就只能干看着一代没有它的执行者。
-       *
-       * ⚠️ **只有为这个窗口新起的那一代收它**：接上一条已经活着的那一代时**不再 apply**
-       * ——那一代有它自己的那一个（同 `switch` 那条「不共享可变选择」）。
-       * ⚠️ **它说的是窗口的，不是「这条会话的」**：窗口是在哪儿起的、带没带那个参数，
-       * 就是它；**会话本身不记住它**（库里没有这一列）。
-       */
-      readonly allowAll?: boolean
-      /**
        * **启动目录**——窗口在哪儿起的。执行者按它算工作区默认根
        * （配置没写 `workspaceRoots` 时「启动目录＝默认根」，U18 那条`??`）。
        * 它是**窗口的属性**，而窗口是客户端：不给的话执行者只能拿管理者自己那一份，
@@ -98,6 +85,13 @@ export type ClientToManager =
   | { readonly t: 'stop'; readonly session: SessionId; readonly scope: StopScope }
   | { readonly t: 'bye'; readonly why: string }
   | { readonly t: 'read'; readonly ids: readonly string[] }
+  /**
+   * **sudo 密码答复**（U129）——只走这一条瞬时通道。
+   *
+   * ⚠️ `password` **不进入会话、事件流、日志或模型上下文**：管理者只按 `requestId`
+   * 原样转给执行者，执行者只写进 `sudo -S -v` 的 stdin。取消用 `cancelled` 表达。
+   */
+  | { readonly t: 'sudo.answer'; readonly requestId: string; readonly password?: string; readonly cancelled?: true }
 
 /** 管理者 → 客户端。 */
 export type ManagerToClient =
@@ -189,6 +183,13 @@ export type ManagerToClient =
   | { readonly t: 'ev'; readonly gen: number | null; readonly event: KernelEvent }
   /** 一句**给人看**的话（代次过期、管理者要退了……）——客户端把它落成一行回执。 */
   | { readonly t: 'line'; readonly text: string }
+  /**
+   * **sudo 密码组件**（U129）——`command` 是展示给用户的那一行，**不含密码**。
+   * 答复走 `sudo.answer`；同一 `requestId` 只认第一次。
+   */
+  | { readonly t: 'sudo.request'; readonly requestId: string; readonly command: string }
+  /** 这一件认证已经落定（答复了 / 取消了 / 轮收束了）——其余窗口撤掉组件。 */
+  | { readonly t: 'sudo.settled'; readonly requestId: string }
 
 /** 执行者 → 管理者。 */
 export type ExecutorToManager =
@@ -237,6 +238,10 @@ export type ExecutorToManager =
    * 「快照里已含的内容」之间不可能夹进一条——事件 id 单调，凡 id 大于水位的都还没发生。
    */
   | { readonly t: 'snapshot'; readonly seq: number; readonly snapshot: RunSnapshot }
+  /** 要用户输入 sudo 密码（U129）——由执行者的 sudo 认证端口发起。 */
+  | { readonly t: 'sudo.request'; readonly requestId: string; readonly command: string }
+  /** 这一件认证不用再等了（取消 / 轮收束 / 连接走了）。 */
+  | { readonly t: 'sudo.cancel'; readonly requestId: string; readonly reason: string }
 
 /** 管理者 → 执行者。 */
 export type ManagerToExecutor =
@@ -251,6 +256,8 @@ export type ManagerToExecutor =
   | { readonly t: 'cmd'; readonly cmd: Command }
   /** **要一份接回快照**——管理者在把某个窗口挂到这一代上时发（见 `ManagerToClient` 的 `resumed`）。 */
   | { readonly t: 'snapshot'; readonly seq: number }
+  /** sudo 密码答复（U129）——密码只经这一条内存/本机 socket 通道交给执行者。 */
+  | { readonly t: 'sudo.answer'; readonly requestId: string; readonly password?: string; readonly cancelled?: true }
   | { readonly t: 'bye'; readonly why: string }
 
 /** 线上消息的总表——判别收窄用得到它。 */

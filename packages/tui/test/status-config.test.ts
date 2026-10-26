@@ -34,13 +34,6 @@ function openConfig(over: { readonly statusLine?: { cells: readonly string[]; co
       entries: [{ provider: 'minimax', name: '个人版', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } }, }],
       current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
     }),
-    event('grants.catalog', {
-      workspace: ROOT,
-      grants: [],
-      stale: [],
-      decisions: { total: 0, uncovered: 0, vetoed: 0 },
-      history: { total: 0, auto: 0, kernel: 0 },
-    }),
     event('mcp.catalog', { servers: [] }),
     event('web.state', { provider: 'deepseek-web' }),
   ])
@@ -98,7 +91,6 @@ describe('状态行可配 · 入口走 /config', () => {
 
     expect(rowsOf(stage).map((row) => row.label.trim())).toEqual([
       '模型与连接',
-      '本工作区授权',
       '外部工具',
       '网页查询与搜索',
       '状态行',
@@ -210,17 +202,16 @@ test('本轮耗时沿 prefs 回执切换，保存失败保持原口径', () => {
 })
 
 
-test('配置读数按种类到齐，重复授权回话不提前开屏、不关闭配置', () => {
+test('配置读数按种类到齐，重复回话不提前开屏、不关闭配置', () => {
   const stage = createStage()
   stage.type('/config '); stage.press({kind:'enter'})
-  const grants = event('grants.catalog', {workspace:ROOT, grants:[], stale:[], decisions:{total:0,uncovered:0,vetoed:0}, history:{total:0,auto:0,kernel:0}})
-  stage.feed([event('model.catalog',{entries:[]}), grants, grants])
-  expect(stage.shell.getView().dock.kind).toBe('input')
-  stage.feed([event('mcp.catalog',{servers:[]})])
+  const mcp = event('mcp.catalog', {servers:[]})
+  stage.feed([event('model.catalog',{entries:[]}), mcp, mcp])
   expect(stage.shell.getView().dock.kind).toBe('input')
   stage.feed([event('web.state',{})])
+  expect(stage.shell.getView().dock.kind).toBe('picker')
   expect(rowsOf(stage).some(row=>row.value==='turnDuration')).toBe(true)
-  stage.feed([grants])
+  stage.feed([mcp])
   expect(rowsOf(stage).some(row=>row.value==='turnDuration')).toBe(true)
   stage.shell.dispose()
 })

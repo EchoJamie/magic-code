@@ -20,7 +20,7 @@
  */
 
 import type { RecordId, SessionId } from './ids.ts'
-import type { DecisionWeight, TurnEndReason } from './events.ts'
+import type { TurnEndReason } from './events.ts'
 
 /**
  * **那六行状态**——设计那张表左栏的词，一个不多一个不少。
@@ -148,7 +148,7 @@ export type StopPhase = 'accepted' | 'done' | 'unconfirmed'
  *   水位之后的消息，**按 id 去重**；
  * - **活动流式内容从有效执行者取当前快照**：`text` / `thinking` 是**此刻**在飞的那一段
  *   （不是上一轮的半段增量）；
- * - **恢复流式内容、进度与待答项**：`tools` / `decisions` 就是另外两件。
+ * - **恢复流式内容与进度**：`tools` 就是另外那一件。
  *
  * 时间戳都取自产生处（执行者的时钟），外壳**不自己盖钟**：报时间的是做事的那一头。
  */
@@ -172,8 +172,6 @@ export type RunSnapshot = {
   readonly thinkingTruncated?: boolean
   /** 在飞的工具调用（有 `tool.call` 还没有 `tool.result` 的那些）。 */
   readonly tools: readonly SnapshotTool[]
-  /** 还挂着的裁决卡（有请求、还没答复）。 */
-  readonly decisions: readonly SnapshotDecision[]
   /** 最近一次可确认进展——与 `RunRow.progress` 同一件事的同一份。 */
   readonly progress?: { readonly at: number; readonly what: string }
   /** 最近一次输出。 */
@@ -186,16 +184,6 @@ export type RunSnapshot = {
    */
   readonly model?: string
   readonly window?: number
-  /**
-   * **这一代在执行全放行**（U73 · 缺席＝不在全放行 · **一个布尔，没有第二档**）。
-   *
-   * 为什么要带上：它是**随使用变的状态**（起会话那一刻给的），而 `全放行` 那一格在状态行上
-   * **常驻**——「用户必须随时知道自己在全放行」。而它是**执行者**的属性（闸门长在那一头），
-   * 窗口这一侧**看不到**：不画回来的话，挂上一条**已经活着**的那一代时，窗口只能拿自己
-   * 敲的命令行去猜——那正是最坏的一形（窗口写着「照常问」、闸门却静默放行）。
-   * 故它随快照回来，取的是**这一代闸门此刻真的怎么判**。
-   */
-  readonly allowAll?: boolean
 }
 
 /** 快照里的一条在飞工具——够外壳把那一行原样画回去。 */
@@ -208,19 +196,4 @@ export type SnapshotTool = {
   readonly at: number
   /** 已经出来的输出（按行；有界，取末尾若干行）。 */
   readonly output: readonly string[]
-}
-
-/** 快照里的一张裁决卡——够外壳把那张卡原样挂回去。 */
-export type SnapshotDecision = {
-  /** 配对键：**请求事件**的 id（`decision.answer` 原样带回的就是它）。 */
-  readonly id: RecordId
-  /** 这次裁决问的是哪一次工具调用。 */
-  readonly call: RecordId
-  /** 卡上那个名字（外部工具＝`服务器 / 工具`，内置＝工具名）。 */
-  readonly name: string
-  /** 呈现材料——与 `tool.decision.request` 上那一份**同一份字**。 */
-  readonly material: string
-  readonly weight: DecisionWeight
-  /** 外部操作（不给「总是允许」的那一类）。 */
-  readonly external?: boolean
 }

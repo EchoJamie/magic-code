@@ -31,18 +31,6 @@ export const MAGIC_DIR = '.magic'
 export const CONFIG_FILE_NAME = 'config.json'
 
 /**
- * **授权文件名**（U22 · 技术方案 · 权限「授权的落点」）——内核**自持**的那一个文件。
- * 落点＝基础目录 ＋ 本名（`<基础目录>/grants.json`）。
- *
- * **为什么不写 `config.json`**：那是**用户手写**的（写回它要操心原子写 · 保留用户编辑 ·
- * 并发）；授权的写回只落在**一个内核全权持有的文件**上，那三件麻烦就都不成问题。
- *
- * **一个文件，不是一项目一文件**——安全相关的东西价值在**一眼看全**（能扫、能删）；
- * 散进几十个小文件的那一刻它就不再被审。**按工作区绝对路径分节**（见 `grants.catalog`）。
- */
-export const GRANTS_FILE_NAME = 'grants.json'
-
-/**
  * **统一基础路径**（U42）——解析出来的两件，一起往下传。
  *
  * **为什么是两件而不是一件**：`MAGIC_HOME` 换的是 **Magic 自己的落点**，不是**家目录**。
@@ -137,23 +125,6 @@ export type ProviderConfig = {
    */
   readonly modelOverrides?: Readonly<Record<string, ProviderModelOverride>>
 
-}
-
-/**
- * 权限段——`permissions.rules`（阶段 2 加键 · 技术方案 · 配置与密钥 · 权限「规则化」）。
- *
- * **条目形态的权威在权限域**——`@magic/permission` 的 `parseRules` 是唯一的解析器
- * （形态见其 `PermissionRule`：工具 × 路径模式 × 操作类型 → 允许）。**解析从严**：
- * 读不懂的条目**逐个拒收、连同缘由交回装配**（静默丢弃会让人对着一条不生效的规则发呆）。
- *
- * 故本契约只认「**这个键在哪**」，条目长什么样不在这里复述一遍——两处各写一份形态，
- * 迟早分叉成「配置认一种、解析器认另一种」。取值交 `parseRules`：它连「整个值不是数组」
- * 这种情形都要给出缘由，所以此处取**原值**。
- *
- * **键缺省 ＝ 无规则 ＝ 一律问**（阶段 1 姿态）——故不接线也能跑；**必闸禁区照旧凌驾其上**。
- */
-export type PermissionsConfig = {
-  readonly rules?: unknown
 }
 
 /**
@@ -280,8 +251,6 @@ export type MagicConfig = {
   readonly providers: Readonly<Record<string, ProviderConfig>>
   /** 网页服务连接（U94）——见 `WebConfig`；键缺省＝两项网页工具都不可用。 */
   readonly web?: WebConfig
-  /** 权限段（阶段 2）——见 `PermissionsConfig`。 */
-  readonly permissions?: PermissionsConfig
   /** 工作区根列表（阶段 3）——见 `WorkspaceRoots`；**键缺省＝启动目录单根**。 */
   readonly workspaceRoots?: WorkspaceRoots
   /** 项目规约段（阶段 3 · U32）——见 `RulesConfig`；**键缺省＝只有两处默认来源**。 */

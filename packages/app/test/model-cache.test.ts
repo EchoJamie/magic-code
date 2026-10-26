@@ -367,7 +367,6 @@ describe('真装配 · 认证轮换', () => {
       // U42：基础路径由 `magic` 一处给（`home:` 那个口已撤）
       config: loadConfig({ path, magic: magicAt(root) }),
       magic: magicAt(root),
-      grantsFile: join(root, 'grants.json'),
       modelFetch,
     })
     const shell = attachShell(assembly.shell)

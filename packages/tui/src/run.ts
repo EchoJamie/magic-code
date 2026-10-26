@@ -20,7 +20,7 @@ import { createElement as h } from 'react'
 import { createShell, type ShellOptions } from './shell.ts'
 import { TuiApp } from './components/app.ts'
 import type { ControlTransport, RunNotice, SessionId, StopScope } from '@magic/contracts'
-import type { RunFeed, ResumeFeed, StopReport } from './shell.ts'
+import type { RunFeed, ResumeFeed, StopReport, SudoFeed } from './shell.ts'
 
 /** 启动入参——传输由装配注入；`boot` 是「订阅之后、放开输入之前」那一跳。 */
 export type RunTuiOptions = {
@@ -112,6 +112,8 @@ export type RunTuiOptions = {
   /** **刚刚发生了一件事**（U50）——完成 / 失败 / 需要你。见 `ShellOptions.notices`。 */
   readonly markRead?: ((ids: readonly string[]) => void) | undefined
   readonly notices?: ((listener: (notice: RunNotice) => void) => void) | undefined
+  /** **sudo 密码组件**（U129）——密码只经这条瞬时通道到 Engine。 */
+  readonly sudo?: SudoFeed | undefined
 }
 
 /** 挂上终端之后的把手。 */
@@ -151,6 +153,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     stopped: options.stopped,
     lines: options.lines,
     notices: options.notices,
+    sudo: options.sudo,
     markRead: options.markRead,
     // **「放开输入」以 `boot` 完成为界**（技术方案 · 装配视图第 5 步 · U25 收敛）——
     // 没有 `boot` 可等的调用方（测试 / 演示）照旧一挂载就能提交。

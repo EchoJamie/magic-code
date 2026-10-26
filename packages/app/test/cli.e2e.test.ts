@@ -188,9 +188,6 @@ describe('入口 magic', () => {
       expect(result.stdout).not.toContain('sk-test-not-a-real-key')
       // 外壳位如实交代（真外壳归 U09）
       expect(result.stdout).toContain('外部工具　未连接（离线检查）')
-      // 权限规则：没配也要**明说**（U76 起那是常态——不在名单里的调用本来就不问，
-      // 不是漏配；说清这件事，用户才不会以为自己少配了什么）
-      expect(result.stdout).toContain('权限规则　0 条 · 被拒 0 条')
       // 工具集：**从契约的冻结行现取**（第 18 轮补锚——此行曾写死「exec（阶段 1 唯一工具）」，
       // 工具集 v1 到站后它成了假话）；七件按表的次序
       expect(result.stdout).not.toContain('工具集')
@@ -209,29 +206,6 @@ describe('入口 magic', () => {
     }
   })
 
-  test('自检报权限规则——**被拒的条目连同缘由**（解析从严，但不静默丢弃）', async () => {
-    const home = tempDir('magic-cli-')
-    mkdirSync(join(home, '.magic'), { recursive: true })
-    writeConfig(
-      join(home, '.magic'),
-      validConfig({
-        dataDir: join(home, 'data'),
-        // 第 2 条键名写错（`pth`）——权限域从严不收；用户得在自检里看得到这件事
-        permissions: { rules: [{ tool: 'exec', op: 'read' }, { tool: 'exec', pth: '/w' }] },
-      }),
-    )
-
-    try {
-      const result = await run(home, '--check')
-
-      expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('权限规则　1 条 · 被拒 1 条')
-      expect(result.stdout).toContain('第 2 条')
-      expect(result.stdout).toContain('pth')
-    } finally {
-      removeDir(home)
-    }
-  })
 
   test('**坏根**退 1 且是「配置有问题：」一行话——不是三段内部栈', async () => {
     // 由头（本轮实测）：`workspaceRoots` 是**用户手写在配置文件里**的东西——路径打错
@@ -488,50 +462,25 @@ describe('入口 magic · 接续（`resume` · 恢复入口）', () => {
   })
 })
 
-describe('入口 magic · 全放行（`--allow-all`）', () => {
-  test('用法里写清了这条入口——**且写清了它只在起会话那一刻给**', async () => {
+describe('入口 magic · 已移除的 `--allow-all`', () => {
+  test('帮助里不再有这条入口', async () => {
     const home = tempDir('magic-cli-')
     try {
       const result = await run(home, '--help')
-
-      expect(result.stdout).toContain('--allow-all')
-      expect(result.stdout).toContain('本次会话跳过所有操作确认')
-      expect(result.stdout).toContain('仅启动时可用')
-      expect(result.stdout).toContain('可跳过改权限和改属主等操作的确认')
-      expect(result.stdout).toContain('不使用 --allow-all 时，改权限和改属主仍需确认')
-      expect(result.stdout).toContain('删除规则仍直接拒绝，不受 --allow-all 影响')
-      expect(result.stdout).not.toContain('包括删除')
-      // ⚠️ **不叫 `mode`**（设计明文：「mode」这个词留给别的用途）——判的是**参数名**，
-      // 故按**词**比、不按子串比：`--model` 那个词里本来就有 `--mode` 这四个字母加两个。
-      expect(result.stdout.split(/\s+/u)).not.toContain('--mode')
+      expect(result.stdout).not.toContain('--allow-all')
+      expect(result.stdout).toContain('默认放行')
+      expect(result.stdout).toContain('rm / shred / srm')
     } finally {
       removeDir(home)
     }
   })
 
-  test('敲得出来——不被当成坏参数（与 `--check` 同用即跑自检）', async () => {
-    const { home } = stageWithConfig()
-
+  test('传入 `--allow-all` 是坏参数', async () => {
+    const home = tempDir('magic-cli-')
     try {
       const result = await run(home, '--allow-all', '--check')
-
-      expect(result.stderr).toBe('')
-      expect(result.exitCode).toBe(0)
-      expect(result.stdout).not.toContain('不认得的参数')
-    } finally {
-      removeDir(home)
-    }
-  })
-
-  test('**不带值**——多出来的那个词照旧是坏参数（它是一个开关，不是一个可点名的设置）', async () => {
-    const home = tempDir('magic-cli-')
-
-    try {
-      // `--allow-all true` 这种写法不该被悄悄吃下：第二个词是**位置参数**，没人认它
-      const result = await run(home, '--allow-all', 'true', '--check')
-
       expect(result.exitCode).toBe(1)
-      expect(result.stderr).toContain('不认得的参数')
+      expect(result.stderr).toContain('不认得的参数「--allow-all」')
     } finally {
       removeDir(home)
     }

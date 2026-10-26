@@ -10,7 +10,6 @@
 
 import { describe, expect, test } from 'bun:test'
 import {
-  DECISION_REQUEST_KIND,
   TOOLSET_V1,
   TRANSIENT_EVENT_KINDS,
   apiKeyEnvVarOf,
@@ -25,8 +24,6 @@ import type {
   CommandRoutes,
   ModelSwitchRequest,
   Content,
-  Decision,
-  DecisionAnswer,
   DecisionId,
   Entry,
   EntryRange,
@@ -37,7 +34,6 @@ import type {
   ExecResult,
   KernelEvent,
   KernelTransport,
-  MagicConfig,
   ModelFinishReason,
   ModelGateway,
   ModelMessage,
@@ -47,7 +43,6 @@ import type {
   ModelTraits,
   ConversationService,
   NewEntry,
-  PermissionGate,
   ProviderConfig,
   RecordId,
   RecordsService,
@@ -157,7 +152,6 @@ export function envelopeConstructsByKind(): void {
 export function commandsConstruct(): void {
   const cmds: readonly Command[] = [
     { type: 'input.submit', text: '看下 playground' },
-    { type: 'decision.answer', id: 7, decision: 'approve' },
     { type: 'turn.interrupt' },
   ]
   void cmds
@@ -423,110 +417,6 @@ export function sandboxReadOptsAreOptional(): void {
   void call
 }
 
-/** 「总是允许」＝答复上的**位**——`DecisionAnswer.remember` 可省（**向后兼容**）。 */
-export function decisionAnswerRememberIsOptional(): void {
-  const oneShot: DecisionAnswer = { type: 'decision.answer', id: 1, decision: 'approve' }
-  const always: DecisionAnswer = { type: 'decision.answer', id: 1, decision: 'approve', remember: true }
-
-  void oneShot
-  void always
-
-  // **不是裁决词表的第三词**——`Decision` 仍是两词，`tool.decision.decision` 用的是同一个表。
-  // @ts-expect-error `Decision` 只有 'approve' / 'reject'
-  const thirdWord: DecisionAnswer = { type: 'decision.answer', id: 1, decision: 'always' }
-  void thirdWord
-}
-
-/** 那个位**两个端口都过得去**：`CommandRoutes.onDecision` 与 `PermissionGate.resolve`。 */
-export function rememberTravelsThroughBothPorts(): void {
-  // 两参写法照收——旧装配的字面一字不动（向后兼容）
-  const legacy: CommandRoutes = {
-    onInput: () => undefined,
-    onInterrupt: () => undefined,
-    onDecision: (id, decision) => void [id, decision],
-    onModelSwitch: () => undefined,
-    onSession: () => undefined,
-    onHistoryRead: () => undefined,
-    onModelList: () => undefined,
-    onModelRefresh: () => undefined,
-    onModelConfigure: () => undefined,
-    onModelOverride: () => undefined,
-    onProviderList: () => undefined,
-    onProviderSave: () => undefined,
-    onProviderRemove: () => undefined,
-    onGrantsList: () => undefined,
-    onGrantsRevoke: () => undefined,
-    onSkillList: () => undefined,
-    onPathList: () => undefined,
-    onPathIdentify: () => undefined,
-    onInputPaste: () => undefined,
-    onImageExport: () => undefined,
-    onMcpList: () => undefined,
-    onMcpReconnect: () => undefined,
-    onPrefsSet: () => undefined,
-    onWebList: () => undefined,
-    onWebConfigure: () => undefined,
-  }
-  const widened: CommandRoutes = {
-    onInput: () => undefined,
-    onInterrupt: () => undefined,
-    onDecision: (id, decision, opts) => void [id, decision, opts?.remember],
-    onModelSwitch: () => undefined,
-    onSession: () => undefined,
-    onHistoryRead: () => undefined,
-    onModelList: () => undefined,
-    onModelRefresh: () => undefined,
-    onModelConfigure: () => undefined,
-    onModelOverride: () => undefined,
-    onProviderList: () => undefined,
-    onProviderSave: () => undefined,
-    onProviderRemove: () => undefined,
-    onGrantsList: () => undefined,
-    onGrantsRevoke: () => undefined,
-    onSkillList: () => undefined,
-    onPathList: () => undefined,
-    onPathIdentify: () => undefined,
-    onInputPaste: () => undefined,
-    onImageExport: () => undefined,
-    onMcpList: () => undefined,
-    onMcpReconnect: () => undefined,
-    onPrefsSet: () => undefined,
-    onWebList: () => undefined,
-    onWebConfigure: () => undefined,
-  }
-
-  // 端口面持有 → 三参调用成立（这正是装配把位递给权限域的那一跳）
-  const gate: PermissionGate = {
-    decide(call: ToolCall): Promise<Decision> {
-      void call
-      return Promise.resolve('approve')
-    },
-    /** 实现面**可以少写参数**——端口上第三参是可选的 */
-    resolve(requestId: DecisionId, decision: Decision): void {
-      void [requestId, decision]
-    },
-  }
-
-  void legacy
-  void widened
-  void gate.resolve(1, 'approve') // 不给＝一次性
-  void gate.resolve(1, 'approve', { remember: true }) // 给了＝批准 ＋ 记住
-}
-
-/** 权限段——`MagicConfig.permissions.rules` 是阶段 2 的加键（缺省＝无规则＝一律问）。 */
-export function configCarriesPermissionRules(): void {
-  const bare: MagicConfig = { models: {}, providers: {} }
-  const withRules: MagicConfig = {
-    models: {},
-    providers: {},
-    // 条目形态**不在这里复述**——权威是权限域的 `parseRules`（故此处是原值，交它解析）
-    permissions: { rules: [{ tool: 'exec', op: 'read' }] },
-  }
-
-  void bare
-  void withRules
-}
-
 // —— 第 17 轮补锚（阶段 2 波次 2 · 换模型命令 ＋ 重试事件）——
 
 /** `model.switch` ＝**第四支命令**——两件可选、都不给也合法（内核对空请求报「不知道换什么」）。 */
@@ -552,7 +442,6 @@ export function routesCarryModelSwitch(): void {
   const routes: CommandRoutes = {
     onInput: () => undefined,
     onInterrupt: () => undefined,
-    onDecision: () => undefined,
     onModelSwitch: (request: ModelSwitchRequest) => void [request.choice, request.reasoning],
     onSession: () => undefined,
     onHistoryRead: () => undefined,
@@ -563,8 +452,6 @@ export function routesCarryModelSwitch(): void {
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
-    onGrantsList: () => undefined,
-    onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
@@ -698,9 +585,6 @@ describe('事件契约', () => {
       // 表在内存里而不是库里；新锚多一格，判据一个字没松）。`/model` 是反复看的动作，
       // 每次往库里留一笔「问过」只会污染观测；「换过什么模型」另有 `model.switched` 落着。
       'model.catalog',
-      // U22：授权名录同列——**又是同一条判据**（表在盘上的 `grants.json` 里，不在库里），
-      // 且 `/grants` 也是反复看的抽屉。改动的痕不在「谁看过名录」上，而在文件本身少了一条。
-      'grants.catalog',
       // U33 · 终端入口：技能目录同列——**同一条判据的第四处**（目录在盘上，不在库里），
       // 且 `/skills` 也是反复看的动作（选择器）。当时用了哪一份材料另有痕：
       // `user` 条目的载荷（名字 / 来源 / 正文），重放读的是那份。
@@ -836,12 +720,6 @@ describe('配置契约', () => {
     expect(expandHome('rel/path', '/home/u')).toBe('rel/path')
     // 中段 `~` 不是前导——不展开
     expect(expandHome('/a/~/b', '/home/u')).toBe('/a/~/b')
-  })
-})
-
-describe('控制面契约（迁移忠实性）', () => {
-  test('裁决配对的事件侧 kind 不变', () => {
-    expect(DECISION_REQUEST_KIND).toBe('tool.decision.request')
   })
 })
 

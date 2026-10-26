@@ -15,7 +15,6 @@ import type {
   EventDataOf,
   EventKind,
   KernelEvent,
-  RecordId,
 } from '@magic/contracts'
 // 测试层·非域——信封铸造桩（`stamp` 的构造面断言全仓只此一处，见该包文件头）
 import { makeTestStamper } from '@magic/faux'
@@ -87,12 +86,11 @@ export type ScriptedKernel = {
 const SCRIPT_MODEL = 'faux-kernel'
 
 /**
- * 假内核——收到 `input.submit` 就演一出「模型流式 → 工具 → 审批 → 执行 → 收尾」：
+ * 假内核——收到 `input.submit` 就演一出「模型流式 → 工具 → 执行 → 收尾」：
  *
  * 1. `turn.start` · 思考流 · 正文流 · 工具调用流（toolcall 通道）；
- * 2. `tool.call` → `tool.decision.request`（带材料与轻重）——**等答复**；
- * 3. 答复后 `tool.decision` → `tool.output.delta` 流 → `tool.result`；
- * 4. 收尾：正文流 · `model.usage` · `turn.end(settled)`。
+ * 2. `tool.call` → `tool.decision` → `tool.output.delta` 流 → `tool.result`；
+ * 3. 收尾：正文流 · `model.usage` · `turn.end(settled)`。
  *
  * `turn.interrupt` → `turn.end(aborted)`，在跑的脚本作废（幂等：无脚本在跑时忽略）。
  *
@@ -109,8 +107,6 @@ export function createScriptedKernel(options: ScriptedKernelOptions = {}): Scrip
   /** 在跑的脚本被作废（中断 / 停掉）。 */
   let cancelled = false
   let running = false
-  /** 待答复的调用——`null` 表示没有悬着的询问。 */
-  let hangingCall: RecordId | null = null
 
   /** 铸一发并投给订阅者（造事件走桩的铸造器——`id` 单调、`at` 固定）。 */
   const emit = <K extends EventKind>(kind: K, data: EventDataOf[K]): KernelEvent => {
@@ -169,52 +165,20 @@ export function createScriptedKernel(options: ScriptedKernelOptions = {}): Scrip
       () => {
         // `tool.call` 的 id 即调用链的 `call`——后续四处同指它
         const call = emit('tool.call', { name: 'exec', args: { cmd: 'ls' } }).id
-        hangingCall = call
-        emit('tool.decision.request', {
-          call,
-          name: 'exec',
-          material: '在工作区根执行：ls',
-          weight: 'heavy',
-        })
+        emit('tool.decision', { call, decision: 'approve', decider: 'user', elapsedMs: 1200 })
+        emit('tool.output.delta', { call, channel: 'stdout', text: 'README.md\n' })
+        emit('tool.output.delta', { call, channel: 'stdout', text: 'packages\n' })
+        emit('tool.result', { call, ok: true, output: { text: 'README.md\npackages\n' } })
+        emit('model.delta', { channel: 'text', text: '看完了：工作区里是 README.md 与 packages。' })
+        settle()
       },
     ])
   }
 
-  const onAnswer = (approved: boolean): void => {
-    const call = hangingCall
-    if (call === null) return
-
-    hangingCall = null
-
-    script([
-      () =>
-        emit('tool.decision', {
-          call,
-          decision: approved ? 'approve' : 'reject',
-          decider: 'user',
-          elapsedMs: 1200,
-        }),
-      ...(approved
-        ? [
-            () => emit('tool.output.delta', { call, channel: 'stdout' as const, text: 'README.md\n' }),
-            () => emit('tool.output.delta', { call, channel: 'stdout' as const, text: 'packages\n' }),
-            () => emit('tool.result', { call, ok: true, output: { text: 'README.md\npackages\n' } }),
-          ]
-        : [() => emit('tool.result', { call, ok: false, output: { text: '（未获批准，未执行）' } })]),
-      () =>
-        emit('model.delta', {
-          channel: 'text',
-          text: approved ? '看完了：工作区里是 README.md 与 packages。' : '好，那就不跑。',
-        }),
-      settle,
-    ])
-  }
-
   const onInterrupt = (): void => {
-    if (!running && hangingCall === null) return
+    if (!running) return
 
     cancelled = true
-    hangingCall = null
     if (timer !== undefined) clearTimeout(timer)
     emit('turn.end', { reason: 'aborted' })
   }
@@ -223,7 +187,6 @@ export function createScriptedKernel(options: ScriptedKernelOptions = {}): Scrip
     shell: {
       send: (command: Command) => {
         if (command.type === 'input.submit') { if(command.local!==true)onInput(command.text) }
-        else if (command.type === 'decision.answer') onAnswer(command.decision === 'approve')
         else onInterrupt()
       },
       subscribe: (listener) => {

@@ -22,7 +22,6 @@ import type {
   CommandRoutes,
   ControlHub,
   ControlTransport,
-  DecisionId,
   EventEnvelope,
   EventKind,
   EventSink,
@@ -59,22 +58,6 @@ test('关闭控制面停止新准入，并等在途异步操作落定', async ()
 
 // —— 类型层探针（tsc 校验；`bun test` 只剥类型，不做检查）——
 
-/** 命令按 `type` 收窄——裁决答复的配对键是 `id`。 */
-export function commandNarrowsByType(): void {
-  const answer: Command = { type: 'decision.answer', id: 42, decision: 'approve' }
-
-  if (answer.type === 'decision.answer') {
-    const id: DecisionId = answer.id
-    const decision: 'approve' | 'reject' = answer.decision
-    void id
-    void decision
-  }
-
-  // @ts-expect-error 裁决答复必须带配对键 id（请求事件的 id）
-  const missingId: Command = { type: 'decision.answer', decision: 'approve' }
-  void missingId
-}
-
 /** 命令目录穷尽——新增 kind 时此处缺返回，tsc 报错。 */
 export function commandSubjectOf(command: Command): string {
   switch (command.type) {
@@ -89,8 +72,6 @@ export function commandSubjectOf(command: Command): string {
     case 'input.manage': return { kind: 'input.manage', command } as never
     case 'input.submit':
       return command.text
-    case 'decision.answer':
-      return `${command.id}：${command.decision}`
     case 'turn.interrupt':
       return '中断'
     case 'model.switch':
@@ -110,14 +91,6 @@ export function commandSubjectOf(command: Command): string {
     case 'model.list':
       // D10 读侧第二支——无参：问的就是「都有哪些」
       return '列模型条目'
-    case 'grants.list':
-      // U22 授权读侧——无参：问的就是「本工作区记着哪些、别处还有哪些节」
-      return '列授权名录'
-    case 'grants.revoke':
-      // U22 撤销——两形共一个命令：给了 index 撤一条，只给 workspace 撤一整节
-      return `撤销授权：${command.workspace ?? '（本工作区）'} / ${
-        command.index === undefined ? '（整节）' : `第 ${command.index} 条`
-      }`
     case 'skills.list':
       // U33 技能读侧——无参：问的就是「都发现了哪些」
       return '列技能目录'
@@ -186,11 +159,11 @@ export function commandSubjectOf(command: Command): string {
  * 本探针是 M03 判据「消费不走强转」的编译期证据。
  */
 export function kernelEventNarrowsByKind(event: KernelEvent): number {
-  if (event.kind === 'tool.decision.request') {
-    return event.data.call // 自动收窄——无 `as`
-  }
   if (event.kind === 'tool.decision') {
-    return event.data.elapsedMs // 另一个 kind：同样自动收窄
+    return event.data.elapsedMs // 自动收窄——无 `as`
+  }
+  if (event.kind === 'tool.call') {
+    return event.data.name.length // 另一个 kind：同样自动收窄
   }
   return 0
 }
@@ -228,7 +201,6 @@ export function hubFaceRealizesPort(): void {
   port.bind({
     onInput: () => undefined,
     onInterrupt: () => undefined,
-    onDecision: () => undefined,
     onModelSwitch: () => undefined,
     onSession: () => undefined,
     onHistoryRead: () => undefined,
@@ -239,8 +211,6 @@ export function hubFaceRealizesPort(): void {
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
-    onGrantsList: () => undefined,
-    onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
@@ -271,7 +241,6 @@ export function routesAreContractShape(): void {
   const routes: CommandRoutes = {
     onInput: (input) => void input.text,
     onInterrupt: () => undefined,
-    onDecision: (id, decision) => void [id, decision],
     onModelSwitch: (request) => void [request.choice, request.reasoning],
     onSession: (command) => void command.type,
     onHistoryRead: () => undefined,
@@ -282,8 +251,6 @@ export function routesAreContractShape(): void {
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
-    onGrantsList: () => undefined,
-    onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
@@ -317,7 +284,6 @@ function routesWith(overrides: Partial<ControlRoutes>): ControlRoutes {
   return {
     onInput: () => undefined,
     onInterrupt: () => undefined,
-    onDecision: () => undefined,
     onModelSwitch: () => undefined,
     onSession: () => undefined,
     onHistoryRead: () => undefined,
@@ -328,8 +294,6 @@ function routesWith(overrides: Partial<ControlRoutes>): ControlRoutes {
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
-    onGrantsList: () => undefined,
-    onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
@@ -428,7 +392,7 @@ describe('通道回环——命令进 · 事件出', () => {
 // —— 命令进（外壳 → 内核）——
 
 describe('命令进——外壳 → 内核', () => {
-  test('三条命令原样投给路由，且 JSON 往返等价', () => {
+  test('两条命令原样投给路由，且 JSON 往返等价', () => {
     const hub = createControlHub()
     const { kernel, shell } = createInProcessTransportPair()
     const got: Command[] = []
@@ -437,52 +401,19 @@ describe('命令进——外壳 → 内核', () => {
       routesWith({
         onInput: (input) => got.push({ type: 'input.submit', ...input }),
         onInterrupt: () => got.push({ type: 'turn.interrupt' }),
-        onDecision: (id, decision) => got.push({ type: 'decision.answer', id, decision }),
       }),
     )
     hub.attach(kernel)
 
     shell.send({ type: 'input.submit', text: '把 README 读一遍' })
-    shell.send({ type: 'decision.answer', id: 42, decision: 'approve' })
     shell.send({ type: 'turn.interrupt' })
 
     const expected: Command[] = [
       { type: 'input.submit', text: '把 README 读一遍' },
-      { type: 'decision.answer', id: 42, decision: 'approve' },
       { type: 'turn.interrupt' },
     ]
     expect(got).toEqual(expected)
     expect(JSON.parse(JSON.stringify(got))).toEqual(expected)
-  })
-
-  test('「总是允许」**原样转手**——控制域不翻译，只把位递给路由', () => {
-    const hub = createControlHub()
-    const { kernel, shell } = createInProcessTransportPair()
-    // 路由侧记下**收到的第三参**——这正是权限域 `resolve` 会拿到的那一件
-    const seen: { readonly id: DecisionId; readonly decision: string; readonly remember: boolean | undefined }[] = []
-
-    hub.bind(
-      routesWith({
-        onDecision: (id, decision, opts) => seen.push({ id, decision, remember: opts?.remember }),
-      }),
-    )
-    hub.attach(kernel)
-
-    shell.send({ type: 'decision.answer', id: 42, decision: 'approve', remember: true })
-    shell.send({ type: 'decision.answer', id: 43, decision: 'approve' })
-
-    // 给了＝递下去；没给＝`undefined`（**不替用户补 `false`**——控制域没有语义可翻）
-    expect(seen).toEqual([
-      { id: 42, decision: 'approve', remember: true },
-      { id: 43, decision: 'approve', remember: undefined },
-    ])
-  })
-
-  test('带 `remember` 的答复照过可序列化门（**布尔位**，不是类实例 / undefined）', () => {
-    // 通道投递前逐条校验（JSON 往返无损）——`remember: true` 必须安然通过。
-    // 反面：若有人图省事写成 `remember: undefined`，那一位会被拒投（丢键＝有损）。
-    expect(isSerializable({ type: 'decision.answer', id: 42, decision: 'approve', remember: true })).toBe(true)
-    expect(isSerializable({ type: 'decision.answer', id: 42, decision: 'approve', remember: undefined })).toBe(false)
   })
 
   test('换模型**原样转手**——控制域不认识注册表，也不知道换得成换不成', () => {
@@ -565,42 +496,6 @@ describe('命令进——外壳 → 内核', () => {
       'identify:/ws/shot.png:false',
       'identify:/tmp/x.png:true',
     ])
-  })
-
-  test('裁决答复按**请求事件 id** 配对——与 `call` 字段两 id 不混', () => {
-    const hub = createControlHub()
-    const { kernel, shell } = createInProcessTransportPair()
-    const answers: [DecisionId, string][] = []
-    let requestId = 0
-
-    hub.bind(routesWith({ onDecision: (id, decision) => answers.push([id, decision]) }))
-    hub.attach(kernel)
-
-    shell.subscribe((event) => {
-      if (event.kind !== 'tool.decision.request') return
-      // **自动收窄**——`event.data` 已是该 kind 的载荷，无 `as`（旧写法须强转）
-      requestId = event.id
-      expect(event.data.call).toBe(7) // 调用链 id ≠ 请求事件 id
-      expect(event.data.weight).toBe('heavy')
-    })
-
-    // 内核出请求事件——id＝配对键 42；data.call＝该次调用的 tool.call 事件 id 7
-    hub.emit(
-      envelope(42, 'tool.decision.request', {
-        call: 7,
-        name: 'write',
-        material: '覆盖 playground/a.txt（整写）',
-        weight: 'heavy',
-      }),
-    )
-    expect(requestId).toBe(42)
-
-    // 外壳按**请求事件 id** 答复（不是按 call）
-    shell.send({ type: 'decision.answer', id: requestId, decision: 'approve' })
-
-    expect(answers).toEqual([[42, 'approve']])
-    // 误用 call 配对时 id 会是 7——此处明证不是
-    expect(answers).not.toEqual([[7, 'approve']])
   })
 
   test('未装路由＝丢弃不抛（与无订阅方同一条纪律）', () => {
@@ -706,13 +601,8 @@ describe('可序列化守护（消息是纯数据）', () => {
       { type: 'input.submit', text: 'x' },
       { type: 'turn.interrupt' },
       envelope(1, 'tool.call', { name: 'exec', args: { cmd: 'ls', flags: ['-la'], depth: 1 } }),
-      envelope(2, 'tool.decision.request', {
-        call: 7,
-        name: 'write',
-        material: '',
-        weight: 'light',
-      }),
-      Object.freeze({ type: 'decision.answer', id: 1, decision: 'reject' }),
+      envelope(2, 'tool.decision', { call: 7, decision: 'reject', decider: 'kernel', elapsedMs: 0 }),
+      Object.freeze({ type: 'turn.interrupt' }),
     ]
 
     for (const message of messages) expect(isSerializable(message)).toBe(true)
@@ -802,11 +692,11 @@ describe('跨进程留缝', () => {
     hub.attach(kernel)
     shell.subscribe((event) => seen.push(event))
 
-    const request = envelope(42, 'tool.decision.request', {
+    const request = envelope(42, 'tool.decision', {
       call: 7,
-      name: 'write',
-      material: '覆盖 playground/a.txt',
-      weight: 'heavy',
+      decision: 'reject',
+      decider: 'kernel',
+      elapsedMs: 0,
     })
 
     // 模拟跨设备：内核侧序列化 → 文本过线 → 外壳侧 parse 回消息

@@ -30,7 +30,6 @@ import type {
   ModelInfoSnapshot,
   ModelSwitchRequest,
 } from '@magic/contracts'
-import { parseRules } from '@magic/permission'
 import { createProjectRules, writeClipboardText } from '@magic/execution'
 import { createModelRegistry } from '@magic/model'
 import type { ModelRegistry } from '@magic/model'
@@ -135,6 +134,10 @@ export async function terminalOptions(inputs: TerminalInputs): Promise<RunTuiOpt
     // **刚刚发生了一件事**（U50）——完成 / 失败 / 需要你；三类之外管理者一个都不发
     markRead: (ids) => client.markRead(ids),
     notices: (listener) => client.onNotice((notice) => listener(notice)),
+    sudo: {
+      subscribe: (listener) => client.onSudo(listener),
+      answer: (requestId, password) => client.answerSudo(requestId, password),
+    },
     ...(inputs.session === undefined ? {} : { openingSession: inputs.session }),
     // **管理者不在了 ⇒ 交给外壳如实说**（见 `run.ts` 的 `onGone`）：留在界面、说清失联，
     // **不自动退场**（U100）。连接断的那一刻起，这一屏收不到实况、命令也发不出去——
@@ -335,14 +338,6 @@ async function startupReceipts(inputs: TerminalInputs): Promise<readonly string[
    */
   const unread = unreadSummaryOf(client.unread)
   if (unread !== undefined) said.push(unread)
-  const rejected = parseRules(loaded.config.permissions?.rules ?? []).rejected
-
-  if (rejected.length > 0) {
-    said.push(
-      `配置里有 ${rejected.length} 条权限规则读不懂（未生效）——${loaded.path}（\`--check\` 看缘由）`,
-    )
-  }
-
   // 项目规约**只数「坏了」那一类**（取舍那类是产品按设计做的选择，报它就成了噪音
   // ——口径与 `Assembly.notices` 逐字同）
   try {
@@ -405,10 +400,12 @@ export function terminalConnection(
     onStopped: feed((client, listener) => client.onStopped(listener)),
     onNotice: feed((client, listener) => client.onNotice(listener)),
     onLine: feed((client, listener) => client.onLine(listener)),
+    onSudo: feed((client, listener) => client.onSudo(listener)),
     onClose: feed((client, listener) => client.onClose(listener), true),
     send: (command) => current.send(command),
     stop: (session, scope) => current.stop(session, scope),
     markRead: (ids) => current.markRead(ids),
+    answerSudo: (requestId, password) => current.answerSudo(requestId, password),
     close: () => { closed = true; current.close() },
   }
   return {

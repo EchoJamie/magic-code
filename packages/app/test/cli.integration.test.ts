@@ -10,16 +10,16 @@ import { reopenApp } from '../src/run/spawn-manager.ts'
 
 describe('resident-cli 短路径与终端接回参数', () => {
 
-  test('--open-request UUID 与 session/switch/allow-all 通过真实 hello 转交，不伪造 session', async () => {
+  test('--open-request UUID 与 session/switch 通过真实 hello 转交，不伪造 session', async () => {
     const g = cliGround()
     const server = fakeApp(g)
     const request = 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE'
     try {
       g.publish()
-      const parsed = parseArgs(['resume', 'session-real', '--open-request', request, '--model', 'spell', '--allow-all'])
+      const parsed = parseArgs(['resume', 'session-real', '--open-request', request, '--model', 'spell'])
       const connection = await connectTerminal(parsed, { home: g.home, env: { PATH: '/work/bin', API_KEY: 'do-not-send' } })
       const hello = server.messages.find((message) => message.t === 'hello')!
-      expect(hello).toMatchObject({ t: 'hello', session: 'session-real', openRequest: request, switch: { choice: 'spell' }, allowAll: true })
+      expect(hello).toMatchObject({ t: 'hello', session: 'session-real', openRequest: request, switch: { choice: 'spell' } })
       expect(JSON.stringify(hello)).not.toContain('do-not-send')
       connection.client.close()
 

@@ -58,13 +58,6 @@ const ENTER: ShellKey = { kind: 'enter' }
  */
 const ASK_SKILLS: Command = { type: 'skills.list' }
 
-/** 挂一条裁决（接管）。 */
-function ask(shell: ReturnType<typeof live>, weight: 'light' | 'heavy' = 'light'): void {
-  shell.spy.emit(
-    event('tool.decision.request', { call: 71, name: 'exec', material: '命令 ls', weight }, { id: 88 }),
-  )
-}
-
 // ══ 交代 ═════════════════════════════════════════════════════════════
 
 describe('交代（输入 → input.submit）', () => {
@@ -192,11 +185,10 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     const routes = [
       ['/resume ', ['session.list']],
       ['/model ', ['model.list']],
-      ['/grants ', ['grants.list']],
       ['/skills ', ['skills.list']],
       ['/mcp ', ['mcp.list']],
       ['/web ', ['model.list', 'web.list']],
-      ['/config ', ['model.list', 'grants.list', 'mcp.list', 'web.list']],
+      ['/config ', ['model.list', 'mcp.list', 'web.list']],
     ] as const
     for (const [text, expected] of routes) {
       const app = live()
@@ -213,123 +205,6 @@ describe('slash（纯输出型 / 交互配置型）', () => {
         app.shell.dispose()
       }
     }
-  })
-})
-
-// ══ 接管 ═════════════════════════════════════════════════════════════
-
-describe('接管（裁决挂着时占住输入框）', () => {
-  test('选中批准后 Enter 发一次答复，带请求事件 id', () => {
-    const app = live()
-    ask(app)
-
-    app.press({ kind: 'down' }); app.press({ kind: 'enter' })
-    expect(app.commands()).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
-  })
-
-  test('选中持久授权后 Enter 带上 remember 位', () => {
-    const app = live()
-    ask(app, 'light')
-
-    app.press({ kind: 'down' }); app.press({ kind: 'down' }); app.press({ kind: 'enter' })
-    expect(app.commands()).toEqual([
-      { type: 'decision.answer', id: 88, decision: 'approve', remember: true },
-    ])
-  })
-
-  test('必闸类按 `a` ——**不发命令**，当场说清缘由', () => {
-    const app = live()
-    ask(app, 'heavy')
-
-    app.press({ kind: 'char', char: 'a' })
-    expect(app.commands()).toEqual([])
-    expect(app.view().flash).toContain('先答复')
-  })
-
-  test('外部操作按 `a`——**不发命令**，缘由按它自己的说法（效果由服务器决定）', () => {
-    const app = live()
-    app.spy.emit(
-      event(
-        'tool.decision.request',
-        { call: 71, name: 'fake / echo', material: '参数：{}', weight: 'heavy', external: true },
-        { id: 88 },
-      ),
-    )
-
-    app.press({ kind: 'char', char: 'a' })
-    expect(app.commands()).toEqual([])
-    expect(app.view().flash).toContain('先答复')
-    // 说清「这次批的是哪一件」：`y` 在外部件上答的是**这一次**，不是本机的一条长期授权。
-    // **原锚**「按 ○ 批准这一次」（带键位写法）；**为何变**（返工 B）：一屏键位只说一次，
-    // 卡上已经写着键位，回执里就不再列一遍；**新锚**只说「只能批准这一次」这件事本身。
-    expect(app.view().flash).toContain('此刻不管用')
-  })
-
-  test('**草稿不丢**——接管时收起来、答完原样归还、不自动发送', () => {
-    const app = live()
-
-    app.type('打了一半')
-    ask(app)
-    expect(app.view().draft).toBe('')
-    // 草稿**连同插入点与它里面的引用**一起收着（返工轮：插入点不再一律摆到末尾；
-    // U36：引用也是那份草稿的一部分——归还时少一件就是把用户的草稿改掉了一半，见 `Stashed`）
-    expect(app.view().stashed).toEqual({ draft: '打了一半', caret: 4, refs: [] })
-
-    app.press({ kind: 'down' }); app.press({ kind: 'enter' })
-    // 答复发出去；**裁决落定那一刻**（内核回 `tool.decision`）才归还草稿
-    expect(app.commands()).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
-    expect(app.view().dock.kind).toBe('decision')
-
-    app.spy.emit(event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 900 }))
-    expect(app.view().draft).toBe('打了一半')
-    expect(app.view().stashed).toBeNull()
-    expect(app.view().dock.kind).toBe('input')
-    // **不自动发送**——归还的草稿仍在输入框里，没被发出去
-    expect(app.commands()).toHaveLength(1)
-  })
-
-  test('**不静默吞键**——按了别的字，忽略但当场说一句', () => {
-    const app = live()
-    ask(app)
-
-    app.press({ kind: 'char', char: 'x' })
-    expect(app.commands()).toEqual([])
-    expect(app.view().flash).toContain('先答复')
-    expect(app.view().draft).toBe('') // 那一下没有进草稿
-  })
-
-  test('审批不接受粘贴；Esc 返回输入，Tab 可重新进入', () => {
-    const app = live()
-    ask(app)
-
-    app.press({ kind: 'paste', text: '粘一段' })
-    expect(app.view().draft).toBe('')
-    expect(app.view().flash).toContain('粘不了')
-
-    app.press({ kind: 'escape' })
-    expect(app.view().dock.kind).toBe('input')
-    expect(app.commands()).toEqual([])
-    app.press({ kind: 'tab' })
-    expect(app.view().dock.kind).toBe('decision')
-  })
-
-  test('多件逐件问——答完一件接着下一件，草稿一直收着', () => {
-    const app = live()
-
-    app.type('草稿')
-    ask(app)
-    app.press({ kind: 'down' }); app.press({ kind: 'enter' })
-
-    // 第二件到（内核接着问）
-    app.spy.emit(
-      event('tool.decision.request', { call: 72, name: 'write', material: 'm', weight: 'light' }, { id: 89 }),
-    )
-    expect(app.view().dock.kind).toBe('decision')
-    expect(app.view().stashed).toEqual({ draft: '草稿', caret: 2, refs: [] }) // 只收一次
-
-    app.press({ kind: 'char', char: 'n' })
-    app.spy.emit(event('tool.decision', { call: 72, decision: 'reject', decider: 'user', elapsedMs: 100 }))
-    expect(app.view().draft).toBe('草稿')
   })
 })
 
@@ -604,16 +479,6 @@ describe('Ctrl+C（空闲按两次退出 · 有在途工作开三选）', () => 
     expect(busy.commands()).toEqual([])
   })
 
-  test('接管中按 Ctrl+C ⇒ 开三选（全局键，接管不吞），**不替用户答、也不替用户中断**', () => {
-    const app = live()
-    ask(app)
-
-    expect(app.press({ kind: 'ctrl+c' }).exit).toBe(false)
-    expect(app.view().dock).toMatchObject({ kind: 'picker', picker: { source: 'task' } })
-    expect(app.commands()).toEqual([])
-    // 草稿照旧收在 `stashed` 里（接管那一套没被动过）——答完/返回才归还
-    expect(app.view().stashed).not.toBeNull()
-  })
 })
 
 // ══ `/exit`（U52）══════════════════════════════════════════════════════
@@ -822,20 +687,6 @@ describe('/exit（停掉这条会话，然后退出界面）', () => {
     expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt', text: '认得的用法：/exit（不带参数）' })
   })
 
-  /**
-   * **接管（裁决挂着、这一轮在等你答复）期间发不出去**——回车归答复，那条是既有接管
-   * 规矩（敲进去的每个字都当答复键判，非答复键当场说一句），本单不动它。
-   *
-   * 这一条钉的是**边界**，不是「/exit 不好使」：要退，`ctrl+c` 照旧能中断这一轮
-   * （见上面那条「全局键，接管不吞」），中断之后再 `/exit` 就走——两件事各归各的入口。
-   */
-  test('接管期间敲不进去——回车归答复（既有接管规矩）', () => {
-    const app = live()
-    ask(app)
-
-    expect(run(app, '/exit').exit).toBe(false)
-    expect(app.view().draft).toBe('') // 那几个字进不了草稿（都当答复键走了）
-  })
 })
 
 // ══ 重建 ═════════════════════════════════════════════════════════════

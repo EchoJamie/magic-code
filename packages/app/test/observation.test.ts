@@ -47,11 +47,6 @@ describe('无执行者的真实只读目录', () => {
     mkdirSync(skillDir, { recursive: true })
     writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: local\ndescription: 本地真实技能\n---\n正文不进入目录\n')
     writeFileSync(join(g.workspace, 'hello.ts'), 'export const hello = 1')
-    const stale = join(g.root, 'removed')
-    writeFileSync(join(g.base, 'grants.json'), JSON.stringify({ version: 1, workspaces: {
-      [g.workspace]: [{ tool: 'web_fetch', op: ['outbound'], host: 'example.com', grantedAt: 1 }],
-      [stale]: [{ tool: 'web_fetch', op: ['outbound'], host: 'old.example.com', grantedAt: 1 }],
-    } }))
     g.store.attention.put({ id: 'pending', session: 'no-session-yet', fact: 'needs-input', kind: 'needs-you', at: 1, unread: true, delivered: false })
     const before = bytesUnder(g.root)
     const fetch = spyOn(globalThis, 'fetch').mockImplementation((() => { throw new Error('只读不能网络请求') }) as unknown as typeof globalThis.fetch)
@@ -68,9 +63,6 @@ describe('无执行者的真实只读目录', () => {
       expect(JSON.stringify(skills)).not.toContain('正文不进入目录')
       const paths = await answer({ type: 'paths.list', query: 'hello' }, g.context, 'paths.catalog')
       expect(paths.rows.some((row) => row.path.endsWith('hello.ts'))).toBe(true)
-      const grants = await answer({ type: 'grants.list' }, g.context, 'grants.catalog')
-      expect(grants.grants).toHaveLength(1)
-      expect(grants.stale).toEqual([stale])
       const servers: ObservationContext['mcp'] = [{ server: 'real-probe', transport: 'stdio', state: { status: 'available' }, tools: ['echo'], rejected: [{ tool: 'bad name', reason: '真实拒收原因' }] }]
       expect(await answer({ type: 'mcp.list' }, { ...g.context, mcp: servers }, 'mcp.catalog')).toEqual({ servers })
       await Bun.sleep(0)
@@ -118,10 +110,6 @@ describe('无执行者的真实只读目录', () => {
     const path = join(g.workspace, '.magic/skills/late')
     mkdirSync(path, { recursive: true }); writeFileSync(join(path, 'SKILL.md'), '---\nname: late\ndescription: 后到的技能\n---\n')
     expect((await answer({ type: 'skills.list' }, g.context, 'skills.catalog')).skills[0]?.name).toBe('late')
-    writeFileSync(join(g.base, 'grants.json'), '{broken')
-    const before = readFileSync(join(g.base, 'grants.json'), 'utf8')
-    expect((await answer({ type: 'grants.list' }, g.context, 'grants.catalog')).note).toContain('授权文件读不懂')
-    expect(readFileSync(join(g.base, 'grants.json'), 'utf8')).toBe(before)
   })
 
   test('观察面切换按目标缓存拒绝不支持档位，换供应商或型号不沿用旧思考；不联网或改原选择', async () => {
@@ -151,7 +139,7 @@ describe('无执行者的真实只读目录', () => {
     } finally { fetch.mockRestore() }
   })
 
-  test('所选会话的工作区授权历史真实可见，查询不分配记录id或改变未读', async () => {
+  test('所选会话的工作区裁决历史真实可见，查询不分配记录id或改变未读', async () => {
     const g = ground()
     const writer = createRecordsStore({ dataDir: g.dataDir, workspace: [g.workspace] })
     cleanups.push(() => writer.close())
@@ -163,13 +151,9 @@ describe('无执行者的真实只读目录', () => {
     } })
     expect(g.store.decisionHistory()).toEqual({ total: 0, auto: 0, kernel: 0 })
     expect(g.store.decisionHistory([g.workspace])).toEqual({ total: 1, auto: 1, kernel: 0 })
-    const selected = { ...g.context, session: 'existing', cwd: g.root }
     const before = bytesUnder(g.root)
     // ⚠️ 这条会话里那条带图片引用的交代（`blob` 是它那份字节）**照旧躺着**——U111 撤掉
     // `/attachments` 撤的是那条命令与它的读面，材料本身仍在记录里（看它在 `ctrl+o` 那一屏）。
-    const grants = await answer({ type: 'grants.list' }, selected, 'grants.catalog')
-    expect(grants.workspace).toBe(g.workspace)
-    expect(grants.history).toEqual({ total: 1, auto: 1, kernel: 0 })
     expect(bytesUnder(g.root)).toEqual(before)
     expect(await g.store.listSessions()).toHaveLength(1)
   })
@@ -180,7 +164,6 @@ describe('无执行者的真实只读目录', () => {
     for (const command of [
       { type: 'session.list' }, { type: 'history.read' }, { type: 'model.switch', choice: 'default' },
       { type: 'mcp.reconnect', server: 'real' }, { type: 'input.submit', text: '明确输入' },
-      { type: 'grants.revoke', index: 0 },
     ] satisfies Command[]) expect(await query(command, g.context)).toBeUndefined()
     await expect(query({ type: 'model.list' }, g.context)).rejects.toThrow('config.json')
     expect(await g.store.listSessions()).toEqual([])

@@ -33,16 +33,11 @@ const handle = await runTui({ transport: kernel.shell })
 if (!scripted) {
   console.log('假内核已就位——交代一件事试试（Ctrl+C 退出 / 工作中 Ctrl+C 中断）。')
 } else {
-  // 无人值守：经会话壳走一遍「交代 → 审批（自动批准）→ 结果」，然后收摊。
+  // 无人值守：经会话壳走一遍「交代 → 工具默认放行 → 结果」，然后收摊。
   // 注意：这条路绕开了键盘（键盘那一跳由 test/interaction.test.ts 覆盖）。
-  const done = handle.shell.subscribe(() => {
-    if (handle.shell.getView().pending !== null) handle.shell.answer('approve')
-  })
-
   handle.shell.submit('看下工作区')
 
   setTimeout(() => {
-    done()
     handle.unmount()
     kernel.stop()
     // Ink 收摊后 stdin 仍挂着监听，显式退出更干净

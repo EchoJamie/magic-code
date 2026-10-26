@@ -89,9 +89,6 @@ function stage(): {
         cwd: workspace,
         config: loadConfig({ path: configPath, magic: magicAt(root) }),
         magic: magicAt(root),
-        // **授权文件也落沙地**（照 `support.ts` 的 `makeStage`）：缺省 `GRANTS_FILE` 是
-        // `~/.magic/grants.json`——那是**用户真的那份**，装配级用例一律不许碰它
-        grantsFile: join(root, 'magic', 'grants.json'),
         prompt: { platform: 'darwin', date: '2026-09-20' },
         modelFetch: endpoint(),
         ...(options.modelGateway === undefined ? {} : { modelGateway: options.modelGateway }),

@@ -66,7 +66,7 @@ def active_work(app, room, control, cli, env):
             reader = client.makefile('rb')
             def send(value): client.sendall((json.dumps(value) + '\n').encode())
             send({'t': 'hello', 'role': 'client', **{key: record[key] for key in ['protocol', 'version', 'source']},
-                  'cwd': str(room), 'allowAll': True})
+                  'cwd': str(room)})
             while json.loads(reader.readline())['t'] != 'welcome': pass
             send({'t': 'cmd', 'gen': None, 'environment': env, 'cmd': {'type': 'input.submit', 'text': 'Run the isolated system check.'}})
             wait_for(lambda: marker.exists() and len(requests) == (round + 1) * 2)

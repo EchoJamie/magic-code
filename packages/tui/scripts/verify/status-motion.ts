@@ -136,22 +136,6 @@ async function main(): Promise<void> {
   ])
   await save(out, '03-工具-败', failed.getView())
 
-  /**
-   * **等你在脉冲**——静态帧看不出动效，故**逐帧**：同一个 `pulseAt`（那一刻）、
-   * 四个「此刻」把那一趟脉冲走完（0 → 300 → 600 → 1200 毫秒）。
-   */
-  const waiting = live('看看这个文件', [
-    ...ENOUGH,
-    ...call('write', { path: 'src/records/db.ts' }),
-    event('tool.decision.request', { call: 71, name: 'write', material: '整写文件 src/records/db.ts', weight: 'heavy' }, { id: 88 }),
-  ])
-  for (const [index, step] of [0, 300, 600, 1200].entries()) {
-    await save(out, `04-等你-脉冲-${index + 1}`, waiting.getView(), AT + 88 + step, AT + 88)
-    // **色才是那一次脉冲的证据**（四张 `.txt` 整帧逐字相同——动的是亮度，不是字）
-    const frame = await show([waiting.getView()], SCREEN, AT + 88 + step, AT + 88)
-    await Bun.write(Bun.stdout, `   ↳ 状态格那一位的色：${frame.cellsOf(frame.statusRow)[1]?.fg ?? '（默认）'}\n\n`)
-  }
-
   // —— 二 · 状态行那三张 ——
 
   const plain = live('看看这个文件', [...ENOUGH, ...MODEL_KNOWN])
@@ -198,13 +182,6 @@ async function main(): Promise<void> {
     event('model.catalog', {
       entries: [{ provider: 'minimax', name: '个人版', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } }, }],
       current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
-    }),
-    event('grants.catalog', {
-      workspace: '/Users/who/code/magic-code',
-      grants: [],
-      stale: [],
-      decisions: { total: 0, uncovered: 0, vetoed: 0 },
-      history: { total: 0, auto: 0, kernel: 0 },
     }),
     event('mcp.catalog', { servers: [] }),
   ]) {

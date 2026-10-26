@@ -60,17 +60,6 @@ const ENTRIES: readonly ModelCatalogRow[] = [
 
 const CURRENT: ModelSelectionRef = { protocol: 'chat-completions' as const, endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' }
 
-const GRANTS: EventDataOf['grants.catalog'] = {
-  workspace: ROOT,
-  grants: [
-    { describe: '工具 exec × 根内 × 操作 read', grantedAt: 1_700_000_000_000, stale: false },
-    { describe: '工具 read × 根内 × 任意操作', grantedAt: 1_699_000_000_000, stale: false },
-  ],
-  stale: [],
-  decisions: { total: 8, uncovered: 4, vetoed: 1 },
-  history: { total: 20, auto: 15, kernel: 0 },
-}
-
 const MCP: EventDataOf['mcp.catalog'] = {
   servers: [
     { server: 'files', transport: 'stdio', state: { status: 'available' }, tools: ['read'], rejected: [] },
@@ -89,7 +78,6 @@ function open(
     readonly entries?: readonly ModelCatalogRow[]
     readonly current?: ModelSelectionRef | null
     /** 「取网页用的模型」那一格（U78）——不给＝**还没配**（答复上不给这一位）。 */
-        readonly grants?: EventDataOf['grants.catalog']
     readonly mcp?: EventDataOf['mcp.catalog']
     readonly web?: EventDataOf['web.state']
   } = {},
@@ -105,7 +93,6 @@ function open(
           ? {}
           : { current: over.current }),
     }),
-    event('grants.catalog', over.grants ?? GRANTS),
     event('mcp.catalog', over.mcp ?? MCP),
     event('web.state', over.web ?? WEB),
   ])
@@ -159,13 +146,13 @@ const statusHintOf = (stage: Stage): string => stage.shell.getView().status.hint
 // ══ 一 · 开屏 ═════════════════════════════════════════════════════════
 
 describe('`/config` · 开屏', () => {
-  test('一次问四份读数（连接 · 授权 · 外部工具 · 网页服务）；**齐了才开屏**', () => {
+  test('一次问三份读数（连接 · 外部工具 · 网页服务）；**齐了才开屏**', () => {
     const stage = live()
     stage.type('/config ')
     stage.press(ENTER)
 
     // ⚠️ 头一条是打 `/` 那一下的技能目录查询（U33：输入行候选要它）——与这一屏无关
-    expect(stage.commands()).toEqual([{ type: 'skills.list' }, {"local":true,ref:expect.any(String),"refs":[],"text":"/config ","type":"input.submit"}, { type: 'model.list' }, { type: 'grants.list' }, { type: 'mcp.list' }, { type: 'web.list' }])
+    expect(stage.commands()).toEqual([{ type: 'skills.list' }, {"local":true,ref:expect.any(String),"refs":[],"text":"/config ","type":"input.submit"}, { type: 'model.list' }, { type: 'mcp.list' }, { type: 'web.list' }])
 
     // 来一份：还差几份 ⇒ **不开**（少问一份，那一格就只能写「还没问到」，而「一眼看全」
     // 正是这一屏存在的理由），记录区也一个字都不进
@@ -173,14 +160,13 @@ describe('`/config` · 开屏', () => {
     expect(pickerOf(stage)).toBeUndefined()
     expect(rowsOf(stage)).toEqual(['/config '])
 
-    stage.feed([event('grants.catalog', GRANTS), event('mcp.catalog', MCP)])
+    stage.feed([event('mcp.catalog', MCP)])
     expect(pickerOf(stage)).toBeUndefined()
 
-    // 四份齐了才开
+    // 三份齐了才开
     stage.feed([event('web.state', WEB)])
     expect(labelsOf(stage)).toEqual([
       '模型与连接',
-      '本工作区授权',
       '外部工具',
       '网页查询与搜索',
       '状态行', // U112 加的两行（状态行可配 · 减少动效）——都排在末行那份账之前
@@ -196,7 +182,6 @@ describe('`/config` · 开屏', () => {
     open(stage)
 
     expect(valueOf(stage, '模型与连接')).toBe('MiniMax-M3 · 个人版 · Enter 进入')
-    expect(valueOf(stage, '本工作区授权')).toBe('2 条 · Enter 进入')
     expect(valueOf(stage, '外部工具')).toBe('1 台 · Enter 进入')
     expect(valueOf(stage, '网页查询与搜索')).toBe('deepseek · Fetch 提炼 deepseek-chat · Enter 进入')
     // 末行：家目录下那一截缩成 `~`（省那一格的地方），根只有一个就直接摆出来
@@ -210,7 +195,6 @@ describe('`/config` · 开屏', () => {
     const frame = await stage.screen({ columns: 100, rows: 40 })
     const values = [
       'MiniMax-M3 · 个人版 · Enter 进入',
-      '2 条 · Enter 进入',
       '1 台 · Enter 进入',
       'deepseek · Fetch 提炼 deepseek-chat · Enter 进入',
       '~/.magic · ~/ns/proj · Enter 查看路径',
@@ -254,12 +238,12 @@ describe('`/config` · 筛', () => {
     const stage = live()
     open(stage)
 
-    stage.type('授权')
-    expect(labelsOf(stage)).toEqual(['本工作区授权'])
+    stage.type('外部')
+    expect(labelsOf(stage)).toEqual(['外部工具'])
     // ⚠️ 「不设专门的搜索模式」：打进去的字**一个都不进草稿**（草稿照旧空着——这一屏接管了
     // 输入，而它没有另开一个输入框），筛词报在列表下方那行说明里（用户看得见自己在筛什么）
     expect(draftOf(stage)).toBe('')
-    expect(hintOf(stage)).toBe('筛选「授权」——接着打收窄，退格删一个字\n↑↓ 选择 · 输入筛词 · Esc 返回')
+    expect(hintOf(stage)).toBe('筛选「外部」——接着打收窄，退格删一个字\n↑↓ 选择 · 输入筛词 · Esc 返回')
   })
 
   test('筛按**屏上看得见的字**（名称 ＋ 当前值那一格）——打值里的字也找得到', () => {
@@ -274,15 +258,15 @@ describe('`/config` · 筛', () => {
   test('退格清过滤——退到空＝**全表**（抽屉照旧开着）', () => {
     const stage = live()
     open(stage)
-    stage.type('授权')
+    stage.type('外部')
     expect(labelsOf(stage)).toHaveLength(1)
 
     stage.press(BACKSPACE)
-    // 「授」还在筛（一个字也是筛词）
-    expect(hintOf(stage)).toBe('筛选「授」——接着打收窄，退格删一个字\n↑↓ 选择 · 输入筛词 · Esc 返回')
+    // 「外」还在筛（一个字也是筛词）
+    expect(hintOf(stage)).toBe('筛选「外」——接着打收窄，退格删一个字\n↑↓ 选择 · 输入筛词 · Esc 返回')
     stage.press(BACKSPACE)
 
-    expect(labelsOf(stage)).toHaveLength(8)
+    expect(labelsOf(stage)).toHaveLength(7)
     expect(hintOf(stage)).toBe(HINT_PICKER_CONFIG)
     expect(statusHintOf(stage)).toBe('') // 抽屉照旧开着
   })
@@ -301,16 +285,16 @@ describe('`/config` · 筛', () => {
   test('`esc` **不负责清过滤**（清过滤归退格）——筛词只活在这一屏里', () => {
     const stage = live()
     open(stage)
-    stage.type('授权')
+    stage.type('外部')
 
     // 一下 `esc` 就全收（**不是**「先清过滤再收起」的两段键）
     stage.press(ESC)
     expect(pickerOf(stage)).toBeUndefined()
     expect(statusHintOf(stage)).toBe(HINT_IDLE)
 
-    // 再开一次 ⇒ 全表（开一屏就是一屏新的，筛词不跟着活下来）
+    // 再开一次 ⇒ 全表（开一屏就是一屏新，筛词不跟着活下来）
     open(stage)
-    expect(labelsOf(stage)).toHaveLength(8)
+    expect(labelsOf(stage)).toHaveLength(7)
     expect(hintOf(stage)).toBe(HINT_PICKER_CONFIG)
   })
 })
@@ -341,19 +325,9 @@ describe('`/config` · 选中即进那一屏', () => {
     expect(a.content.map(one => one.text)).toEqual(['› /model'])
   })
 
-  test('「本工作区授权」⇒ `/grants` 那一屏；「外部工具」⇒ `/mcp` 那一屏（都是总览）', () => {
-    const grants = live()
-    open(grants)
-    // ⚠️ 两下：U78 起「取网页用的模型」排在第 1 行（「模型与连接」的下一行）
-    grants.press(DOWN)
-    grants.press(ENTER)
-    expect(grants.commands().at(-1)).toEqual({ type: 'grants.list' })
-    grants.feed([event('grants.catalog', GRANTS)])
-    expect(labelsOf(grants)).toEqual(['工具 exec × 根内 × 操作 read', '工具 read × 根内 × 任意操作'])
-
+  test('「外部工具」⇒ `/mcp` 那一屏（总览）', () => {
     const mcp = live()
     open(mcp)
-    mcp.press(DOWN)
     mcp.press(DOWN)
     mcp.press(ENTER)
     expect(mcp.commands().at(-1)).toEqual({ type: 'mcp.list' })
@@ -364,7 +338,7 @@ describe('`/config` · 选中即进那一屏', () => {
   test('「数据目录与工作区根」⇒ 自己那一屏：一块输出，报的是**没缩过的全路径**', () => {
     const stage = live()
     open(stage)
-    for (let step = 0; step < 7; step += 1) stage.press(DOWN) // 末行（U94 起是第 8 行）
+    for (let step = 0; step < 6; step += 1) stage.press(DOWN) // 末行（U94 起是第 7 行）
     stage.press(ENTER)
 
     // 收屏（回输入行），记录区里留一块
@@ -382,7 +356,7 @@ describe('`/config` · 选中即进那一屏', () => {
     // 列表那一格报个数（一格里摆不下两条全路径），它自己那一屏逐条写全
     expect(valueOf(stage, '数据目录与工作区根')).toBe('~/.magic · 2 个根 · Enter 查看路径')
 
-    for (let step = 0; step < 7; step += 1) stage.press(DOWN) // 末行（U94 起是第 8 行）
+    for (let step = 0; step < 6; step += 1) stage.press(DOWN) // 末行（U94 起是第 7 行）
     stage.press(ENTER)
     expect(pickerOf(stage)?.detail).toEqual([
       `  数据目录　${DATA_DIR}`,
@@ -400,7 +374,7 @@ describe('`/config` · 选中即进那一屏', () => {
 
     stage.press(LEFT)
     expect(pickerOf(stage)).toEqual(expect.objectContaining({ source: 'config' }))
-    expect(labelsOf(stage)).toHaveLength(8)
+    expect(labelsOf(stage)).toHaveLength(7)
   })
 })
 
@@ -414,7 +388,6 @@ describe('`/config` · 那一格写什么（纯函数）', () => {
     current: CURRENT,
     // 缺省＝**还没配**（U94 那一格；要验配上了的形就显式给一个）
     web: null,
-    grants: GRANTS,
     mcp: MCP,
     // U112 新增的两项：状态行**没配过**（`undefined` ＝ 走默认那条）＋ 动效照常（没开「减少动效」）。
     statusLine: undefined,
@@ -440,9 +413,7 @@ describe('`/config` · 那一格写什么（纯函数）', () => {
     )
   })
 
-  test('授权与外部工具报的是**数量**（来源 / 连接状态 / 工具数留在各自那一屏）', () => {
-    expect(rowOf()['本工作区授权']).toBe('2 条 · Enter 进入')
-    expect(rowOf({ grants: { ...GRANTS, grants: [] } })['本工作区授权']).toBe('还没有 · Enter 进入')
+  test('外部工具报的是**数量**（连接状态 / 工具数留在各自那一屏）', () => {
     expect(rowOf()['外部工具']).toBe('1 台 · Enter 进入')
     expect(rowOf({ mcp: { servers: [] } })['外部工具']).toBe('还没配 · Enter 进入')
   })
@@ -464,8 +435,8 @@ describe('`/config` · 那一格写什么（纯函数）', () => {
       .toBe('还没配置 · Fetch 提炼 未配置 · Enter 进入')
   })
 
-  test('筛词空＝全表（八行）；筛不中＝空表（退到空就是全表）', () => {
-    expect(configRows(base)).toHaveLength(8)
+  test('筛词空＝全表（七行）；筛不中＝空表（退到空就是全表）', () => {
+    expect(configRows(base)).toHaveLength(7)
     expect(configRows({ ...base, filter: '没有这一项' })).toEqual([])
   })
 

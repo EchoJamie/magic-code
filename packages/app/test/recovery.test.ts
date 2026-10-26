@@ -47,9 +47,8 @@ function textOfContent(content: UserMessageContent): string {
  * 摆的是记录里那几样**原始数据**（条目 ＋ 事件），不经任何内核代码的加工——
  * 恢复要认的就是它们，真崩溃留下的也就是这几样（一字不差）。
  *
- * 裁决轨迹摆的是**已批准、未回填**（用户按了 y，然后进程没了）——那是本单元最硬的一条：
+ * 裁决轨迹摆的是**已批准、未回填**（闸门放行之后进程没了）——那是本单元最硬的一条：
  * 「已批准」只说明**有资格跑**，不说明跑没跑到哪一步，故**一次都不能重跑**。
- * 「未答复」那一支的判据在 `@magic/actions` 的用例里（同一份现场换个轨迹）。
  */
 function writeCrashSite(
   assembly: Assembly,
@@ -72,15 +71,9 @@ function writeCrashSite(
     at: T0,
   })
   event('turn.start', {})
-  // 链引用＝这次 `tool.call` 事件的 id——请求 / 询问 / 裁决 / 结果四处同指它
+  // 链引用＝这次 `tool.call` 事件的 id——裁决 / 结果两处同指它
   const callRef = event('tool.call', { name: call.name, args: call.args })
-  event('tool.decision.request', {
-    call: callRef,
-    name: call.name,
-    material: `${call.name} ${JSON.stringify(call.args)}`,
-    weight: 'light',
-  })
-  event('tool.decision', { call: callRef, decision: 'approve', decider: 'user', elapsedMs: 120 })
+  event('tool.decision', { call: callRef, decision: 'approve', decider: 'auto', elapsedMs: 120 })
 }
 
 /** 接上外壳位并留一份轨迹。 */

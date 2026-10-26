@@ -137,11 +137,11 @@ describe('判据 1 · 落取回环', () => {
         stamp('agent.start', {}),
         stamp('turn.end', { reason: 'aborted' }, 2),
         stamp('model.usage', { inputTokens: 1234, outputTokens: 5678 }, 2),
-        stamp('tool.decision.request', {
+        stamp('tool.decision', {
           call: callId,
-          name: 'exec',
-          material: '命令分解：\n  rm -rf build/  ← 删除 · 不可逆',
-          weight: 'heavy',
+          decision: 'reject',
+          decider: 'kernel',
+          elapsedMs: 0,
         }),
       ]
       for (const event of events) records.appendEvent(event)
@@ -176,15 +176,15 @@ describe('判据 1 · 落取回环', () => {
         'agent.start',
         'turn.end',
         'model.usage',
-        'tool.decision.request',
+        'tool.decision',
       ])
       expect(readEvents.map((event) => event.turn)).toEqual([null, 2, 2, null])
       expect(readEvents[0]?.data).toEqual({})
       expect(readEvents[3]?.data).toEqual({
         call: callId,
-        name: 'exec',
-        material: '命令分解：\n  rm -rf build/  ← 删除 · 不可逆',
-        weight: 'heavy',
+        decision: 'reject',
+        decider: 'kernel',
+        elapsedMs: 0,
       })
 
       // id 空间归记录域——条目与事件共用、单调、不撞

@@ -340,30 +340,6 @@ describe('`Ctrl T` 与翻页', () => {
     expect(stage.shell.getView().draft).toBe('第一句')
   })
 
-  test('翻页键在**接管**（裁决）期间不生效', () => {
-    const stage = createStage()
-
-    stage.feed([
-      event('plan.changed', {
-        entry: 1,
-        plan: note(...Array.from({ length: 60 }, (_u, at) => step(`第 ${at + 1} 步`))),
-      }),
-    ])
-
-    // 没有接管时翻得动（给一个明确的目标位置）
-    stage.press({ kind: 'planTop', top: 5 })
-    expect(stage.shell.getView().planTop).toBe(5)
-
-    // 裁决接管输入之后，翻页让位
-    stage.feed([
-      event('tool.decision.request', { call: 9, name: 'exec', material: 'rm -rf /tmp/x', weight: 'light' }, { id: 90 }),
-    ])
-    expect(stage.shell.getView().dock.kind).toBe('decision')
-
-    stage.press({ kind: 'planTop', top: 9 })
-    expect(stage.shell.getView().planTop).toBe(5)
-  })
-
   test('方向键照旧归选择器与输入历史（翻页不抢它们）', () => {
     const stage = createStage()
 

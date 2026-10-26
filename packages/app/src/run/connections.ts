@@ -8,7 +8,6 @@ export type ClientConn = Readonly<{
   link: Link<ClientToManager>
   cwd: string
   switch: ModelSwitchRequest | undefined
-  allowAll: boolean | undefined
   environment: Readonly<Record<string, string>>
   collaborationMember: string | undefined
   target: Executor | undefined
@@ -26,7 +25,7 @@ type ConnectionState = {
 }
 
 /** 终端连接、执行代绑定与快照水位；断开连接不取消执行。 */
-export function createClientConnections(changed: () => void, log?: (line: string) => void) {
+export function createClientConnections(changed: () => void, log?: (line: string) => void, onBound?: (executor: Executor) => void) {
   const clients = new Map<number, ConnectionState>()
   const snapshots = new WeakMap<Executor, { seq: number; asking: Map<number, number> }>()
   let nextConn = 1
@@ -69,6 +68,8 @@ export function createClientConnections(changed: () => void, log?: (line: string
     conn.buffered = []
     pending.asking.set(seq, conn.id)
     send(executor, { t: 'snapshot', seq })
+    // 接回期间挂着的瞬时请求（sudo 认证）要能重放给新窗口——旧窗口可能已经走了。
+    onBound?.(executor)
   }
 
   /** 同一代认领真实会话后同步窗口目标；不重新绑定或重置快照水位。 */
@@ -123,7 +124,7 @@ export function createClientConnections(changed: () => void, log?: (line: string
 
   return {
     clients: clients as ReadonlyMap<number, ClientConn>,
-    create(input: Pick<ClientConn, 'link' | 'cwd' | 'switch' | 'allowAll' | 'selectedSession'>): ClientConn {
+    create(input: Pick<ClientConn, 'link' | 'cwd' | 'switch' | 'selectedSession'>): ClientConn {
       const conn: ConnectionState = {
         ...input, id: nextConn++, environment: {}, collaborationMember: undefined,
         target: undefined, awaiting: null, buffered: [], readRevision: 0, readingSession: null,

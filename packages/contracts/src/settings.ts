@@ -22,8 +22,6 @@ export type SettingsAction =
   | { readonly type: 'role.save'; readonly id: string; readonly role: AgentRoleConfig }
   | { readonly type: 'role.remove'; readonly id: string }
   | { readonly type: 'workspace.set'; readonly roots: readonly string[] | null }
-  | { readonly type: 'permissions.set'; readonly rules: readonly unknown[] }
-  | { readonly type: 'grants.revoke'; readonly workspace: string; readonly index?: number; readonly grantStamp: string | null }
 
 /** configuration 仅包含已知可编辑字段，凭据值绝不返回。 */
 export type SettingsSnapshot = {
@@ -35,9 +33,6 @@ export type SettingsSnapshot = {
   readonly catalog: readonly unknown[]
   readonly vendors: readonly unknown[]
   readonly sources: readonly { readonly source: string; readonly path: string; readonly resolved: string; readonly problem?: string }[]
-  readonly grants: readonly { readonly workspace: string; readonly entries: readonly unknown[] }[]
-  readonly grantStamp: string | null
-  readonly grantProblem?: string
 
 }
 

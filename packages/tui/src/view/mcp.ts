@@ -3,7 +3,7 @@ import { sanitizeForDisplay } from '@magic/contracts'
 import type { PickerRow } from '../view.ts'
 
 /**
- * **`/mcp` 的行** —— 一台服务器一行（**与 `/grants` · `/skills` 同位置同开合**）。
+ * **`/mcp` 的行** —— 一台服务器一行（**与 `/skills` 同位置同开合**）。
  *
  * 一件要紧的事：行**保证只占一行**（`oneLine`）——`meta` 里是状态与件数，由渲染层按列宽
  * 截断；高度账按一行一条数（见 `PickerRow.oneLine`）。**不可用的缘由不放这儿**：

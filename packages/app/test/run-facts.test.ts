@@ -91,12 +91,6 @@ describe('六行状态逐行对事实', () => {
     expect(runStateOf(record({ turnActive: true }))).toBe('running')
   })
 
-  test('等待你 · 存在仍有效的提问或审批', () => {
-    const asking = record({ busy: true, turnActive: true, action: '等你定夺：rm -rf build' })
-    asking.decisions.set(7, 6)
-    expect(runStateOf(asking)).toBe('waiting')
-  })
-
   test('停止中 · 已受理停止，资源尚未全部退出', () => {
     const stopping = record({ stopping: true })
     expect(runStateOf(stopping)).toBe('stopping')

@@ -107,7 +107,7 @@ enum SettingsValidation {
             try require(web.object.keys.allSatisfy { $0 == "provider" }, "web 字段")
             try text(web["provider"], "web.provider")
         }
-        for section in ["rules", "skills", "permissions", "motion", "mcp"] { if let value = raw.object[section] { try object(value, section) } }
+        for section in ["rules", "skills", "motion", "mcp"] { if let value = raw.object[section] { try object(value, section) } }
         for (section, key) in [("rules", "sources"), ("rules", "linkSources"), ("skills", "sources")] {
             if let values = raw[section].object[key] { try texts(values, section + "." + key) }
         }
@@ -154,16 +154,5 @@ enum SettingsValidation {
         // `region` 是既有模型连接层的官方区域字段，不在这里拒；
         // 有效地址是否固定由 `NativeSettings.apply` 按供应商适配解析后判。
         try require(entry.object["baseURL"] == nil, "web.provider 须使用固定官方地址")
-    }
-
-    static func permission(_ rule: SettingsValue, ops allowed: [String]) throws {
-        try object(rule, "权限规则")
-        try require(rule.object.keys.allSatisfy { ["tool", "path", "host", "via", "op"].contains($0) }, "权限规则字段")
-        try text(rule["tool"], "权限规则.tool")
-        for key in ["path", "host", "via"] { if let value = rule.object[key] { try text(value, "权限规则." + key) } }
-        if let op = rule.object["op"] {
-            let ops = op.isArray ? op.array : [op]
-            try require(!ops.isEmpty && ops.allSatisfy { allowed.contains($0.text) }, "权限规则.op")
-        }
     }
 }

@@ -113,7 +113,6 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
   terminal.onGone?.(() => shell.hostGone())
   client.onEvent(event => {
     events.push(event)
-    if (event.kind === 'tool.decision.request' && event.data.name.startsWith('agent_')) client.send({ type: 'decision.answer', id: event.id, decision: 'approve' })
   })
   client.onLine(line => mark('client-line', line))
   const collaboration = () => { const id = shell.getView().sessionId; return id === null ? undefined : store.collaboration.collaborationForSession(id) }

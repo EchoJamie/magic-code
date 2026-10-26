@@ -20,6 +20,8 @@ import type {
   OutputDelta,
   PlanNote,
   Sandbox,
+  SudoAuth,
+  SudoPlan,
   ToolSpec,
   UsedSkill,
 } from '@magic/contracts'
@@ -47,6 +49,17 @@ export type ToolRunContext = {
    * 它们全部推去改一遍——而「没接后台」本就是这一位的合法取值（那一形当场回一句「没接」）。
    */
   readonly background?: BackgroundRuns | undefined
+  /**
+   * **这一次是一次形状合格的 `sudo` 短命令**（U129）——只有 `exec` 会看到。
+   *
+   * 缺省 ＝ 不是 sudo（普通命令照旧）。权限域产出，工具域不自己解析命令。
+   */
+  readonly sudo?: SudoPlan | undefined
+  /**
+   * **sudo 专用认证端口**（U129）——密码只经它从 UI 到 Engine，工具域拿不到密码本身。
+   * 缺省不给 ＝ 这次装配没有认证通道（`exec` 照实回一句用不了）。
+   */
+  readonly sudoAuth?: SudoAuth | undefined
 }
 
 /** 执行体的产出——终值（`ok` 与**面向模型的文本**）。记录侧形态由分发按大块转存定。 */

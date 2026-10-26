@@ -97,7 +97,6 @@ function scanEvents(events: readonly KernelEvent[]): {
 } {
   const calls: { call: RecordId; name: string; args: Readonly<Record<string, unknown>>; turn: TurnId | null }[] = []
   const withResult = new Set<RecordId>()
-  const requested = new Set<RecordId>()
   const decided = new Map<RecordId, { decision: Decision; decider: Decider }>()
   const open = new Set<TurnId>()
   let lastTurn: TurnId | null = null
@@ -123,9 +122,6 @@ function scanEvents(events: readonly KernelEvent[]): {
       case 'tool.result':
         withResult.add(event.data.call)
         break
-      case 'tool.decision.request':
-        requested.add(event.data.call)
-        break
       case 'tool.decision':
         decided.set(event.data.call, { decision: event.data.decision, decider: event.data.decider })
         break
@@ -140,7 +136,7 @@ function scanEvents(events: readonly KernelEvent[]): {
       .filter((call) => !withResult.has(call.call))
       .map((call) => ({
         ...call,
-        requested: requested.has(call.call),
+        requested: false,
         decision: decided.get(call.call)?.decision ?? null,
         decider: decided.get(call.call)?.decider ?? null,
       })),

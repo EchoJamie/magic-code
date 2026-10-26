@@ -11,7 +11,7 @@ import { resolve } from 'node:path'
  * （别再各写一份，两份迟早对不上）。
  */
 
-import type { BackgroundRuns, BlobStore, OutputDelta, RefusalKind, WorkspaceService } from '@magic/contracts'
+import type { BackgroundRuns, BlobStore, OutputDelta, RefusalKind, SudoAuth, SudoPlan, WorkspaceService } from '@magic/contracts'
 import type {
   FauxDecider,
   FauxExecScript,
@@ -66,6 +66,10 @@ export type ToolDepsOptions = {
    * 缺省不给＝照旧（`decider` 那一档说了算）。
    */
   readonly refusal?: RefusalKind
+  /** U129：这一次当作形状合格的 sudo 短命令。 */
+  readonly sudo?: SudoPlan
+  /** U129：sudo 认证端口。 */
+  readonly sudoAuth?: SudoAuth
 }
 
 /** 一束现成的替身——多数用例照这样拼。铸造器**一束一份**（信封同源）。 */
@@ -89,6 +93,7 @@ export function makeToolDeps(options: ToolDepsOptions = {}): ToolDeps {
       ? makeFauxPermissionGate()
       : makeFauxPermissionGate({
           ...(options.refusal === undefined ? {} : { refusal: options.refusal }),
+          ...(options.sudo === undefined ? {} : { sudo: options.sudo }),
           ...(options.refusal === undefined ? { auto: options.decider ?? 'approve' } : {}),
         })
   const sink = makeFauxSink()
@@ -113,6 +118,7 @@ export function makeToolDeps(options: ToolDepsOptions = {}): ToolDeps {
     // U77：这台机器上有没有 `trash`（真装配会探一次）——缺省按"没有"，
     // 要判"指路 `trash`"那句话的用例显式给 `true`
     trashAvailable: options.trashAvailable ?? false,
+    ...(options.sudoAuth === undefined ? {} : { sudoAuth: options.sudoAuth }),
   })
 
   return { stamper, sandbox, gate, sink, records, workspace, runtime }

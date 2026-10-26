@@ -11,50 +11,40 @@ const timing: TurnTimingEvent[] = [
   event('turn.start', {}, { id: 1 }),
   event('turn.end', { reason: 'settled', continues: true }, { id: 10_001 }),
   event('turn.start', {}, { id: 10_002, turn: 2 }),
-  event('tool.decision.request', { call: 100, name: 'exec', material: '', weight: 'heavy' }, { id: 20_001, turn: 2 }),
-  event('tool.decision.request', { call: 101, name: 'exec', material: '', weight: 'heavy' }, { id: 25_001, turn: 2 }),
-  event('tool.decision', { call: 100, decision: 'approve', decider: 'user', elapsedMs: 15000 }, { id: 35_001, turn: 2 }),
-  event('tool.decision', { call: 101, decision: 'approve', decider: 'user', elapsedMs: 20000 }, { id: 45_001, turn: 2 }),
   event('turn.end', { reason: 'settled' }, { id: 123_001, turn: 2 }),
 ]
 
 describe('整轮时间投影', () => {
-  test('多模型轮不归零；并行审批扣并集 25s；实时与历史统计相同', () => {
+  test('多模型轮不归零；实时与历史统计相同', () => {
     let live = createView()
     for (const e of timing) live = reduce(live, e)
     expect(live.settled.filter(row => row.kind === 'round')).toHaveLength(1)
     const round = live.round!
     expect(roundDuration(round, 'elapsed', null)).toBe(123_000)
-    expect(roundDuration(round, 'active', null)).toBe(98_000)
+    expect(roundDuration(round, 'active', null)).toBe(123_000)
     expect(roundSummary(round, 'elapsed')).toMatch(/^耗时 2m 03s · 结束于 \d{2}:\d{2}$/)
-    expect(roundSummary(round, 'active')).toMatch(/^耗时 1m 38s（不含等待） · 结束于 \d{2}:\d{2}$/)
+    expect(roundSummary(round, 'active')).toMatch(/^耗时 2m 03s（不含等待） · 结束于 \d{2}:\d{2}$/)
     const restored = rebuild(createView(), [], { timing })
     expect(restored.round).toEqual(round)
     expect(restored.settled).toEqual(live.settled)
   })
-  test('等待审批、普通 waiting、停止、失联各说实况；接回从原起点计时', () => {
-    let view = rebuild({ ...createView(), sessionId: TEST_SESSION }, [], { timing: timing.slice(0, 4) })
-    expect(roundLineText(view, TEST_AT + 30_001)).toBe('◊ 等待你 · 30s')
-    expect(roundLineText({ ...view, turnDuration: 'active' }, TEST_AT + 30_001)).toBe('◊ 等待你 · 20s（不含等待）')
-    view = reduce(view, timing[5]!)
+  test('普通 waiting、失联各说实况；接回从原起点计时', () => {
+    const view = rebuild({ ...createView(), sessionId: TEST_SESSION }, [], { timing: timing.slice(0, 3) })
+    expect(roundLineText(view, TEST_AT + 30_001)).toBe('● thinking... 30s')
+    expect(roundLineText({ ...view, turnDuration: 'active' }, TEST_AT + 30_001)).toBe('● thinking... 30s（不含等待）')
     expect(roundLineText({ ...view, status: { ...view.status, state: 'waiting' } }, TEST_AT + 50_001)).toBe('● thinking... 50s')
     expect(roundLineText({ ...view, status: { ...view.status, state: 'lost' } }, TEST_AT + 50_001)).toBe('■ 本轮状态待确认')
   })
-  test('边界缺失、时间倒退不补猜；未配对审批使扣除口径不可计算', () => {
+  test('边界缺失、时间倒退不补猜', () => {
     expect(foldRound(null, timing.at(-1)!)).toBeNull()
     const start = foldRound(null, timing[0]!)!
     const backward = foldRound(start, { ...timing.at(-1)!, at: TEST_AT - 100 })!
     expect(roundSummary(backward, 'elapsed')).toBeNull()
-    let incomplete = foldRound(start, { ...timing[5]!, turn: 1 })!
-    incomplete = foldRound(incomplete, { ...timing.at(-1)!, turn: 1 })!
-    expect(roundSummary(incomplete, 'elapsed')).not.toBeNull()
-    expect(roundSummary(incomplete, 'active')).toBeNull()
   })
-  test('未关闭等待截断于结束，失败及停止有终态且结束后不继续累计', () => {
+  test('失败及停止有终态且结束后不继续累计', () => {
     const start = foldRound(null, timing[0]!)!
-    const waiting = foldRound(start, { ...timing[3]!, turn: 1 })!
-    const end = foldRound(waiting, event('turn.end', { reason: 'aborted' }, { id: 30_001 }))!
-    expect(roundDuration(end, 'active', TEST_AT + 999_999)).toBe(20_000)
+    const end = foldRound(start, event('turn.end', { reason: 'aborted' }, { id: 30_001 }))!
+    expect(roundDuration(end, 'active', TEST_AT + 999_999)).toBe(30_000)
     expect(roundSummary(end, 'elapsed')).toStartWith('已停止 · 耗时 30s')
     expect(roundSummary({ ...end, reason: 'error' }, 'elapsed')).toStartWith('失败 · 耗时 30s')
   })

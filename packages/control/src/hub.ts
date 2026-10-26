@@ -3,7 +3,7 @@
  *
  * 域的两个动作：
  * - **`bind(routes)`**——装命令路由：`input.submit` / `turn.interrupt` → 对话域；
- *   `decision.answer` → 权限域；`model.switch` → 装配（注册表，技术方案 · 装配视图 4）；
+ *   `model.switch` → 装配（注册表，技术方案 · 装配视图 4）；
  *   `session.*` 四支 → 对话域（会话的持有者——本域只是把话带到）；
  *   `history.read`（读侧）→ 对话域，答复走 `session.history` 事件；
  * - **`attach(transport)`**——接传输：接**内核侧一端**（契约 `KernelTransport`）后，
@@ -14,9 +14,6 @@
  *
  * 纪律（技术方案 · 领域划分 · 控制域）：
  * - **无订阅方时命令丢弃**（Emitter 语义，不抛、不排队）——装配须**先接订阅、后放开输入**；
- * - **裁决配对＝请求事件 id**——答复按 `decision.answer.id` 原样路由给权限域，域内不解释
- *   （`call` 是另一 id 空间，见契约 `ids.ts` 头注）；答复的**加宽位**（`remember`）同样原样
- *   转手——本域**不做翻译**，「总是允许」的落地（**工作区级授权** · U22）归权限域；
  * - 消息经传输投递，**可序列化校验在传输那侧**（投递前逐条，违者拒投并点名路径）。
  */
 
@@ -85,11 +82,6 @@ export function createControlHub(onError?: (error: unknown) => void): ControlHub
         return target.onInput(command)
       case 'turn.interrupt':
         return target.onInterrupt()
-      case 'decision.answer':
-        // 配对键＝请求事件 id，原样交给权限域——此处不解释、不改写。
-        // `remember`（「总是允许」）也**原样转手**：它是答复上的位，翻译归权限域
-        // （控制域翻一道＝两处各有一套语义，迟早分叉）。
-        return target.onDecision(command.id, command.decision, { remember: command.remember })
       case 'model.switch':
         // 换模型——原样转手给装配（它握着注册表）。本域**不知道换得成换不成**：
         // 「切不动就不动」的判别式处置归装配，路由只负责把话带到（同 `onDecision` 的姿势）。
@@ -111,10 +103,6 @@ export function createControlHub(onError?: (error: unknown) => void): ControlHub
         // 模型条目表（读侧）——**原样转手**给**装配**（注册表在它手上）。本域不认识注册表、
         // 也不知道有哪些条目；答复走事件（`model.catalog`，不落库）——命令面只发不收。
         return target.onModelList()
-      case 'grants.list':
-        // 授权名录（读侧）——**原样转手**给**装配**（`grants.json` 的读写都在它那一层，
-      // 域不碰文件系统）。本域不认识授权，答复走事件（`grants.catalog`，不落库）。
-        return target.onGrantsList()
       case 'skills.list':
         // 技能目录（读侧 · U33）——**原样转手**给**装配**（执行域的发现面在它手里，
         // 同 `model.list` 之于注册表）。本域不认识技能，答复走事件
@@ -127,7 +115,7 @@ export function createControlHub(onError?: (error: unknown) => void): ControlHub
       case 'paths.identify':
         // 认一认选定的那一条（U62 · 图片的名字）——同一条路（执行域的路径面在装配手里）。
         // 本域不认识文件系统，**也不判里外**：`external` 是用户选定那一刻的事实，
-        // 原样带过去（同 `decision.answer` 的 `remember` 之例：控制域只带话，不翻译）。
+        // 原样带过去（控制域只带话，不翻译）。
         // 答复走事件（`paths.identified`，不落库）。
         return target.onPathIdentify(command.path, command.external)
       case 'input.paste':
@@ -147,11 +135,6 @@ export function createControlHub(onError?: (error: unknown) => void): ControlHub
         // 显式重连——同一条路（连接归装配）。**不在这里判服务器名认不认得**：
         // 名字是配置里的身份，只有装配那份配置说了算（同 `grants.revoke` 的缺省之例）。
         return target.onMcpReconnect(command.server)
-      case 'grants.revoke':
-        // 撤销——同一条路（落盘归装配）。**不在这里解释 `workspace` / `index` 的缺省**：
-        // 「缺省＝本工作区」「缺省＝整节」是**授权落点**的语义，归装配那一侧（同 `decision.answer`
-        // 的 `remember` 之例：控制域只带话，不翻译）。
-        return target.onGrantsRevoke(command.workspace, command.index)
       case 'model.refresh':
         // 显式刷新模型信息（U41）——**原样转手**给**装配**（模型信息缓存与在途获取在它那一层，
         // 同 `model.list` 之于注册表）。缺省那条连接由装配按「当下选中」解释，本域不猜。
@@ -173,7 +156,7 @@ export function createControlHub(onError?: (error: unknown) => void): ControlHub
         return target.onPrefsSet(command)
       case 'provider.list':
         // 管理面的连接一览（U41 读侧）——**归装配**（配置与凭据的读取都在它那一层，
-        // 同 `grants.list` 之于授权文件）。答复走事件（`provider.catalog`，不落库）。
+        // 同 `model.list` 之于注册表）。答复走事件（`provider.catalog`，不落库）。
         return target.onProviderList()
       case 'provider.save':
         // 接入 / 改名 / 更新认证 / 改地址共一个动作（U41）——落盘归装配。

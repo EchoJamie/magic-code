@@ -30,7 +30,7 @@ async function fixture() {
       const endings: ((reason: string) => void)[] = []
       request.link.onMessage(message => {
         commands.push(message)
-        if (message.t === 'snapshot') request.link.send({ t: 'snapshot', seq: message.seq, snapshot: { watermark: 0, turnOpen: false, tools: [], decisions: [] } })
+        if (message.t === 'snapshot') request.link.send({ t: 'snapshot', seq: message.seq, snapshot: { watermark: 0, turnOpen: false, tools: [] } })
         if (message.t === 'bye') for (const end of endings) end(message.why)
       })
       return { onExit(end) { endings.push(end) }, cancel() { for (const end of endings) end('受控执行者已结束') } }
@@ -168,7 +168,7 @@ test('只读分页和旧通知 inspect 可达普通历史与归档目标，不�
   } finally { await f.close() }
 })
 
-test('三类通知保留长原文、换行及组合字符，不在显示前生成截短摘要', async () => {
+test('两类通知保留长原文、换行及组合字符，不在显示前生成截短摘要', async () => {
   const f = await fixture()
   try {
     const client = await f.connect(), received: import('@magic/contracts').RunNotice[] = []
@@ -186,9 +186,6 @@ test('三类通知保留长原文、换行及组合字符，不在显示前生�
     expect(received.at(-1)?.detail).toBe(text)
     expect(f.store.attention.list()[0]?.detail).toBe(text)
     f.event('a', 'turn.start', {}, 2)
-    f.event('a', 'tool.decision.request', { call: 101, name: 'exec', material: text, weight: 'heavy' }, 2)
-    await until(() => received.some(notice => notice.kind === 'needs-you'))
-    expect(received.at(-1)?.detail).toBe(text)
     f.event('a', 'model.error', { tier: 'terminal', message: text }, 2)
     f.event('a', 'turn.end', { reason: 'error' }, 2)
     f.event('a', 'agent.state', { state: 'waiting' }, 2)
@@ -198,7 +195,7 @@ test('三类通知保留长原文、换行及组合字符，不在显示前生�
   } finally { await f.close() }
 })
 
-test('当前通知取真实回复、替换旧来源；新轮及历史失效审批退出，旧呈现不清新原因', async () => {
+test('当前通知取真实回复、替换旧来源；新轮清掉旧呈现，旧来源不撑当前工作', async () => {
   const f = await fixture()
   try {
     const client = await f.connect()
@@ -216,24 +213,6 @@ test('当前通知取真实回复、替换旧来源；新轮及历史失效审�
     expect(notice.source).toEqual({ session: 'a', event: stop.id, entry })
     expect((await f.inspect()).work).toMatchObject({ currentNotice: notice, terminalOpen: true })
     f.event('a', 'turn.start', {}, 2)
-    expect(f.store.attention.list({ sessions: ['a'] })).toEqual([])
-    const approval1 = f.event('a', 'tool.decision.request', { call: 101, name: 'exec', material: '是否允许操作一', weight: 'heavy' }, 2)
-    const first = f.store.attention.list({ sessions: ['a'] })[0]!
-    const approval2 = f.event('a', 'tool.decision.request', { call: 102, name: 'exec', material: '是否允许操作二', weight: 'heavy' }, 2)
-    const second = f.store.attention.list({ sessions: ['a'] })[0]!
-    expect(second.id).not.toBe(first.id)
-    f.observer.send({ t: 'native.read', serviceInstance: f.manager.identity.serviceInstance, ids: [first.id] })
-    const history = await f.request({ t: 'native.history', session: 'a', source: { session: 'a', event: approval1.id } }, 'native.history.result')
-    expect(history.events?.map(event => event.id)).toEqual([approval1.id])
-    expect(history.currentRequests?.map(event => event.id)).toEqual([approval1.id, approval2.id])
-    expect(f.store.attention.list({ sessions: ['a'] })[0]?.unread).toBe(true)
-    f.observer.send({ t: 'native.read', serviceInstance: f.manager.identity.serviceInstance, ids: [second.id] })
-    expect((await f.inspect()).work).toMatchObject({ state: 'waiting', affected: true, canArchive: false })
-    expect(f.store.attention.list({ sessions: ['a'] })[0]?.unread).toBe(false)
-    f.event('a', 'tool.decision', { call: 102, decision: 'approve', decider: 'user', elapsedMs: 0 }, 2)
-    const remaining = await f.request({ t: 'native.history', session: 'a', source: { session: 'a', event: approval1.id } }, 'native.history.result')
-    expect(remaining.currentRequests?.map(event => event.id)).toEqual([approval1.id])
-    expect((await f.inspect()).work).toMatchObject({ state: 'waiting', affected: true })
     expect(f.store.attention.list({ sessions: ['a'] })).toEqual([])
     f.event('a', 'turn.end', { reason: 'aborted' }, 2)
     f.event('a', 'agent.state', { state: 'waiting' })
@@ -278,7 +257,7 @@ test('协作归档按根原子核资格，成员执行未收尾阻塞；恢复�
   } finally { await f.close() }
 })
 
-test('归档资格保留后台、未知与资源收尾保护；已结束的失效裁决不阻止归档', () => {
+test('归档资格保留后台、未知与资源收尾保护', () => {
   const run = newRunRecord({ gen: 1, session: 'a', startedAt: 1, explicit: false })
   expect(canArchiveRun(run)).toBe(false)
   run.ready = true; run.connected = true; run.everConnected = true; run.busy = false
@@ -290,7 +269,7 @@ test('归档资格保留后台、未知与资源收尾保护；已结束的失�
   expect(canArchiveRun(run)).toBe(false)
   run.reclaimPending = false; run.state = 'unknown'
   expect(canArchiveRun(run)).toBe(false)
-  run.ended = { kind: 'aborted', at: 5, why: '已确认退出' }; run.state = 'stopped'; run.decisions.set(4, 3)
+  run.ended = { kind: 'aborted', at: 5, why: '已确认退出' }; run.state = 'stopped'
   expect(canArchiveRun(run)).toBe(true)
 })
 

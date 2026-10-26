@@ -85,3 +85,10 @@ export {
 export type { WebSourceOptions } from './web.ts'
 
 export { spawnOwned } from './process.ts'
+
+/**
+ * **sudo 专用认证**（U129）——`sudo -S -v`，密码只写认证进程的 stdin。
+ * 不是端口：它是装配实现 `SudoAuth` 时用的那一跳（同 `clipboard.ts` 那几件）。
+ */
+export { validateSudoPassword } from './sudo.ts'
+export type { SudoValidation } from './sudo.ts'

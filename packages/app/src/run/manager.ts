@@ -201,7 +201,12 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   const stopGraceMs = options.stopGraceMs ?? STOP_GRACE_MS
   const stopKillMs = options.stopKillMs ?? STOP_KILL_MS
 
-  const connections = createClientConnections(() => native.changed(), options.log)
+  const connections = createClientConnections(() => native.changed(), options.log, (executor) => {
+    for (const [requestId, request] of sudoRequests) {
+      if (request.executor !== executor) continue
+      for (const conn of connections.watching(executor)) conn.link.send({ t: 'sudo.request', requestId, command: request.command })
+    }
+  })
   const { clients, bind, syncTarget, onSnapshot, dropClient } = connections
   const executors = new Set<Executor>()
 
@@ -309,7 +314,12 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     }
   }
   const collaborationInputs = new Map<string, { conn: ClientConn; session: string; target: string; ref?: string }>()
-  const collaborationDecisions = new Map<number, Extract<KernelEvent, { kind: 'tool.decision.request' }>>()
+  /**
+   * 在途 sudo 认证（U129）——`requestId → 发起它的执行者`。
+   *
+   * 密码不在这里留：`sudo.answer` 一进来就原样转给执行者，表里删掉这一条。
+   */
+  const sudoRequests = new Map<string, { readonly executor: Executor; readonly command: string }>()
   const control = createExecutorControl(executor => {
     executor.run.stopping = true
     send(executor, { t: 'bye', why: '成员启动超时' })
@@ -336,7 +346,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       await control.configure(live, model)
     },
     runs: () => [...executors].map(e => runRowOf(e.run)),
-    decisions: session => liveOf(session)?.run.decisions.size ?? 0,
+    decisions: () => 0,
     changed: () => {
       releaseEnvironments()
       native.changed(); for (const conn of clients.values()) void publishCollaboration(conn)
@@ -420,7 +430,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     const problem = conn.selectedSession === null || workRoot(target.session) !== workRoot(conn.selectedSession)
       ? '目标不属于当前整件工作'
       : executor?.executionId !== target.execution ? '执行代次已改变或已经结束'
-        : !executor.run.connected || executor.link.closed ? '执行实例失联，无法确认命令状态' : undefined
+        : executor === undefined || !executor.run.connected || executor.link.closed ? '执行实例失联，无法确认命令状态' : undefined
     if (problem || !executor) { publishBackground(conn, { target, outcome: { ok: false, reason: problem ?? '目标不存在' } }); return }
     deliver(executor, command)
   }
@@ -444,11 +454,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       const member = conn.collaborationMember
       const view = await collaboration.view(session, member)
       if (member !== conn.collaborationMember) return
-      if (view.collaboration !== undefined && collaborationEvent(conn, view)) {
-        for (const event of collaborationDecisions.values()) if (view.members.some(m => m.agent.sessionId === event.session)) {
-          conn.link.send({ t: 'ev', gen: conn.target?.gen ?? null, event })
-        }
-      }
+      if (view.collaboration !== undefined) collaborationEvent(conn, view)
     } catch { /* 离开或停止过程中不启动新的执行。 */ }
   }
   async function collaborationCommand(conn: ClientConn, command: CollaborationCommand): Promise<void> {
@@ -610,7 +616,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
             selectedSession: message.session ?? null,
             cwd: message.cwd,
             switch: message.switch,
-            allowAll: message.allowAll,
           })
           client = conn
 
@@ -667,7 +672,8 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
             onCommand(client, message.gen, message.cmd)
           }
           if (message.t === 'stop') stopRun(client, message.session, message.scope)
-          if (message.t === 'bye') dropClient(client.id)
+          if (message.t === 'sudo.answer') answerSudo(client, message)
+          if (message.t === 'bye') dropConnection(client.id)
           return
         }
 
@@ -676,7 +682,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         diagnosticLog.write('error', 'client.operation.failed', identity)
       }
     })
-    link.onClose(() => { if (client !== undefined) dropClient(client.id) })
+    link.onClose(() => { if (client !== undefined) dropConnection(client.id) })
   }
 
   const stopReports = new Map<number, (phase: StopPhase, note?: string) => void>()
@@ -729,10 +735,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     return [...clients.values()].filter(conn => !conn.link.closed &&
       (conn.selectedSession !== null && workRoot(conn.selectedSession) === origin))
   }
-  function currentRequests(session: string): readonly Extract<KernelEvent, { kind: 'tool.decision.request' }>[] {
-    const root = workRoot(session)
-    return [...collaborationDecisions.values()].filter(event => workRoot(event.session) === root && liveOf(event.session)?.run.decisions.has(event.id))
-  }
   /** 当前提醒只能引用原事实；旧通知行本身不能证明还有一个停点。 */
   function reconcileNotice(session: string): AttentionItem | undefined {
     const root = workRoot(session)
@@ -742,7 +744,8 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     const event = source?.event === undefined ? undefined : store.readEvent(source.session, source.event)
     const boundary = source === undefined ? undefined : store.latestEvent(source.session, ['turn.start', 'turn.end', 'message.user'])
     let valid = !isArchived(root) && source !== undefined && workRoot(source.session) === root
-    if (notice.kind === 'needs-you') valid &&= event?.kind === 'tool.decision.request' && liveOf(source!.session)?.run.decisions.has(event.id) === true
+    // U129 起「需要你」不再由逐次授权产生；旧的这一类提醒一律失效。
+    if (notice.kind === 'needs-you') valid = false
     else if (notice.kind === 'done') valid &&= event?.kind === 'turn.end' && event.data.reason === 'settled' && !event.data.continues && boundary?.id === event.id && canArchive(root)
     else if (event !== undefined) valid &&= (event.kind === 'error' || event.kind === 'model.error' || event.kind === 'turn.end') && boundary?.kind === 'turn.end' && boundary.data.reason === 'error' && (event.turn === boundary.turn || event.id === boundary.id)
     else {
@@ -848,7 +851,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     works: nativeWorks,
     sessions: nativeSessions,
     manage: manageSession,
-    currentRequests,
     async inspect(session) {
       if (!store.hasSession(session)) return undefined
       const root = workRoot(session)
@@ -1055,7 +1057,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
 
   async function onCommand(conn: ClientConn, gen: number | null, command: Command): Promise<void> {
     const session = conn.selectedSession
-    const execution = command.type === 'input.submit' || command.type === 'decision.answer' || command.type === 'collaboration.input' || command.type === 'collaboration.resume' || (command.type === 'input.manage' && command.action !== 'list')
+    const execution = command.type === 'input.submit' || command.type === 'collaboration.input' || command.type === 'collaboration.resume' || (command.type === 'input.manage' && command.action !== 'list')
     if (session !== null && execution && isArchived(session)) {
       const input = command.type === 'input.submit' ? command : command.type === 'collaboration.input' ? command.input : undefined
       if (input !== undefined) conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'input.settled', data: { ok: false, ref: input.ref, reason: ARCHIVED_NOTE } } })
@@ -1101,7 +1103,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       return
     }
 
-    if (conn.target === undefined && ['model.list', 'provider.list', 'skills.list', 'paths.list', 'grants.list', 'mcp.list'].includes(command.type)) {
+    if (conn.target === undefined && ['model.list', 'provider.list', 'skills.list', 'paths.list', 'mcp.list'].includes(command.type)) {
       const session = conn.selectedSession
       void observe(command, {
         magic: options.magic, cwd: conn.cwd, store, session, mcp: mcpCatalog, now,
@@ -1113,17 +1115,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     }
     const originSession = conn.selectedSession
     const activeCollaboration = originSession == null ? undefined : store.collaboration.collaborationForSession(originSession)
-    // 有效成员卡归持卡执行者；入口退代不能让这张仍有效的卡答不进去。
-    if (activeCollaboration !== undefined && command.type === 'decision.answer') {
-      const memberSessions = new Set(store.collaboration.listMembers(activeCollaboration.collaborationId).map(a => a.sessionId))
-      const owner = [...executors].find(e => e.run.session !== null && memberSessions.has(e.run.session) && e.run.decisions.has(command.id))
-      if (owner !== undefined) { deliver(owner, command); return }
-      if ([...executors].some(e => e.run.session !== null && memberSessions.has(e.run.session) && e.run.resolvedDecisions.has(command.id))) {
-        conn.link.send({ t: 'line', text: '这一件已经处理过了——答复只算第一次' })
-        return
-      }
-    }
-
     if (gen !== null && (conn.target === undefined || gen !== conn.target.gen)) {
       conn.link.send({
         t: 'line',
@@ -1194,7 +1185,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     const previous = conn.target
     if (command.type === 'input.submit' && previous?.run.session != null && activeCollaboration === undefined &&
       previous.run.lastTurn !== undefined && !previous.run.busy && !previous.run.turnActive &&
-      backgroundOf(previous.run) === 0 && previous.run.decisions.size === 0 &&
+      backgroundOf(previous.run) === 0 &&
       !store.serviceFor(previous.run.session).inputs.list().some(input => input.state === 'pending')) {
       const selected = conn.selectedSession
       // 该输入由管理者等待接续，不属于旧 Agent；旧实例释放不能给它发送拒收回执。
@@ -1214,19 +1205,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         return
       }
       await onCommand(conn, null, command)
-      return
-    }
-
-    if (command.type === 'decision.answer' && conn.target !== undefined) {
-      const run = conn.target.run
-      if (!run.decisions.has(command.id) && run.resolvedDecisions.has(command.id)) {
-        conn.link.send({
-          t: 'line',
-          text: '这一件已经处理过了——答复只算第一次，那件工具不会再跑一遍',
-        })
-        return
-      }
-      deliver(conn.target, command)
       return
     }
 
@@ -1270,7 +1248,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         explicit: true,
         cwd: conn.cwd, environment: conn.environment,
         ...(conn.switch === undefined ? {} : { switch: conn.switch }),
-        ...(conn.allowAll === true ? { allowAll: true } : {}),
       })
       if (spawned === undefined) {
         conn.link.send({ t: 'line', text: `起不了执行者——没接上 ${session}` })
@@ -1327,7 +1304,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       environment: conn.environment,
       cwd: conn.cwd,
       ...(conn.switch === undefined ? {} : { switch: conn.switch }),
-      ...(conn.allowAll === true ? { allowAll: true } : {}),
     })
     if (spawned !== undefined) bind(conn, spawned)
     return spawned
@@ -1341,7 +1317,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     readonly environment?: Readonly<Record<string, string>>
     readonly cwd: string
     readonly switch?: ModelSwitchRequest | undefined
-    readonly allowAll?: boolean | undefined
   }): Executor | undefined {
     if (input.session !== null && isArchived(input.session)) return undefined
     const root = input.session === null ? undefined : workRoot(input.session)
@@ -1365,7 +1340,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         session: input.session, cwd: input.cwd, magic: options.magic,
         link: agentLink, records: store, ledger,
         ...(input.switch === undefined ? {} : { switch: input.switch }),
-        ...(input.allowAll === true ? { allowAll: true } : {}),
       })
     } catch (error) {
       options.log?.(`装配 Agent 不成：${String(error)}`)
@@ -1416,6 +1390,36 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     try { saveRuns(true) } catch (error) { failed(error); return undefined }
     pushRuns()
     return executor
+  }
+
+  /** 一个窗口走了：把它占着、而再没人看着的 sudo 认证收掉。 */
+  function dropConnection(id: number): void {
+    dropClient(id)
+    for (const [requestId, request] of sudoRequests) {
+      if (connections.watching(request.executor).length === 0) cancelSudo(requestId, request.executor)
+    }
+  }
+
+  /** sudo 认证落定：转给执行者，并让其余窗口撤掉组件。密码不在这里留痕。 */
+  function answerSudo(conn: ClientConn, message: Extract<ClientToManager, { t: 'sudo.answer' }>): void {
+    const request = sudoRequests.get(message.requestId)
+    if (request === undefined || conn.target !== request.executor) return
+    const executor = request.executor
+    sudoRequests.delete(message.requestId)
+    send(executor, message.cancelled === true
+      ? { t: 'sudo.answer', requestId: message.requestId, cancelled: true }
+      : { t: 'sudo.answer', requestId: message.requestId, password: message.password ?? '' })
+    for (const watcher of connections.watching(executor)) {
+      watcher.link.send({ t: 'sudo.settled', requestId: message.requestId })
+    }
+  }
+
+  function cancelSudo(requestId: string, executor: Executor): void {
+    if (!sudoRequests.delete(requestId)) return
+    send(executor, { t: 'sudo.answer', requestId, cancelled: true })
+    for (const watcher of connections.watching(executor)) {
+      watcher.link.send({ t: 'sudo.settled', requestId })
+    }
   }
 
   /** 送一条**命令**——`send` 的那一层皮（读起来仍是「送一条命令」）。 */
@@ -1506,6 +1510,23 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       case 'snapshot':
         onSnapshot(executor, message.seq, message.snapshot)
         return
+      case 'sudo.request': {
+        // 同一 requestId 只认一次；没有窗口看着这一代就当场取消（命令不启动）。
+        if (sudoRequests.has(message.requestId)) return
+        sudoRequests.set(message.requestId, { executor, command: message.command })
+        const watchers = connections.watching(executor)
+        if (watchers.length === 0) {
+          cancelSudo(message.requestId, executor)
+          return
+        }
+        for (const conn of watchers) {
+          conn.link.send({ t: 'sudo.request', requestId: message.requestId, command: message.command })
+        }
+        return
+      }
+      case 'sudo.cancel':
+        cancelSudo(message.requestId, executor)
+        return
       default:
         return
     }
@@ -1582,8 +1603,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         if (run.session !== null) clearTurnNotice(run.session)
         stopGenerations.set(run, nextStopGeneration++)
         run.turnActive = true
-        // 新的一轮开始 ⇒ 上一轮那些「已答复」的记账清掉（它们只在本轮之内管用）
-        run.resolvedDecisions.clear()
         break
       case 'message.assistant':
         stopContent.set(run, { ...stopContent.get(run), entry: event.data.entry })
@@ -1599,10 +1618,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         run.turnActive = false
         run.lastTurn = event.data.reason
         run.lastTurnAt = event.at
-        // **轮收束 ⇒ 悬着的裁决作废**——与执行者那一侧同一条口径（`executor.ts`）：
-        // 卡挂着的时候这一轮没结束，故那条「等你」照旧成立。
-        run.decisions.clear()
-
         if (run.session !== null) {
           const current = store.attention.list({ sessions: [workRoot(run.session)] })[0]
           // 同一停点重放保留已读与送达事实；新一轮仍由 turn.start 清除旧原因。
@@ -1610,24 +1625,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
           if (!event.data.continues && (event.data.reason === 'settled' || event.data.reason === 'error')) queueMicrotask(() => { void notifyStop(run, event).catch(error => options.log?.(`当前原因读取失败：${String(error)}`)) })
         }
         break
-      case 'tool.decision.request':
-        run.decisions.set(event.id, event.data.call)
-        if (run.session !== null) notify(run.session, 'needs-you', event.id, event.data.material || event.data.name, { session: run.session, event: event.id }, event.at)
-        break
-      case 'tool.decision': {
-        if (run.session !== null) {
-          const current = store.attention.list({ sessions: [workRoot(run.session)] })[0]
-          if (current?.source?.session === run.session && run.decisions.get(current.source.event ?? -1) === event.data.call) store.attention.clear(workRoot(run.session))
-        }
-        // 答复落地——请求那一条从「挂着」挪到「已处理」（晚到的答复据此被认出来）
-        for (const [id, call] of run.decisions) {
-          if (call === event.data.call) {
-            run.decisions.delete(id)
-            run.resolvedDecisions.add(id)
-          }
-        }
-        break
-      }
       case 'tool.output.delta':
         run.output = { at, sample: tailOf(run.output?.sample, event.data.text) }
         break
@@ -1647,28 +1644,14 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
 
     connections.publish(executor, event)
 
-    if (event.kind === 'tool.decision.request') collaborationDecisions.set(event.id, event)
-    if (event.kind === 'tool.decision') for (const [id, pending] of collaborationDecisions) {
-      if (pending.session === event.session && pending.data.call === event.data.call) collaborationDecisions.delete(id)
-    }
-    if (event.kind === 'turn.end') for (const [id, pending] of collaborationDecisions) {
-      if (pending.session === event.session) collaborationDecisions.delete(id)
-    }
-
     const shared = event.session === undefined ? undefined : store.collaboration.collaborationForSession(event.session)
-    if (shared !== undefined && (event.kind === 'tool.decision.request' || event.kind === 'tool.decision')) {
-      for (const conn of clients.values()) {
-        if (conn.target === executor) continue
-        if ((conn.selectedSession) === shared.originSessionId) conn.link.send({ t: 'ev', gen: conn.target?.gen ?? null, event })
-      }
-    }
     if (shared !== undefined && event.kind === 'turn.end' && event.data.reason === 'settled' && !event.data.continues) {
       void collaboration.settled(event.session!, event.turn).catch(error => options.log?.(`咨询回报尚未核实：${String(error)}`))
     }
     if (shared !== undefined && ((event.kind === 'turn.end' && event.data.reason === 'error') || event.kind === 'error')) {
       void collaboration.failed(event.session!, event.kind === 'error' ? event.data.message : '成员本轮执行失败，需要核对停点').catch(error => options.log?.(`失败回报尚未核实：${String(error)}`))
     }
-    if (shared !== undefined && ['agent.state', 'turn.start', 'turn.end', 'tool.decision.request', 'tool.decision', 'message.assistant', 'message.user', 'model.usage'].includes(event.kind)) {
+    if (shared !== undefined && ['agent.state', 'turn.start', 'turn.end', 'tool.decision', 'message.assistant', 'message.user', 'model.usage'].includes(event.kind)) {
       collaboration.changed()
       if (event.kind === 'agent.state' && event.data.state === 'waiting') {
         void collaboration.idle(shared.originSessionId).then(closed => {
@@ -1683,6 +1666,9 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
 
   function retire(executor: Executor, reason: string): void {
     if (executor.run.ended !== undefined) return
+    for (const [requestId, request] of sudoRequests) {
+      if (request.executor === executor) cancelSudo(requestId, executor)
+    }
     for (const [key, owner] of collaborationInputs) if (owner.target === executor.run.session) {
       collaborationInputs.delete(key)
       owner.conn.link.send({
@@ -1708,7 +1694,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     executor.run.connected = false
     executor.run.busy = false
     executor.run.turnActive = false
-    executor.run.decisions.clear()
     executor.run.action = undefined
     refresh(executor.run, at)
 
