@@ -95,6 +95,49 @@ test('TS 与 Swift 按同一文件格式交叉编辑，字段校验、凭据隐�
   } finally { g.close() }
 }, 60000)
 
+test('角色保存两端一致：能力与可解析性不拦，结构冲突两端都拒', async () => {
+  const g = ground()
+  const settings = createSettings({ magic: g, environment: {}, fetch: async () => { throw new Error('本地编辑不得联网') } })
+  try {
+    writeFileSync(g.configPath, JSON.stringify({
+      providers: {
+        local: { baseURL: 'https://local.invalid/v1', protocol: 'responses', auth: 'none',
+          modelOverrides: { chatless: { capabilities: { chat: false } } } },
+        unlisted: { vendor: 'no-such-vendor' },
+      },
+      models: {
+        default: { provider: 'local', model: 'chatless' },
+        spell: { provider: 'unlisted', model: 'mystery' },
+      },
+    }))
+    // 档位未配置、chat=false／思考未知、官方适配不可解析——两端都照存。
+    for (const action of [
+      { type: 'role.save', id: 'future', role: { name: '先定义', instructions: '稍后补模型', model: { choice: 'cantrip' } } },
+      { type: 'role.save', id: 'chatless', role: { name: '无对话', instructions: '先存模板', model: { choice: 'default', reasoning: { mode: 'level', level: 'xhigh' } } } },
+      { type: 'role.save', id: 'unlisted', role: { name: '未列型号', instructions: '稍后核对', model: { choice: 'spell', reasoning: { mode: 'off' } } } },
+    ] as SettingsAction[]) {
+      const before = readFileSync(g.configPath, 'utf8')
+      await settings.apply(action, configStamp(g.configPath))
+      const expected = JSON.parse(readFileSync(g.configPath, 'utf8'))
+      writeFileSync(g.configPath, before)
+      const result = await runNativeSettings({ ...g, action, stamp: configStamp(g.configPath) }, {})
+      expect(result.error).toBeUndefined(); expect(result.saved).toBe(true)
+      expect(JSON.parse(readFileSync(g.configPath, 'utf8'))).toEqual(expected)
+    }
+    // 缺档位与未知思考模式这类结构冲突——两端都拒，且不落盘。
+    for (const action of [
+      { type: 'role.save', id: 'bad', role: { name: '缺档位', instructions: '只写思考', model: { reasoning: { mode: 'off' } } } },
+      { type: 'role.save', id: 'bad', role: { name: '未知思考', instructions: '拼错模式', model: { choice: 'default', reasoning: { mode: 'telepathy' } } } },
+    ] as unknown as SettingsAction[]) {
+      const before = readFileSync(g.configPath, 'utf8')
+      await expect(settings.apply(action, configStamp(g.configPath))).rejects.toThrow()
+      const result = await runNativeSettings({ ...g, action, stamp: configStamp(g.configPath) }, {})
+      expect(result.saved).toBe(false); expect(result.error).toBeDefined()
+      expect(readFileSync(g.configPath, 'utf8')).toBe(before)
+    }
+  } finally { g.close() }
+}, 60000)
+
 test('两端对规范化目录别名使用同一把锁；任一端持锁时另一端不能覆盖', async () => {
   const g = ground(), alias = join(g.home, 'alias')
   writeFileSync(g.configPath, '{}'); symlinkSync(g.base, alias, 'dir')

@@ -14,7 +14,6 @@ import { createFileModelInfoCache } from './model-cache.ts'
 import { createModelsDevResource } from './models-dev-resource.ts'
 import { configStamp } from '@magic/config'
 import { cacheAccessFor, connectionScopeChanged } from './cache-access.ts'
-import { resolveModelChoice } from './agent-models.ts'
 import { providerCatalog, readModelCatalog } from './run/observation.ts'
 export type SettingsContext = {
   readonly magic: MagicHome
@@ -94,10 +93,14 @@ export function createSettings(context: SettingsContext) {
     // 网页配置的保存与浏览不触发任何模型侧请求（U94）；其余设置沿用原有缓存预热。
     if (action.type !== 'web.configure') await currentInfo.warmup()
     const snapshots = Object.entries(loaded.config.providers).map(([provider, config]) => ({ provider, config, snapshot: currentInfo.peek(provider).snapshot }))
+    // 角色保存只判结构与明显冲突（D65）：档位是否配置、地址／协议能否解析、
+    // 对话与思考能力都留给创建成员或真实请求时解析。形制（字段、枚举、类型）
+    // 由下方 `parseConfig` 校验；这里只多守一条——写了 model 就要指明档位。
     if (action.type === 'role.save' && action.role.model !== undefined) {
-      const choice = resolveModelChoice({ providers: loaded.config.providers, configuredModels: loaded.config.models, config: action.role.model,
-        modelInfoOf: (provider, model) => currentInfo.model(provider, model) })
-      if (!choice.ok) throw new Error(`角色模型设置：${choice.reason}`)
+      const model = action.role.model
+      const conflict = typeof model !== 'object' || model === null || Array.isArray(model)
+        ? '须是对象' : model.choice === undefined ? '须明确选择 Default 或模型档位' : undefined
+      if (conflict !== undefined) throw new Error(`角色模型设置${conflict}`)
     }
     const validate = (raw: Record<string, unknown>) => {
       const config = parseConfig(raw, configPath, context.magic).config

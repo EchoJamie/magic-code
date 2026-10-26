@@ -277,7 +277,7 @@ struct RoleSettingsPage: View {
                         Text(roles[id]["name"].text).font(.headline)
                         Text(id).font(.caption).foregroundStyle(.secondary)
                         Text(roles[id]["instructions"].text).font(.callout).foregroundStyle(.secondary).lineLimit(3)
-                        Text("\(roles[id]["model"]["choice"].text.isEmpty ? "继承创建入口模型" : roles[id]["model"]["choice"].text.capitalized) · \(roles[id]["tools"] == .null ? "继承工具范围" : "指定 \(roles[id]["tools"].array.count) 个工具")").font(.caption).foregroundStyle(.secondary)
+                        Text("\(roleChoiceLabel(roles[id]["model"], snapshot: snapshot)) · \(roles[id]["tools"] == .null ? "继承工具范围" : "指定 \(roles[id]["tools"].array.count) 个工具")").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer(); Button("编辑") { drafts.roleEditor = id }; Button("删除", role: .destructive) { remove = id }
                 }; Divider()
@@ -331,6 +331,9 @@ struct RoleEditor: View {
                 }
                 if draft.value["model"]["reasoning"]["mode"].text == "level" { SettingText(title: "思考档（须由该型号支持）", value: reasoningField("level")) }
                 if draft.value["model"]["reasoning"]["mode"].text == "budget" { SettingText(title: "思考 token 预算", value: reasoningField("budgetTokens")) }
+                ForEach(Array(roleModelNotes(draft.value, snapshot: snapshot).enumerated()), id: \.offset) { _, note in
+                    Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 Button("清除显式模型与思考默认") { draft.put("model", .null) }
             }
         } footer: {
@@ -353,6 +356,70 @@ struct RoleEditor: View {
             draft.put("model", model.isEmpty ? .null : .object(model))
         })
     }
+}
+
+/// 列表里的模型列：档位写了但当前未配置时如实标出——保存不拦，只提示下一步。
+func roleChoiceLabel(_ model: SettingsValue, snapshot: SettingsSnapshot) -> String {
+    let choice = model["choice"].text
+    guard !choice.isEmpty else { return "继承创建入口模型" }
+    return choice.capitalized + (snapshot.configuration["models"][choice].isObject ? "" : "（尚未配置）")
+}
+
+/// 角色默认模型的状态说明（只用于展示）。
+///
+/// 保存只记录模板（D65）：这里说明当前缺什么、下一步做什么，不把状态藏成保存失败；
+/// 能力由创建成员或真实请求时再解析。
+func roleModelNotes(_ model: SettingsValue, snapshot: SettingsSnapshot) -> [String] {
+    let choice = model["choice"].text
+    guard !choice.isEmpty else { return ["未设置独立默认；创建成员时采用创建入口当前的模型与思考。"] }
+    let label = choice.capitalized
+    let mapping = snapshot.configuration["models"][choice]
+    guard mapping.isObject else {
+        return ["\(label) 尚未配置；仍可保存。创建成员前请到「模型」设置配置该档位，或改选其他档位。"]
+    }
+    let provider = mapping["provider"].text, modelID = mapping["model"].text
+    let config = snapshot.configuration["providers"][provider]
+    var notes: [String] = []
+    if !config.isObject {
+        notes.append("\(label) 引用的连接「\(provider)」已不存在；仍可保存。请改选档位或修复该连接。")
+    } else {
+        let vendor = config["vendor"].text, address = config["baseURL"].text
+        if vendor.isEmpty {
+            if address.isEmpty { notes.append("连接「\(provider)」还没有服务地址；仍可保存。创建成员前请补全地址或改选模型。") }
+        } else if let vendorEntry = snapshot.vendors.first(where: { $0["vendor"].text == vendor }) {
+            let region = config["region"].text
+            if address.isEmpty, !region.isEmpty, !vendorEntry["regions"].array.contains(where: { $0["id"].text == region }) {
+                notes.append("连接「\(provider)」的官方区域「\(region)」无法识别；仍可保存。请在该连接中重新选择区域。")
+            }
+        } else {
+            notes.append("连接「\(provider)」的供应商适配「\(vendor)」无法识别；仍可保存。请在该连接中重新选择供应商或改为自定义地址。")
+        }
+    }
+    let row = snapshot.catalog.first { $0["provider"].text == provider } ?? .null
+    let known = row["modelInfo"][modelID]
+    let override = config["modelOverrides"][modelID]["capabilities"]["chat"]
+    let chat = override.isBool ? override : known["capabilities"]["chat"]
+    if chat == .bool(false) {
+        notes.append("型号「\(modelID)」的资料标记为不支持对话；仍可保存。创建成员后的请求会失败，请改角色默认或更换模型。")
+    }
+    let reasoning = model["reasoning"], mode = reasoning["mode"].text
+    if ["off", "level", "budget"].contains(mode) {
+        let support = row["effectiveReasoning"][modelID]
+        if !support.isObject {
+            notes.append("型号「\(modelID)」的思考能力未知；仍可保存。创建成员时只能使用模型默认思考，请把角色思考改为模型默认或更换模型。")
+        } else if mode == "off", support["disable"] != .bool(true) {
+            notes.append("型号「\(modelID)」未声明支持关闭思考；仍可保存。请把角色思考改为模型默认或更换模型。")
+        } else if mode == "level", !support["levels"].array.contains(reasoning["level"]) {
+            notes.append("型号「\(modelID)」没有思考档位「\(reasoning["level"].text)」；仍可保存。可用档位：\(support["levels"].array.map(\.text).joined(separator: " / "))。")
+        } else if mode == "budget" {
+            let budget = support["budget"], tokens = reasoning["budgetTokens"].number ?? 0
+            let unsupported = !budget.isObject || tokens <= 0
+                || (budget["minTokens"].number.map { tokens < $0 } ?? false)
+                || (budget["maxTokens"].number.map { tokens > $0 } ?? false)
+            if unsupported { notes.append("型号「\(modelID)」不支持该思考预算；仍可保存。请把角色思考改为模型默认或更换模型。") }
+        }
+    }
+    return notes.isEmpty ? ["\(label) · \(modelID)：保存只记录默认；创建成员时按当时的连接与能力再解析。"] : notes
 }
 
 struct SettingsRemovalSheet: View {
