@@ -165,13 +165,13 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
   return { root, magic, workspace, dataDir, calls, foreign, errors, events, commands, lines, agentExits, closedViews, manager, store, client, shell, closeWindows,
     session, collaboration, members, member, delegation, wait, pick,
     requests: (model = 'entry-model') => calls.filter(call => call.model === model),
+    /** 走 `Tab` → 协作列表 → Enter，切进成员子会话（与 `/resume` 同一条会话通路）。 */
     async openMember(target = shell) {
+      const session = member()!.sessionId
       target.key({ kind: 'tab' })
       await wait('协作列表', () => { const dock = target.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'collaboration' })
       pick(member()!.agentId, target)
-      await wait('成员完整阅读', () => { const dock = target.getView().dock; return dock.kind === 'picker' && dock.picker.reader?.key === `${member()!.agentId}:records` })
-      target.key({kind:'memberMenu'})
-      await wait('成员操作', () => { const dock=target.getView().dock;return dock.kind==='picker'&&dock.picker.source==='collaboration-member' })
+      await wait('进入成员子会话', () => target.getView().sessionId === session)
     },
     async openWindow() {
       const another = await connectManager(manager.socketPath, { cwd: workspace, session: session()!, label: `${name}-second`,

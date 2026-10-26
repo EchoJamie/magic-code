@@ -12,7 +12,7 @@ export const collaborationFixture: CollaborationView = {
   members: [
     { agent: { agentId: 'coordinator', sessionId: 'origin', name: '协调', role: '整合结果', model: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', at: 0 },
       runtime: { session: 'origin', state: 'idle', since: 0, startedAt: 0, workspace: ['/project'], holds: true }, pendingDecisions: 0 },
-    { agent: { agentId: 'worker', sessionId: 'member', name: '实现', role: '调整校验', model: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', at: 0 },
+    { agent: { agentId: 'worker', sessionId: 'member', name: '实现', role: '调整校验', model: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', createdBy: 'coordinator', at: 0 },
       runtime: { session: 'member', state: 'running', action: '检查回调兼容', since: 0, startedAt: 0, workspace: ['/project'], holds: true }, pendingDecisions: 0,
       delegation: { delegationId: 10, collaborationId: 'work', delegatorId: 'coordinator', assigneeId: 'worker', source: { messageId: 10 }, authorization: [], scope: '回调校验', state: 'accepted', at: 0 } },
   ],
@@ -22,6 +22,22 @@ export const collaborationFixture: CollaborationView = {
   ],
   waits: [], constraints: [{ messageId: 20, states: [{ agentId: 'worker', state: 'pending' }, { agentId: 'coordinator', state: 'included' }] }],
 }
+
+/** 子会话自己的历史：讨论消息在正文里是一条 `agent-message` 引用条目。 */
+export const memberEntries: readonly Entry[] = [
+  { id: 60, kind: 'user', at: 4, content: { text: '按入口要求核对回调。' } },
+  { id: 61, kind: 'agent-message', at: 5, content: { text: '' }, source: 'origin',
+    payload: { messageId: 41, collaborationId: 'work', senderId: 'coordinator' } },
+  { id: 62, kind: 'assistant', at: 6, content: { text: '保留原状态码，继续核对兼容性。' } },
+]
+
+export const memberMessages = [
+  { messageId: 40, collaborationId: 'work', senderId: 'worker', recipients: ['coordinator'], purpose: 'question' as const, body: [{ kind: 'text' as const, text: '失败响应应保留原状态码吗？' }, { kind: 'entry' as const, ref: { sessionId: 'origin', entryId: 1 }, label: '原始要求' }], discussionRoot: 40, at: 0, withdrawn: false },
+  { messageId: 41, collaborationId: 'work', senderId: 'coordinator', recipients: ['worker'], purpose: 'decision' as const, body: [{ kind: 'text' as const, text: '保留原状态码；未解决的兼容性疑点继续记录。' }], discussionRoot: 40, replyTo: 40, at: 1, withdrawn: false },
+]
+
+/** 从子会话看到的同一份协作快照（消息只带这条子会话可读的那些）。 */
+export const memberSessionView: CollaborationView = { ...collaborationFixture, messages: memberMessages }
 
 export function collaborationDetail(member?: string): CollaborationView {
   if (member === undefined) return collaborationFixture

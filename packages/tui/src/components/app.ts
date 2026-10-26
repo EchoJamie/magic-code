@@ -1077,7 +1077,6 @@ export function TuiApp({ shell }: TuiAppProps) {
           startTop: top,
           title: reader?.title ?? shell.getView().status.session ?? '当前工作',
           retry: reader?.key.startsWith('session:') ? () => { shell.key({ kind: 'enter' }) } : undefined,
-          memberAction: reader?.key.endsWith(':records') === true ? (kind, top) => { action = true; shell.key({kind:'readerTop',top}); shell.key({kind:kind === 'input' ? 'memberInput' : 'memberMenu'}) } : undefined,
           // **加入本次输入**（U110）——放回稿子是外壳的事（编号、引用表、插入点都在它手上）；
           // 那一屏自己就此退出（`screen.ts` 那一支），回来就是接着打字
           attach: (material) => shell.attachMaterial(material),

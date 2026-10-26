@@ -178,7 +178,7 @@ test('真实入口 detached 后根窗口保留成员审批、目标及草稿，�
     const root = f.manager.executors().find(one => one.session === origin)!
     const member = f.member()!
     f.shell.key({ kind: 'paste', text: '整体保留原稿' })
-    await f.openMember(); f.pick('input')
+    await f.openMember()
     f.shell.key({ kind: 'paste', text: '成员保留原稿 ' }); f.shell.key({ kind: 'char', char: '@' })
     await f.wait('真实文件引用候选', () => {
       const dock = f.shell.getView().dock
@@ -193,29 +193,35 @@ test('真实入口 detached 后根窗口保留成员审批、目标及草稿，�
     const dock = f.shell.getView().dock
     if (dock.kind !== 'decision') throw new Error('成员审批没有展示')
     rootReply.release()
-    await f.wait('入口真实退出且窗口收到 detached', () => detached.length > 0 && f.agentExits.some(one => one.gen === root.gen)
+    // 窗口已切到子会话：入口执行者照常收摊，但这一屏不该收到 detached（D68 不断连）。
+    await f.wait('入口真实退出', () => f.agentExits.some(one => one.gen === root.gen)
       && !f.manager.executors().some(one => one.session === origin))
+    expect(detached).toEqual([])
     expect(f.manager.clients()).toBe(1)
-    expect(f.shell.getView().sessionId).toBe(origin)
-    expect(f.shell.getView().inputMember).toBe(member.agentId)
+    expect(f.shell.getView().sessionId).toBe(member.sessionId)
     // 审批接管输入时，原稿与引用保存在既有 stashed；答复后必须原样归还。
     expect(f.shell.getView().stashed).toMatchObject({ draft, refs })
     expect(f.shell.getView().dock).toMatchObject({ kind: 'decision', pending: { id: dock.pending.id, member: '实现' } })
     expect(statSync(path).mode & 0o777).toBe(0o600)
+    // D68：查看当前子会话不再重读、重发它的完整历史（协作视图不带 entries）。
     f.client.send({ type: 'collaboration.read', member: member.agentId })
-    await f.wait('只读重发仍为原审批', () => f.events.filter(one => one.kind === 'tool.decision.request' && one.id === dock.pending.id).length >= 2)
+    await Bun.sleep(200)
+    const views = f.events.flatMap(one => one.kind === 'collaboration.view' ? [one.data] : [])
+    expect(views.filter(view => view.entries !== undefined)).toEqual([])
+    expect(views.every(view => view.selectedMember === undefined)).toBe(true)
     expect(f.manager.executors().some(one => one.session === origin)).toBe(false)
     f.shell.key({ kind: 'down' }); f.shell.key({ kind: 'enter' }); f.shell.key({ kind: 'enter' })
     await f.wait('无入口 executor 时答复仍交成员执行', () => (statSync(path).mode & 0o777) === 0o700 && f.requests('member-model').length === 3)
     expect(f.commands.filter(one => one.type === 'decision.answer' && one.id === dock.pending.id)).toHaveLength(1)
     expect(f.events.filter(one => one.kind === 'tool.decision' && one.session === member.sessionId && one.data.call === dock.pending.call)).toHaveLength(1)
     expect(f.shell.getView().dock.kind).not.toBe('decision')
-    expect(f.shell.getView().inputMember).toBe(member.agentId)
+    expect(f.shell.getView().sessionId).toBe(member.sessionId)
     expect(f.shell.getView().draft).toBe(draft)
     expect(f.shell.getView().refs).toEqual(refs)
     f.shell.key({ kind: 'tab' })
     await f.wait('返回整体目标选择', () => { const dock = f.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'collaboration' })
     f.pick('whole')
+    await f.wait('返回入口会话', () => f.shell.getView().sessionId === origin)
     expect(f.shell.getView().draft).toBe('整体保留原稿')
     expect(f.shell.getView().inputMember).toBeUndefined()
     expect(f.requests()).toHaveLength(2)
@@ -336,14 +342,15 @@ test('显式正常收尾：收下成员交付后仍能写最终正文，资源�
     expect(originEntries.filter(one => one.kind === 'tool-call').map(one => one.payload)).toContainEqual({ name: 'agent_control', args: { action: 'close' } })
     expect(memberEntries.filter(one => one.kind === 'tool-result').map(one => one.payload)).toMatchObject([{ ok: true }, { ok: true }])
 
-    // 关闭后仍经原 socket 查询完整成员记录；只读不重建执行者。
-    f.client.send({ type: 'collaboration.read', member: member.agentId })
-    await f.wait('关闭后成员完整记录仍可查询', () => f.events.some(one => one.kind === 'collaboration.view' && one.data.selectedMember === member.agentId && one.data.collaboration?.state === 'closed'))
-    const read = f.events.findLast(one => one.kind === 'collaboration.view' && one.data.selectedMember === member.agentId)
-    if (read?.kind !== 'collaboration.view') throw new Error('未返回关闭后的记录')
-    expect(read.data.entries).toEqual(memberEntries)
-    expect(read.data.messages?.map(one => one.purpose)).toEqual(expect.arrayContaining(['delegation', 'receipt', 'delivery']))
-    expect(JSON.stringify(read.data.messages)).toContain(conclusion)
+    // 关闭后仍可进入这条子会话查看完整正文；只读不重建执行者。
+    await f.openMember()
+    const memberView = f.shell.getView()
+    expect(memberView.sessionId).toBe(member.sessionId)
+    expect(memberView.collaboration?.collaboration?.state).toBe('closed')
+    const transcript = [...memberView.settled, ...memberView.rows]
+    expect(transcript.some(one => one.kind === 'assistant' && one.text.includes(memberFinal))).toBe(true)
+    expect(transcript.some(one => one.key.startsWith('am:'))).toBe(true)
+    expect(JSON.stringify(memberView.messages)).toContain(conclusion)
     expect(f.manager.executors()).toEqual([])
     expect(f.requests()).toHaveLength(5)
     expect(f.requests('member-model')).toHaveLength(3)
@@ -372,7 +379,7 @@ test('两个根 TUI 使用独立提交身份：成员材料拒收只回原窗口
       const path = join(f.workspace, `${window.label}-ref.txt`)
       writeFileSync(path, '提交前可读的材料')
       window.shell.key({ kind: 'paste', text: `整体${window.label}尚未提交的草稿` })
-      await f.openMember(window.shell); f.pick('input', window.shell)
+      await f.openMember(window.shell)
       window.shell.key({ kind: 'paste', text: `成员${window.label}核对 ` }); window.shell.key({ kind: 'char', char: '@' })
       await f.wait('真实文件候选', () => { const dock = window.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'paths' && dock.picker.rows.some(one => one.value === path) })
       f.pick(path, window.shell)
@@ -399,6 +406,7 @@ test('两个根 TUI 使用独立提交身份：成员材料拒收只回原窗口
       window.shell.key({ kind: 'tab' })
       await f.wait('回到协作列表', () => { const dock = window.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'collaboration' })
       f.pick('whole', window.shell)
+      await f.wait('回到入口会话', () => window.shell.getView().sessionId === f.collaboration()?.originSessionId)
       expect(window.shell.getView().draft).toBe(`整体${window.label}尚未提交的草稿`)
       expect(window.shell.getView().inputMember).toBeUndefined()
     }
@@ -609,4 +617,49 @@ test('共同补充的原文、文件引用与图片字节进入入口和成员�
     expect(f.errors).toEqual([])
     expect(f.events.filter(one => one.kind === 'error')).toEqual([])
   } finally { await f.close() }
+}, 30000)
+
+test('U130：成员运行中切进子会话，正文实时追加；返回入口不断连、草稿各自保留', async () => {
+  const memberReply = latch()
+  const f = await collaborationRuntime('subsession-switch', async call => {
+    if (call.model === 'entry-model') return call.index === 0 ? spawnMember : { text: '入口本轮结束。' }
+    if (call.index === 0) {
+      await memberReply.promise
+      return { tool: 'agent_message', args: { action: 'respond', operationId: 'accept', delegation: f.delegation()!.delegationId, response: 'accept' } }
+    }
+    return { text: '成员正在检查回调。' }
+  })
+  try {
+    f.shell.key({ kind: 'paste', text: '分出检查，成员先跑起来。' }); f.shell.key({ kind: 'enter' })
+    await f.wait('成员执行中', () => f.member() !== undefined
+      && f.manager.runs().find(one => one.session === f.member()!.sessionId)?.state === 'running')
+    f.shell.key({ kind: 'paste', text: '入口草稿' })
+    const origin = f.session()!
+    const memberSession = f.member()!.sessionId
+
+    // 运行中 Tab → 协作列表 → Enter：进的是完整子会话，不是阅读器。
+    await f.openMember()
+    expect(f.shell.getView().sessionId).toBe(memberSession)
+    expect(f.shell.getView().draft).toBe('')
+    expect(f.shell.getView().inputMember).toBeUndefined()
+
+    memberReply.release()
+    await f.wait('子会话正文实时追加', () => [...f.shell.getView().settled, ...f.shell.getView().rows]
+      .some(row => row.kind === 'assistant' && row.text.includes('成员正在检查回调')))
+
+    // 子会话里再开列表：当前子会话不在；主会话预选，Enter 返回。
+    f.shell.key({ kind: 'tab' })
+    await f.wait('子会话的协作列表', () => { const dock = f.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'collaboration' })
+    const dock = f.shell.getView().dock
+    if (dock.kind !== 'picker') throw new Error('没有协作列表')
+    const coordinator = f.store.collaboration.collaborationForSession(memberSession)!.coordinatorId
+    expect(dock.picker.rows.some(row => row.value === f.member()!.agentId)).toBe(false)
+    expect(dock.picker.rows[dock.picker.selected]?.value).toBe(coordinator)
+    f.pick(coordinator)
+    await f.wait('返回入口会话', () => f.shell.getView().sessionId === origin)
+    expect(f.shell.getView().draft).toBe('入口草稿')
+    expect(f.manager.clients()).toBe(1)
+    expect(f.errors).toEqual([])
+    expect(f.events.filter(one => one.kind === 'error')).toEqual([])
+  } finally { memberReply.release(); await f.close() }
 }, 30000)

@@ -87,19 +87,26 @@ async function reclaimed(f: StopRuntime, owned: readonly OwnedProcess[], atStop:
   expect(f.store.collaboration.listExecutions(work.collaborationId).every(one => one.state === 'finished')).toBe(true)
   expect(f.store.collaboration.listExecutions(work.collaborationId).filter(one => one.mode === 'work').map(one => one.operationId)).toEqual(atStop.workExecutions)
   const before = { calls: f.calls.length, launches: f.launches.length }
-  // 停止后经同一根窗口 socket 读整体与每位成员完整记录；只读不得重新建立执行者。
+  // 停止后经同一根窗口 socket 读协作摘要；只读不带成员完整历史，也不重新建立执行者。
   const queries = [undefined, ...f.members().map(one => one.agentId)]
   for (const member of queries) {
     const start = f.events.length
     f.client.send({ type: 'collaboration.read', ...(member === undefined ? {} : { member }) })
-    await f.wait('停止后的真实记录读视图', () => f.events.slice(start).some(one => one.kind === 'collaboration.view' && one.data.selectedMember === member && one.data.collaboration?.state === 'stopped'))
-    const event = f.events.slice(start).find(one => one.kind === 'collaboration.view' && one.data.selectedMember === member)
-    if (event?.kind !== 'collaboration.view') throw new Error('没有协作记录视图')
-    if (member !== undefined) {
-      const session = f.members().find(one => one.agentId === member)!.sessionId
-      expect(event.data.entries).toEqual(await Array.fromAsync(f.store.readEntries(session)))
-    }
+    await f.wait('停止后的协作视图', () => f.events.slice(start).some(one => one.kind === 'collaboration.view' && one.data.collaboration?.state === 'stopped'))
+    const event = f.events.slice(start).find(one => one.kind === 'collaboration.view')
+    if (event?.kind !== 'collaboration.view') throw new Error('没有协作视图')
+    // 当前会话自身（这里是入口）不会被当成要查看的成员；协作视图也不携带 entries。
+    expect(event.data.entries).toBeUndefined()
+    expect(event.data.selectedMember).toBeUndefined()
   }
+  // 成员正文改走会话历史分片：切进子会话并读历史，不重建执行者。
+  const memberSession = f.members().find(one => one.agentId !== f.collaboration()?.coordinatorId)!.sessionId
+  const historyStart = f.events.length
+  f.client.send({ type: 'session.open', session: memberSession })
+  f.client.send({ type: 'history.read', session: memberSession })
+  await f.wait('停止后的子会话历史', () => f.events.slice(historyStart).some(one => one.kind === 'session.history' && one.data.session === memberSession && one.data.done))
+  const history = f.events.slice(historyStart).flatMap(one => one.kind === 'session.history' && one.data.session === memberSession && one.data.done ? [one.data] : [])[0]
+  expect(history?.entries.length).toBeGreaterThan(0)
   await Bun.sleep(200) // 仅检查迟到帧/多余调用；停止证明来自 onExit、原账本与进程组探针。
   expect(f.calls).toHaveLength(atStop.calls)
   expect({ calls: f.calls.length, launches: f.launches.length }).toEqual(before)

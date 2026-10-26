@@ -435,13 +435,20 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       }
     })
   }
+  /** D68：任何把「当前会话自身」当成要查看成员的请求都按没有选择处理。 */
+  function viewingSelfGuard(conn: ClientConn, member: string | undefined): string | undefined {
+    if (member === undefined || conn.selectedSession === null) return member
+    if (store.collaboration.getAgent(member)?.sessionId !== conn.selectedSession) return member
+    connections.selectMember(conn, undefined)
+    return undefined
+  }
   async function publishCollaboration(conn: ClientConn): Promise<void> {
     if (stopped || storeClosed) return
     publishBackground(conn)
     const session = conn.selectedSession
     if (session === undefined || session === null) return
     try {
-      const member = conn.collaborationMember
+      const member = viewingSelfGuard(conn, conn.collaborationMember)
       const view = await collaboration.view(session, member)
       if (member !== conn.collaborationMember) return
       if (view.collaboration !== undefined && collaborationEvent(conn, view)) {
@@ -454,8 +461,13 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   async function collaborationCommand(conn: ClientConn, command: CollaborationCommand): Promise<void> {
     const session = conn.selectedSession
     if (session === undefined || session === null) return
-    if (command.type === 'collaboration.read') connections.selectMember(conn, command.member)
     let submitted = command
+    if (command.type === 'collaboration.read') {
+      // 当前会话自身不再作为「查看成员」——选择一并清掉，回执仍按这一份请求发回。
+      const member = viewingSelfGuard(conn, command.member)
+      connections.selectMember(conn, member)
+      submitted = { type: 'collaboration.read', ...(member === undefined ? {} : { member }) }
+    }
     let inputKey: string | undefined
     if (command.type === 'collaboration.input') {
       inputKey = command.input.ref ?? crypto.randomUUID()
@@ -467,7 +479,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     }
     try {
       const view = await collaboration.command(session, submitted)
-      if (command.type === 'collaboration.read' && command.member !== conn.collaborationMember) return
+      if (submitted.type === 'collaboration.read' && submitted.member !== conn.collaborationMember) return
       if (command.type === 'collaboration.resume') {
         const live = liveOf(view.originSession)
         if (live !== undefined && conn.target !== live) bind(conn, live)
@@ -1031,10 +1043,15 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         if (event.kind === 'input.local') inputs.push(event)
         if (isTurnTimingEvent(event)) timing.push(event)
       }
+      // 子会话正文里的 `agent-message` 条目只带引用；正文随末块交给外壳并入正文。
+      const agent = store.collaboration.agentForSession(session)
+      const work = agent === undefined ? undefined : store.collaboration.collaborationForSession(session)
+      const messages = agent === undefined || work === undefined || agent.agentId === work.coordinatorId
+        ? [] : store.collaboration.listMessages(agent.agentId)
       const send = (done: boolean): void => {
         conn.link.send({
           t: 'ev', gen: null, event: {
-            id: 0, turn: null, at: now(), session, kind: 'session.history', data: { session, entries, done, ...(done ? { inputs, timing } : {}) },
+            id: 0, turn: null, at: now(), session, kind: 'session.history', data: { session, entries, done, ...(done ? { inputs, timing, ...(messages.length === 0 ? {} : { messages }) } : {}) },
           }
         })
         entries = []
@@ -1180,12 +1197,27 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session, kind: 'input.pending', data: { inputs: inputs.list(), ...(note === undefined ? {} : { note }) } } })
       return
     }
+    // 当前会话是子会话时，输入只发给这条子会话；入口会话仍是整件工作的共同补充。
+    const currentAgent = originSession == null ? undefined : store.collaboration.agentForSession(originSession)
+    const subSession = activeCollaboration === undefined || currentAgent === undefined
+      || currentAgent.agentId === activeCollaboration.coordinatorId ? undefined : currentAgent
     if (activeCollaboration !== undefined && command.type === 'input.submit') {
-      await collaborationCommand(conn, { type: 'collaboration.input', input: command, shared: true })
+      if (subSession !== undefined) await collaborationCommand(conn, { type: 'collaboration.input', member: subSession.agentId, input: command })
+      else await collaborationCommand(conn, { type: 'collaboration.input', input: command, shared: true })
       return
     }
     if (activeCollaboration !== undefined && command.type === 'turn.interrupt') {
-      void collaborationCommand(conn, { type: 'collaboration.stop' })
+      // 子会话的停止范围是这份委派及其派生闭包；入口仍是整件工作。
+      const delegation = subSession === undefined ? undefined
+        : store.collaboration.listDelegations(activeCollaboration.collaborationId).find(d => d.assigneeId === subSession.agentId && d.state === 'accepted')?.delegationId
+      if (subSession === undefined) void collaborationCommand(conn, { type: 'collaboration.stop' })
+      else if (delegation === undefined) conn.link.send({ t: 'line', text: '此成员没有当前委派，无法推断停止范围' })
+      else void collaborationCommand(conn, { type: 'collaboration.stop', delegation })
+      return
+    }
+    if (activeCollaboration !== undefined && subSession !== undefined && command.type === 'model.switch') {
+      // 复用现有会话模型入口，但落点只在这个成员：持久写回成员身份并配置它的执行者。
+      await collaborationCommand(conn, { type: 'collaboration.configure', member: subSession.agentId, model: command })
       return
     }
 
@@ -1232,7 +1264,13 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
 
     // **换目标的只有这两条**（见文件头注）
     if (command.type === 'session.open' || command.type === 'session.new') {
-      if (conn.target !== undefined && conn.target.run.busy) {
+      if (command.type === 'session.open' && conn.target !== undefined && conn.target.run.busy) {
+        // 同一份协作里的入口与子会话各有执行者：换的是窗口看哪一条，不停正在跑的那一代。
+        const from = conn.target.run.session
+        const sameWork = from !== null
+          && store.collaboration.collaborationForSession(from)?.collaborationId !== undefined
+          && store.collaboration.collaborationForSession(from)?.collaborationId === store.collaboration.collaborationForSession(command.session)?.collaborationId
+        if (sameWork) { retarget(conn, command.session); return }
         deliver(conn.target, command)
         return
       }
