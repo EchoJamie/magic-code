@@ -77,6 +77,35 @@ describe('完整选择的校验与原子提交', () => {
     expect(wrong.use({ ...defaults, provider: 'wrong' }).ok).toBe(false)
   })
 
+  test('历史来源只作诊断：协议与端点按当前配置重新解析，旧值不锁定也不缺项拒绝', () => {
+    const options = { providers, modelInfoOf: known }
+    // 旧记录记的是另一套来源——解析结果以**当前连接**为准，不比对、不拒绝。
+    expect(selectModel(options, { ...defaults, protocol: 'messages', endpoint: 'https://old.example/v1' }))
+      .toEqual({ ok: true, selection: defaults })
+    // 缺 protocol／endpoint 的旧记录同样能接回。
+    for (const legacy of [{ choice: defaults.choice, provider: 'ds', model: defaults.model, reasoning: defaults.reasoning },
+      { ...defaults, protocol: undefined, endpoint: undefined }]) {
+      expect(selectModel(options, legacy)).toEqual({ ok: true, selection: defaults })
+    }
+    // 当前配置换了协议：下一次请求按新协议与新端点组装，旧值不让路。
+    const changed = [selectModel({ providers: { ds: { ...providers.ds!, protocol: 'messages' } }, modelInfoOf: known }, defaults),
+      selectModel({ providers: { ds: { ...providers.ds!, protocol: 'messages' } }, modelInfoOf: known },
+        { ...defaults, protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' })]
+    for (const result of changed) {
+      expect(result).toEqual({ ok: true, selection: { ...defaults, protocol: 'messages', endpoint: 'https://api.deepseek.com/anthropic/v1' } })
+    }
+  })
+
+  test('当前配置不再支持旧型号时说明具体限制，不要求重新选择模型', () => {
+    const result = selectModel({ providers: { ds: { ...providers.ds!, protocol: 'responses' } }, modelInfoOf: known },
+      { ...defaults, model: 'deepseek-v4-pro' })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toContain('deepseek-v4-pro')
+      expect(result.reason).not.toContain('重新选择模型')
+    }
+  })
+
   test('调用方修改原对象不改已提交选择', () => {
     const models = registry()
     const reasoning = { mode: 'level' as const, level: 'high' }

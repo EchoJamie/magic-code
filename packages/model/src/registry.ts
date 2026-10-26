@@ -51,8 +51,15 @@ function errorStream(stamper: EventStamper, model: string, message: string): Mod
 }
 
 export type ModelRegistryOptions = {
-  /** 配置里的 `providers` 原样（形制见共享语言 · 配置形制）。 */
+  /** 配置里的 `providers` 原样（形制见共享语言 · 配置形制）——也是 `providersOf` 缺席时的回落。 */
   readonly providers: Readonly<Record<string, ProviderConfig>>
+  /**
+   * **当下的连接资料**（D63）——给了就按需现取，而不是认构造时的那一份快照。
+   *
+   * 「下一次请求按当前配置重新组装」靠它：每个 `stream()` 在启动那一刻取一次连接资料、
+   * 重新解析来源并固定下来；进行中的请求不受之后的变化影响。
+   */
+  readonly providersOf?: (() => Readonly<Record<string, ProviderConfig>>) | undefined
   /** 信封铸造器——**按会话实例构造**，各条目的网关共用同一个（见 `createModelGateway`）。 */
   readonly stamper: EventStamper
   /** 中间件链——逐条目的网关共用（横切逻辑与「走哪家」无关）。 */
@@ -85,22 +92,58 @@ export type ModelRegistryOptions = {
     | undefined
 }
 
+type ActiveModel = {
+  readonly selection: ModelSelection
+  readonly gateway: ModelGateway
+  readonly spec: EffectiveSpec
+  readonly capabilities: ModelCapabilities | undefined
+}
+
 export function createModelRegistry(options: ModelRegistryOptions): ModelRegistry {
-  const { providers, stamper } = options
-  let active: { readonly selection: ModelSelection; readonly gateway: ModelGateway; readonly spec: EffectiveSpec; readonly capabilities: ModelCapabilities | undefined } | undefined
+  const { stamper } = options
+  /** 当前连接资料——配置读面给了现值就用它，否则认构造时那一份。 */
+  const providersNow = (): Readonly<Record<string, ProviderConfig>> => options.providersOf?.() ?? options.providers
+  let active: ActiveModel | undefined
   const adapterFor = (id: string): VendorAdapter | undefined => {
-    const vendor = ownOf(providers, id)?.vendor
+    const vendor = ownOf(providersNow(), id)?.vendor
     return vendor === undefined ? undefined : vendorOf(vendor)
   }
 
+  /**
+   * 按已校验的选择造一份目标 ＋ 调用端口。调用方拿到的是**这一刻**的连接资料；
+   * 之后配置怎么变都影响不到它（进行中的请求按启动时来源结束）。
+   */
+  const activate = (
+    chosen: ModelSelection,
+    providers: Readonly<Record<string, ProviderConfig>>,
+  ): { readonly ok: true; readonly active: ActiveModel } | { readonly ok: false; readonly reason: string } => {
+    try {
+      const configured = providers[chosen.provider]!
+      const adapter = configured.vendor === undefined ? undefined : vendorOf(configured.vendor)
+      const config = structuredClone({ ...configured, protocol: chosen.protocol })
+      const known = structuredClone(options.modelInfoOf?.(chosen.provider, chosen.model))
+      const spec = effectiveSpecOf({ model: chosen.model, config, adapter, known, fallbackOutputTokens: options.maxCompletionTokens })
+      const capabilities = effectiveCapabilitiesOf(chosen.model, config, known)
+      const gateway = createModelGateway({
+        ...options, providerId: chosen.provider, model: chosen.model, reasoning: chosen.reasoning,
+        config, apiKey: options.apiKeys?.[chosen.provider],
+        modelInfoOf: () => known,
+      })
+      // 凭据、能力和网关构造全部成功才算数；一份状态同时持有目标和调用端口。
+      return { ok: true, active: { selection: chosen, gateway, spec: Object.freeze(spec), capabilities: capabilities === undefined ? undefined : Object.freeze(capabilities) } }
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   return {
-    list: () => Object.keys(providers).map(id => ({ id })),
+    list: () => Object.keys(providersNow()).map(id => ({ id })),
     current: () => active?.selection,
-    has: id => ownOf(providers, id) !== undefined,
+    has: id => ownOf(providersNow(), id) !== undefined,
 
     capacityOf(provider, model): EffectiveSpec | undefined {
       if (active?.selection.provider === provider && active.selection.model === model) return active.spec
-      const config = ownOf(providers, provider)
+      const config = ownOf(providersNow(), provider)
       return config === undefined ? undefined : effectiveSpecOf({
         model, config, adapter: adapterFor(provider), known: options.modelInfoOf?.(provider, model),
         fallbackOutputTokens: options.maxCompletionTokens,
@@ -109,39 +152,35 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
 
     capabilityOf(provider, model): ModelCapabilities | undefined {
       if (active?.selection.provider === provider && active.selection.model === model) return active.capabilities
-      const config = ownOf(providers, provider)
+      const config = ownOf(providersNow(), provider)
       return config === undefined ? undefined : effectiveCapabilitiesOf(model, config, options.modelInfoOf?.(provider, model))
     },
 
     use(selection): ModelSwitchResult {
-      const checked = selectModel(options, selection)
+      const providers = providersNow()
+      const checked = selectModel({ providers, modelInfoOf: options.modelInfoOf }, selection)
       if (!checked.ok) return checked
-      const chosen = checked.selection
-      try {
-        const config = structuredClone({ ...providers[chosen.provider]!, protocol: chosen.protocol })
-        const known = structuredClone(options.modelInfoOf?.(chosen.provider, chosen.model))
-        const spec = effectiveSpecOf({ model: chosen.model, config, adapter: adapterFor(chosen.provider), known, fallbackOutputTokens: options.maxCompletionTokens })
-        const capabilities = effectiveCapabilitiesOf(chosen.model, config, known)
-        const gateway = createModelGateway({
-          ...options, providerId: chosen.provider, model: chosen.model, reasoning: chosen.reasoning,
-          config, apiKey: options.apiKeys?.[chosen.provider],
-          modelInfoOf: () => known,
-        })
-        // 凭据、能力和网关构造全部成功才提交；一份状态同时持有目标和调用端口。
-        active = { selection: chosen, gateway, spec: Object.freeze(spec), capabilities: capabilities === undefined ? undefined : Object.freeze(capabilities) }
-        return checked
-      } catch (error) {
-        return { ok: false, reason: error instanceof Error ? error.message : String(error) }
-      }
+      const built = activate(checked.selection, providers)
+      if (!built.ok) return built
+      active = built.active
+      return checked
     },
 
     stream(request: ModelRequest, streamOptions?: ModelStreamOptions): ModelStream {
       const current = active
       if (current === undefined) return errorStream(stamper, '', '还没有有效模型选择——请在 /model 配置 Default 或模型档位')
-      const stream = current.gateway.stream(request, streamOptions)
+      // 每一次请求边界都按当前配置重新解析来源；旧记录里的 protocol／endpoint 只作诊断。
+      const providers = providersNow()
+      const checked = selectModel({ providers, modelInfoOf: options.modelInfoOf }, current.selection)
+      const built = checked.ok ? activate(checked.selection, providers) : checked
+      if (!built.ok) return errorStream(stamper, current.selection.model, `按当前配置无法组装模型请求：${built.reason}`)
+      // 这一刻定下的来源跟着这一趟走完；下一次请求再看当时配置。
+      const chosen = built.active
+      active = chosen
+      const stream = chosen.gateway.stream(request, streamOptions)
       return { ...stream, events: (async function* () {
         for await (const event of stream.events) yield event.kind === 'model.call.start'
-          ? { ...event, data: { ...event.data, choice: current.selection.choice } } : event
+          ? { ...event, data: { ...event.data, choice: chosen.selection.choice } } : event
       })() }
     },
   }

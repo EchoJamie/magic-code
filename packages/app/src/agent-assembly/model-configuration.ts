@@ -129,10 +129,20 @@ export function createModelConfiguration(input: {
   const knownModelOf = (provider: string, model: string): ModelInfo | undefined =>
     modelInfo.model(provider, model)
 
-  // 每次构造独立注册表；保存的组合缺来源时拒绝恢复，不重新猜默认值。
+  /**
+   * 每次构造独立注册表。
+   *
+   * 历史里的 `protocol`／`endpoint` 只作诊断元数据（D63）：缺这两项不妨碍接回，
+   * 来源按**当前配置**重新解析；缺连接或型号时点名缺项与下一步，不要求「重新选择模型」。
+   */
   const registryOf = (selection: AgentModelConfig | undefined, stamper: EventStamper): ModelRegistry => {
     const registry = createModelRegistry({
       providers: providerBook,
+      // 下一次请求按当前配置组装：取连接资料前先看外部有没有改过（见 `syncProviderBook`）
+      providersOf: () => {
+        syncProviderBook()
+        return providerBook
+      },
       stamper,
       fetch, env: environment,
       configPath: loaded.path,
@@ -140,9 +150,14 @@ export function createModelConfiguration(input: {
       modelInfoOf: knownModelOf,
     })
     if (selection !== undefined) {
-      if (selection.protocol === undefined || selection.endpoint === undefined) throw new Error('该工作保存的模型组合缺少协议或服务地址来源，无法可靠接回；历史记录已保留')
+      if (typeof selection.provider !== 'string' || selection.provider.trim() === '') {
+        throw new Error('这条工作保存的模型组合缺少连接（provider）——请在 /model 的接入设置里确认连接；历史记录已保留')
+      }
+      if (typeof selection.model !== 'string' || selection.model.trim() === '') {
+        throw new Error('这条工作保存的模型组合缺少模型（model）——请在 /model 为该连接设置精确型号；历史记录已保留')
+      }
       const result = registry.use(selection)
-      if (!result.ok) throw new Error(result.reason)
+      if (!result.ok) throw new Error(`这条工作保存的模型组合按当前配置接不回来：${result.reason}——请在 /model 检查这条工作的默认模型或档位与连接设置；历史记录已保留`)
     }
     return registry
   }
