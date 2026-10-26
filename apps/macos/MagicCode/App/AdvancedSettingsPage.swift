@@ -29,7 +29,6 @@ struct AdvancedSettingsPage: View {
                     }
                     Spacer(); Button("编辑") { editing = .roots }
                 }.id("roots")
-            }
                 Text("默认放行；禁止清单只保留 rm / shred / srm（指路 trash）与 su。sudo 走终端密码组件。").font(.caption).foregroundStyle(.secondary)
             }
             SettingsCard(title: "诊断") {
