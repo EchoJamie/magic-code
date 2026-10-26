@@ -68,7 +68,7 @@ describe('Engine 连接上的脚本入口', () => {
 
 })
 
-test('真脚本等待两次工具中间轮之后的最终turn.end；审批答复、工具回填和最终正文完整落账', async () => {
+test('真脚本等待两次工具中间轮之后的最终turn.end；工具回填和最终正文完整落账', async () => {
   const fixture = startFixture({ turns: [
     { kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 .' } },
     { kind: 'tool', name: 'exec', args: { cmd: 'printf script-tool-finished' } },
@@ -78,7 +78,7 @@ test('真脚本等待两次工具中间轮之后的最终turn.end；审批答复
   const host = await startResidentHost(sandbox)
   try {
     const script = join(sandbox.root, 'multi-turn.json')
-    writeFileSync(script, JSON.stringify({ inputs: ['做完两步再回答'], decisions: ['approve'], timeoutMs: 8_000 }))
+    writeFileSync(script, JSON.stringify({ inputs: ['做完两步再回答'], timeoutMs: 8_000 }))
     const child = Bun.spawn([process.execPath, CLI, '--script', script], { cwd: sandbox.workspace, env: sandbox.env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
     expect({ code, stderr }, stderr).toEqual({ code: 0, stderr: '' })
@@ -86,7 +86,6 @@ test('真脚本等待两次工具中间轮之后的最终turn.end；审批答复
     const events = stdout.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line)) as import('@magic/contracts').KernelEvent[]
     const ends = events.filter((event) => event.kind === 'turn.end')
     expect(ends.map((event) => event.data.continues ?? false)).toEqual([true, true, false])
-    expect(stdout).toContain('裁决 1 次')
     const db = readDatabase(join(sandbox.dataDir, 'records.db'))
     try {
       expect(db.sessions).toHaveLength(1)

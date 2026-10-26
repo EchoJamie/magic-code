@@ -27,7 +27,6 @@ const USAGE = `magic —— 软件工程智能体
   -h, --help          显示帮助
   -v, --version       显示版本
   --model <tier>      选择模型（默认 default）
-  --allow-all         本次会话跳过所有操作确认
   --debug             保存并开启调试模式
   --no-debug          保存并关闭调试模式
   --log-level <level> 保存日志等级：error / warn / info / debug / trace
@@ -40,9 +39,9 @@ const USAGE = `magic —— 软件工程智能体
 说明：
   magic 打开交互界面，首次发送消息时创建会话。
   会话 id 可在 /resume 中查看；接回时只展示已有记录，输入后继续执行。
-  --allow-all 仅启动时可用，可跳过改权限和改属主等操作的确认。
-  不使用 --allow-all 时，改权限和改属主仍需确认。
-  删除规则仍直接拒绝，不受 --allow-all 影响。
+  默认放行：未命中禁止清单的工具调用与命令不再逐次询问。
+  禁止清单：rm / shred / srm 那类删除被拒并指路 trash；su 被拒。
+  sudo 走专用密码组件：只接受单行短命令，密码不回显、不进模型与记录。
 
 示例：
   magic --model spell
@@ -74,15 +73,6 @@ export type Args = {
   readonly session?: string | undefined
   /** 开局的换模型请求（`--model` 的落地）——两件都没给即 `undefined`。 */
   readonly switch?: ModelSwitchRequest | undefined
-  /**
-   * **全放行**（U73）——`--allow-all` 带没带。
-   *
-   * ⚠️ **这是它在产品上的唯一入口**：界面里**没有**任何切进全放行的键位、slash 或设置项
-   * ——「开始那一刻」是它唯一的入口，因为**能中途切的，就等于模型能说服用户切、或误按就切**
-   * （`设计/工具执行与权限`·「全放行：只在起会话那一刻给」）。它因此不落 `config.json`：
-   * 不是配置，是**这一次起会话**的状态；也**不是「模式」**——它只是权限这一维的一个取值。
-   */
-  readonly allowAll?: boolean | undefined
 }
 
 export function parseArgs(argv: readonly string[]): Args {
@@ -93,7 +83,6 @@ export function parseArgs(argv: readonly string[]): Args {
   let settings = false
   let model: ModelChoice | undefined
   let session: string | undefined
-  let allowAll = false
   let openRequest: string | undefined
 
   /** 取值——缺值 / 撞上另一个选项即报（`--model --check` 这类笔误不该被当成名字）。 */
@@ -142,15 +131,11 @@ export function parseArgs(argv: readonly string[]): Args {
       i += 1
       continue
     }
-    if (arg === '--allow-all') {
-      allowAll = true
-      continue
-    }
     throw new Error(`不认得的参数「${arg}」（见 magic --help）`)
   }
 
   if (check && diagnostics) throw new Error('--check 是只读检查，不能与诊断修改参数同时使用')
-  if (settings && (check || script !== undefined || session !== undefined || model !== undefined || allowAll || openRequest !== undefined || diagnostics)) throw new Error('--settings 仅用于离线配置，请单独使用')
+  if (settings && (check || script !== undefined || session !== undefined || model !== undefined || openRequest !== undefined || diagnostics)) throw new Error('--settings 仅用于离线配置，请单独使用')
   if (openRequest !== undefined && (check || script !== undefined)) throw new Error('--open-request 仅用于终端接回')
 
   return {
@@ -161,7 +146,6 @@ export function parseArgs(argv: readonly string[]): Args {
     ...(settings ? { settings: true } : {}),
     script,
     session,
-    ...(allowAll ? { allowAll: true } : {}),
     ...(model === undefined ? {} : { switch: { choice: model } }),
   }
 }
@@ -217,7 +201,7 @@ async function offlineSettings(): Promise<number> {
     copyText: writeClipboardText, magicBase: magic.base, dataDir: magic.base, home: magic.home, workspaceRoots: workspace.roots(),
     statusLine: loaded.config.statusLine, reducedMotion: loaded.config.motion?.reduced === true,
     turnDuration: loaded.config.turnDuration,
-    receipts: ['本地设置：/model 管理模型与连接，/config 查看配置，/grants 管理授权。保存不启动 Engine；退出后运行 magic 开始工作。'],
+    receipts: ['本地设置：/model 管理模型与连接，/config 查看配置。保存不启动 Engine；退出后运行 magic 开始工作。'],
   })
   await tui.waitUntilExit(); return 0
 }
@@ -226,8 +210,7 @@ async function offlineCheck(args: Args): Promise<number> {
   const { loadConfig } = await import('@magic/config')
   const { resolveApiKey } = await import('@magic/model')
   const { createSkills, createProjectRules } = await import('@magic/execution')
-  const { skillsCatalog, readGrantView } = await import('./run/observation.ts')
-  const { parseRules } = await import('@magic/permission')
+  const { skillsCatalog } = await import('./run/observation.ts')
   const magic = localMagicHome()
   const loaded = loadConfig({ magic })
   const workspace = workspaceOf(loaded, process.cwd())
@@ -241,7 +224,6 @@ async function offlineCheck(args: Args): Promise<number> {
   if (providerId !== undefined) {
     resolveApiKey({ providerId, config: loaded.config.providers[providerId]!, env: process.env, configPath: loaded.path })
   }
-  const rules = parseRules(loaded.config.permissions?.rules ?? [])
   console.log('magic —— 离线配置检查')
   console.log(`  ${describeConfig(loaded)}`)
   console.log(`  数据落点　${magic.base}`)
@@ -250,8 +232,6 @@ async function offlineCheck(args: Args): Promise<number> {
   const current = chosen?.ok ? `${chosen.selection.provider}（${chosen.selection.model}）` : (loaded.providerId ?? '未选供应商')
   if (chosen?.ok) console.log(`—— 本次走 ${current}`)
   console.log(`  供应商表　${providers.length} 条——${providers.join(' · ')} · 当前走 ${current}`)
-  console.log(`  权限规则　${rules.rules.length} 条 · 被拒 ${rules.rejected.length} 条`)
-  for (const problem of rules.rejected) console.log(`             第 ${problem.index + 1} 条：${problem.reason}`)
   if (args.session !== undefined) {
     const { readSessionSummary } = await import('@magic/records')
     const session = readSessionSummary(magic.base, args.session)
@@ -259,11 +239,6 @@ async function offlineCheck(args: Args): Promise<number> {
   }
   const projectRules = (await createProjectRules({ workspace, sources: loaded.config.rules?.sources ?? [], linkSources: loaded.config.rules?.linkSources ?? [] }).load([]))
   console.log(`  项目规约　${describeProjectRules(projectRules)}`)
-  const grants = readGrantView(magic, workspace)
-  console.log(`  授权　　　${grants.unreadable === undefined
-    ? `${grants.view.grants.length} 条（本工作区） · ${grants.path}${grants.view.stale.length === 0 ? '' : ` · 陈旧的节 ${grants.view.stale.length} 个（/grants 里撤）`}`
-    : `读不懂（本次不加载、也不会写它）：${grants.unreadable} · ${grants.path}`}`)
-  if (grants.note !== undefined) console.log(`             ${grants.note}`)
   const skills = skillsCatalog((await createSkills({ workspace, magicBase: magic.base, home: magic.home, sources: loaded.config.skills?.sources ?? [] }).discover()))
   console.log(`  技能　　　${skills.skills.length === 0 ? '无（放 .magic/skills/<名称>/SKILL.md 就来）' : skills.skills.map((one) => `${one.name}（${one.label}）`).join(' · ')}`)
   if (skills.problems.length > 0) console.log(`             有 ${skills.problems.length} 个没读进来`)
@@ -309,16 +284,14 @@ function describeProjectRules(load: RulesLoad): string {
   return lines.join('\n')
 }
 
-/** 脚本只是另一种客户端：订阅与裁决复用既有驱动，执行全部经选定 Engine。 */
+/** 脚本只是另一种客户端：订阅复用既有驱动，执行全部经选定 Engine。 */
 export async function runAppScript(args: Args & { readonly script: string }, options: AppConnectionOptions = {}): Promise<void> {
   const script = await readScript(args.script)
   const { client } = await connectTerminal(args, options)
   const { clientTransport } = await import('./run/terminal.ts')
-  const queued = [...(script.decisions ?? [])]
   const transport = clientTransport(client)
   const handle = attachShell(transport, {
     timeoutMs: script.timeoutMs,
-    decide: () => queued.shift() ?? 'approve',
     onEvent: (event) => {
       if (event.kind !== 'model.delta' && event.kind !== 'tool.output.delta') console.log(JSON.stringify(event))
     },
@@ -386,7 +359,7 @@ export async function runAppScript(args: Args & { readonly script: string }, opt
       client.send({ type: 'history.read', session })
       await history
     }
-    console.log(`—— 会话 ${session ?? '未建立'} · 事件 ${handle.events.length} 条 · 条目 ${entries} 条 · 裁决 ${handle.decisions.length} 次 · 换模型 ${switches} 次`)
+    console.log(`—— 会话 ${session ?? '未建立'} · 事件 ${handle.events.length} 条 · 条目 ${entries} 条 · 换模型 ${switches} 次`)
   } finally {
     handle.dispose()
     client.close()
@@ -405,7 +378,6 @@ export async function connectTerminal(args: Args, options: AppConnectionOptions 
       ...(args.session === undefined ? {} : { session: args.session }),
       ...(args.openRequest === undefined ? {} : { openRequest: args.openRequest }),
       ...(args.switch === undefined ? {} : { switch: args.switch }),
-      ...(args.allowAll === true ? { allowAll: true } : {}),
     },
   })
 }
@@ -435,7 +407,6 @@ async function runTerminal(args: Args): Promise<number> {
         cwd: process.cwd(), label: 'terminal', reattach: true,
         ...(session === undefined ? {} : { session }),
         ...(args.switch === undefined ? {} : { switch: args.switch }),
-        ...(args.allowAll === true ? { allowAll: true } : {}),
       } })
       return reopened.client
     }, args.session)

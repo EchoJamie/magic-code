@@ -244,17 +244,6 @@ describe('之二 · 两条分隔线划开哪两块（挪正下沿那条）', () 
     三块分得开(await stage.screen(WIDE), '选择器', '甲的事')
   })
 
-  test('**裁决卡开着**：卡整块在下线之上，状态行仍在下线之下', async () => {
-    const stage = createStage()
-    stage.feed([
-      event('tool.call', { name: 'write', args: {} }, { id: 71 }),
-      event('tool.decision.request', { call: 71, name: 'write', material: '覆盖 src/a.ts', weight: 'light' }, { id: 88 }),
-    ])
-
-    expect(stage.shell.getView().dock.kind).toBe('decision') // 防空转
-    三块分得开(await stage.screen(WIDE), '裁决卡', '○ 批准这一次')
-  })
-
   /**
    * **本地小输入**（`/model manage` → 进这条连接 → 改名）——三种形态里最深的一条链，
    * 但正是工单点名要看的那一格：接管着**输入行本身**时，那条线是不是还在它上方。

@@ -9,7 +9,6 @@ import AppKit
     @Published var selection = Set<String>()
     @Published private(set) var compactDetail = false
     @Published private(set) var rows: [NativeSession] = []
-    @Published private(set) var currentRequests: [HistoryEvent] = []
     @Published private(set) var events: [HistoryEvent] = []
     @Published private(set) var entries: [HistoryEntry] = []
     @Published private(set) var loading = false
@@ -74,7 +73,7 @@ import AppKit
             compactDetail = true
             self.route = route; readNotice = nil; visibleNotice = nil; historyExpanded = true
             search = ""; workspace = []; selection = [route.session]; selectionAfterRefresh = nil
-            entries = []; events = []; currentRequests = []; detailWork = nil; rename = nil; memberSession = nil
+            entries = []; events = []; detailWork = nil; rename = nil; memberSession = nil
             historyRequest = nil; inspectRequest = nil; reading = false; next = nil; done = false; historyError = nil
             locate()
         } else { refresh() }
@@ -104,7 +103,7 @@ import AppKit
         if route != nil && selection == Set([route!.session]) { return }
         if route?.session != selected?.id { route = nil; detailWork = nil }
         inspectRequest = nil; readNotice = nil; memberSession = nil
-        entries = []; events = []; currentRequests = []; next = nil; done = false; historyError = nil; historyRequest = nil; reading = false; rename = nil; visibleNotice = nil
+        entries = []; events = []; next = nil; done = false; historyError = nil; historyRequest = nil; reading = false; rename = nil; visibleNotice = nil
         detailWork = selection.count == 1 ? selection.first.flatMap { works[$0] } : nil
         inspectSelection()
         if historyExpanded, selected != nil { history() }
@@ -193,13 +192,12 @@ import AppKit
                 archived = work.archived; selection = [work.session]; selectionAfterRefresh = selection
                 refresh(); if entries.isEmpty && events.isEmpty { next = nil; done = false; history() }
             }
-        case let .historyResult(request, service, session, entries, events, currentRequests, next, done, error):
+        case let .historyResult(request, service, session, entries, events, next, done, error):
             guard request == historyRequest, service == identity?.serviceInstance,
                   session == (selected?.id ?? route?.session), online else { return }
             historyRequest = nil; reading = false; historyError = error
             guard let entries else { return }
             if let events { self.events = events }
-            if let currentRequests { self.currentRequests = currentRequests }
             self.entries += entries.filter { row in !self.entries.contains { $0.id == row.id } }
             if !refreshingCurrent { self.next = next; self.done = done }
         case let .managed(request, service, results):
@@ -399,12 +397,7 @@ struct SessionWindow: View {
                         if let input = row.recentInput { SettingsCard(title: "最近交代") { Text(input).font(.callout).lineSpacing(4).textSelection(.enabled) } }
                         if let progress = row.recentProgress { SettingsCard(title: "实际进展") { Text(progress).font(.callout).lineSpacing(4).textSelection(.enabled) } }
                     }
-                    if !row.archived && !model.currentRequests.isEmpty {
-                        SettingsCard(title: "需要你的答复") {
-                            Label("请在终端答复；查看不会批准请求。", systemImage: "terminal").font(.caption).foregroundStyle(.secondary)
-                            ForEach(model.currentRequests) { event in eventContent(event) }
-                        }.overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(MagicStyle.accent.opacity(0.35)))
-                    }
+
                     if let members = model.detailWork?.members, !members.isEmpty {
                         Menu(model.memberSession.flatMap { id in members.first { $0.session == id }?.name } ?? "入口会话记录") {
                             Button("入口会话记录") { model.chooseMember(nil) }

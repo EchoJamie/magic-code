@@ -32,7 +32,7 @@ final class NativeSettings {
         var configuration: [String: SettingsValue] = ["providers": .object(providers), "mcp": .object(["servers": .object(servers)]),
             "debugMode": raw.object["debugMode"] ?? .bool(false), "logLevel": raw.object["logLevel"] ?? .string("info"),
             "statusLine": raw.object["statusLine"] ?? .object(["cells": .strings(["session", "context"]), "color": .bool(true)])]
-        for key in ["models", "agentRoles", "rules", "skills", "permissions", "motion"] { configuration[key] = raw.object[key] ?? .object([:]) }
+        for key in ["models", "agentRoles", "rules", "skills", "motion"] { configuration[key] = raw.object[key] ?? .object([:]) }
         configuration["web"] = raw.object["web"] ?? .object([:])
         configuration["workspaceRoots"] = raw.object["workspaceRoots"]
         let sources = [("rules", "sources"), ("rules", "linkSources"), ("skills", "sources")].flatMap { section, key in
@@ -46,27 +46,11 @@ final class NativeSettings {
                 return .object(row)
             }
         }
-        let grantPath = base + "/grants.json", grantStamp = SettingsFile.stamp(grantPath)
-        var grants: [SettingsValue] = [], grantProblem: String?
-        do {
-            let file = try SettingsFile.read(grantPath)
-            if grantStamp != nil {
-                try validGrantFile(file)
-                for (workspace, entries) in file["workspaces"].object.sorted(by: { $0.key < $1.key }) {
-                    if !entries.isArray { grantProblem = "授权文件存在无法读取的内容，请定位文件修复"; continue }
-                    let valid = entries.array.compactMap { entry -> SettingsValue? in
-                        do { try validGrant(entry); return normalizedGrant(entry) } catch { grantProblem = "授权文件存在无法读取的内容，请定位文件修复"; return nil }
-                    }
-                    if !valid.isEmpty { grants.append(.object(["workspace": .string(workspace), "entries": .array(valid)])) }
-                }
-            }
-        } catch { grantProblem = "授权文件存在无法读取的内容，请定位文件修复" }
-        guard SettingsFile.stamp(path) == stamp, SettingsFile.stamp(grantPath) == grantStamp else { throw WireError.invalid("配置或授权在读取期间已改变，请重新读取") }
+        guard SettingsFile.stamp(path) == stamp else { throw WireError.invalid("配置在读取期间已改变，请重新读取") }
         let status = preview?["statusLine"] ?? configuration["statusLine"]!
         return SettingsSnapshot(preview: settingsPreview(status, columns: Int(preview?["columns"].number ?? 90), reduced: preview?["reducedMotion"].flag ?? raw["motion"]["reduced"].flag),
             configPath: path, base: base, stamp: stamp, configuration: .object(configuration), catalog: models.rows(raw, stamp: stamp),
-            vendors: models.metadata["vendors"].array.map { .object($0.object.filter { ["vendor", "label", "regions", "protocols"].contains($0.key) }) }, sources: sources,
-            grants: grants, grantStamp: grantStamp, grantProblem: grantProblem)
+            vendors: models.metadata["vendors"].array.map { .object($0.object.filter { ["vendor", "label", "regions", "protocols"].contains($0.key) }) }, sources: sources)
     }
     func apply(_ action: SettingsValue, stamp: String?) async throws -> String {
         guard SettingsFile.stamp(path) == stamp else { throw WireError.invalid("配置已被修改，请重新读取后再保存；输入已保留") }
@@ -80,10 +64,6 @@ final class NativeSettings {
             let failures = await [listFailure, metadataFailure].compactMap { $0 }
             if !failures.isEmpty { throw WireError.invalid(failures.joined(separator: "；")) }
             return models.vendor(config) == nil ? "Models.dev 资料已刷新；未发起模型调用" : "模型列表与 Models.dev 资料已刷新；未发起模型调用"
-        }
-        if type == "grants.revoke" {
-            try revoke(action)
-            return "已撤销授权；配置权限规则另行管理"
         }
         let snapshots = raw["providers"].object.compactMap { id, config in models.snapshot(id, config: config, stamp: stamp).map { (id, config, $0) } }
         try SettingsFile.edit(path, expected: stamp) { current in
@@ -205,9 +185,6 @@ final class NativeSettings {
                 }
             }
             next.put("workspaceRoots", roots == .null ? nil : roots)
-        case "permissions.set":
-            for rule in action["rules"].array { try SettingsValidation.permission(rule, ops: models.metadata["ruleOps"].array.map(\.text)) }
-            var permissions = raw["permissions"]; permissions.put("rules", action["rules"]); next.put("permissions", permissions)
         default: throw WireError.invalid("未知设置动作")
         }
         return next
@@ -231,47 +208,16 @@ final class NativeSettings {
         default: throw WireError.invalid("角色模型思考设置无效")
         }
     }
-    private func validGrantFile(_ raw: SettingsValue) throws {
-        try SettingsValidation.require((raw.object["version"] == nil || raw["version"] == .number(1)) && raw["workspaces"].isObject, "授权文件版本或工作区")
-    }
-    private func validGrant(_ entry: SettingsValue) throws {
-        var rule = entry
-        for key in ["grantedAt", "lastHitAt", "hits"] { rule.put(key, nil) }
-        try SettingsValidation.permission(rule, ops: models.metadata["ruleOps"].array.map(\.text))
-        try SettingsValidation.require(entry["grantedAt"].number?.isFinite == true, "授权记账时间")
-        for key in ["lastHitAt", "hits"] { if let value = entry.object[key] { try SettingsValidation.require(value.number.map { $0.isFinite && $0 >= 0 } == true, "授权记账字段") } }
-    }
-    private func normalizedGrant(_ entry: SettingsValue) -> SettingsValue {
-        var entry = entry
-        for key in ["tool", "path", "host", "via"] { if let value = entry.object[key] { let text = value.text.trimmingCharacters(in: .whitespacesAndNewlines); entry.put(key, .string(["host", "via"].contains(key) ? text.lowercased() : text)) } }
-        return entry
-    }
-    private func revoke(_ action: SettingsValue) throws {
-        let grantPath = base + "/grants.json", expected = action["grantStamp"] == .null ? nil : action["grantStamp"].text
-        try SettingsFile.edit(grantPath, expected: expected) { file in
-            let raw = expected == nil ? SettingsValue.object(["version": .number(1), "workspaces": .object([:])]) : file
-            try validGrantFile(raw)
-            var next = raw, workspaces = raw["workspaces"]
-            let workspace = action["workspace"].text
-            if let index = action["index"].number {
-                let rows = workspaces[workspace].array
-                let validIndices = rows.indices.filter { (try? validGrant(rows[$0])) != nil }
-                guard index < Double(validIndices.count) else { throw WireError.invalid("该授权已不存在，请重新读取") }
-                var kept = rows; kept.remove(at: validIndices[Int(index)])
-                workspaces.put(workspace, kept.isEmpty ? nil : .array(kept))
-            } else { workspaces.put(workspace, nil) }
-            next.put("workspaces", workspaces); return next
-        }
-    }
+
     private func settingsPreview(_ status: SettingsValue, columns: Int, reduced: Bool) -> SettingsValue {
         let sample = models.metadata["preview"], separator = sample["separator"].text
         let segments = sample["segments"].array
-        guard segments.count >= 3 else { return .object([:]) }
+        guard segments.count >= 2 else { return .object([:]) }
         func width(_ text: String) -> Int { text.reduce(0) { $0 + ($1.unicodeScalars.contains { $0.value >= 0x2E80 && $0.value <= 0xA4CF || $0.value >= 0xAC00 && $0.value <= 0xD7AF || $0.value >= 0xF900 && $0.value <= 0xFAFF || $0.value >= 0xFF01 && $0.value <= 0xFF60 } ? 2 : 1) } }
-        let state = segments[0]["text"].text + segments[1]["text"].text, fixed = segments[2]["text"].text
+        let state = segments[0]["text"].text + segments[1]["text"].text
         let names = sample["cells"].array.map(\.text)
-        var cells = status["cells"].array.compactMap { value -> SettingsValue? in names.firstIndex(of: value.text).flatMap { segments.indices.contains($0 + 3) ? segments[$0 + 3] : nil } }
-        let available = columns - 2 - width(state) - width(fixed)
+        var cells = status["cells"].array.compactMap { value -> SettingsValue? in names.firstIndex(of: value.text).flatMap { segments.indices.contains($0 + 2) ? segments[$0 + 2] : nil } }
+        let available = columns - 2 - width(state)
         while cells.count > 1 && cells.reduce(0, { $0 + width($1["text"].text) }) > available { cells.removeLast() }
         if var first = cells.first {
             let content = String(first["text"].text.dropFirst(separator.count)), allowed = max(4, available - separator.count)
@@ -281,10 +227,10 @@ final class NativeSettings {
                 first.put("text", .string(separator + kept + "…")); cells[0] = first
             }
         }
-        var shown = Array(segments.prefix(3)) + cells
+        var shown = Array(segments.prefix(2)) + cells
         let color = status["color"] != .bool(false)
         if !color { shown = shown.map { var item = $0; if item.object["color"] != nil { item.put("color", .null) }; return item } }
         return .object(["text": .string(shown.map { $0["text"].text }.joined()), "columns": .number(Double(columns)), "segments": .array(shown),
-            "colors": color ? sample[reduced ? "reducedColors" : "colors"] : .array(Array(repeating: .null, count: 10)), "separator": sample["separator"], "fixed": sample["fixed"]])
+            "colors": color ? sample[reduced ? "reducedColors" : "colors"] : .array(Array(repeating: .null, count: 10)), "separator": sample["separator"], "fixed": .string("")])
     }
 }

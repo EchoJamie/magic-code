@@ -11,9 +11,7 @@
       "configuration": {},
       "catalog": [],
       "vendors": [],
-      "sources": [],
-      "grants": [],
-      "grantStamp": null
+      "sources": []
     },
     "note": "已保存",
     "base": "/tmp/synthetic",

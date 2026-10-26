@@ -1,7 +1,6 @@
 import type { InputPurpose, MagicConfig, StoredInput } from '@magic/contracts'
 import { isTurnTimingEvent, type TurnTimingEvent } from '@magic/contracts'
 import { foldRound, type RoundTiming } from './round.ts'
-import type { GrantsCatalog } from './view/grants.ts'
 import type { McpCatalog } from './view/mcp.ts'
 import { modelLabel } from './view/models.ts'
 
@@ -11,7 +10,6 @@ import type {
   AgentId,
   BlobRef,
   CollaborationView,
-  DecisionWeight,
   Entry,
   EventDataOf,
   InputRefEntry,
@@ -30,7 +28,6 @@ import type {
   SessionId,
   SessionSummary,
   SkillCatalogRow,
-  SnapshotDecision,
   SnapshotTool,
   StatusLineConfig,
   StopPhase,
@@ -126,7 +123,6 @@ export type LogRow =
        */
       readonly startedAt: number | null
 
-      readonly awaitingDecision?: true
       /** 结果 / 输出的行（dim 缩进块）。 */
       readonly output: readonly string[]
 
@@ -246,33 +242,6 @@ export function planFromEntries(entries: readonly Entry[]): PlanSnapshot {
 
 // ══ 左下交互区（四种用法同一位置）════════════════════════════════════
 
-/** 待答的裁决——**接管输入框**的那一件。 */
-export type PendingDecision = {
-  readonly session?: SessionId
-  readonly submitted?: boolean
-  readonly selected?: number
-  readonly top?: number
-  readonly member?: string
-  /** **配对键**——`tool.decision.request` 事件的 id（答复原样带回）。 */
-  readonly id: RecordId
-  readonly call: RecordId
-  readonly name: string
-  /** 判断材料——diff / 命令分解 / 影响面（**内联**，不另套容器）。 */
-  readonly material: string
-  readonly weight: DecisionWeight
-
-  readonly external?: boolean
-
-  readonly host?: string
-  /** **经哪一台可信中转服务**（U94）——代读时与目标域一起显示。 */
-  readonly via?: string
-  /**
-   * 多件裁决的**第几件 / 共几件**（原型 · 场景 7：件数报两处——卡上 ＋ 状态行）。
-   * 单件时 `null`（不报数）。
-   */
-  readonly position: { readonly index: number; readonly total: number } | null
-}
-
 /** 选择器的一行。 */
 export type PickerRow = {
   readonly detail?: readonly string[]
@@ -295,14 +264,6 @@ export type PickerRow = {
    * 这是**视觉次序**，不是可用性：压暗的行**照样选得中、切得过去**。
    */
   readonly faint?: boolean
-  /**
-   * **明确撤销**（`/grants`）——这一行要发的撤销负载（`grants.revoke` 的两件）。
-   *
-   * 只有授权那个抽屉给：别的选择器「选定」是**切过去**，授权这里「选定」是**撤掉它**
-   * （B13 的一句规格）。故这一位存在＝回车之后要发一条撤销，而不是打开什么。
-   */
-  readonly revoke?: { readonly workspace?: string; readonly index?: number }
-
   readonly oneLine?: boolean
   /**
    * **必留的那一段**（`oneLine` 行用）——它是 `meta` 的**前缀**（如 MCP 那行的状态说法、
@@ -321,7 +282,7 @@ export type PickerRow = {
   readonly keep?: string
 }
 
-/** 选择器（`/resume` · `/model` · `/grants` · `/skills` · `@` 路径）——**只在左下开**。 */
+/** 选择器（`/resume` · `/model` · `/skills` · `@` 路径）——**只在左下开**。 */
 export type Picker = {
 
   readonly source:
@@ -336,11 +297,9 @@ export type Picker = {
     | 'session-actions'
     | 'session-history'
     | 'model'
-    | 'grants'
     | 'input-purpose'
     | 'input-pending'
     | 'input-detail'
-    | 'grants-detail'
     | 'paths-info'
     | 'skills'
     | 'paths'
@@ -402,7 +361,6 @@ export type PromptState = {
 /** 左下交互区——**四种用法同一位置、同一开合**。 */
 export type Dock =
   | { readonly kind: 'input' }
-  | { readonly kind: 'decision'; readonly pending: PendingDecision }
   | { readonly kind: 'picker'; readonly picker: Picker }
 
   | { readonly kind: 'prompt'; readonly prompt: PromptState }
@@ -423,9 +381,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: '/exit', summary: '停止当前工作并退出界面' },
   { name: '/status', summary: '查看会话、模型、用量与调用状态' },
 
-  { name: '/config', summary: '调整终端、模型、授权与工具设置' },
+  { name: '/config', summary: '调整终端、模型与工具设置' },
   { name: '/model', summary: '选择工作模型与思考等级' },
-  { name: '/grants', summary: '查看或撤销工作区授权' },
 
   { name: '/skills', summary: '浏览或搜索技能，选定后加入草稿' },
 
@@ -530,10 +487,6 @@ export const HINT_LOST = '/connect 重连 · ctrl+r 刷新 · ctrl+c 退出'
 export const HINT_WORKING = 'Esc 停止 · ctrl+c 停或离开'
 /** 退避中右位提示（后段动态：`1.6s 后重发 · 不用管`）。 */
 export const HINT_RETRYING_TAIL = '后重发 · 不用管'
-/** 裁决态右位提示（必闸类没有 `a`）。 */
-export const HINT_DECIDE_LIGHT = '↑↓ 选择 · Enter 确认 · Esc 返回'
-export const HINT_DECIDE_HEAVY = HINT_DECIDE_LIGHT
-
 export const HINT_BOOTING = '启动中——恢复跑完才受理输入'
 /** 临时层提示留在菜单；纯列表支持 ← 返回，字段保留光标编辑。 */
 export const HINT_PICKER = '↑↓ 选择 · Enter 选定 · ← / Esc 返回'
@@ -586,10 +539,7 @@ export function presentedNoticeOf(view: ShellView): string | undefined {
   const notice = view.notice
   if (!notice?.unread) return
   const source = notice.source
-  if (notice.kind === 'needs-you') {
-    const pending = view.dock.kind === 'decision' ? view.dock.pending : view.pendingDecision
-    return source?.event !== undefined && pending?.id === source.event && pending.session === source.session ? notice.id : undefined
-  }
+  if (notice.kind === 'needs-you') return undefined
   return view.settled.some(row => notice.kind === 'done'
     ? source?.session === view.sessionId && source.entry !== undefined && row.kind === 'assistant' && row.entry === source.entry && row.text.trim() !== ''
     : row.kind === 'receipt' && (row.key === `notice:${notice.id}` || (source?.event !== undefined && row.source?.session === source.session && row.source.event === source.event)))
@@ -632,7 +582,6 @@ export type ShellStatus = {
 
   readonly reasoning: string | null
 
-  readonly allowAll: boolean
   /** 右位提示——**独立一栏，出现/消失不推动左半**。 */
   readonly hint: string
 }
@@ -661,12 +610,24 @@ export type Stashed = {
 }
 
 /** 一屏的全部状态（记录区 ＋ 左下交互区 ＋ 状态行）。 */
+/**
+ * **sudo 密码组件**（U129）——只存展示用的那一格，**不存密码本身**。
+ * `masked` 是已输入的位数（屏上按它画点），密码在 shell 的闭包里。
+ */
+export type SudoPrompt = {
+  readonly requestId: string
+  readonly command: string
+  readonly masked: number
+  readonly busy?: true
+  readonly error?: string
+}
+
 export type ShellView = {
   /** Engine 当前提醒的来源；只用于确认对应内容已呈现。 */
   readonly notice?: RunNotice | undefined
+  /** sudo 密码组件（U129）——开着时占住输入区。 */
+  readonly sudo?: SudoPrompt | null
   readonly round: RoundTiming | null
-  /** 从现有审批队列投影；Esc 返回后仍可见。 */
-  readonly pendingDecision?: PendingDecision | undefined
   readonly pendingInputs: readonly StoredInput[]
   readonly inputPurpose: InputPurpose
   readonly collaboration?: CollaborationView
@@ -712,7 +673,6 @@ export type ShellView = {
 
   readonly runs: readonly RunRow[]
 
-  readonly grants: GrantsCatalog | null
 
   readonly skills: SkillsCatalog | null
 
@@ -781,9 +741,6 @@ export function createView(input: CreateViewInput = {}): ShellView {
       window: null,
       // 思考档：起手什么都不知道（还没问过模型列表）——那一格整格省掉
       reasoning: null,
-      // 起手先按「不是」——**报它由执行者给**（见 `ShellStatus.allowAll`），
-      // 而执行者还没起来时本来也就没有闸门，没有哪一次放行是「全放行放的」
-      allowAll: false,
       hint: HINT_IDLE,
     },
     dock: { kind: 'input' },
@@ -793,6 +750,7 @@ export function createView(input: CreateViewInput = {}): ShellView {
     refs: [],
     stashed: null,
     flash: null,
+    sudo: null,
 
     exitArmed: false,
 
@@ -809,7 +767,6 @@ export function createView(input: CreateViewInput = {}): ShellView {
     modelCurrent: null,
     configuredModels: {},
     web: null,
-    grants: null,
     turnTools: 0,
     // **没有计划**（不占位）· 默认展开（设计）· 视口从头开始
     plan: { entry: null, plan: null },
@@ -861,15 +818,8 @@ export function reduce(
       return reduceToolOutput(view, event.data)
     case 'tool.result':
       return reduceToolResult(view, event.data, event.at)
-    case 'tool.decision.request': {
-      const next = reduceDecision(view, event.id, event.data)
-      const member = view.collaboration?.members.find((one) => one.agent.sessionId === event.session)?.agent.name
-      return member === undefined || next.dock.kind !== 'decision' ? next : {
-        ...next, dock: { kind: 'decision', pending: { ...next.dock.pending, member } },
-      }
-    }
     case 'tool.decision':
-      return reduceVerdict(view, event.data, event.at)
+      return reduceVerdict(view, event.data)
 
     case 'message.user':
 
@@ -890,11 +840,10 @@ export function reduce(
       const final = !event.data.continues && view.round?.end !== null && view.round !== null
         && ![...view.settled, ...view.rows].some(row => row.key === view.round?.key)
         ? { ...view, rows: [...view.rows, { kind: 'round' as const, key: view.round.key, timing: view.round }] } : view
-      const settled = settle(undock(final))
+      const settled = settle(final)
       return patchStatus(settled, {
         state: event.data.continues ? 'working' : event.data.reason === 'error' ? 'error' : 'idle',
         amount: null,
-        // ⚠️ `undock` 在前：卡收了之后 `dock` 回到输入行 ⇒ 这一格**才**归本状态
         hint: hintKeepingDock(settled, event.data.continues ? HINT_WORKING : HINT_IDLE),
       })
 
@@ -959,8 +908,6 @@ export function reduce(
         vendors: event.data.vendors,
       }
 
-    case 'grants.catalog':
-      return { ...view, grants: event.data }
 
     case 'skills.catalog':
       return { ...view, skills: event.data }
@@ -1231,68 +1178,21 @@ function reduceToolResult(view: ShellView, data: ToolResultData, at: number): Sh
 
 type VerdictData = Extract<KernelEvent, { kind: 'tool.decision' }>['data']
 
-function reduceVerdict(view: ShellView, data: VerdictData, at: number): ShellView {
+function reduceVerdict(view: ShellView, data: VerdictData): ShellView {
   const target = indexOfCall(view, data.call)
   const rows =
     target === -1
       ? view.rows
       : view.rows.map((row, index) => {
           if (index !== target || row.kind !== 'tool') return row
-          const { awaitingDecision, ...rest } = row
           return {
-                ...rest,
-                // 裁决的耗时（提示 → 答复）**不进工具行**——那是裁决的账（见行上 `elapsedMs` 的注）
-                ...(data.decision === 'reject' ? { state: 'rejected' as const } : {}),
-                // **批准 ⇒ 起算点挪到这一刻**（见上注：批准在执行之前，故是「从零开始」）
-                ...(data.decision === 'approve' && awaitingDecision === true
-                  ? { startedAt: at }
-                  : {}),
-              }
+            ...row,
+            // 内核按禁止清单拒绝时，这一行如实标成「已拒绝」。
+            ...(data.decision === 'reject' ? { state: 'rejected' as const } : {}),
+          }
         })
 
-  // 裁决落定 ⇒ 接管解除、**草稿归还**（多件时下一件会重新接管，草稿再收一次）
-  const answered = undock({ ...view, rows })
-  if (view.dock.kind !== 'decision') return answered
-
-  // 答完之后**球在内核那边**——这一轮还在跑（工具要跑、模型要继续）。
-  // 状态行得说回「工作中」：不归位它就停在「等你定夺」上，而那一刻**已经不是**那个状态了
-  // （「状态行只放此刻」——第 23 轮真跑留帧时当场看出来的：卡收了、桌下却在说「等你定夺」）。
-  return patchStatus(answered, { state: 'working', amount: null, hint: HINT_WORKING })
-}
-
-type DecisionRequestData = Extract<KernelEvent, { kind: 'tool.decision.request' }>['data']
-
-/** `tool.decision.request`——挂上裁决（**接管输入框**）。件数从本轮的工具有几条推。 */
-function reduceDecision(view: ShellView, id: RecordId, data: DecisionRequestData): ShellView {
-  const position =
-    view.turnTools <= 1 ? null : { index: toolIndex(view, data.call), total: view.turnTools }
-
-  const asked = patchTool(view, indexOfCall(view, data.call), (row) => ({
-    ...row,
-    awaitingDecision: true as const,
-  }))
-
-  const pending: ShellView = {
-    ...asked,
-    dock: {
-      kind: 'decision',
-      pending: {
-        id,
-        call: data.call,
-        name: data.name,
-        material: data.material,
-        weight: data.weight,
-
-        ...(data.external === true ? { external: true } : {}),
-
-        ...(data.host === undefined ? {} : { host: data.host }),
-        ...(data.via === undefined ? {} : { via: data.via }),
-        position,
-      },
-    },
-  }
-
-  return withDecisionStatus(takeOver(pending))
+  return { ...view, rows }
 }
 
 type SessionStateData = Extract<KernelEvent, { kind: 'session.state' }>['data']
@@ -1557,20 +1457,13 @@ function rebuildRows(entries: readonly Entry[], collapseTools = true, rounds: re
  */
 const RESUME_SOURCE = 0
 
-/** 执行连接已核销：撤去失效裁决与在飞提示，保留记录和未发送草稿。 */
+/** 执行连接已核销：撤去在飞提示，保留记录和未发送草稿。 */
 export function finishExecution(view: ShellView): ShellView {
-  const awaiting = view.dock.kind === 'decision' ? view.dock.pending.call : undefined
-  const next = undock(view)
-  const rows = next.rows.map((row): LogRow => {
+  const rows = view.rows.map((row): LogRow => {
     if (row.kind !== 'tool' || row.state !== 'running') return row
-    const { awaitingDecision, ...body } = row
-    const notExecuted = awaitingDecision === true || row.call === awaiting
-    return { ...body,
-      state: notExecuted ? 'unexecuted' : 'failed',
-      output: [...row.output, notExecuted ? '该询问已失效，未执行' : '执行中断，外部效果待确认'],
-    }
+    return { ...row, state: 'failed', output: [...row.output, '执行中断，外部效果待确认'] }
   })
-  return patchStatus(settle({ ...next, rows }), { state: 'idle', amount: null, hint: HINT_IDLE })
+  return patchStatus(settle({ ...view, rows }), { state: 'idle', amount: null, hint: HINT_IDLE })
 }
 
 export function applyResume(view: ShellView, snapshot: RunSnapshot): ShellView {
@@ -1613,19 +1506,6 @@ export function applyResume(view: ShellView, snapshot: RunSnapshot): ShellView {
   // 在跑的是哪个模型 / 它的窗——不画回去的话，状态行左半边是空的（同一个界面两种样子）
   if (snapshot.model !== undefined) {
     next = patchStatus(next, { model: snapshot.model, window: snapshot.window ?? null })
-  }
-
-  next = patchStatus(next, { allowAll: snapshot.allowAll === true })
-
-  if (snapshot.decisions.length > 0 && next.dock.kind !== 'decision') {
-    const one = snapshot.decisions[0] as SnapshotDecision
-    next = reduceDecision(next, one.id, {
-      call: one.call,
-      name: one.name,
-      material: one.material,
-      weight: one.weight,
-      ...(one.external === true ? { external: true } : {}),
-    })
   }
 
   return next
@@ -1804,92 +1684,8 @@ function contentTextOf(entry: Entry): string {
 
 // ══ 接管（裁决挂着时占住输入框）══════════════════════════════════════
 
-/**
- * 接管——把草稿**连同插入点**收起来（原型：**草稿不丢**，答完原样归还）。
- *
- * 多件裁决时草稿**只收一次**：第一件接管时收起，其后各件沿用同一份（`stashed` 非空即已收）。
- *
- * ⚠️ 收的是 `view.caret`（不是「末尾」）——接管期间打不进草稿（`shell.ts` 的键映射把字
- * 喂给裁决作答），故此刻的插入点**就是**用户离开时那一个，答完照原样放回去。
- */
-export function takeOver(view: ShellView): ShellView {
-  if (view.dock.kind !== 'decision' || view.stashed !== null) return view
-
-  return {
-    ...view,
-    stashed: {
-      draft: view.draft,
-      caret: Math.max(0, Math.min(view.caret, view.draft.length)),
-      refs: view.refs,
-    },
-    draft: '',
-    caret: 0,
-    refs: [],
-    flash: null,
-  }
-}
-
-/**
- * 解除接管——**归还原草稿与它的插入点**（不自动发送）。
- *
- * 没有收起来的草稿时（接管前就没草稿）`stashed` 为 `null`：草稿与插入点**原样不动**
- * （接管那一刻草稿已被清空，这里不必替它摆一个位置）。
- */
-export function undock(view: ShellView): ShellView {
-  if (view.dock.kind !== 'decision') return view // 没在接管＝没得解除
-
-  const stashed = view.stashed
-  const draft = stashed?.draft ?? view.draft
-  const caret = stashed?.caret ?? view.caret
-
-  return {
-    ...view,
-
-    rows: clearAwaiting(view.rows, view.dock.pending.call),
-    dock: { kind: 'input' },
-    draft,
-    // 夹一道：手搭的视图可能给过越界的插入点（同 `shell.ts` 的 `caretAt`）
-    caret: Math.max(0, Math.min(caret, draft.length)),
-    // 引用与正文**一起回来**——它俩是同一件事的两面（见 `Stashed.refs` 那条注）。
-    // 撤回草稿若短于收起来那份（手搭的视图），区间照原样交回：编辑那几处会夹，
-    // 此处不另编一套（`inline.ts` 的每一步都按当下的位置算）。
-    refs: stashed?.refs ?? view.refs,
-    stashed: null,
-    flash: null,
-  }
-}
-
-function clearAwaiting(rows: readonly LogRow[], call: RecordId): readonly LogRow[] {
-  return rows.map((row) => {
-    if (row.kind !== 'tool' || row.call !== call || row.awaitingDecision !== true) return row
-
-    const { awaitingDecision: _answered, ...rest } = row
-    return rest
-  })
-}
-
-/** 「不静默吞键」——接管期间按了不认的键，当场说一句（原型 · 场景 6）。 */
-export function flashTakeover(view: ShellView, message: string): ShellView {
-  return view.dock.kind === 'decision' ? { ...view, flash: message } : view
-}
-
 function clearFlash(view: ShellView): ShellView {
   return view.flash === null ? view : { ...view, flash: null }
-}
-
-/** 裁决态的状态行（`● 等你定夺` ＋ 件数 ＋ 键位——键位**只在卡上**与右位各一次）。 */
-export function withDecisionStatus(view: ShellView): ShellView {
-  if (view.dock.kind !== 'decision') return view
-
-  const { position, weight, external } = view.dock.pending
-
-  return patchStatus(view, {
-    state: 'waiting',
-    amount: position === null ? null : `${position.index}/${position.total}`,
-    // **外部件右位留空**（返工 B）：卡上已经写了 `y 批准这一次 / n 拒绝`，
-    // 一屏上的键位**只说一次**（交互约束那条）——状态行再列一遍就是同一件事说两遍。
-    hint: external === true ? '' : weight === 'heavy' ? HINT_DECIDE_HEAVY : HINT_DECIDE_LIGHT,
-  })
 }
 
 export function stateMark(state: StatusState): string {
@@ -1968,20 +1764,8 @@ function interruptedRows(view: ShellView): ShellView {
 function foldRunState(view: ShellView): ShellView {
   const run = view.sessionId === null ? undefined : view.runs.find((one) => one.session === view.sessionId)
 
-  // **那一代核销了 ⇒ 还在「运行中」的行改判成「已中断」**（见 `INTERRUPTED_TEXT`）：
-  // 这两条来路（挂着卡 / 没挂卡）都要走它——卡那一支另加「卡作废 ＋ 行定局」。
+  // **那一代核销了 ⇒ 还在「运行中」的行改判成「已中断」**（见 `INTERRUPTED_TEXT`）。
   if (run?.state === 'stopped' && hasRunningTool(view)) view = interruptedRows(view)
-
-  if (run?.state === 'stopped' && view.dock.kind === 'decision') {
-    // **行也一起定局**：那一代没了，这一轮的行再也不会变——留着「⟳ 跑动中」的行会
-    // 让 `hasRunningTool` 一直为真（`ctrl+c` 于是永远走「有在途工作」那条路 ✗，
-    // 与卡那一半是同一个死角）
-    return patchStatus(settle(interruptedRows(undock(view))), {
-      state: 'idle',
-      amount: null,
-      hint: HINT_IDLE,
-    })
-  }
 
   const said = run === undefined ? undefined : factFaceOf(run.state)
   if (said === undefined || said === view.status.state) return view
@@ -1994,7 +1778,7 @@ function foldRunState(view: ShellView): ShellView {
     state: said,
     amount: null,
     // 右位是本状态的键位提示——收了尾，它得跟着换，否则一屏上「● 空闲 ＋ ctrl+c 中断」又打架。
-    // ⚠️ 只换**本状态那一句**：抽屉 / 卡开着的右位归它们自己（`HINT_PICKER*` / `HINT_DECIDE*`），
+    // ⚠️ 只换**本状态那一句**：抽屉开着的右位归它们自己（`HINT_PICKER*`），
     // 那不是这一格的脸，替它改了就是把别人的提示抹掉。
     hint: view.status.hint === (said === 'working' ? HINT_IDLE : HINT_WORKING)
       ? (said === 'working' ? HINT_WORKING : HINT_IDLE)
@@ -2097,15 +1881,6 @@ function countTool(view: ShellView): ShellView {
 }
 
 /** 该次调用在本轮工具里的第几件（从 1 起）。 */
-function toolIndex(view: ShellView, call: RecordId): number {
-  const tools = view.rows.filter(
-    (row): row is Extract<LogRow, { kind: 'tool' }> => row.kind === 'tool',
-  )
-  const at = tools.findIndex((row) => row.call === call)
-
-  return at === -1 ? tools.length : at + 1
-}
-
 function patchTool(
   view: ShellView,
   index: number,

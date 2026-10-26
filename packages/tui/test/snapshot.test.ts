@@ -323,148 +323,6 @@ describe('场景 3 · 工作中（流式）', () => {
   })
 })
 
-// ══ 场景 4–8（裁决与接管）════════════════════════════════════════════
-
-describe('场景 4 · 待裁决（轻）', () => {
-  test('黄线 ＋ 材料内联 ＋ 三键（含 `a`）；接管态**不画输入行**（D29）', () => {
-    const app = live()
-    app.feed([
-      state(SESSION, [{ id: SESSION, title: '记录查询优化' }]),
-      event('turn.start', {}),
-    ])
-    app.type('跑一下测试看看现在什么情况')
-    app.key(ENTER)
-    app.feed([
-      event('model.delta', { channel: 'text', text: '要跑 bun test——这条命令没配过规则，请一下。' }),
-      event(
-        'tool.decision.request',
-        { call: 71, name: 'exec', material: '命令 bun test · 只读（不写工作区）', weight: 'light' },
-        { id: 88 },
-      ),
-    ])
-
-    const frame = app.screen()
-    expect(frame).toContain('│ exec')
-    expect(frame).toContain('此操作尚未获得授权')
-    expect(frame).toContain('本工作区总是允许')
-    // 原锚＝`toContain('等你的答复')`（D29 那句占位整个没了，规格改由**卡 ＋ 状态行**背书）。
-    // ⚠️ 只数**分隔线之下**那几行——`› ` 在**记录区**是用户消息的标记，整帧里它本来就有。
-    const rows = frame.split('\n')
-    const dock = rows.slice(rows.findLastIndex((line) => /^─{8,}$/u.test(line.trim())) + 1)
-    expect(frame).not.toContain('等你的答复')
-    expect(dock.some((line) => line.trimStart().startsWith('›'))).toBe(false)
-    // ⚠️ **U112 换锚**：等裁决那一格由 `●`（工作中同一个点）改成 **`◊`**——「等你定夺」是与
-    //    「工作中」并列的一档，不该共用同一个记号（`marks.ts` · `MARKS.ring`）。
-    expect(frame).toContain('◊ 等你定夺')
-    expect(frame).toContain('↑↓ 选择 · Enter 确认 · Esc 返回')
-    expect(frame).toMatchSnapshot()
-  })
-})
-
-describe('场景 5 · 待裁决（重）', () => {
-  test('红线 ＋ **`a` 划掉**（不是藏起来）；右位只剩 `↑↓ 选择 · Enter 确认 · Esc 返回`', () => {
-    const app = live()
-    app.feed([
-      state(SESSION, [{ id: SESSION, title: '时区修正' }]),
-      event('turn.start', {}),
-    ])
-    app.type('把 user_version 抬到 1，旧库的迁移也补上')
-    app.key(ENTER)
-    app.feed([
-      event(
-        'tool.decision.request',
-        {
-          call: 72,
-          name: 'write',
-          material: '目标 src/records/db.ts · 影响面 覆盖已有文件（132 行将变）\n- const v = 0\n+ const v = 1',
-          weight: 'heavy',
-        },
-        { id: 89 },
-      ),
-    ])
-
-    const frame = app.screen()
-    expect(frame).toContain('此操作需要你明确授权')
-    expect(frame).not.toContain('本工作区总是允许') // 政策不允许的动作不列出（划掉而非藏起来）
-    expect(frame).toContain('↑↓ 选择 · Enter 确认 · Esc 返回')
-    expect(frame).toMatchSnapshot()
-  })
-})
-
-describe('场景 6 · 接管 · 按了非答复键', () => {
-  test('忽略但**当场说一句**（`▲ …`）；其余照旧', () => {
-    const app = live()
-    app.feed([
-      state(SESSION, [{ id: SESSION, title: '记录查询优化' }]),
-      event('turn.start', {}),
-      event('tool.decision.request', { call: 71, name: 'write', material: '覆盖 src/records/db.ts', weight: 'heavy' }, { id: 88 }),
-    ])
-    app.key({ kind: 'char', char: 'x' })
-
-    const frame = app.screen()
-    expect(frame).toContain('▲')
-    expect(frame).toContain('先答复')
-    expect(frame).toMatchSnapshot()
-  })
-})
-
-describe('场景 7 · 多件裁决', () => {
-  test('件数报**两处**：卡的标题 `2 / 3` 与状态行 `2/3`', () => {
-    const app = live()
-    app.feed([
-      state(SESSION, [{ id: SESSION, title: '时区修正' }]),
-      event('turn.start', {}),
-      event('tool.call', { name: 'write', args: { path: 'a' } }, { id: 71 }),
-      event('tool.call', { name: 'write', args: { path: 'b' } }, { id: 72 }),
-      event('tool.call', { name: 'write', args: { path: 'c' } }, { id: 73 }),
-      event(
-        'tool.decision.request',
-        { call: 72, name: 'write', material: '目标 README.md · 影响面 覆盖（新增 12 行）', weight: 'light' },
-        { id: 88 },
-      ),
-    ])
-
-    const frame = app.screen()
-    expect(frame).toContain('1/1')
-    // ⚠️ **U112 换锚**：等裁决那一格 `●` → `◊`（同场景 4）。
-    expect(frame).toContain('◊ 等你定夺 1/1')
-    // ⚠️ **U66 改了这张帧**：被问的那一件（`write b`）**不再画底下那行读数**
-    // （`⟳ 运行中` 那条没了）——在等裁决 ≠ 在执行，那一行不说「跑了多久」。
-    // 同一屏上没被问的那两件（`a` / `c`）照旧，它们在那一格里的身份是「还没落定」。
-    expect(frame).toMatchSnapshot()
-  })
-})
-
-describe('场景 8 · 答完之后', () => {
-  test('回执一行 · 下一件接上 · 草稿归还（不自动发送）', () => {
-    const app = live()
-    app.feed([
-      state(SESSION, [{ id: SESSION, title: '时区修正' }]),
-      event('turn.start', {}),
-      event('tool.call', { name: 'write', args: { path: 'src/records/db.ts' } }, { id: 71 }),
-      event('tool.decision.request', { call: 71, name: 'write', material: '目标 src/records/db.ts', weight: 'heavy' }, { id: 88 }),
-    ])
-    app.type('打了一半的话')
-    app.key({ kind: 'char', char: 'y' })
-    // ⚠️ **裁决事件也要显式给 id**（U66）：起算点从此锚在**裁决那一刻**（＝这一条信封的 `at`），
-    // 而缺省 id 是本文件**全局递增**的那个计数——不钉死的话，这一帧里的耗时随
-    // 「本文件里前面加了几条用例」而变（这个数本来就不是这条用例要判的东西）。
-    app.feed([
-      event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 1200 }, { id: 90 }),
-    ])
-    app.feed([
-      event('tool.result', { call: 71, ok: true, output: { text: '写好了' } }, { id: 271 }),
-      // 第二件：工具先落，再问（件数就是从这里数的）
-      event('tool.call', { name: 'write', args: { path: 'README.md' } }, { id: 72 }),
-      event('tool.decision.request', { call: 72, name: 'write', material: '目标 README.md', weight: 'light' }, { id: 89 }),
-    ])
-
-    const frame = app.screen()
-    expect(frame).toContain('1/1')
-    expect(frame).toMatchSnapshot()
-  })
-})
-
 // ══ 场景 9–11（slash 两种走法）═══════════════════════════════════════
 
 describe('场景 9 · `/resume`（交互配置型）', () => {
@@ -559,7 +417,7 @@ describe('场景 11 · `/help`（纯输出型）', () => {
     expect(frame).toMatch(/\/exit\s+停止当前工作并退出界面/)
     // U71——`/config` 也在表上。这张表**从命令表出**（`HELP_LINES` 就是 `COMMANDS` 铺的）：
     // 加了命令而这一行没跟上，就是「设计里有、帮助里没有」那类漏。
-    expect(frame).toMatch(/\/config\s+调整终端、模型、授权与工具设置/)
+    expect(frame).toMatch(/\/config\s+调整终端、模型与工具设置/)
     expect(frame).not.toContain('/session')
     // **命令本身不回显**——记录区里没有 `› /help` 那一行（候选里的那条不算：
     // 它在左下交互区、不在记录区）
@@ -762,16 +620,14 @@ describe('场景 11 · slash 自动补全', () => {
   /**
    * 只列**真存在**的命令（原型 · 场景 11 的自律）。
    *
-   * ⚠️ **原锚是 `/grants`「内核还没有，故不列」**——`U22` 到站后它有了（授权名录
-   * 走 `grants.list`），于是这一条**翻面**：候选里**应当**有它。
-   * 「表里列的都得真认得」那半条改由 `shell.test.ts` 的遍历用例钉（更强，且不用手改）。
+   * 「表里列的都得真认得」那半条另由 `shell.test.ts` 的遍历用例钉（更强，且不用手改）。
    */
-  test('真存在的命令照列——`/g` 出 `/grants`（到站后它真有了）', () => {
+  test('真存在的命令照列——`/w` 出 `/web`', () => {
     const app = live()
 
-    app.type('/g')
+    app.type('/w')
 
-    expect(app.screen()).toContain('/grants')
+    expect(app.screen()).toContain('/web')
   })
 
   test('`Tab` 补全 —— 选中那条落进草稿（留一个空格等参数）；`esc` 收起候选', () => {
@@ -1134,10 +990,10 @@ describe('slash 候选（D12 · 纯函数级）', () => {
    * **判据本身一字未改**（前缀在前 · 子序列在后 · 全表列全）。技能名那一批不在这条里
    * ——它们要**给了目录**才列（见下面那条用例）。
    */
-  test('`/g` —— 出 `/grants`（它现在真存在）', async () => {
+  test('`/g` —— 出 `/config`（子序列命中）', async () => {
     const { matchCommands } = await import('../src/view.ts')
 
-    expect(matchCommands('/g').map((row) => row.name)).toEqual(['/grants', '/config'])
+    expect(matchCommands('/g').map((row) => row.name)).toEqual(['/config'])
     // ⚠️ **五变**（`U44`）：`/session` 撤掉、换 `/clear` · `/resume` · `/rename` 三条——
     // 全表还是十条（撤一条换三条）。`/s` 那一列里 `/session` 没了，`/resume` 进来
     // （`s` 是它的**子序列**，与 `/attachments` / `/grants` 同档，按名字序排在最后）。
@@ -1145,14 +1001,13 @@ describe('slash 候选（D12 · 纯函数级）', () => {
     expect(matchCommands('/s').map((row) => row.name)).toEqual([
       '/skills',
       '/status',
-      '/grants',
       '/ps',
       '/resume',
     ])
     // U52——打到一半就认出来（`/ex` 只可能是 `/exit`：别的名里一个 `x` 都没有）
     expect(matchCommands('/ex').map((row) => row.name)).toEqual(['/exit'])
-    // U94：`/web` 进表——全表十四条。
-    expect(matchCommands('/').map((row) => row.name)).toHaveLength(14)
+    // U94：`/web` 进表——全表十三条。
+    expect(matchCommands('/').map((row) => row.name)).toHaveLength(13)
     expect(matchCommands('看下目录')).toEqual([]) // 不是 slash——不出候选
   })
 

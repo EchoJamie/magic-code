@@ -298,16 +298,6 @@ describe('内核拒的那一笔：回执指路（用户拒的那一笔照旧）'
     expect(outcome.output).not.toContain('改用 `trash`')
   })
 
-  test('`no-substitute`（`shred` / `srm`）⇒ 拒，且**不给替代**', async () => {
-    const deps = makeToolDeps({ refusal: 'no-substitute', trashAvailable: true })
-
-    const outcome = await deps.runtime.invoke(execCall('shred -u secret.key'), {})
-
-    expect(outcome.output).toContain('shred')
-    expect(outcome.output).toContain('收不回来') // 为什么拒
-    expect(outcome.output, '它要的就是不可逆——换个更弱的做法等于没照它办').not.toContain('trash')
-  })
-
   test('**用户拒的那一笔照旧**那句泛泛的——两种"拒"分得开', async () => {
     const deps = makeToolDeps({ decider: 'reject' }) // 替身闸门没给 `refusalOf`（＝人答的）
 

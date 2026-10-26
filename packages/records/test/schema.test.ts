@@ -153,7 +153,6 @@ describe('判据 3 · 不落库清单', () => {
       'background.state',
       'collaboration.view',
       'exec.background.done',
-      'grants.catalog',
       // U110（本单追加）：导出原图的答复同列——同 `input.pasted` 那一条（一次动作的
       // 当场答复；那份字节与名字本来就在 `user` 条目的载荷里，而路径是一次性的）。
       'image.exported',

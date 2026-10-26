@@ -1,12 +1,11 @@
 import type { EventDataOf, ModelCatalogRow, ModelRef, StatusLineCell, StatusLineConfig } from '@magic/contracts'
 import type { PickerRow } from '../view.ts'
-import type { GrantsCatalog } from './grants.ts'
 import type { McpCatalog } from './mcp.ts'
 
 /**
  * **`/config` 那一屏里「不是读数」的那两件**——数据目录与工作区根。
  *
- * 另外三行（连接 · 授权 · 外部工具）各有自己的读侧命令可问，唯独这两件**是进程启动那一刻
+ * 另外两行（连接 · 外部工具）各有自己的读侧命令可问，唯独这两件**是进程启动那一刻
  * 就定下的**（配置 ＋ 启动目录），没有任何命令答得出来。装配把**已解析的那两份**递进来
  * （同 `ShellOptions.workspaceRoots` 的姿势）：**拿不到的不编**——没给就那一格空着、那一屏
  * 少一行，绝不拿一个拼出来的路径顶上。
@@ -27,14 +26,13 @@ export type ConfigPaths = {
 export type ConfigItem = {
 
   /** 选定之后进哪一项——落在 `PickerRow.value` 上（与 `modelActionRows` 同一姿势）。 */
-  readonly key: 'model' | 'grants'
+  readonly key: 'model'
   | 'mcp' | 'web' | 'paths' | 'statusLine' | 'motion' | 'turnDuration'
   readonly name: string
 }
 
 export const CONFIG_ITEMS: readonly ConfigItem[] = [
   { key: 'model', name: '模型与连接' },
-  { key: 'grants', name: '本工作区授权' },
   { key: 'mcp', name: '外部工具' },
   { key: 'web', name: '网页查询与搜索' },
   { key: 'statusLine', name: '状态行' },
@@ -101,17 +99,6 @@ function configModelValue(entries: readonly ModelCatalogRow[], current: ModelRef
 }
 
 /**
- * ② **本工作区授权**的当前值——**几条**（少了／多了跟着变）。
- *
- * ⚠️ **不报「授权来源」**（规则来的还是 `a` 记的）：那是 `/grants` 那一屏的上下文。
- * 陈旧的节（别的工作区）也不进这一格——这一行说的是**本工作区**。
- */
-function configGrantsValue(catalog: GrantsCatalog | null): string {
-  if (catalog === null) return ''
-  return catalog.grants.length === 0 ? '还没有' : `${catalog.grants.length} 条`
-}
-
-/**
  * ③ **外部工具**的当前值——**配了几台**。
  *
  * ⚠️ **不报「连上没有 · 各有几件工具」**（设计明文点名的「工具数」）：那是 `/mcp` 那一屏
@@ -149,7 +136,6 @@ export function configRows(input: {
   readonly paths: ConfigPaths
   readonly models: readonly ModelCatalogRow[]
   readonly current: ModelRef | null
-  readonly grants: GrantsCatalog | null
   readonly mcp: McpCatalog | null
   readonly web: EventDataOf['web.state'] | null
   readonly statusLine: StatusLineConfig | undefined
@@ -161,7 +147,6 @@ export function configRows(input: {
 }): readonly PickerRow[] {
   const values: Readonly<Record<ConfigItem['key'], string>> = {
     model: configModelValue(input.models, input.current),
-    grants: configGrantsValue(input.grants),
     mcp: configMcpValue(input.mcp),
     web: configWebValue(input.web),
     paths: configPathsValue(input.paths),
@@ -195,7 +180,7 @@ function hits(needle: string, name: string, value: string): boolean {
  *
  * - **没在筛**：`回车＝进那一项`。这一屏的那件事（「选中 ⇒ 进它自己那一屏」）**别处一个字
  *   都没说**——状态行右位那句是通用的「回车 定」，而这里「定」下去发生的是**换一屏**
- *   （照 `/grants` 那句「回车＝撤销选定那条」的先例）；
+
  * - **在筛**：报出筛词。⚠️ **必须报**——输入被这一屏接管了，不报用户就看不见自己打的字
  *   去了哪儿（见 `Picker.filter` 的注）。0 行也照报：那时「没有这一项」**是一个回答**，
  *   不是一个空档（照 `/skills` 同一条）。

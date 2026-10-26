@@ -25,7 +25,6 @@ import type { CollaborationRecords } from './collaboration.ts'
  * **三个 id 各有空间，不许混**（技术方案 · 领域划分 · 端口内类型）：
  * ① `ToolCall.id` ＝**供应商侧**调用 id（只用于回填配对）；
  * ② 事件的 `call`（`RecordId` 空间）＝贯穿调用链（请求 / 询问 / 裁决 / 结果）的那次调用；
- * ③ `DecisionId` ＝裁决配对的**请求事件** id。
  */
 
 import type {
@@ -53,7 +52,7 @@ import type {
 // MCP 那一支的身份源（`mcp.ts` 与本节互为类型引用——两边都是 `import type`，编译期擦除）
 import type { ExternalToolRef } from './mcp.ts'
 import type { Decider, Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './events.ts'
-import type { BlobRef, DecisionId, RecordId, SessionId, TurnId } from './ids.ts'
+import type { BlobRef, RecordId, SessionId, TurnId } from './ids.ts'
 import type { ReasoningSetting } from './model.ts'
 
 // ══ 端口 ══════════════════════════════════════════════════════════════
@@ -147,51 +146,81 @@ export interface ToolRuntime {
 
 /** 工具域 → 权限域。 */
 /**
- * **内核直接拒的那一笔，为什么**（U77）——工具域据它给模型一句有用的话。
+ * **内核直接拒的那一笔，为什么**（U129）——工具域据它给模型一句有用的话。
  *
- * `rm` 那类**不再"问"，而是直接拒**（设计 · 工具执行与权限「`rm` 直接拒，指路 `trash`」）：
- * 拒的理由是**这一类不可逆**，不是"你该问我"——故**回执不能只说一句「已拒绝」**，
- * 它得说出为什么、以及**该用什么**。理由分两支，两支的措辞不同：
+ * 默认放行之后，内核只拒三类：
  *
- * - `irreversible`——这一类**不可逆**，但有**可逆的替代**（`trash`：进废纸篓、能捞回）
- *   ⇒ 回执**要指路**；
- * - `no-substitute`——它**要的就是不可逆**（`shred` / `srm`：覆盖掉就收不回）
- *   ⇒ 回执**不给替代**（换个更弱的做法糊过去，等于没照它办）。
+ * - `irreversible`——`rm` / `shred` / `srm` 那类删除不可逆，回执**指路 `trash`**；
+ * - `su`——切换用户身份并交互输入密码，日常无必要，直接拒；
+ * - `sudo-unsupported`——`sudo` 只接受单行短命令；包多行、`sh -c` / `bash -c`、
+ *   here-doc、解释器或脚本的，直接拒并说明拆分方式。
  *
- * ⚠️ **只是"理由"，不是"要不要放行"**：放不放由闸门自己定，且**一律不放**
- * （连 `--allow-all` 也放不动它——那一档只动「问不问」那一维）。
+ * ⚠️ **只是"理由"，不是"要不要放行"**：放不放由闸门自己定，且**一律不放**。
  */
-export type RefusalKind = 'irreversible' | 'no-substitute'
+export type RefusalKind = 'irreversible' | 'su' | 'sudo-unsupported'
+
+/**
+ * 一条通过形状检查的 `sudo` 短命令（U129）——认证与执行都只认这一份。
+ *
+ * `command` 是原样展示给用户的那一行；`run` 是认证通过后交给沙箱的整条命令
+ * （`sudo` 后插入 `-n`，其余字符原样保留）；`program` 是被提权的程序（说明材料用）。
+ */
+export type SudoPlan = {
+  readonly command: string
+  readonly run: string
+  readonly program: string
+}
+
+/**
+ * sudo 专用认证端口（U129）——工具域 → 装配。
+ *
+ * 密码**只经这一口**从 UI 到 Engine，再由执行域写入 `sudo -S -v` 的 stdin；
+ * 它不进入命令参数、环境、文件描述符、会话、事件流或模型上下文。
+ */
+export type SudoAuthResult =
+  | { readonly ok: true }
+  | {
+    readonly ok: false
+    /** `cancelled` ＝ 用户取消；`failed` ＝ 认证没通过 / 通道不可用（不会自动重试）。 */
+    readonly reason: 'cancelled' | 'failed'
+    readonly detail?: string
+  }
+
+export type SudoAuth = {
+  authenticate(request: {
+    /** 展示给用户的那一行命令（不含密码）。 */
+    readonly command: string
+    /** 认证进程的工作目录（缺省＝装配的启动目录）。 */
+    readonly cwd?: string
+    readonly signal?: AbortSignal
+  }): Promise<SudoAuthResult>
+}
 
 export interface PermissionGate {
   /**
-   * 请裁决。
+   * 请裁决——U129 起**默认放行**：只有禁止清单（`rm`/`shred`/`srm`、`su`）和形状不合法的
+   * `sudo` 会被拒；不再产生人工询问。
    *
-   * `callRef` ＝**该次 `tool.call` 事件的 id**（事件载荷 `call` 的来处）——「请求 → 询问 →
-   * 裁决 → 结果」四事件串链的依据（审计与阶段 2 恢复的**在途识别**都按它找）。
-   * 权限域自己拿不到（那是工具域发的事件），故由调用方传入；**必填**——
-   * 不设哨兵兜底：静默的 `-1` 比缺参更坏，接线漏了应当在**编译期**就报。
+   * `callRef` ＝**该次 `tool.call` 事件的 id**——裁决事件串链的依据。**必填**。
    */
   decide(call: ToolCall, ctx: PermissionContext, callRef: RecordId, signal?: AbortSignal): Promise<Decision>
   /**
-   * **这一笔是不是内核直接拒的，理由是哪一条**（U77）——工具域据此措辞。
+   * **这一笔是不是内核直接拒的，理由是哪一条**——工具域据此措辞。
    *
-   * 为什么单开一口：裁决只回 `approve` / `reject` 两字，而**「用户拒」与「内核拒」
-   * 要说的不是同一句话**——后者得告诉模型**该用什么**（见 `RefusalKind`）。
    * 口径与 `decide` 同一处产出（同一次机械分析），**工具域不自己判**（它不解析命令）。
-   *
-   * **可选**：不给这一口（旧实现 / 只验裁决的替身）＝工具域只说那句泛泛的
-   * 「已拒绝——未执行」，与加它之前一字不差。
    */
   refusalOf?(call: ToolCall, ctx: PermissionContext): RefusalKind | undefined
   /**
-   * 控制域答复路由至此。
-   *
-   * 第三参 `opts.remember` ＝答复上的**「总是允许」位**（见 `control.ts` · `DecisionAnswer.remember`）
-   * ——控制域**原样转手**、不翻译；**授权的落点归权限域**（凝成一条授权，按
-   * 工具 × 路径模式 × 操作类型 记，**落点是工作区**）。**缺省＝不给＝一次性**（向后兼容）。
+   * 被拒那一笔的**具体缘由**（U129）——例如 `sudo` 命中了哪一种不成形的写法。
+   * 工具域把它接在固定报文后面，模型才改得动。
    */
-  resolve(requestId: DecisionId, decision: Decision, opts?: { remember?: boolean }): void
+  refusalDetail?(call: ToolCall, ctx: PermissionContext): string | undefined
+  /**
+   * 这一次是**形状合格的 `sudo` 短命令**吗——是就给认证与执行要的那一份。
+   *
+   * 只是读取同一次机械分析的结论；放不放仍由 `decide` 说。非 `exec`、非 sudo 给 `undefined`。
+   */
+  sudoPlan?(call: ToolCall, ctx: PermissionContext): SudoPlan | undefined
 }
 
 /** 对话域 → 记录域。 */
@@ -1667,30 +1696,23 @@ export type FileIdentity = { readonly dev: string; readonly ino: string }
 
 /**
  * 命令路由（装配 → 控制域，技术方案 · 领域划分 · 装配视图：`input.submit` / `turn.interrupt`
- * → 对话域；`decision.answer` → 权限域）。
+ * → 对话域；`model.switch` → 装配）。
  */
 export type CommandRoutes = {
   onInput(input: UserInput): void
   onInputManage?(command: InputManage): void
   onInterrupt(): void
   /**
-   * 裁决答复 → 权限域。
-   *
-   * `opts` 是**答复上的加宽位**（目前只有「总是允许」）——控制域**原样转手**给
-   * `PermissionGate.resolve`，**不由它翻译**（技术方案 · 领域划分 · 端口内类型）。
-   */
-  onDecision(id: DecisionId, decision: Decision, opts?: { remember?: boolean }): void
-  /**
    * 换模型 → 模型域（装配接注册表的 `use()`）。
    *
-   * 控制域**原样转手**（同 `onDecision` 的姿势）——它不认识注册表，也不知道换得成换不成；
+   * 控制域**原样转手**（同 `onModelList` 的姿势）——它不认识注册表，也不知道换得成换不成；
    * 「切不动就不动」的判别式处置归**装配**（技术方案 · 领域划分 · 端口内类型）。
    */
   onModelSwitch(request: ModelSwitchRequest): void
   /**
    * 会话命令 → 对话域。
    *
-   * 控制域**原样转手**（同 `onDecision` / `onModelSwitch` 的姿势）——它不认识会话，
+   * 控制域**原样转手**（同 `onModelSwitch` 的姿势）——它不认识会话，
    * 也不知道开得成开不成；「打不开就不打开」的处置归对话域。
    */
   onSession(command: SessionCommand): void
@@ -1740,27 +1762,9 @@ export type CommandRoutes = {
   /** **移除一条连接** → 装配（写盘归它；有引用时的处置见 `ProviderRemove`）。 */
   onProviderRemove(provider: string): void
   /**
-   * **授权名录**（`/grants` 的读侧）→ **装配**（它握着 `~/.magic/grants.json` 的读写）。
-   *
-   * 控制域**原样转手**（同 `onModelList` 的姿势）——它不认识授权文件，也不知道里边有什么；
-   * 答复走事件（`grants.catalog`，**不落库**）：命令面只发不收。
-   *
-   * **为什么归装配**：授权文件是**内核自持**的一个文件（技术方案 · 权限「授权的落点」），
-   * 盘的读写归装配那一层（同配置文件之例——域不碰文件系统），权限域只持**账本**。
-   */
-  onGrantsList(): void
-  /**
-   * **撤销授权** → 装配（同 `onGrantsList` 的姿势：落盘归它）。
-   *
-   * `workspace` 缺省＝**本工作区那一节**；`index` 缺省＝**整节撤掉**（陈旧节那条路）。
-   * 撤销**不是裁决**——它不进 `tool.decision` 那条链，只改文件 ＋ 回一条 `grants.catalog`
-   * （外壳据以刷新抽屉并留一行回执）。
-   */
-  onGrantsRevoke(workspace?: string, index?: number): void
-  /**
    * **技能目录**（`/skills` 的读侧 · U33）→ **装配**（它握着执行域的发现面）。
    *
-   * 控制域**原样转手**（同 `onModelList` / `onGrantsList` 的姿势）——它不认识技能目录，
+   * 控制域**原样转手**（同 `onModelList` 的姿势）——它不认识技能目录，
    * 也不知道发现了哪些；答复走事件（`skills.catalog`，**不落库**）：命令面只发不收。
    *
    * **为什么归装配而不是对话域**：技能来源面是**执行域的实现**，而把「用什么工作区 /

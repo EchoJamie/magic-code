@@ -171,6 +171,9 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
           ...options.background,
           start: (cmd, startOptions) => options.background!.start(cmd, { ...startOptions, target }),
         },
+        // **sudo 的那一份**（U129）——权限域产出，工具域只转手（它不解析命令）
+        sudo: options.gate.sudoPlan?.(call, contextOf()),
+        sudoAuth: options.sudoAuth,
       })
     } catch (error) {
       return refused(crashedOutput(reasonOf(error)))
@@ -228,7 +231,9 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     if (decision === 'reject') {
       const refusedBy = options.gate.refusalOf?.(asked, contextOf())
       return refused(
-        refusedBy === undefined ? OUTPUT_REJECTED : refusalOutput(refusedBy, options.trashAvailable),
+        refusedBy === undefined
+          ? OUTPUT_REJECTED
+          : refusalOutput(refusedBy, options.trashAvailable, options.gate.refusalDetail?.(asked, contextOf())),
       )
     }
 

@@ -29,11 +29,6 @@ export type ExecutorRequest = {
   readonly ledger: ProcessLedger
 
   readonly switch?: ModelSwitchRequest | undefined
-  /**
-   * **全放行**（U73）——同上：**只有为这个窗口新起的那一代**收它，且要赶在
-   * **执行者造闸门之前**（那是装配期的事，没有事后改的口）。
-   */
-  readonly allowAll?: boolean | undefined
 }
 
 /** 一个 Agent 实例的取消与完成。资源收尾完成之后才发完成通知。 */

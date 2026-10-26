@@ -276,13 +276,6 @@ describe('④ `/config`：门 → 进那一项自己那一屏', () => {
     stage.press(ENTER)
     stage.feed([
       event('model.catalog', { entries: ENTRIES, current: CURRENT }),
-      event('grants.catalog', {
-        workspace: '/ws',
-        grants: [],
-        stale: [],
-        decisions: { total: 0, uncovered: 0, vetoed: 0 },
-        history: { total: 0, auto: 0, kernel: 0 },
-      }),
       event('mcp.catalog', { servers: [] }),
       event('web.state', {}),
     ] as readonly KernelEvent[])
@@ -348,27 +341,6 @@ describe('⑤ 一级的选择器：`←` 就是收起', () => {
     stage.press(LEFT)
     expect(dockOf(stage).kind).toBe('picker')
     stage.press(ESC)
-    expect(dockOf(stage).kind).toBe('input')
-  })
-
-  test('`/grants`', () => {
-    const stage = createStage()
-    stage.type('/grants ')
-    stage.press(ENTER)
-    stage.feed([
-      event('grants.catalog', {
-        workspace: '/ws',
-        grants: [
-          { describe: '工具 exec × 根内 × 操作 read', grantedAt: 1_700_000_000_000, stale: false },
-        ],
-        stale: [],
-        decisions: { total: 1, uncovered: 0, vetoed: 0 },
-        history: { total: 1, auto: 1, kernel: 0 },
-      }),
-    ])
-
-    expect(pickerOf(stage)?.source).toBe('grants')
-    stage.press(LEFT)
     expect(dockOf(stage).kind).toBe('input')
   })
 

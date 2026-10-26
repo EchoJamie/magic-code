@@ -20,13 +20,7 @@
  *    故它平时**定住**，只有那一下亮起来；
  * ③ **可配**：挑哪几格、什么顺序、上不上色（见 `StatusLineProps`）。
  *
- * ## 全放行那一格（U73 · 本单不改）
- *
- * - 它报的是**这一代**（命令行 `--allow-all` 起的那一代，见 `ShellStatus.allowAll`），
- *   不是窗口自己的 argv——挂上一条早就活着的那一代时，两处可以不一样。
- * - ⚠️ **它是常驻状态，不是回执**：不自己消失、**不参与降级**、**也不在可挑的那一列里**
- *   （省它等于把这一位从屏上抹掉——那一格就是它**在屏上的唯一痕迹**）。
- */
+ *  */
 
 import { Box, Text } from 'ink'
 import { createElement as h } from 'react'
@@ -76,14 +70,6 @@ export type StatusLineProps = {
  */
 const SEP = ` ${MARKS.sep} `
 
-/**
- * 全放行那一格的字（U73）——**产品上就这三个字**。
- *
- * 用户敲的是 `--allow-all`，屏上报的是「全放行」（说法见 `设计/工具执行与权限`）。
- * 导出是为了让判据**锚在它上面**：改了它，用例会红，不会静默过期（同 `anchors.ts` 那条）。
- */
-export const ALLOW_ALL_LABEL = '全放行'
-
 export function StatusLine({
   status,
   columns,
@@ -110,7 +96,7 @@ export function StatusLine({
       status.amount === null ? '' : h(Text, { color: tint(stateColor(status, null, null)) }, ` ${status.amount}`),
       // ② **全放行**——`warn` 色：它与那几格不是一类（那几格是**在报什么**，这一格是
       // **在报此刻有多放得开**），故不吃 `faint`；也不必吃 `danger`（那不是出错）
-      ...fixed.map((cell) => h(Text, { key: 'allow-all', color: tint(PALETTE.warn) }, `${SEP}${cell}`)),
+      ...fixed.map((cell) => h(Text, { key: 'fixed', color: tint(PALETTE.warn) }, `${SEP}${cell}`)),
       ...left.map((cell, index) => h(Text, { key: `c:${index}`, color: tint(PALETTE.faint) }, `${SEP}${cell}`)),
     ),
     // 右位——独立一栏；放不下就整段不出现（**不推动左半**）。
@@ -121,8 +107,8 @@ export function StatusLine({
 
 /** 原生示例与真正终端共享字段、省略及列宽规则。 */
 export function statusLineLayout({ status, columns, cells, workspace }: Pick<StatusLineProps, 'status' | 'columns' | 'cells' | 'workspace'>) {
-  // 全放行那一格——挂在 ① 之后、**不参与降级**（见文件头注）。不在全放行时它整格不存在。
-  const fixed = status.allowAll ? [ALLOW_ALL_LABEL] : []
+  // U129 起没有「全放行」那一格；`fixed` 这一跳留给将来同样不参与让位的东西。
+  const fixed: readonly string[] = []
   const stateWidth = displayWidth(`${stateMark(status.state)} ${stateText(status.state)}${status.amount === null ? '' : ` ${status.amount}`}`)
   const base = columns - 2 - stateWidth
   const texts = cellTexts(status, cells, workspace)
@@ -132,7 +118,7 @@ export function statusLineLayout({ status, columns, cells, workspace }: Pick<Sta
   return { fixed, left, hint, base }
 }
 export function statusLinePreview(config: { cells: readonly StatusLineCell[]; color?: boolean }, columns: number, reduced: boolean) {
-  const status: ShellStatus = { state: 'working', amount: '8s', session: '设置示例', model: 'Spell', reasoning: reasoningText({ mode: 'default' }), usage: 12400, window: 200000, allowAll: true, hint: '' }
+  const status: ShellStatus = { state: 'working', amount: '8s', session: '设置示例', model: 'Spell', reasoning: reasoningText({ mode: 'default' }), usage: 12400, window: 200000, hint: '' }
   const layout = statusLineLayout({ status, columns, cells: config.cells, workspace: '/示例/项目' })
   const text = `${stateMark(status.state)} ${stateText(status.state)} ${status.amount}${[...layout.fixed, ...layout.left].map(value => `${SEP}${value}`).join('')}`
   const color = (value: string) => config.color === false ? null : value
@@ -142,7 +128,7 @@ export function statusLinePreview(config: { cells: readonly StatusLineCell[]; co
     ...layout.fixed.map(value => ({ text: `${SEP}${value}`, color: color(PALETTE.warn) })),
     ...layout.left.map(value => ({ text: `${SEP}${value}`, color: color(PALETTE.faint) })),
   ]
-  return { text, columns, segments, colors: Array.from({ length: 10 }, (_, i) => config.color === false ? null : stateColor(status, reduced ? null : i * 200, null)), separator: SEP, fixed: ALLOW_ALL_LABEL }
+  return { text, columns, segments, colors: Array.from({ length: 10 }, (_, i) => config.color === false ? null : stateColor(status, reduced ? null : i * 200, null)), separator: SEP, fixed: '' }
 }
 
 /**

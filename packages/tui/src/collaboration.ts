@@ -71,7 +71,7 @@ export function collaborationHeader(view: ShellView): readonly string[] {
 
 /** 仅投影屏上的整体状态；控制范围仍由明确命令决定。 */
 export function collaborationStatus(view: ShellView): ShellStatus {
-  if (view.dock.kind === 'decision' || view.status.state === 'lost') return view.status
+  if (view.status.state === 'lost') return view.status
   const waiting = (view.background?.waiting.length ?? 0) > 0
   const status: ShellStatus = waiting ? { ...view.status, state: 'background', amount: null } : view.status
   if (view.collaboration?.collaboration === undefined) return status

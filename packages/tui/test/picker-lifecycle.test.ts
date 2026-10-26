@@ -14,7 +14,7 @@
  * ## 根因（真 PTY 实测 · 见回报 U29）
  *
  * `<Static>` 的 `key` 原先按**会话 id**，而「读侧命令先开一张**空壳**会话」
- * （`/grants` 那条路：信封必带会话）让**抽屉一开就撞上一次 id 到位**（`null` → 真 id）：
+ * （信封必带会话）让**抽屉一开就撞上一次 id 到位**（`null` → 真 id）：
  * React 重挂 `Static` ⇒ 游标归零 ⇒ 已印进 scrollback 的字标**又印一遍**；
  * 那一帧还走 Ink 的「有静态输出」那条路（`log.clear()` ＋ 重写静态输出），
  * 擦头正落在上一帧的**顶行**（空态那句）⇒ 记录区少一行。
@@ -28,7 +28,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { Entry, EventDataOf } from '@magic/contracts'
+import type { Entry } from '@magic/contracts'
 import { bannerOf } from '../src/banner.ts'
 import type { ShellView } from '../src/view.ts'
 import { event } from './events.ts'
@@ -38,30 +38,6 @@ import { show } from './screen.ts'
 
 /** 正常的宽（与其余规格用例同尺寸）与一档窄窗（字标换成一行版的那一侧）。 */
 const WIDE: ScreenOptions = { columns: 200, rows: 40 }
-
-const ENTER = { kind: 'enter' } as const
-const ESC = { kind: 'escape' } as const
-
-/** 空壳会话的 id——**目录里没有它**（装配为「信封必带会话」开的那张，D5 的不落账那条）。 */
-const SHELL_SESSION = 'shell-u29'
-
-/** 一句用户话——「抽屉开完之后还打得出字」用它当草稿。 */
-const DRAFT = '看看这个工作区里有什么'
-
-/** 一份有项的名录（两条授权 ＋ 一个陈旧的节）——抽屉「有东西可点」那一档。 */
-function catalog(over: Partial<EventDataOf['grants.catalog']> = {}): EventDataOf['grants.catalog'] {
-  return {
-    workspace: '/work/proj',
-    grants: [
-      { describe: '工具 exec × 路径 根内 × 操作 read', grantedAt: 1_700_000_000_000, hits: 3, lastHitAt: 1_700_000_000_000, stale: false },
-      { describe: '工具 read × 根内 × 操作任意', grantedAt: 1_699_000_000_000, stale: true },
-    ],
-    stale: ['/work/gone'],
-    decisions: { total: 8, uncovered: 4, vetoed: 1 },
-    history: { total: 20, auto: 15, kernel: 0 },
-    ...over,
-  }
-}
 
 /** 逐帧录一串——第 0 帧＝装载，其后每步一拍。 */
 function takes(stage: Stage, steps: readonly (() => void)[]): readonly ShellView[] {
@@ -85,71 +61,6 @@ function bannerCopies(frame: Frame, columns: number): number {
 /** 屏上含 `needle` 的行有几条（「只一份」用）。 */
 const countOf = (frame: Frame, needle: string): number =>
   frame.screen.lines.filter((line) => line.includes(needle)).length
-
-/** 还有没有字可打——作曲家那一行在不在（`› ` 起头那行就是输入行）。 */
-const canType = (frame: Frame): boolean => frame.dock.some((line) => line.text.includes('›'))
-
-/** 抽屉开着时的现场：草稿 ＋ 名录到手（**还没**收到那张空壳的 `session.state`）。 */
-function drawerOpen(over: Partial<EventDataOf['grants.catalog']> = {}): {
-  readonly stage: Stage
-  readonly views: readonly ShellView[]
-} {
-  const stage = createStage()
-
-  return {
-    stage,
-    views: takes(stage, [
-      () => stage.type('/grants '),
-      () => stage.press(ENTER),
-      () => stage.feed([event('grants.catalog', catalog(over))]),
-    ]),
-  }
-}
-
-// ══ ① 有项抽屉：开合都不重复、不丢行 ══════════════════════════════════
-
-describe('① 抽屉开合（有项）', () => {
-  test('**抽屉开着**：字标一份 · 名录的行在', async () => {
-    const { views } = drawerOpen()
-    const frame = await show(views, WIDE)
-
-    expect(bannerCopies(frame, WIDE.columns)).toBe(1)
-    expect(countOf(frame, '工具 exec × 路径 根内 × 操作 read')).toBe(1)
-  })
-
-  test('**空壳的 `session.state` 随后到**（抽屉还开着）：字标仍一份', async () => {
-    // 这一拍正是 D25 的现场：读侧命令先开一张空壳，答复异步随后到——
-    // 会话 id 到位（`null` → 真 id）**不是**「记录区换了一页」，也不是「会话有内容了」
-    const { stage, views } = drawerOpen()
-    const withShell = [
-      ...views,
-      (() => {
-        stage.feed([event('session.state', { active: SHELL_SESSION, sessions: [] })])
-        return stage.shell.getView()
-      })(),
-    ]
-
-    const frame = await show(withShell, WIDE)
-
-    expect(bannerCopies(frame, WIDE.columns)).toBe(1)
-    expect(withShell.length).toBe(views.length + 1) // 那一拍真的录进去了
-  })
-
-  test('**收起之后**：字标仍一份 · 抽屉的行不留痕', async () => {
-    const { stage, views } = drawerOpen()
-    stage.feed([event('session.state', { active: SHELL_SESSION, sessions: [] })])
-    const opened = [...views, stage.shell.getView()]
-    stage.press(ESC)
-    const closed = [...opened, stage.shell.getView()]
-
-    const frame = await show(closed, WIDE)
-
-    expect(bannerCopies(frame, WIDE.columns)).toBe(1)
-    expect(frame.has('工具 exec × 路径 根内 × 操作 read')).toBe(false) // 收起＝不留痕
-    expect(canType(frame)).toBe(true)
-    expect(opened.length).toBe(views.length + 1)
-  })
-})
 
 // ══ ④ 换页仍要「印得出来」（换页判据动了，这条钉住它的另一半）════════
 
@@ -237,45 +148,5 @@ describe('④ 一页一个页头（换会话那条路）', () => {
     //    现在数到 0。判据本身没变：**这一行印过两遍**（开机 ＋ 切回来），只是不再带标记。
     expect(countOf(frame, '甲：列一下。')).toBe(2)
     expect(countOf(frame, '› 乙：就一句')).toBe(1)
-  })
-})
-
-// ══ ③ 空抽屉：回执进记录区，输入照常 ══════════════════════════════════
-
-describe('③ 空抽屉（名录一条都没有）', () => {
-  test('**不开抽屉**：那句回执落进记录区（只一份），接着打字照常进草稿', async () => {
-    const stage = createStage()
-    const views = takes(stage, [
-      () => stage.type('/grants '),
-      () => stage.press(ENTER),
-      () => stage.feed([event('grants.catalog', catalog({ grants: [], stale: [] }))]),
-      () => stage.press(ESC),
-      () => stage.type(DRAFT),
-    ])
-    const frame = await show(views, WIDE)
-
-    expect(countOf(frame, '› /grants')).toBe(1) // 记录区里只一份（不重复、不丢）
-    expect(canType(frame)).toBe(true)
-    expect(frame.dock.some((line) => line.text.includes(DRAFT))).toBe(true) // 草稿真进了作曲家
-  })
-
-  test('**回执之后开有项的抽屉、再收起**：回执还在且只一份 · 字标一份', async () => {
-    const stage = createStage()
-    const views = takes(stage, [
-      () => stage.type('/grants '),
-      () => stage.press(ENTER),
-      () => stage.feed([event('grants.catalog', catalog({ grants: [], stale: [] }))]),
-      () => stage.press(ESC),
-      () => stage.type('/grants '),
-      () => stage.press(ENTER),
-      () => stage.feed([event('grants.catalog', catalog())]), // 这一次有项 ⇒ 抽屉开
-      () => stage.feed([event('session.state', { active: SHELL_SESSION, sessions: [] })]),
-      () => stage.press(ESC),
-    ])
-    const frame = await show(views, WIDE)
-
-    expect(countOf(frame, '› /grants')).toBe(2) // 「记录保留」：回执仍在，且没被重印
-    expect(bannerCopies(frame, WIDE.columns)).toBe(1)
-    expect(frame.has('工具 exec × 路径 根内 × 操作 read')).toBe(false) // 收起不留痕
   })
 })

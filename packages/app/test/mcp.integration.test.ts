@@ -95,24 +95,20 @@ async function until(test: () => boolean, what: string, timeoutMs = 15_000): Pro
   }
 }
 
-/** 裸接控制面：留事件轨迹，**按需答复**（不自动批准——审批那一段要看个清楚）。 */
+/** 裸接控制面：留事件轨迹（U129 起默认放行，没有要答复的窗口）。 */
 function bareShell(assembly: Assembly) {
   const events: KernelEvent[] = []
   const off = assembly.shell.subscribe((event) => events.push(event))
 
   return {
     events,
-    requests: () => eventsOfKind(events, 'tool.decision.request'),
     result: () => eventsOfKind(events, 'tool.result').at(-1),
-    answer(id: number, decision: 'approve' | 'reject'): void {
-      assembly.shell.send({ type: 'decision.answer', id, decision })
-    },
     dispose: off,
   }
 }
 
-describe('发现 → 审批 → 调用 → 落账 → 回填', () => {
-  test('首轮模型请求就看得见外部工具；批准后真的调用、结果回填、账落库', async () => {
+describe('发现 → 调用 → 落账 → 回填', () => {
+  test('首轮模型请求就看得见外部工具；默认放行后真的调用、结果回填、账落库', async () => {
     const dir = scrapDir()
     const stage = stageWith({ fake: serverEntry(dir, 'fake') })
     const log = join(dir, 'fake.jsonl')
@@ -140,22 +136,15 @@ describe('发现 → 审批 → 调用 → 落账 → 回填', () => {
 
       const shell = bareShell(assembly)
       assembly.shell.send({ type: 'input.submit', text: '用外部工具回显一句' })
-      await until(() => shell.requests().length >= 1, '审批询问')
 
       // ① **发现**：首轮请求的工具表里就有它（唯一名带服务器身份）
+      await until(() => lastModel(stage).requests.length >= 1, '首轮模型请求')
       const first = lastModel(stage).requests[0]
       expect(first?.tools?.map((tool) => tool.name)).toContain('mcp__fake__echo')
 
-      // ② **审批**：卡上点名 `服务器 / 工具`，材料是**实际业务参数**，且标着「外部操作」
-      const request = shell.requests()[0]
-      expect(request?.data.name).toBe('fake / echo')
-      expect(request?.data.weight).toBe('heavy')
-      expect(request?.data.external).toBe(true)
-      expect(request?.data.material).toContain('外部你好')
-
-      // ③ **批准 → 调用**：服务器那边确实收到了一次（服务器自己数的）
-      shell.answer(request?.id as number, 'approve')
+      // ② **默认放行 → 调用**：裁决留痕是 `auto`，服务器那边确实收到了一次（服务器自己数的）
       await until(() => eventsOfKind(shell.events, 'tool.result').length >= 1, '工具跑完')
+      expect(eventsOfKind(shell.events, 'tool.decision').map((v) => v.data.decider)).toEqual(['auto'])
 
       expect(callsOf(log).map((call) => call.tool)).toEqual(['echo'])
       expect(shell.result()?.data.ok).toBe(true)
@@ -186,43 +175,6 @@ describe('发现 → 审批 → 调用 → 落账 → 回填', () => {
   })
 })
 
-describe('拒绝', () => {
-  test('拒绝＝服务器零调用（计数为证），模型收到「已拒绝——未执行」', async () => {
-    const dir = scrapDir()
-    const stage = stageWith({ fake: serverEntry(dir, 'fake') })
-    const log = join(dir, 'fake.jsonl')
-
-    try {
-      const assembly = stage.assemble({
-        turns: [{ toolCalls: [{ name: 'mcp__fake__echo', args: { text: '别调' } }] }, { text: '好' }],
-      })
-      await assembly.ready()
-
-      const shell = bareShell(assembly)
-      assembly.shell.send({ type: 'input.submit', text: '调一下' })
-      await until(() => shell.requests().length >= 1, '审批询问')
-
-      shell.answer(shell.requests()[0]?.id as number, 'reject')
-      await until(() => shell.result() !== undefined, '结果落定')
-
-      expect(shell.result()?.data.ok).toBe(false)
-      // **服务器自己数的数是 0**——拒绝之后一次都没打过去
-      expect(callsOf(log)).toEqual([])
-
-      // 回填给模型的那一句说的是「没做」
-      await until(() => lastModel(stage).requests.length >= 2, '第二次模型请求')
-      const toolMessage = lastModel(stage).requests[1]?.messages.find((m) => m.role === 'tool')
-      expect(toolMessage?.output).toContain('已拒绝——未执行')
-
-      shell.dispose()
-      await assembly.shutdown()
-      assembly.close()
-    } finally {
-      stage.dispose()
-    }
-  })
-})
-
 test('**调用中途**才起的后代、父随即崩——从真应用这一侧也收得到', async () => {
     const dir = scrapDir()
     const log = join(dir, 'fake.jsonl')
@@ -236,8 +188,6 @@ test('**调用中途**才起的后代、父随即崩——从真应用这一侧�
 
       const shell = bareShell(assembly)
       assembly.shell.send({ type: 'input.submit', text: '让它起一层再崩' })
-      await until(() => shell.requests().length >= 1, '审批询问')
-      shell.answer(shell.requests()[0]?.id as number, 'approve')
       await until(() => shell.result() !== undefined, '结果落定')
 
       // 那一笔的效果未知（调用发出去了、服务器在途没了）
@@ -329,15 +279,12 @@ test('下划线开头的合法工具：进模型工具表**并被真实调用**�
 
       const shell = bareShell(assembly)
       assembly.shell.send({ type: 'input.submit', text: '调那个下划线开头的' })
-      await until(() => shell.requests().length >= 1, '审批询问')
 
       // ② **进模型那一侧的工具表**（注册名带三横：前缀 ＋ 服务器 ＋ `_echo`）
+      await until(() => lastModel(stage).requests.length >= 1, '首轮模型请求')
       expect(toolNamesOf(lastModel(stage).requests[0])).toContain('mcp__fake___echo')
 
-      // ③ **真调用**：批准之后服务器自己数得到这一件，结果原样回来
-      const request = shell.requests()[0]
-      expect(request?.data.name).toBe('fake / _echo')
-      shell.answer(request?.id as number, 'approve')
+      // ③ **真调用**：默认放行之后服务器自己数得到这一件，结果原样回来
       await until(() => shell.result() !== undefined, '结果落定')
 
       expect(callsOf(log).map((call) => call.tool)).toEqual(['_echo'])
@@ -376,16 +323,6 @@ describe('真实来源与不可放权', () => {
 
       const shell = bareShell(assembly)
       assembly.shell.send({ type: 'input.submit', text: '调 beta 那台' })
-      await until(() => shell.requests().length >= 1, '审批询问')
-
-      const request = shell.requests()[0]
-      // 真实来源取**注册表**：名字是 `mcp__beta__echo`，卡上就该是 `beta / echo`
-      expect(request?.data.name).toBe('beta / echo')
-      expect(request?.data.external).toBe(true)
-      // 自报的那个 `server: 'alpha'` 与自定义的 `readOnly` 只是**参数**（照实显示、不作判据）
-      expect(request?.data.material).toContain('"server": "alpha"')
-
-      shell.answer(request?.id as number, 'approve')
       await until(() => eventsOfKind(shell.events, 'tool.result').length >= 1, '工具跑完')
 
       // 两台服务器各数各的：调用只落在 beta 那台上
@@ -400,52 +337,6 @@ describe('真实来源与不可放权', () => {
     }
   })
 
-  test('服务器自报只读 / 幂等照样要问，且不给「总是允许」（记也记不上）', async () => {
-    const dir = scrapDir()
-    const stage = stageWith({ fake: serverEntry(dir, 'fake') })
-
-    try {
-      // `annotated` 那件自报 `readOnlyHint: true` / `idempotentHint: true`
-      const assembly = stage.assemble({
-        turns: [
-          { toolCalls: [{ name: 'mcp__fake__annotated', args: {} }] },
-          { toolCalls: [{ name: 'mcp__fake__annotated', args: {} }] },
-          { text: '好' },
-        ],
-      })
-      await assembly.ready()
-
-      // **一条交代里连着两轮工具调用**（脚本第 1、2 段都是同一件工具）：答了「总是允许」
-      // 之后下一轮照样得问——这正是「外部操作不给长期授权」的可观察形态。
-      const shell = bareShell(assembly)
-      assembly.shell.send({ type: 'input.submit', text: '跑两趟' })
-      await until(() => shell.requests().length >= 1, '第一次询问')
-
-      expect(shell.requests()[0]?.data.weight).toBe('heavy')
-      // 就算答「总是允许」（脚本那条路按得到）——**权限域也不记**
-      assembly.shell.send({
-        type: 'decision.answer',
-        id: shell.requests()[0]?.id as number,
-        decision: 'approve',
-        remember: true,
-      })
-      await until(() => shell.requests().length >= 2, '第二次询问')
-
-      expect(shell.requests()[1]?.data.external).toBe(true)
-
-      // 授权名录里一条都没有（外部操作不进授权账）
-      expect(assembly.grantsView().grants).toEqual([])
-
-      shell.answer(shell.requests()[1]?.id as number, 'approve')
-      await until(() => eventsOfKind(shell.events, 'tool.result').length >= 2, '两趟都跑完')
-
-      shell.dispose()
-      await assembly.shutdown()
-      assembly.close()
-    } finally {
-      stage.dispose()
-    }
-  })
 })
 
 describe('失败路径', () => {
@@ -459,11 +350,9 @@ describe('失败路径', () => {
 
     try {
       const assembly = stage.assemble({
-        // ⚠️ **原锚**：`exec echo 内置照常`（判轻）；**为何变**（U76）：判轻的调用默认通、
-        // **不弹卡**——这一条要的正是「卡 → 批准 → 内置件照跑」那一路；**新锚**：名单里的
-        // 删除打头（必问），`内置照常` 那串输出原样留在第二段。
+        // 内置件照跑：U129 起判轻与改权限都默认放行，`echo 内置照常` 那串输出原样回来。
         turns: [
-          { toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 . && echo 内置照常' } }] },
+          { toolCalls: [{ name: 'exec', args: { cmd: 'echo 内置照常' } }] },
           { text: '好' },
         ],
       })
@@ -477,12 +366,9 @@ describe('失败路径', () => {
       // 开屏那几句话里点名到它（`/mcp` 那一屏归 U39，U38 至少要说得出来）
       expect((await assembly.notices()).join('\n')).toContain('broken')
 
-      // 内置工具照常：这一轮 `exec` 走的是**名单里**那条（删除）——照旧问一次，
-      // 批准之后就真跑（U76 起不问的只是判轻的那些）
+      // 内置工具照常：坏掉的外部服务器不拖垮 `exec`
       const shell = bareShell(assembly)
       assembly.shell.send({ type: 'input.submit', text: '跑个内置的' })
-      await until(() => shell.requests().length >= 1, '审批询问')
-      shell.answer(shell.requests()[0]?.id as number, 'approve')
       await until(() => shell.result() !== undefined, '内置工具跑完')
 
       expect(shell.result()?.data.ok).toBe(true)
@@ -513,8 +399,6 @@ describe('失败路径', () => {
 
       const shell = bareShell(assembly)
       assembly.shell.send({ type: 'input.submit', text: '先来个拖住的' })
-      await until(() => shell.requests().length >= 1, '审批询问')
-      shell.answer(shell.requests()[0]?.id as number, 'approve')
       await until(() => shell.result() !== undefined, '超时落定')
 
       const timed = outputTextOf(shell.result())
@@ -522,8 +406,6 @@ describe('失败路径', () => {
       expect(timed).toContain('核对后再决定是否重试')
 
       // 断连：调用进去了、服务器在途没了
-      await until(() => shell.requests().length >= 2, '第二次询问')
-      shell.answer(shell.requests()[1]?.id as number, 'approve')
       await until(() => eventsOfKind(shell.events, 'tool.result').length >= 2, '断连落定')
 
       expect(outputTextOf(eventsOfKind(shell.events, 'tool.result')[1])).toContain(
@@ -552,8 +434,6 @@ describe('失败路径', () => {
 
       const shell = bareShell(assembly)
       assembly.shell.send({ type: 'input.submit', text: '拖住的' })
-      await until(() => shell.requests().length >= 1, '审批询问')
-      shell.answer(shell.requests()[0]?.id as number, 'approve')
 
       // 调用已经在途（服务器那边数得到），此刻按中断
       await until(() => callsOf(join(dir, 'fake.jsonl')).length >= 1, '调用发出')
@@ -591,8 +471,6 @@ describe('失败路径', () => {
 
       const shell = bareShell(assembly)
       assembly.shell.send({ type: 'input.submit', text: '先把服务器弄没，再调一次' })
-      await until(() => shell.requests().length >= 1, '第一次询问')
-      shell.answer(shell.requests()[0]?.id as number, 'approve')
       await until(() => eventsOfKind(shell.events, 'tool.result').length >= 1, '第一笔落定')
 
       // 第一笔：调用**发出去过**，服务器在途没了 ⇒ 效果未知（要人核对）
@@ -601,8 +479,6 @@ describe('失败路径', () => {
       )
 
       // 第二笔：连接已断 ⇒ **没发出去**（什么都不用核对）——两者分开报
-      await until(() => shell.requests().length >= 2, '第二次询问')
-      shell.answer(shell.requests()[1]?.id as number, 'approve')
       await until(() => eventsOfKind(shell.events, 'tool.result').length >= 2, '第二笔落定')
 
       const second = outputTextOf(eventsOfKind(shell.events, 'tool.result')[1])
@@ -635,8 +511,6 @@ describe('失败路径', () => {
 
       const shell = bareShell(assembly)
       assembly.shell.send({ type: 'input.submit', text: '要个图' })
-      await until(() => shell.requests().length >= 1, '审批询问')
-      shell.answer(shell.requests()[0]?.id as number, 'approve')
       await until(() => shell.result() !== undefined, '结果落定')
 
       const text = outputTextOf(shell.result())
@@ -748,14 +622,7 @@ describe('恢复', () => {
       })
       stamp('turn.start', {})
       const callRef = stamp('tool.call', { name: 'mcp__fake__echo', args: { text: '没跑完的那次' } })
-      stamp('tool.decision.request', {
-        call: callRef,
-        name: 'fake / echo',
-        material: '参数：\n{\n  "text": "没跑完的那次"\n}',
-        weight: 'heavy',
-        external: true,
-      })
-      stamp('tool.decision', { call: callRef, decision: 'approve', decider: 'user', elapsedMs: 90 })
+      stamp('tool.decision', { call: callRef, decision: 'approve', decider: 'auto', elapsedMs: 90 })
       first.close()
 
       // ③ 重起接续：`boot` 跑恢复那一趟（装载 ＋ 在途处置 ＋ 重建）
@@ -809,8 +676,6 @@ describe('关闭与隔离', () => {
 
       const shell = bareShell(assembly)
       assembly.shell.send({ type: 'input.submit', text: '调一下' })
-      await until(() => shell.requests().length >= 1, '审批询问')
-      shell.answer(shell.requests()[0]?.id as number, 'approve')
       await until(() => shell.result() !== undefined, '跑完')
 
       const child = callsOf(log)[0]?.pid

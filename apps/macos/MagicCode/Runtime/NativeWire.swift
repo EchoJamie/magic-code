@@ -272,14 +272,14 @@ enum NativeResponse: Codable, Equatable {
     case engineResult(request: String, phase: EngineStopPhase, error: String?)
     case error(reason: String)
     case sessionsResult(request: String, serviceInstance: String, sessions: [NativeSession]?, error: String?)
-    case historyResult(request: String, serviceInstance: String, session: String, entries: [HistoryEntry]?, events: [HistoryEvent]?, currentRequests: [HistoryEvent]?, next: Int?, done: Bool, error: String?)
+    case historyResult(request: String, serviceInstance: String, session: String, entries: [HistoryEntry]?, events: [HistoryEvent]?, next: Int?, done: Bool, error: String?)
     case managed(request: String, serviceInstance: String, results: [SessionManagementResult])
-    private enum Keys: String, CodingKey { case done, entries, events, currentRequests, next, results, sessions, t, identity, projection, request, work, error, session, phase, note, reason, serviceInstance, base, snapshot, mcp, canChangeData }
+    private enum Keys: String, CodingKey { case done, entries, events, next, results, sessions, t, identity, projection, request, work, error, session, phase, note, reason, serviceInstance, base, snapshot, mcp, canChangeData }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .t) {
         case "native.sessions.result": self = .sessionsResult(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), sessions: try c.decodeOptional([NativeSession].self, forKey: .sessions), error: try c.decodeOptional(String.self, forKey: .error))
-        case "native.history.result": self = .historyResult(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), session: try c.decode(String.self, forKey: .session), entries: try c.decodeOptional([HistoryEntry].self, forKey: .entries), events: try c.decodeOptional([HistoryEvent].self, forKey: .events), currentRequests: try c.decodeOptional([HistoryEvent].self, forKey: .currentRequests), next: try c.decodeOptional(Int.self, forKey: .next), done: try c.decode(Bool.self, forKey: .done), error: try c.decodeOptional(String.self, forKey: .error))
+        case "native.history.result": self = .historyResult(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), session: try c.decode(String.self, forKey: .session), entries: try c.decodeOptional([HistoryEntry].self, forKey: .entries), events: try c.decodeOptional([HistoryEvent].self, forKey: .events), next: try c.decodeOptional(Int.self, forKey: .next), done: try c.decode(Bool.self, forKey: .done), error: try c.decodeOptional(String.self, forKey: .error))
         case "native.session.managed": self = .managed(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), results: try c.decode([SessionManagementResult].self, forKey: .results))
 
         case "native.welcome": self = .welcome(identity: try c.decode(ServiceIdentity.self, forKey: .identity), projection: try c.decode(NativeProjection.self, forKey: .projection))
@@ -305,14 +305,13 @@ enum NativeResponse: Codable, Equatable {
             try c.encode(serviceInstance, forKey: .serviceInstance)
             try c.encodeIfPresent(sessions, forKey: .sessions)
             try c.encodeIfPresent(error, forKey: .error)
-        case let .historyResult(request, serviceInstance, session, entries, events, currentRequests, next, done, error):
+        case let .historyResult(request, serviceInstance, session, entries, events, next, done, error):
             try c.encode("native.history.result", forKey: .t)
             try c.encode(request, forKey: .request)
             try c.encode(serviceInstance, forKey: .serviceInstance)
             try c.encode(session, forKey: .session)
             try c.encodeIfPresent(entries, forKey: .entries)
             try c.encodeIfPresent(events, forKey: .events)
-            try c.encodeIfPresent(currentRequests, forKey: .currentRequests)
             try c.encodeIfPresent(next, forKey: .next)
             try c.encode(done, forKey: .done)
             try c.encodeIfPresent(error, forKey: .error)

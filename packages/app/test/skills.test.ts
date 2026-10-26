@@ -19,7 +19,6 @@ import type { EventStamper, KernelEvent, ModelGateway, ModelMessage, SkillRef } 
 import { createModelGateway } from '@magic/model'
 // 机械分析面（`@magic/permission` 出口 ③）——**供外壳预览与测试直取**（见其头注）。
 // U76 起判轻的不再过闸、也**不发请求事件**，故「这一格判轻」这件事只剩它答得出（见用例里的注）。
-import { analyze } from '@magic/permission'
 import { attachShell, runShellScript } from '../src/index.ts'
 import type { ShellHandle } from '@magic/app'
 import { eventsOfKind, lastModel, makeStage, readDatabase, type Stage } from './support.ts'
@@ -463,34 +462,10 @@ describe('模型自主选用：走真工具通路', () => {
       const results = eventsOfKind(shell.events, 'tool.result')
       expect(results.map((event) => event.data.ok)).toEqual([true, true])
 
-      // —— 闸门那一侧：**判轻不问**（U76）——两次 `skill` 都走自动放行、不留卡 ——
-      //
-      // ⚠️ **原锚**：「闸门问过，但问的是**轻档**」——`asked` 两条都是 `weight: 'light'`，
-      // 材料里含「只读材料」；**为何变**：U76 起判轻的**默认通**，链上**根本不发
-      // `tool.decision.request`**，故那两条判据的落点（请求事件）不存在了；**新锚**：
-      // ①「不问」是可观察的（`asked` 为空 ＋ 两条裁决都是 `auto`——它们照旧过了闸门）；
-      // ②「为什么算轻」改由**机械分析面**直取（`analyze` 是 `@magic/permission` 的公开面，
-      //    头注写明「供外壳预览与测试直取」）——判据仍是原话：分析表里没有 `skill` 这一格
-      //    的话，兜底是 `heavy · unknown`（`unclassifiable`——**表外兜底照旧是重档**），
-      //    而那一档**照旧必问**（U76 放宽的只有 `exec` 那一路）。
-      const asked = eventsOfKind(shell.events, 'tool.decision.request')
-      expect(asked).toEqual([])
+      // —— 闸门那一侧：**默认放行**（U129）——两次 `skill` 都走自动放行、不留卡 ——
       expect(
         eventsOfKind(shell.events, 'tool.decision').map((event) => event.data.decider),
       ).toEqual(['auto', 'auto'])
-
-      const root = realpathSync(stage.workspace)
-      const skillFace = analyze(
-        // `id` 是**链引用**（`tool.call` 那一头铸的），机械分析不看它——这里给一个占位
-        { id: 'call-skill', name: 'skill', args: { name: 'pdf' } },
-        // `skill` 这一格不吃 `PermissionContext`（它没有影响面词条）——给一份真的根，
-        // 免得将来那一格真用上路径判据时，这里悄悄测的是一份空语境。
-        { roots: [root], declaredRoots: [root], defaultRoot: root },
-      )
-      // ⚠️ `Analysis` 是判别联合（U77）：先确认它不是"直接拒"那一形，才读得到 `weight`
-      if (skillFace.refusal !== undefined) throw new Error('技能读取不该被拒')
-      expect(skillFace.weight).toBe('light')
-      expect(skillFace.material).toContain('只读材料')
 
       // —— 回填真进了下一次请求 ——
       expect(requestText(stage, 2)).toContain('先数页数')
@@ -908,7 +883,7 @@ describe('历史不被材料刷新重写', () => {
 })
 
 describe('边界不越', () => {
-  test('技能里的 `allowed-tools` **不改审批**：脚本照旧走闸门', async () => {
+  test('技能里的 `allowed-tools` **不改禁止清单**：脚本照旧走闸门', async () => {
     const stage = makeStage()
     try {
       // 一份「想给自己放权」的技能：上游规范里的 allowed-tools 写着能跑命令
@@ -928,24 +903,23 @@ describe('边界不越', () => {
           { text: '好' },
         ],
       })
-      // 无人值守替人答复：**改权限那一条拒绝**——「allowed-tools 不改审批」的判据看它
-      const shell = attachShell(assembly.shell, {
-        decide: (request) => (request.name === 'exec' ? 'reject' : 'approve'),
-      })
+      const shell = attachShell(assembly.shell)
       await shell.submit('照 risky 做')
       shell.dispose()
 
       // 技能主文确实进了上下文（模型读得到那句「跑 rm -rf」）
       expect(requestText(stage, 1)).toContain('收拾干净')
       // 但技能里写着 `allowed-tools: Bash(rm:*)` **一点也不管用**：
-      //
-      // ⚠️ **U77 换的锚**：删除那一条**内核直接拒**（连卡都不出——技能怎么写都改不了它），
-      // 而改权限那一条**照旧过闸**（落在**重**档）——两半一起看，才是「审批归内核」。
-      const asked = eventsOfKind(shell.events, 'tool.decision.request')
-      expect(asked.map((event) => event.data.name)).toEqual(['exec'])
-      expect(asked.map((event) => event.data.weight)).toEqual(['heavy'])
+      // 删除那一条**内核直接拒**（技能怎么写都改不了它）；改权限那一条**默认放行**。
+      expect(
+        eventsOfKind(shell.events, 'tool.decision').map((event) => [event.data.decision, event.data.decider]),
+      ).toEqual([
+        ['approve', 'auto'], // 读技能
+        ['reject', 'kernel'], // 删除——名单照拒
+        ['approve', 'auto'], // 改权限——默认放行
+      ])
 
-      // 三发各有着落：读技能成了；删的那条**被拒没跑**；改权限那条**被替身拒了也没跑**
+      // 三发各有着落：读技能成了；删的那条**被拒没跑**；改权限那条跑了（目标不存在，故失败）
       const results = eventsOfKind(shell.events, 'tool.result')
       expect(results.map((event) => event.data.ok)).toEqual([true, false, false])
       expect(existsSync(target)).toBe(false)

@@ -53,20 +53,16 @@ export {
   reduce,
   settle,
   stateLabel,
-  takeOver,
   textOfLines,
-  undock,
   unreadSummaryOf,
   withBanner,
   withContextWindow,
-  withDecisionStatus,
 } from './view.ts'
 export type {
   CommandSpec,
   CompletionState,
   Dock,
   LogRow,
-  PendingDecision,
   Picker,
   PickerRow,
   ShellStatus,
@@ -122,11 +118,10 @@ export {
   spacerWalk,
 } from './components/log.ts'
 export type { LogLine, LogRowProps, Segment, SpacerWalk } from './components/log.ts'
-export { DecisionCard } from './components/decision.ts'
 export { Composer, placeholderOf } from './components/composer.ts'
 export type { ComposerTone } from './components/composer.ts'
 export { PickerList } from './components/picker.ts'
-export { StatusLine, ALLOW_ALL_LABEL, statusLinePreview } from './components/status.ts'
+export { StatusLine, statusLinePreview } from './components/status.ts'
 export {
   PALETTE,
   displayWidth,

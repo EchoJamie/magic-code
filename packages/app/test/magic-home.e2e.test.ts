@@ -156,7 +156,7 @@ function plantSkill(root: string, name: string, note: string): void {
 }
 
 describe('MAGIC_HOME 下的真 CLI', () => {
-  test('设了基址——自检报的全是新树那几处（配置 · 数据 · 授权 · 用户技能）', async () => {
+  test('设了基址——自检报的全是新树那几处（配置 · 数据 · 用户技能）', async () => {
     const room = makeRoom()
     try {
       const oldConfig = plantTree(room.home, { provider: 'old', model: 'OLD-MODEL' })
@@ -184,10 +184,8 @@ describe('MAGIC_HOME 下的真 CLI', () => {
       // 读的是新树那一份配置（老树那一份连碰都没碰）
       expect(result.stdout).toContain(newConfig)
       expect(result.stdout).not.toContain(oldConfig)
-      // 数据 / 授权都从新基址派生
+      // 数据从新基址派生
       expect(result.stdout).toContain(`数据落点　${join(room.base, '.magic')}`)
-      expect(result.stdout).toContain(join(room.base, '.magic', 'grants.json'))
-      expect(result.stdout).toContain('授权　　　1 条（本工作区）')
       // 供应商与用户技能也取自新树（老树那两样一个字都不该露头）
       expect(result.stdout).toContain('NEW-MODEL')
       expect(result.stdout).not.toContain('OLD-MODEL')

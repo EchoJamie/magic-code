@@ -37,7 +37,7 @@ final class NativeTests: XCTestCase {
                     .object(["id": .string("responses"), "label": .string("Responses"), "models": .strings(["exact-model"])]),
                     .object(["id": .string("messages"), "label": .string("Anthropic Messages"), "models": .strings(["other-model"])])
                 ])
-            ])], sources: [], grants: [], grantStamp: nil, grantProblem: nil)
+            ])], sources: [])
     }
 
     @MainActor func testU126OfficialUsesConcreteProtocolAndRegionLabels() throws {
@@ -1514,9 +1514,9 @@ extension NativeTests {
     @MainActor private func catalog(_ model: SessionBrowserModel, _ messages: NativeMessages, _ rows: [NativeSession]) throws {
         model.receive(.sessionsResult(request: try XCTUnwrap(messages.catalog), serviceInstance: testIdentity.serviceInstance, sessions: rows, error: nil))
     }
-    @MainActor private func history(_ model: SessionBrowserModel, _ messages: NativeMessages, entries: [HistoryEntry], events: [HistoryEvent] = [], currentRequests: [HistoryEvent] = [], next: Int? = nil, done: Bool = true) throws {
+    @MainActor private func history(_ model: SessionBrowserModel, _ messages: NativeMessages, entries: [HistoryEntry], events: [HistoryEvent] = [], next: Int? = nil, done: Bool = true) throws {
         model.receive(.historyResult(request: try XCTUnwrap(messages.history), serviceInstance: testIdentity.serviceInstance,
-            session: model.selected?.id ?? model.route!.session, entries: entries, events: events, currentRequests: currentRequests, next: next, done: done, error: nil))
+            session: model.selected?.id ?? model.route!.session, entries: entries, events: events, next: next, done: done, error: nil))
     }
     private func entry(_ id: Int = 1, text: String = "保存的完整回复") -> HistoryEntry {
         HistoryEntry(id: id, kind: "assistant", content: .object(["text": .string(text)]), payload: nil, at: 1, source: nil)
@@ -1683,7 +1683,7 @@ extension NativeTests {
         model.open(route: NoticeRoute(base: testIdentity.base, serviceInstance: "older-generation", session: "one", notice: notice))
         model.receive(.inspected(request: try XCTUnwrap(messages.inspect), work: work, error: nil))
         try catalog(model, messages, [sessionRow()])
-        let event = HistoryEvent(turn: nil, id: 8, session: "one", at: 1, kind: "tool.decision.request", data: .object(["material": .string("需要确认的操作")]))
+        let event = HistoryEvent(turn: nil, id: 8, session: "one", at: 1, kind: "error", data: .object(["message": .string("需要确认的操作")]))
         try history(model, messages, entries: [], events: [event])
         model.windowActive(true); model.detailVisible(session: "one", visible: true)
         XCTAssertTrue(messages.reads.isEmpty, "旧实例来源可读，但不能回执到新实例")
@@ -1712,7 +1712,7 @@ extension NativeTests {
         else { XCTFail("没有分页请求") }
         let late = try XCTUnwrap(messages.history)
         model.selection = ["two"]; model.choose()
-        model.receive(.historyResult(request: late, serviceInstance: testIdentity.serviceInstance, session: "one", entries: [entry(2)], events: [], currentRequests: [], next: nil, done: true, error: nil))
+        model.receive(.historyResult(request: late, serviceInstance: testIdentity.serviceInstance, session: "one", entries: [entry(2)], events: [], next: nil, done: true, error: nil))
         XCTAssertTrue(model.entries.isEmpty)
         XCTAssertTrue(messages.reads.isEmpty)
     }

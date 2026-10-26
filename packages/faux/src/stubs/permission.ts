@@ -27,6 +27,7 @@ import type {
   PermissionGate,
   RecordId,
   RefusalKind,
+  SudoPlan,
   ToolCall,
 } from '@magic/contracts'
 
@@ -46,6 +47,8 @@ export type FauxPermissionGateOptions = {
    * 否则「内核拒」与「用户拒」在测试里长得一模一样——而它们要说的不是同一句话。
    */
   readonly refusal?: RefusalKind
+  /** U129：把这一次当作形状合格的 sudo 短命令。 */
+  readonly sudo?: SudoPlan
 }
 
 /** 一次询问的留痕——调用 ＋ 上下文 ＋ **链引用**。 */
@@ -79,6 +82,8 @@ export type FauxPermissionGate = PermissionGate & {
   readonly pending: readonly DecisionId[]
   /** 已答复的裁决（按答复序）。 */
   readonly answers: readonly FauxPermissionAnswer[]
+  /** 旧人工门桩的答复口——U129 起真闸门不再询问；只留给仍按人工回路写的旧测试。 */
+  resolve(requestId: DecisionId, decision: Decision, opts?: { remember?: boolean }): void
 }
 
 /** 造一个权限域桩。 */
@@ -128,6 +133,10 @@ export function makeFauxPermissionGate(
     // U77 · 契约那一位（可选口）：给了 `refusal` 就答得出来
     refusalOf(): RefusalKind | undefined {
       return options.refusal
+    },
+
+    sudoPlan(): SudoPlan | undefined {
+      return options.sudo
     },
 
     resolve(requestId: DecisionId, decision: Decision, opts?: { remember?: boolean }): void {

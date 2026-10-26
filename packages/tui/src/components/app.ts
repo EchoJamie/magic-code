@@ -50,7 +50,6 @@ import {
   statusLineColorOf,
 } from '../view/config.ts'
 import { Composer, PLACEHOLDER_LOST, clip, draftHeight, inkWidth, placeholderOf, type ComposerTone } from './composer.ts'
-import { DecisionCard, decisionLayout } from './decision.ts'
 import { LogRowView, needsSpacer, rowLines, spacerEnd, spacerWalk } from './log.ts'
 import { PALETTE, wrap } from './lines.ts'
 import { PickerList, pickerBudget, pickerLayout, titleLines } from './picker.ts'
@@ -178,7 +177,7 @@ export function AppView({ view, columns, rows, now = null, pulseAt = null }: App
     // 换会话开的新页里**没有字标**（见 `ShellView.page` 与 `reduceSessionState`）。
     //
     // ⚠️ **别拿会话 id 当页号**（原写法，缺陷 D25）：会话 id 与「记录区换了一页」是两回事——
-    // `/grants` 这类读侧命令会先在装配那边开一张**空壳**会话（信封必带会话），
+    // 读侧命令会先在装配那边开一张**空壳**会话（信封必带会话），
     // 于是「打开抽屉」就撞上一次 id 到位（`null` → 真 id）：`<Static>` 当场重挂，
     // 已经印进 scrollback 的字标**又印一遍**；那一帧还走 Ink 的「有静态输出」那条路
     // （`log.clear()` ＋ 重写静态输出），擦头正落在上一帧的顶行 ⇒ 记录区少一行。
@@ -571,7 +570,7 @@ function exitArmedLine(view: ShellView): readonly ReactElement[] {
  * 从来不挂这一行（`shell.ts` 的 `exitOrInterrupt`）——排除它，两处才对得上。
  */
 function showsExitArmed(view: ShellView): boolean {
-  return view.exitArmed && view.dock.kind !== 'decision'
+  return view.exitArmed
 }
 
 /** 左下交互区的内容（四种用法）。 */
@@ -586,7 +585,6 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
   return [
     ...collaborationHeader(view).map((line, index) => h(Text, { key: `collaboration:${index}`, color: index === 0 ? PALETTE.dim : PALETTE.user }, clip(line, Math.max(1, columns)))),
     ...inputNotices(view,columns).map((line,index)=>h(Text,{key:`input-state:${index}`,color:PALETTE.faint},line)),
-    ...(view.dock.kind !== 'decision' && view.pendingDecision !== undefined ? [h(DecisionCard, { key: 'pending', pending: view.pendingDecision, columns, rows, active: false })] : []),
     ...dockContentOf(view, columns, rows),
   ]
 }
@@ -598,13 +596,7 @@ function dockContentOf(view: ShellView, columns: number, rows: number): readonly
   // ⚠️ **待确认的那一行不在这里**（U68 挪到状态行之下了，见 `AppView` 末尾与
   //    `exitArmedLine`）——交互区这一块只剩「输入行 ↔ 状态行」那一对之间的东西。
 
-  if (view.dock.kind === 'decision') {
-    // **不画输入行**（D29）：接管期间打不进字，那句「等你的答复」与状态行的「● 等你定夺」
-    // 说的是同一件事。材料与键位在卡上、状态与件数在状态行，该说的都在。
-    // ⚠️ 真光标不会因此留在屏上：`Composer` 卸载时 Ink 的 `useCursor` 清理把它藏回去；
-    //    草稿与插入点归 `view.stashed`（`takeOver` / `undock`），与画不画这一行无关。
-    return [h(DecisionCard, { key: 'card', pending: view.dock.pending, columns, rows }), ...flash]
-  }
+  if (view.sudo != null) return [...sudoLinesOf(view.sudo, columns), ...flash]
 
   if (view.dock.kind === 'prompt') {
     return [
@@ -747,11 +739,24 @@ function maxDraftLines(rows: number): number {
   return Math.max(1, Math.floor(rows / 2))
 }
 
+/** sudo 密码组件（U129）——密码只画点，**不回显内容**；认证中与失败各有话说。 */
+function sudoLinesOf(sudo: import('../view.ts').SudoPrompt, columns: number): readonly ReactElement[] {
+  const mask = '•'.repeat(Math.min(sudo.masked, 64))
+  return [
+    h(Text, { key: 'sudo:title', color: PALETTE.warn }, clip(`sudo 认证 · ${sudo.command}`, Math.max(1, columns))),
+    h(Text, { key: 'sudo:input', color: PALETTE.warn }, `密码 ${mask}${sudo.busy === true ? '（认证中…）' : ''}`),
+    h(Text, { key: 'sudo:hint', color: PALETTE.dim }, clip(
+      sudo.error ?? 'Enter 认证 · Esc 取消 · 密码不回显；认证成功后系统 sudo 时间戳内其它 sudo 命令复用该凭据',
+      Math.max(1, columns),
+    )),
+  ]
+}
+
 /**
  * 交互区要几行——**按内容算**（原型：展开高度＝内容所需，最多半屏）。纯函数：布局与用例都拿它。
  */
 export function dockHeightOf(view: ShellView, columns: number, rows = Number.POSITIVE_INFINITY): number {
-  return collaborationHeader(view).length + inputNotices(view,columns).length + (view.dock.kind !== 'decision' && view.pendingDecision !== undefined ? decisionLayout(view.pendingDecision, columns, rows, false).lines.length : 0) + dockContentHeightOf(view, columns, rows)
+  return collaborationHeader(view).length + inputNotices(view,columns).length + dockContentHeightOf(view, columns, rows)
 }
 
 function dockContentHeightOf(view: ShellView, columns: number, rows: number): number {
@@ -760,10 +765,7 @@ function dockContentHeightOf(view: ShellView, columns: number, rows: number): nu
   //    ——它的那一行归 `chromeHeightOf`（那才是「活动区之外的全部固定行」那一笔）。
   const completing = completionLines(view, rows)
   if (view.archived && view.dock.kind === 'input') return 1 + flash
-
-  if (view.dock.kind === 'decision') {
-    return decisionLayout(view.dock.pending, columns, rows).lines.length + flash
-  }
+  if (view.sudo != null) return sudoLinesOf(view.sudo, columns).length + flash
 
   if (view.dock.kind === 'prompt') {
     // 标签那一行 ＋ 输入行那一片（与草稿同取 `draftHeight`）＋ 说明（按实际折几行算）＋ 闪一句
@@ -791,7 +793,7 @@ function dockContentHeightOf(view: ShellView, columns: number, rows: number): nu
       pickerBudget(view.dock.picker, columns, rows),
       columns,
     ).height
-    // 那行说明**按实际占几行算**（U22）：`/grants` 的说明比 `/resume` 的长得多
+    // 那行说明**按实际占几行算**（U22）：`/mcp` 的说明比 `/resume` 的长得多
     // （怎么用 ＋ 那笔账），超宽会由 Ink 折行——照 1 行算，交互区就少算了一行
     // （D11 那条「行高与实际不符」的老账，正是这么来的）
     const hint =
@@ -987,7 +989,7 @@ export function TuiApp({ shell }: TuiAppProps) {
   // 整轮耗时、工具和计划复用按需时钟；减少动效仅关闭动画。
   const ticking =
     view.status.state !== 'lost' &&
-    ((view.round !== null && view.round.end === null) || (view.status.state !== 'waiting' && (view.rows.some(row=>row.kind==='tool'&&row.state==='running'&&row.awaitingDecision!==true) || (!view.reducedMotion && (view.status.state==='working'||view.status.state==='retrying')) || breathingOf(view, plan) )) || pulsing)
+    ((view.round !== null && view.round.end === null) || (view.status.state !== 'waiting' && (view.rows.some(row=>row.kind==='tool'&&row.state==='running') || (!view.reducedMotion && (view.status.state==='working'||view.status.state==='retrying')) || breathingOf(view, plan) )) || pulsing)
   const now = useLiveClock(ticking)
 
   /**
@@ -1066,14 +1068,11 @@ export function TuiApp({ shell }: TuiAppProps) {
               rows: reader === undefined ? [...latest.settled, ...latest.rows] : latest.dock.kind === 'picker' ? latest.dock.picker.reader?.rows ?? reader.rows : reader.rows,
               columns: stdout.columns ?? columns,
               screenRows: stdout.rows ?? rows,
-              pending: latest.archived ? undefined : latest.pendingDecision,
               title: reader === undefined ? latest.status.session ?? '当前工作' : latest.dock.kind === 'picker' ? latest.dock.picker.reader?.title : reader.title,
               notice: latest.flash ?? undefined,
             }
           },
           subscribe: shell.subscribe,
-          interrupted: () => (interrupted = shell.getView().dock.kind === 'decision'),
-          decide: () => { shell.key({kind:'tab'}) },
           startTop: top,
           title: reader?.title ?? shell.getView().status.session ?? '当前工作',
           retry: reader?.key.startsWith('session:') ? () => { shell.key({ kind: 'enter' }) } : undefined,
@@ -1149,11 +1148,6 @@ export function TuiApp({ shell }: TuiAppProps) {
     // 故这里算**目标位置**，外壳只存；「没有选择器/审批接管时才生效」那条规矩归外壳判
     // （它才知道此刻左下开着什么）。
     if (key.pageUp === true || key.pageDown === true) {
-      if (view.dock.kind === 'decision') {
-        const layout = decisionLayout(view.dock.pending, columns, rows)
-        feed({ kind: 'decisionTop', top: Math.max(0, Math.min(layout.maxTop, layout.top + (key.pageDown ? 1 : -1) * layout.size)) })
-        return
-      }
       if (view.dock.kind === 'picker') {
         const picker = view.dock.picker
         const layout = pickerLayout(picker,pickerBudget(picker,columns,rows),columns)

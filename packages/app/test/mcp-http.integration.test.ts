@@ -84,18 +84,14 @@ async function until(test: () => boolean, what: string, timeoutMs = 15_000): Pro
   }
 }
 
-/** 裸接控制面：留事件轨迹，**按需答复**。 */
+/** 裸接控制面：留事件轨迹（U129 起默认放行，没有要答复的窗口）。 */
 function bareShell(assembly: Assembly) {
   const events: KernelEvent[] = []
   const off = assembly.shell.subscribe((event) => events.push(event))
 
   return {
     events,
-    requests: () => eventsOfKind(events, 'tool.decision.request'),
     result: () => eventsOfKind(events, 'tool.result').at(-1),
-    answer(id: number, decision: 'approve' | 'reject'): void {
-      assembly.shell.send({ type: 'decision.answer', id, decision })
-    },
     dispose: off,
   }
 }
@@ -114,8 +110,8 @@ async function askMcp(assembly: Assembly): Promise<Extract<KernelEvent, { kind: 
   return found
 }
 
-describe('HTTP 全链（发现 → 审批 → 调用 → 回填）', () => {
-  test('真装配下走完同一条链；工具身份 · 审批卡 · 回填与 stdio 一字不差', async () => {
+describe('HTTP 全链（发现 → 调用 → 回填）', () => {
+  test('真装配下走完同一条链；工具身份 · 默认放行 · 回填与 stdio 一字不差', async () => {
     const http = await serveHttp()
     const stage = makeStage({
       config: { mcp: { servers: { remote: { url: http.url } } } },
@@ -143,22 +139,16 @@ describe('HTTP 全链（发现 → 审批 → 调用 → 回填）', () => {
 
       const shell = bareShell(assembly)
       assembly.shell.send({ type: 'input.submit', text: '用外部工具回显一句' })
-      await until(() => shell.requests().length >= 1, '审批询问')
 
       // ② 首轮模型请求里就有它（唯一名带服务器身份）
-      expect(lastModel(stage).requests[0]?.tools?.map((tool) => tool.name)).toContain(
+      await until(() => lastModel(stage).requests.length >= 1, '首轮模型请求')
+      expect((lastModel(stage).requests[0]?.tools ?? []).map((tool) => tool.name)).toContain(
         'mcp__remote__echo',
       )
 
-      // ③ 审批卡：`服务器 / 工具` ＋ 「外部操作」＋ 实际业务参数
-      const request = shell.requests()[0]
-      expect(request?.data.name).toBe('remote / echo')
-      expect(request?.data.external).toBe(true)
-      expect(request?.data.material).toContain('外部你好')
-
-      // ④ 批准 → **服务器真收到了一次**（服务器自己数的）
-      shell.answer(request?.id as number, 'approve')
+      // ③ **默认放行**：裁决留痕是 `auto`，服务器真收到了一次（服务器自己数的）
       await until(() => eventsOfKind(shell.events, 'tool.result').length >= 1, '工具跑完')
+      expect(eventsOfKind(shell.events, 'tool.decision').map((v) => v.data.decider)).toEqual(['auto'])
 
       expect(callsOf(http.log).map((one) => one['tool'])).toEqual(['echo'])
       expect(shell.result()?.data.ok).toBe(true)
@@ -213,13 +203,6 @@ describe('两种接入并存', () => {
       const shell = bareShell(assembly)
       assembly.shell.send({ type: 'input.submit', text: '两台各调一次' })
 
-      await until(() => shell.requests().length >= 1, '第一次询问')
-      expect(shell.requests()[0]?.data.name).toBe('remote / echo')
-      shell.answer(shell.requests()[0]?.id as number, 'approve')
-      await until(() => shell.requests().length >= 2, '第二次询问')
-
-      expect(shell.requests()[1]?.data.name).toBe('local / echo')
-      shell.answer(shell.requests()[1]?.id as number, 'approve')
       await until(() => eventsOfKind(shell.events, 'tool.result').length >= 2, '两笔都跑完')
 
       // **各数各的**：HTTP 那台只数到它那一次，stdio 那台同理
@@ -314,10 +297,8 @@ describe('查询（`/mcp` 那一屏 · `mcp.list` → `mcp.catalog`）', () => {
       const assembly = stage.assemble({
         turns: [
           { toolCalls: [{ name: 'mcp__remote__echo', args: { text: '先把对端弄没' } }] },
-          // ⚠️ **原锚**：`exec echo 内置照常`（判轻）；**为何变**（U76）：判轻的默认通、
-          // **不弹卡**——下面「第二次询问 → 批准 → 内置照常跑」那三步就没有对象；
-          // **新锚**：名单里的删除打头（必问），`内置照常` 那串输出原样留着。
-          { toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 . && echo 内置照常' } }] },
+          // 内置件照常：U129 起判轻与改权限都默认放行，`echo 内置照常` 那串输出原样回来。
+          { toolCalls: [{ name: 'exec', args: { cmd: 'echo 内置照常' } }] },
           { text: '好' },
         ],
       })
@@ -329,8 +310,6 @@ describe('查询（`/mcp` 那一屏 · `mcp.list` → `mcp.catalog`）', () => {
       await Bun.sleep(200)
 
       assembly.shell.send({ type: 'input.submit', text: '调那台没了的' })
-      await until(() => shell.requests().length >= 1, '第一次询问')
-      shell.answer(shell.requests()[0]?.id as number, 'approve')
       await until(() => shell.result() !== undefined, '第一笔落定')
 
       // 记录：效果未知（发出去过）
@@ -344,8 +323,6 @@ describe('查询（`/mcp` 那一屏 · `mcp.list` → `mcp.catalog`）', () => {
       expect(byName.get('local')?.state.status).toBe('available')
 
       // 内置工具照常跑（第二条交代）
-      await until(() => shell.requests().length >= 2, '第二次询问')
-      shell.answer(shell.requests()[1]?.id as number, 'approve')
       await until(() => shell.result()?.data.ok === true, '内置跑完')
       expect(shell.result()?.data.ok).toBe(true)
 
@@ -371,8 +348,6 @@ describe('显式重连（`/mcp reconnect <服务器>`）', () => {
 
       const shell = bareShell(assembly)
       assembly.shell.send({ type: 'input.submit', text: '调一次' })
-      await until(() => shell.requests().length >= 1, '审批询问')
-      shell.answer(shell.requests()[0]?.id as number, 'approve')
       await until(() => shell.result() !== undefined, '跑完')
       expect(callsOf(http.log)).toHaveLength(1)
 
@@ -470,8 +445,6 @@ describe('关闭与隔离', () => {
 
       const shell = bareShell(assembly)
       assembly.shell.send({ type: 'input.submit', text: '调一下' })
-      await until(() => shell.requests().length >= 1, '审批询问')
-      shell.answer(shell.requests()[0]?.id as number, 'approve')
       await until(() => shell.result() !== undefined, '跑完')
 
       // 密钥不进模型请求 / 事件 / 开屏那几句 / 查询读数（**一处都不许漏**）

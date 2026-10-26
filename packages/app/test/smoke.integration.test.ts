@@ -9,7 +9,7 @@
  * 1. **链走通**——交代 → 模型 → 工具（**经闸门**）→ 回填 → 收束；
  * 2. **落库**——持久类事件与条目都在库里，**瞬时类不在**（`TRANSIENT_EVENT_KINDS`）；
  * 3. **记录可直读**——关库后拿裸 `bun:sqlite` 打开文件，全过程看得见（不经 API 回读）；
- * 4. **裁决配对**——答复按**请求事件** id 回来（不是 `call`——两个 id 空间）。
+ * 4. **裁决留痕**——放行也落一条 `tool.decision`（裁者 `auto`）。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -24,20 +24,10 @@ const TRANSIENT = ['background.state', 'model.delta', 'tool.output.delta', 'inpu
 ] as const
 
 /**
- * 冒烟剧本（U76 起**本文件自带一份**，不再用 `support.ts` 的 `SMOKE_TURNS`）。
+ * 冒烟剧本（本文件自带一份，不再用 `support.ts` 的 `SMOKE_TURNS`）。
  *
- * ⚠️ **原锚**：`exec echo hello-magic`（判轻）；**为何变**：U76 起**判轻的不再问**
- * （默认通——「经闸门」那一段只在 `tool.decision` 上记一条 `decider: 'auto'`），
- * 拿它当夹具，`tool.decision.request` 根本不会出现，「链走通」与「拒绝路径」两支
- * 要判的那件事（请求 → 答复 → 回填）就没有对象；**U76 的新锚**：`rm -rf build && echo hello-magic`
- * ——第一段是**名单里**的删除（必问），第二段把 `hello-magic` 那串输出原样留着。
- *
- * ⚠️ **U77 又换了一次锚**：删除那一类改成**直接拒**（不问），故那条 `rm` **造不出卡**了
- * ——第一段换成 `chmod 755 .`（名单里剩下的那一条，照旧必问），第二段一字不动
- * ⇒ 下面「输出落库 / 回填送达」那几条判据的锚**照旧一个字不用换**。
- *
- * （`support.ts` 的 `SMOKE_TURNS` 仍留在原处：那是**判轻不问**那一形的现成夹具，
- * 别的用例若要它，拿默认那份即可——本文件要的是「有卡」那一形，故自带。）
+ * U129 起**默认放行**：两段（改权限 ＋ 回显）都过闸门，`hello-magic` 那串输出原样回来；
+ * 「经闸门」那一段落在 `tool.decision` 上（`decider: 'auto'`）。
  */
 const GATED_TURNS: readonly FauxTurn[] = [
   {
@@ -72,7 +62,6 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
         'model.call.start',
         'model.call.end',
         'tool.call',
-        'tool.decision.request',
         'tool.decision',
         'tool.result',
         'message.assistant',
@@ -85,8 +74,7 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
       // 交代先落账，再开轮；轮内：模型 → 工具 → 回填 → 收束
       expect(at('message.user')).toBeLessThan(at('turn.start'))
       expect(at('model.call.start')).toBeLessThan(at('tool.call'))
-      expect(at('tool.call')).toBeLessThan(at('tool.decision.request'))
-      expect(at('tool.decision.request')).toBeLessThan(at('tool.decision'))
+      expect(at('tool.call')).toBeLessThan(at('tool.decision'))
       expect(at('tool.decision')).toBeLessThan(at('tool.result'))
 
       // 两轮（模型调了工具 → 回填后**再调一次**才收束），各自成轮
@@ -102,25 +90,11 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
         'waiting',
       ])
 
-      // —— 2 经闸门：裁决真被问了、答复真配对 ——
-      expect(shell.decisions).toHaveLength(1)
-      const request = eventsOfKind(events, 'tool.decision.request')[0]
-      expect(request).toBeDefined()
-      // 配对键＝**请求事件**的 id；载荷里的 `call` 是另一个空间（链引用）
-      expect(shell.decisions[0]?.id).toBe(request?.id)
-      expect(request?.data.name).toBe('exec')
-      // 判断材料给足了（命令分解）——呈现轻重的判据在权限域，此处只认它非空
-      expect(request?.data.material).toContain('echo hello-magic')
-      // ⚠️ **为何问**：问的由头是**名单里**那一段（改权限），不是判轻的第二段——
-      // 材料里两段都在，末尾那一行点名「系统级」，呈现轻重跟着是 `heavy`。
-      //
-      // ⚠️ **U77 换的探针**：从前这一段是**删除**（U76 起名单那两条之一）；
-      // 如今删除那一类**直接拒、根本不问**（设计「`rm` 直接拒，指路 `trash`」），
-      // 故能造出「一张卡」的只剩**改权限那一族**。删除那一套的验收归
-      // `../scripts/verify/irreversible-commands.ts`，不在这条冒烟链上兼职。
-      expect(request?.data.weight).toBe('heavy')
-      expect(request?.data.material).toContain('改权限 · 属主 · 属性 / ACL（不可逆）')
-      expect(request?.data.material).toContain('判据：系统级（改权限 / 属主 / 属性 / ACL）')
+      // —— 2 经闸门：放行也落一条裁决（裁者 `auto`），且链引用对得上那次 `tool.call` ——
+      const verdicts = eventsOfKind(events, 'tool.decision')
+      expect(verdicts).toHaveLength(1)
+      expect(verdicts[0]?.data).toMatchObject({ decision: 'approve', decider: 'auto' })
+      expect(verdicts[0]?.data.call).toBe(eventsOfKind(events, 'tool.call')[0]?.id)
 
       // —— 3 回填送达：**第二次**模型调用的上下文里躺着这次工具结果 ——
       const toolResult = eventsOfKind(events, 'tool.result')[0]

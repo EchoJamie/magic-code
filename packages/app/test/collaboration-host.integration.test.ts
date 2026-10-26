@@ -2,8 +2,7 @@ import { expect, test } from 'bun:test'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
-import type { KernelEvent, NativeResponse, NativeWork } from '@magic/contracts'
-import { linkOf, socketHandlers } from '../src/run/wire.ts'
+import type { KernelEvent } from '@magic/contracts'
 import { startManager, type Manager } from '../src/run/manager.ts'
 import { createAgentLauncher } from '../src/run/launch.ts'
 import { connectManager } from '../src/run/client.ts'
@@ -11,72 +10,6 @@ import { runPathsOf } from '../src/run/paths.ts'
 import { terminalConnection } from '../src/run/terminal.ts'
 import { collaborationRuntime, latch, requestText, spawnMember } from './run-collaboration-fixture.ts'
 
-test('真实原生协作投影：入口释放仍一工作一行，成员审批归根，旧整体停止版本失效', async () => {
-  const memberResponse = latch()
-  const f = await collaborationRuntime('native-collaboration', async call => {
-    if (call.model === 'entry-model') {
-      if (call.index === 0) return spawnMember
-      if (call.index === 1) return { tool: 'agent_wait', args: { operationId: 'native-wait', agents: [f.member()!.agentId],
-        message: f.delegation()!.delegationId, expectation: '等待核对', deadline: Date.now() + 3600_000 } }
-      return { text: '入口核对停点。' }
-    }
-    if (call.index === 0) {
-      await memberResponse.promise
-      return { tool: 'agent_message', args: { action: 'respond', operationId: 'accept', delegation: f.delegation()!.delegationId, response: 'accept' } }
-    }
-    return { tool: 'exec', args: { cmd: 'chmod 700 native-approval.txt' } }
-  })
-  writeFileSync(join(f.workspace, 'native-approval.txt'), 'approval remains pending', { mode: 0o600 })
-  const native = linkOf(await Bun.connect({ unix: f.manager.socketPath, socket: socketHandlers() }) as never)
-  const responses: NativeResponse[] = []
-  native.onMessage(message => { if (message.t.startsWith('native.')) responses.push(message as NativeResponse) })
-  const works = (): readonly NativeWork[] => {
-    const view = responses.findLast(one => one.t === 'native.welcome' || one.t === 'native.projection')
-    return view?.t === 'native.welcome' || view?.t === 'native.projection' ? view.projection.works : []
-  }
-  try {
-    f.shell.key({ kind: 'paste', text: '分出核对工作，等成员结果。' }); f.shell.key({ kind: 'enter' })
-    await f.wait('入口真实释放且成员请求仍在途', () => f.member() !== undefined && f.requests().length === 2 &&
-      f.store.collaboration.listWaits(f.collaboration()!.collaborationId).some(wait => wait.state === 'waiting') &&
-      !f.manager.executors().some(executor => executor.session === f.session()) && f.agentExits.length > 0)
-    const origin = f.session()!
-    native.send({ t: 'hello', role: 'observer', ...f.manager.identity })
-    await f.wait('整项原生投影', () => works().length > 0)
-    expect(works()).toHaveLength(1)
-    expect(works()[0]).toMatchObject({ session: origin, affected: true, state: 'running' })
-    const oldGen = works()[0]!.gen!
-    expect(oldGen).not.toBeNull()
-    memberResponse.release()
-    await f.wait('成员真实审批', () => f.events.some(event => event.kind === 'tool.decision.request' && event.data.name === 'exec'))
-    const approval = f.events.find(event => event.kind === 'tool.decision.request' && event.data.name === 'exec')!
-    native.send({ t: 'native.refresh' })
-    await f.wait('成员审批在原工作待答', () => works()[0]?.currentNotice?.kind === 'needs-you' && works()[0]?.currentNotice?.fact === String(approval.id))
-    expect(works()).toHaveLength(1)
-    expect(works()[0]).toMatchObject({ session: origin, state: 'waiting', affected: true })
-    const notice = works()[0]!.currentNotice!
-    expect(notice.session).toBe(origin)
-    expect(notice.detail).toContain(f.member()!.name)
-    expect(works()[0]!.gen).not.toBe(oldGen)
-    native.send({ t: 'native.stop', request: 'old', serviceInstance: f.manager.identity.serviceInstance, session: origin, gen: oldGen })
-    await f.wait('过期整体停止拒绝', () => responses.some(one => one.t === 'native.stopped' && one.request === 'old'))
-    expect(responses.find(one => one.t === 'native.stopped' && one.request === 'old')).toMatchObject({ phase: 'unconfirmed' })
-    expect(f.collaboration()!.state).toBe('open')
-    native.send({ t: 'native.stop', request: 'current', serviceInstance: f.manager.identity.serviceInstance, session: origin, gen: works()[0]!.gen! })
-    await f.wait('整体真实资源退出后已停', () => responses.some(one => one.t === 'native.stopped' && one.request === 'current' && one.phase === 'done'))
-    expect(f.manager.executors()).toEqual([])
-    expect(f.agentExits).toHaveLength(2)
-    expect(f.collaboration()!.state).toBe('stopped')
-    expect(f.store.collaboration.listExecutions(f.collaboration()!.collaborationId).every(call => call.state === 'finished')).toBe(true)
-    expect(f.requests()).toHaveLength(2)
-    expect(f.errors).toEqual([])
-  } finally {
-    memberResponse.release()
-    native.close()
-    const evidence = process.env['MAGIC_COLLAB_RUN_EVIDENCE']
-    if (evidence) { const dir = resolve(evidence); mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'native-collaboration-projection.json'), JSON.stringify(responses, null, 2)) }
-    await f.close()
-  }
-}, 30000)
 
 test('真实宿主退出再开：target 接回原工作，只读不执行；明确继续及新输入只归原入口', async () => {
   const lateMember = latch()

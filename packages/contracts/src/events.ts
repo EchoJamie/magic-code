@@ -115,9 +115,8 @@ export type EventKind =
   | 'model.delta'
   // model · 实时——**退避重试中**（瞬时档）：是「正在等」的信号，不是重放事实（重放只看终局）
   | 'model.retry'
-  // tool——请求 → 裁决询问（带呈现材料）→ 裁决（批准 / 拒绝 + 裁者 + 耗时）→ 结果
+  // tool——请求 → 裁决（放行 / 拒绝 + 裁者 + 耗时）→ 结果
   | 'tool.call'
-  | 'tool.decision.request'
   | 'tool.decision'
   | 'tool.result'
   // tool · 实时——执行输出增量；**不落库**
@@ -148,8 +147,6 @@ export type EventKind =
   | 'collaboration.view'
   // 控制 · 会话——外壳**重建展示**的条目块（读侧命令的答复）；**不落库**
   | 'session.history'
-  // 控制 · 权限——**授权名录**（U22）：`grants.list` 的答复 ＋ 撤销之后的回话；**不落库**
-  | 'grants.catalog'
   // 控制 · 技能——**技能目录**（U33）：`skills.list` 的答复；**不落库**
   | 'skills.catalog'
   // 控制 · 路径——**路径候选**（U36）：`paths.list` 的答复；**不落库**
@@ -232,29 +229,6 @@ export type ModelCatalogRow = {
 }
 
 /**
- * 授权名录的一行——`grants.catalog` 的载荷（U22 · 技术方案 · 权限「授权的落点」）。
- *
- * **措辞归内核**（`describe`）：条目长什么样只有权限域的 `describeRule` 说了算——
- * 外壳再拼一遍「工具 × 路径 × 操作」就是两处各写一套措辞，改一处漏一处。
- * 而**记账那几件是数据**（次数 / 时刻），外壳据以排「用过几回、多久没用了」。
- */
-export type GrantRow = {
-  /** 这条授权长什么样（工具 × 路径模式 × 操作类型）——`describeRule` 一处产出。 */
-  readonly describe: string
-  /** 点下「总是允许」的时刻（毫秒）。 */
-  readonly grantedAt: number
-  /** 最近一次命中的时刻（毫秒）——**从未命中**时缺席（不给 0 冒充）。 */
-  readonly lastHitAt?: number
-  /** 命中次数——**从未命中**时缺席（同上，不编）。 */
-  readonly hits?: number
-  /**
-   * **久未命中**（`B11`）——判据由权限域按注入的时钟算好（阈值是实现级常量），
-   * 外壳只照着标。⚠️ 标出来**不删**：删用户数据不归内核。
-   */
-  readonly stale: boolean
-}
-
-/**
  * 技能目录的一行——`skills.catalog` 的载荷（U33 · 终端入口）。
  *
  * **只有元数据**（名称 / 简述 / 来源身份），**不含正文**——与端口侧的「启动只发现名称与
@@ -263,7 +237,7 @@ export type GrantRow = {
  *
  * 形态为什么不直接借端口侧的 `SkillCatalog`：`events` 是共享语言的地基，而那个类型在
  * `ports.ts`（它反过来 import 本文件）——`events → ports → events` 会绕成一个环。故此处
- * 照列一排（同 `ModelCatalogRow` 之于注册表条目、`GrantRow` 之于权限域的授权）：
+ * 照列一排（同 `ModelCatalogRow` 之于注册表条目）：
  * **事件面上只出现读得出来的那几格**。
  */
 export type SkillCatalogRow = {
@@ -526,45 +500,6 @@ export type EventDataOf = {
      * （截断时末尾带一句说明，免得读的人以为原文到那儿就完了）。
      */
     readonly rawArgs?: string
-  }
-  'tool.decision.request': {
-    readonly call: RecordId
-    /**
-     * **卡上的名字**——内置工具＝工具名（`exec`）；外部工具＝**`服务器 / 工具`**
-     * （U38：标题取注册表的身份，措辞归内核一处产出，外壳不自己拼）。
-     */
-    readonly name: string
-    /** 判断材料——diff / 命令分解 / 影响面。 */
-    readonly material: string
-    readonly weight: DecisionWeight
-    /**
-     * **这是一次外部操作**（U38）——外壳据它换措辞（`外部操作 · 效果由服务器决定`），
-     * **不给「总是允许」**（外部效果不由本机裁定，一条「总是允许」记不下那个判断）。
-     *
-     * 缺席＝内置工具（既有两处措辞一字不动）。**不落库的瞬时位以外的语义**：它是呈现口径，
-     * 不是判定——判定（必闸 / 从宽）在 `weight` 与材料里。
-     */
-    readonly external?: boolean
-    /**
-     * **这一次发往哪个域名**（U72）——只有取网页那一件会带，且只在地址里认得出域名时。
-     *
-     * 两位用处，都在**这一张卡**上：
-     * - **说清去向**（设计 · 网页与搜索：「卡上要说清发给哪个域名」）——外发这件事的
-     *   判断材料就是「发给谁」，光有工具名答不出它；
-     * - **「总是允许」按域名记**（同处）——那一格的授权**落在域名上，不落在工具上**，
-     *   故卡上得把「按哪个域名」写出来；`a` 在必闸件上**只有带这一位时才给**
-     *   （见 `@magic/tui` 的 `decision.ts` / 答复键那一处）。
-     *
-     * 缺席＝这一次没有域名这一维（既有那些工具一个字节都不变）。
-     */
-    readonly host?: string
-    /**
-     * **这次经哪一台可信中转服务**（U94）——网页取回同时带目标 `host` 与中转 `via`。
-     *
-     * 卡上要同时说清「取哪一页」与「谁去取」；「总是允许」按 `{targetHost, viaHost}`
-     * 记，旧的单域授权缺这一位因此**不匹配**（见权限域 `matchesVia`）。
-     */
-    readonly via?: string
   }
   'tool.decision': {
     readonly call: RecordId
@@ -877,58 +812,6 @@ export type EventDataOf = {
      */
     readonly note?: string
   }
-  // 控制 · 权限——**授权名录**（U22 · 技术方案 · 权限「授权的落点」）。
-  // `grants.list` 的答复，与**撤销之后**的回话共用这一个 kind（三处各立一个只会让渲染侧
-  // 写三遍同一段）——撤销选定即撤，撤完再回一份名录，屏上顺手就是新的那一份。
-  // **不落库**：它是**读出来的**（`grants.json` 本来就在盘上），落库＝把同一张表存 N 遍。
-  'grants.catalog': {
-    /** **分节键**——本工作区（默认根的规范形）；授权按它分节存。 */
-    readonly workspace: string
-    /** 本工作区的授权（声明序）——撤销按这个序报 `index`。 */
-    readonly grants: readonly GrantRow[]
-    /**
-     * **陈旧的节**（`B11`）——**路径已不在**的那些工作区（整节的名录，供撤销）。
-     *
-     * 判据归**装配**（要不在了得问文件系统，而域不碰 fs）：加载 `grants.json` 时逐节探一次。
-     * **只列不删**——「你删或留」，内核不替用户拿主意。
-     */
-    readonly stale: readonly string[]
-    /**
-     * **本会话的裁决分布**——放行区那一笔账的**原料**（`B10` 口径：未配规则的调用占比）。
-     *
-     * 三格两句话（权限域 `GateTally` 那处的口径，此处只转述）：
-     * ```
-     *   未配规则的调用占比 ＝ uncovered / total
-     *   还得人点一下的占比 ＝ (uncovered + vetoed) / total
-     * ```
-     * 两个数只差 `vetoed` 那一格——规则命中了却被必闸禁区否决的调用，对**用户**是同一个
-     * 体验（还是弹了卡），对**规则作者**不是一件事（他得知道「我配的规则够不着这类」）。
-     *
-     * ⚠️ **是本会话的数，不是历史累计**：闸门按会话实例构造。累计要读记录库里的
-     * `tool.decision`（裁者在事件上、分得开「没问」与「秒批」）——那条路归记录域，
-     * **U28 起接上了**（见下 `history`）。
-     */
-    readonly decisions?: {
-      readonly total: number
-      readonly uncovered: number
-      readonly vetoed: number
-    }
-    /**
-     * **同一个库里的历史累计**（U28 · 台账随批小修 12）——**跨会话**的那一笔账，
-     * 读自记录域的读面（`RecordsStore.decisionHistory`）：本工作区的会话们走过的
-     * 全部裁决，按 `decider` 分成三格（见 `DecisionHistory`）。
-     *
-     * 由头：`decisions` 只够看「这一趟顺不顺」（闸门按会话实例构造）；
-     * **「这个项目值不值得配规则」得跨会话**——故这一格与它并列，不合并
-     * （两边的分母不是一回事，合成一个数两边都说不准）。
-     *
-     * **两格都可为 0**（还没走过裁决 / 库里那几条会话没记归属）——外壳**据此不报**，
-     * 不拿 0% 占位。
-     */
-    readonly history?: DecisionHistory
-    /** 一句话说明——只在有事要说时给（读不懂的条目 / 一条授权都没有 / 文件没读到）。 */
-    readonly note?: string
-  }
   // 控制 · 技能——**技能目录**（U33 · 终端入口）。`skills.list` 的答复。
   // **不落库**：与 `model.catalog` / `grants.catalog` 同一条——它是**读出来的**
   // （技能目录本来就在盘上），落库＝把同一张表存 N 遍；且 `/skills` 是**反复看**的动作
@@ -1181,11 +1064,6 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // 是**反复看**的动作（原型里就是拿它当选择器），每次按一下往库里留一笔「问过」
   // 只会污染观测。重放要的是「换过什么模型」（`model.switched` 落着），不是「看过几眼」。
   'model.catalog',
-  // 授权名录同列的理由（U22）：与 `model.catalog` 同一条——它是**读出来的**
-  // （`grants.json` 本来就在盘上），落库＝把同一张表存 N 遍；且 `/grants` 是**反复看**的动作
-  // （原型的抽屉），每次按一下留一笔「问过」只会污染观测。改动本身**有痕**：撤销是用户动作，
-  // 但它的**结果**是文件里少了一条——重放要的是「发生过什么」，不是「谁看过名录」。
-  'grants.catalog',
   // 技能目录同列的理由（U33 · 终端入口）：与 `model.catalog` 同一条——它是**读出来的**
   // （技能目录本来就在盘上），落库＝把同一张表存 N 遍；且 `/skills` 是**反复看**的动作
   // （选择器），每按一下留一笔「问过」只会污染观测。当时到底用了哪一份材料**另有痕**
@@ -1249,7 +1127,7 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
 ]
 
 /** 整轮耗时所需的原始事实；显示侧与记录读取共用这一边界。 */
-export type TurnTimingEvent = Extract<KernelEvent, { kind: 'turn.start' | 'turn.end' | 'tool.decision.request' | 'tool.decision' }>
+export type TurnTimingEvent = Extract<KernelEvent, { kind: 'turn.start' | 'turn.end' | 'tool.decision' }>
 export function isTurnTimingEvent(event: KernelEvent): event is TurnTimingEvent {
-  return event.kind === 'turn.start' || event.kind === 'turn.end' || event.kind === 'tool.decision.request' || event.kind === 'tool.decision'
+  return event.kind === 'turn.start' || event.kind === 'turn.end' || event.kind === 'tool.decision'
 }

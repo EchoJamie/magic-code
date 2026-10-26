@@ -11,7 +11,7 @@ test('顾问终态前，同批独立动作已经落地', async () => {
       { tool: 'write', args: { path: 'independent.txt', content: '在顾问完成前落地' } },
     ] } : { text: '独立动作完成，意见另等。' }
     await pending.promise; return { text: '完整顾问意见' }
-  }, { allowAll: true })
+  })
   try {
     f.shell.key({ kind: 'paste', text: '咨询与独立步骤' }); f.shell.key({ kind: 'enter' })
     await f.wait('独立动作完成后入口继续请求，顾问仍在等待', () => f.requests('entry-model').length === 2)
@@ -27,7 +27,7 @@ test('只读顾问不能写文件，后续合法读取仍能取得原文', async
     if (call.index === 1) return { tool: 'read', args: { path: 'probe.txt' } }
     expect(requestText(call)).toContain('probe.txt')
     return { text: '已通过合法read取得实际探针文件。' }
-  }, { allowAll: true })
+  })
   writeFileSync(join(f.workspace, 'probe.txt'), '原值')
   try {
     f.shell.key({ kind: 'paste', text: '只读咨询' }); f.shell.key({ kind: 'enter' })

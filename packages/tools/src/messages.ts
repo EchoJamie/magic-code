@@ -20,52 +20,48 @@ import type { RefusalKind } from '@magic/contracts'
 export const OUTPUT_REJECTED = '已拒绝——未执行'
 
 /**
- * **删除那一类被内核直接拒**——回执要指路（U77 · 设计 · 权限「`rm` 直接拒，指路 `trash`」）。
+ * **禁止清单命中后的回执**（U129）——三支，措辞不同。
  *
- * ## 为什么不能只说一句「已拒绝」
- *
- * 拒这一类的理由不是「你该问我」（那是问的活），是「**这个命令不可逆**」——
- * 而**不可逆有可逆的替代**：`trash`（系统自带，macOS 15 起）把东西挪进废纸篓，**捞得回来**。
- * **光拒不说，模型只会换着花样再试**；
- * 说清「用什么」，它下一步就走在正道上。⇒ 这一句**是这一段回执的全部内容**。
- *
- * ## 三副面孔（都是实打实的分支，不是措辞偏好）
- *
- * - **`irreversible` ＋ 有 `trash`**：指路（这是常态）；
- * - **`irreversible` ＋ 没有 `trash`**（macOS 15 之前）：**如实说没有**——
- *   ⚠️ 工单明文「**不许假装它一定在**（指一个跑不了的命令，比不指更坏）」；
- * - **`no-substitute`**（`shred` / `srm`）：**不给替代**——它要的就是删得收不回来，
- *   换个更弱的做法等于没照它办（设计明文）。
+ * - `irreversible`：`rm` / `shred` / `srm` 那类删除不可逆，**统一指路 `trash`**；
+ * - `su`：切换用户身份并交互输入密码，内核不放这条路；
+ * - `sudo-unsupported`：`sudo` 只接受单行短命令，`detail` 说出这一条命中了哪一种不成形的
+ *   写法，并给出拆分方式。
  *
  * ## 版面：**第一行要能独立读**
  *
  * 被拒的工具在屏上折叠成**一行**，取的是输出的**首行**（`components/log.ts` 的
  * `verdictOf` —— `rejected` 那一支读 `firstLineOf`）。故「为什么 ＋ 用什么」压在第一行，
- * 补充说明（怎么用 / 交给用户）放第二行。
+ * 补充说明放第二行。
  *
  * `trashAvailable` 由**装配**探一次递进来（本域不碰文件系统、也不读环境）。
  */
-export const refusalOutput = (kind: RefusalKind, trashAvailable: boolean): string => {
-  if (kind === 'no-substitute') {
+export const refusalOutput = (kind: RefusalKind, trashAvailable: boolean, detail?: string): string => {
+  if (kind === 'su') {
     return [
-      '已拒绝——`shred` / `srm` 要的就是删得收不回来，内核不放这条路（也没有可替代的做法）。',
-      '要真删就交给用户，别换一个更温和的写法糊过去——那等于没照它办。',
+      '已拒绝——`su` 要切换用户身份并交互输入密码，内核不放这条路；日常没有它的必要性。',
+      '需要以别的用户做一件事，用单条 `sudo -u 用户 命令` 表达。',
+    ].join('\n')
+  }
+
+  if (kind === 'sudo-unsupported') {
+    return [
+      `已拒绝——sudo 只接受单行短命令${detail === undefined ? '' : `（${detail}）`}。`,
+      '请拆成多条短命令再试；不要用换行、sh -c / bash -c、here-doc、解释器或脚本包住要执行的命令。',
     ].join('\n')
   }
 
   if (!trashAvailable) {
     return [
-      '已拒绝——`rm` 那类删除不可逆；而这台机器上没有 `trash`（macOS 15 起才有），没有可替代的命令。',
+      '已拒绝——`rm` / `shred` / `srm` 那类删除不可逆；而这台机器上没有 `trash`（macOS 15 起才有），没有可替代的命令。',
       '要删就交给用户，别换别的写法绕。',
     ].join('\n')
   }
 
   // ⚠️ **只承诺验到的那一件事**（进废纸篓、能捞回）：设计原本还写着「也能『放回原处』」，
   // 但那一份依据（`~/.Trash/.DS_Store` 里那条原始路径）**本机没能验证**（U77 实测：
-  // 它由 Finder 决定何时刷盘，等了 40 秒没观察到）——**没证的半句不写进承诺里**
-  // （设计已同步收窄，见「`rm` 直接拒，指路 `trash`」那一节）。
+  // 它由 Finder 决定何时刷盘，等了 40 秒没观察到）——**没证的半句不写进承诺里**。
   return [
-    '已拒绝——`rm` 那类删除不可逆；改用 `trash`（它把东西挪进废纸篓，能捞回）。',
+    '已拒绝——`rm` / `shred` / `srm` 那类删除不可逆；改用 `trash`（它把东西挪进废纸篓，能捞回）。',
     '用法照 `rm` 写目标：`trash 文件 目录…`——它没有 `-f`，目标不在会报错。',
   ].join('\n')
 }
@@ -99,6 +95,27 @@ export const OUTPUT_INVALID_ARGS = '参数解析不出——未执行'
 
 /** `exec` 的命令字段取不到（键名锚定单一键 `cmd`——写错的键名不该被猜中）。 */
 export const OUTPUT_EXEC_NO_CMD = '参数错误：cmd 须为非空字符串；命令字段为 cmd'
+
+// —— sudo 专用认证（U129）——
+
+/**
+ * 这次装配**没有接 sudo 认证通道**——不执行。
+ *
+ * 不静默退回普通执行：sudo 在无 stdin 的条件下只会当场 EOF，模型会把它读成「命令失败」，
+ * 而真正的原因是这一条路根本没接。
+ */
+export const OUTPUT_SUDO_NO_CHANNEL =
+  '这条 sudo 命令没能取得认证通道——本次装配没有接入 sudo 密码组件；未执行'
+
+/** 用户在密码组件里取消——命令不启动。 */
+export const OUTPUT_SUDO_CANCELED = '已取消 sudo 认证——命令未执行'
+
+/** 认证没通过（密码错误 / sudo 不认这个用户 / 通道断了）——如实说，不自动重试。 */
+export const sudoAuthFailedOutput = (detail?: string): string =>
+  `sudo 认证没通过——命令未执行${detail === undefined || detail.trim() === '' ? '' : `（${detail.trim()}）`}；可以再发起一次重试`
+
+/** 认证成功、但 `sudo -n` 执行时时间戳已失效（极少见）——说清是哪一截没成。 */
+export const sudoTimestampLostOutput = 'sudo 认证已通过，但执行时系统时间戳已失效——命令未执行；请重新发起一次'
 
 // —— `exec` 的后台那一形（U70）——
 

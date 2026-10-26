@@ -311,27 +311,6 @@ describe('乙 · 草稿那一头（真按键 → 外壳）', () => {
     expect(stage.commands().length).toBe(before)
   })
 
-  test('接管（裁决）期间**不静默吞**——说一句，草稿一个字不动', async () => {
-    const stage = createStage()
-
-    stage.feed([
-      event('tool.decision.request', { call: 71, name: 'exec', material: '命令 ls', weight: 'light' }, { id: 88 }),
-    ])
-
-    const before = stage.shell.getView()
-    stage.press(LINE_START)
-    const after = stage.shell.getView()
-
-    expect(after.draft).toBe(before.draft)
-    expect(after.refs).toEqual(before.refs)
-    expect(after.caret).toBe(before.caret)
-    expect(
-      (await stage.screen({ columns: 100, rows: 40 })).screen.lines.some((one) =>
-        one.includes('「行首」此刻不管用'),
-      ),
-    ).toBe(true)
-  })
-
   test('选择器接管时什么都不做（那一屏的键归屏——不越过它去动后面的草稿）', () => {
     const stage = createStage()
 

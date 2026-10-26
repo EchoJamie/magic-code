@@ -32,8 +32,7 @@ import { join } from 'node:path'
 import { unlinkSync, writeFileSync } from 'node:fs'
 import { displayWidth, PALETTE } from './components/lines.ts'
 import type { LogLine } from './components/log.ts'
-import type { LogRow, PendingDecision } from './view.ts'
-import { decisionLayout } from './components/decision.ts'
+import type { LogRow } from './view.ts'
 import { matchesOf, screenKey, screenLayout, screenOpened, textOfLine, textOfLines } from './transcript.ts'
 import type { ScreenKey, ScreenLayout, ScreenState } from './transcript.ts'
 import type { UserImage } from './view.ts'
@@ -90,12 +89,11 @@ export type ScreenHost = {
   readonly stdin: NodeJS.ReadStream
   readonly stdout: NodeJS.WriteStream
   /** 取此刻要画的那些行与尺寸（每次重画问一次——流式进来的新行据此上屏）。 */
-  readonly read: () => { readonly rows: readonly LogRow[]; readonly columns: number; readonly screenRows: number; readonly pending?: PendingDecision | undefined; readonly title?: string | undefined; readonly notice?: string | undefined }
+  readonly read: () => { readonly rows: readonly LogRow[]; readonly columns: number; readonly screenRows: number; readonly title?: string | undefined; readonly notice?: string | undefined }
   /** 底下那些变了就叫一声（可省）——**叫不叫只影响新内容几时上屏**，不影响键。 */
   /** 主界面需要呈现决策时，归还终端并保留阅读位置。 */
   readonly interrupted?: (() => boolean) | undefined
   /** 阅读期间仍显示现有待决策卡，Tab 归还给决策面板。 */
-  readonly decide?: (() => void) | undefined
   readonly subscribe?: ((listener: () => void) => () => void) | undefined
   /** 开屏时从第几行起（阅读位置记着——设计：「退出保留原来的阅读位置」）。 */
   readonly title?: string
@@ -162,8 +160,8 @@ export async function runScreen(host: ScreenHost): Promise<number> {
       dirty = false
       if (host.interrupted?.()) break
 
-      const { rows, columns, screenRows, pending, title = host.title, notice } = host.read()
-      const footer = [...(notice === undefined ? [] : [clip(notice, columns)]), ...(pending === undefined ? [] : decisionLayout(pending, columns, screenRows, false).lines.map(line => ` │ ${line}`))]
+      const { rows, columns, screenRows, title = host.title, notice } = host.read()
+      const footer = notice === undefined ? [] : [clip(notice, columns)]
       const body = screenLayout(rows, { columns, turnDuration: host.turnDuration?.(), screenRows: screenRows - footer.length - (title === undefined ? 0 : 1) })
       const layout = body
 
@@ -172,7 +170,6 @@ export async function runScreen(host: ScreenHost): Promise<number> {
 
       for (const key of keys) {
         if (key.kind === 'accept' && notice !== undefined && host.retry !== undefined && state.asking === null && state.picked === null) { host.retry(); break }
-        if (key.kind === 'tab' && pending !== undefined) { host.decide?.(); break }
         if (host.memberAction !== undefined && state.asking === null && state.picked === null && key.kind === 'text' && (key.text === 'i' || key.text === 'm')) { host.memberAction(key.text === 'i' ? 'input' : 'menu', state.top); closing = true; break }
         const step = screenKey(state, key, layout)
         if (step.kind === 'state') state = step.state

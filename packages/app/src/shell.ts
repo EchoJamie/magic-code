@@ -14,62 +14,19 @@ import type { ModelSwitchRequest } from '@magic/contracts'
  * **订阅在 `attachShell` 里当场接上，发命令是其后的事**。这条次序就是「先接订阅、
  * 后放开输入」：反了＝用户输入无声丢失。
  *
- * **裁决口径**（无人值守替人批准）——阶段 1 一律人工门；本驱动替人按下按钮，是**验收
- * 装置的方便**，不是产品行为（产品里裁决只来自用户；自动放行归阶段 2 的规则化）。
- * 故缺省 `decide` 写得显眼，脚本可逐条改写；用尽的答复走同一个缺省。
- *
- * **答复的加宽位**（第 16 轮补）——`ShellAnswer` 收两形：裸 `Decision`（一次性，旧写法一字不动）
- * 或 `{ decision, remember? }`。**「总是允许」由此脚本化**：没有这个位，那条链就只
- * 在真 TTY 里按得出来、无人值守验不了（本轮的端到端真跑正是靠它）。
- *
  * **换模型的加宽位**（U17 补）——脚本的交代位收两形：裸字符串（一字不改的老写法）或
  * `{ switch: { choice?, reasoning? } }`（**会话中途换模型**）。落点是 `onSwitch`：装配把
  * **换模型那一条产出路径**接在那儿，本文件只负责「按脚本的次序喊一声」，不认识注册表——
  * 也**因此与命令面同产 `model.switched`**（缺陷 D16：收拢的是产出，不是入口）。
  *
  * ⚠️ **为什么「会话中途换模型」出现在这里**——控制面的命令词表（契约 `Command`）里
- * **没有「换模型」这个词**（`input.submit` / `decision.answer` / `turn.interrupt` 三支），
+ * **没有「换模型」这个词**（`input.submit` / `turn.interrupt` 两支），
  * 而那是个冻结的契约。本驱动是装配侧唯一「在会话中途对内核做点什么」的地方，故这一轮的
  * 入口落在这儿（真产品入口＝外壳的一条命令，待契约加词——见回报「待决」）。
  */
 
-import type { Command, ControlTransport, Decision, InputSubmit, KernelEvent, UserInput } from '@magic/contracts'
+import type { Command, ControlTransport, InputSubmit, KernelEvent, UserInput } from '@magic/contracts'
 import type { ModelSelection, ModelSwitchResult } from '@magic/model'
-
-/** 一次裁决询问（`tool.decision.request` 的几件）。 */
-export type ShellDecisionRequest = {
-  /** 配对键＝**请求事件** id（不是载荷里的 `call`——两个 id 空间）。 */
-  readonly id: number
-  readonly name: string
-  /** 判断材料——命令分解 / diff / 影响面。 */
-  readonly material: string
-  readonly weight: 'light' | 'heavy'
-  /**
-   * **这是一次外部操作**（U38）——`name` 是 `服务器 / 工具`，材料里只有业务参数。
-   *
-   * 脚本据它可以只对内部件答「总是允许」（外部件记也记不上——权限域那一侧不收，
-   * 见其 `Pending.rememberable`）：**给不给是脚本的自由，收不收是内核的口径**。
-   */
-  readonly external?: boolean
-}
-
-/**
- * 一次答复——裸词，或**裸词 ＋ 加宽位**。
- *
- * 给 `Decision` ＝一次性（与阶段 1 逐字同义）；给对象形才谈得上「总是允许」。
- * 两形并存是**向后兼容**的形态：旧脚本 `decisions: ['approve']`、旧钩子 `() => 'approve'`
- * 一字不动照常工作。
- *
- * ⚠️ `remember` **只在批准时生效**（规则的条目只有「允许」这一形，没有「总是拒绝」——
- * 见契约 · `DecisionAnswer.remember`）。
- */
-export type ShellAnswer = Decision | { readonly decision: Decision; readonly remember?: boolean }
-
-/** 已答复的裁决（询问 ＋ 答复）——`remember` **原样记**：给了就在，没给就不在这个键上。 */
-export type ShellDecision = ShellDecisionRequest & {
-  readonly decision: Decision
-  readonly remember?: boolean
-}
 
 /** 一次**会话中途**的换模型（请求 ＋ 落地后的选中）——`switches` 里的痕迹。 */
 export type ShellSwitch = {
@@ -81,8 +38,6 @@ export type ShellSwitch = {
 export type ShellHandle = {
   /** 迄今收到的事件（按到达序，**含瞬时增量**）。活视图：拿在手里继续长。 */
   readonly events: readonly KernelEvent[]
-  /** 迄今答复过的裁决。 */
-  readonly decisions: readonly ShellDecision[]
   /** 迄今换过的模型（按发生序）。 */
   readonly switches: readonly ShellSwitch[]
   /**
@@ -92,7 +47,7 @@ export type ShellHandle = {
    *
    * **两形**（U33 加宽）：裸字符串（一字不改的老写法）或**整份 `UserInput`**
    * （`{ text, skills?, ref? }`）——技能随交代绑定、以及提交的配对键，都要能**经入口**
-   * 递进去，而不是只存在于内核的契约里。与 `ShellAnswer` / `ShellStep` 同一条加宽姿势。
+   * 递进去，而不是只存在于内核的契约里。与 `ShellStep` 同一条加宽姿势。
    */
   submit(input: string | UserInput, timeoutMs?: number): Promise<void>
   /** 发一条命令（不等待）——中断等非提交用途。 */
@@ -124,13 +79,6 @@ export type AttachShellOptions = {
    */
   readonly onEvent?: (event: KernelEvent) => void
   /**
-   * 裁决答复——**无人值守替人批准**（见文件头注）。
-   * 缺省 `() => 'approve'`：验收脚本要跑通全链，被闸门挡下就什么也验不到；
-   * 要验「拒绝路径」请显式传 `() => 'reject'`；要验**「总是允许」**返回对象形
-   * `() => ({ decision: 'approve', remember: true })`（见 `ShellAnswer`）。
-   */
-  readonly decide?: (request: ShellDecisionRequest) => ShellAnswer
-  /**
    * **换模型的落点**——装配把**换模型那一条产出路径**接在这儿
    * （`(request) => assembly.switchModel(request)`：产 `model.switched` 并回结果——缺陷 D16）。
    * 缺省不接：脚本里没写 `switch` 就永远用不到它。
@@ -141,17 +89,6 @@ export type AttachShellOptions = {
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000
-const APPROVE: Decision = 'approve'
-
-/** 答复归一——裸词与对象形收成同两件（`remember` 没给就是 `undefined`，不补 `false`）。 */
-function normalizeAnswer(answer: ShellAnswer): {
-  readonly decision: Decision
-  readonly remember: boolean | undefined
-} {
-  if (typeof answer === 'string') return { decision: answer, remember: undefined }
-  return { decision: answer.decision, remember: answer.remember }
-}
-
 /** 换模型请求的一行话（报错里说清楚「想换成什么」）。 */
 function describeSwitchRequest(request: ModelSwitchRequest): string {
   return request.choice ?? '思考设置'
@@ -184,10 +121,8 @@ function deadline(timeoutMs: number, what: string): { promise: Promise<never>; c
  */
 export function attachShell(shell: ControlTransport, options: AttachShellOptions = {}): ShellHandle {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  const decide = options.decide ?? ((): Decision => APPROVE)
 
   const events: KernelEvent[] = []
-  const decisions: ShellDecision[] = []
   const switches: ShellSwitch[] = []
   /** `agent.state{waiting}` 的水位——`submit` 记下它、等它的下一次。 */
   let waiting = 0
@@ -216,41 +151,11 @@ export function attachShell(shell: ControlTransport, options: AttachShellOptions
       return
     }
 
-    if (event.kind === 'tool.decision.request') {
-      const request: ShellDecisionRequest = {
-        // 配对键＝**请求事件** id（不是载荷里的 `call`——两个 id 空间，见契约 `ids.ts`）
-        id: event.id,
-        name: event.data.name,
-        material: event.data.material,
-        weight: event.data.weight,
-        // 外部操作（U38）——只在真为外部时带键（缺席＝内置件，同线上消息的形状）
-        ...(event.data.external === true ? { external: true } : {}),
-      }
-      const answer = normalizeAnswer(decide(request))
-      decisions.push({
-        ...request,
-        decision: answer.decision,
-        // 给了才落键——没给＝这次答复里没有这一位（与线上消息同形）
-        ...(answer.remember === undefined ? {} : { remember: answer.remember }),
-      })
-
-      // **同一调用栈里答复**——权限域先登记、后扇出，故这条答复落不到空表上。
-      // `remember` 只在 `true` 时才带上键：`undefined` 过不了通道的可序列化门（丢键＝有损），
-      // 而 `false` 与不给同义（规则的条目只有「允许」这一形）
-      shell.send(
-        answer.remember === true
-          ? { type: 'decision.answer', id: request.id, decision: answer.decision, remember: true }
-          : { type: 'decision.answer', id: request.id, decision: answer.decision },
-      )
-    }
   })
 
   return {
     get events(): readonly KernelEvent[] {
       return events
-    },
-    get decisions(): readonly ShellDecision[] {
-      return decisions
     },
 
     get switches(): readonly ShellSwitch[] {
@@ -324,8 +229,8 @@ export function attachShell(shell: ControlTransport, options: AttachShellOptions
 /**
  * 脚本的一步——**交代**·**换模型**·或**一整份结构化交代**。
  *
- * 三形并存是**向后兼容**的形态：老脚本 `inputs: ["…"]` 一字不动照常工作
- * （与 `ShellAnswer` 的加宽位同法）；`{ switch: … }` 是 U17 的加宽位；
+ * 三形并存是**向后兼容**的形态：老脚本 `inputs: ["…"]` 一字不动照常工作；
+ * `{ switch: … }` 是 U17 的加宽位；
  * `{ input: … }` 是 **U33 的加宽位**——技能随交代绑定、以及提交的配对键，
  * 都要能从**现有入口**递进去（`{"input": {"text": "照它做", "skills": [{"name": "pdf", "path": "…"}]}}`）。
  *
@@ -341,12 +246,6 @@ export type ShellStep =
 export type ShellScript = {
   /** 依次走的步骤：交代（裸字符串）或换模型（`{ switch: … }`）。 */
   readonly inputs: readonly ShellStep[]
-  /**
-   * 裁决答复（按询问次序取，用尽后走 `options.decide`）。
-   *
-   * 混着写也认：`['approve', { decision: 'approve', remember: true }]`——第 2 条即「总是允许」。
-   */
-  readonly decisions?: readonly ShellAnswer[]
   /** 每条交代的等待上限（毫秒）。 */
   readonly timeoutMs?: number
 }
@@ -363,13 +262,7 @@ export async function runShellScript(
   script: ShellScript,
   options: AttachShellOptions = {},
 ): Promise<ShellHandle> {
-  const queued = [...(script.decisions ?? [])]
-  const fallback = options.decide ?? ((): ShellAnswer => APPROVE)
-
-  const handle = attachShell(shell, {
-    ...options,
-    decide: (request) => queued.shift() ?? fallback(request),
-  })
+  const handle = attachShell(shell, options)
 
   // **先接订阅（上一步）、再跑启动流转、最后放开输入（下面的循环）**
   // ——无订阅方时命令与事件都丢（技术方案 · 控制域），恢复正好要发事件

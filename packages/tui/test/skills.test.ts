@@ -555,49 +555,6 @@ describe('提交与失败保稿', () => {
   })
 })
 
-describe('接管（裁决）保护整份草稿', () => {
-  test('绑着技能的草稿：接管时三件一起收，答完一起还', () => {
-    const stage = createStage()
-    directHit(stage, '/pdf', [skill('pdf')])
-    stage.type(' 打了一半')
-
-    stage.feed([
-      event(
-        'tool.decision.request',
-        { call: 71, name: 'exec', material: '命令 ls', weight: 'light' },
-        { id: 88 },
-      ),
-    ])
-
-    // 三件一起收：正文 · 插入点 · 它里面的引用（U36——引用是那份草稿的一部分）
-    expect(stage.shell.getView().stashed).toEqual({
-      draft: '/pdf 打了一半',
-      caret: 9,
-      refs: [
-        { start: 0, end: 4, kind: 'skill', marker: '/pdf', name: 'pdf', source: '/ws/project/pdf' },
-      ],
-    })
-
-    stage.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 12 })])
-
-    expect(stage.shell.getView().draft).toBe('/pdf 打了一半')
-    expect(nameOf(stage.shell.getView().refs[0])).toBe('pdf')
-  })
-
-  test('接管期间打字不进草稿（喂给裁决作答）——不认的键当场说一句', () => {
-    const stage = createStage()
-    stage.type('草稿')
-    stage.feed([
-      event('tool.decision.request', { call: 71, name: 'exec', material: 'm', weight: 'light' }, { id: 88 }),
-    ])
-
-    stage.press({ kind: 'char', char: 'x' })
-
-    expect(stage.shell.getView().draft).toBe('')
-    expect(stage.shell.getView().flash).toContain('先答复')
-  })
-})
-
 // ══ 独立验收退回的三处（真 PTY 反例 —— 逐条固化成负例回归）══════════════
 
 /**

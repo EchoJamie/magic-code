@@ -86,8 +86,8 @@ test('两个真实终端共享 Engine；网络、工具与 MCP 环境隔离，�
   const host = await startResidentHost({ ...sandbox, env: { ...sandbox.env, MAGIC_LOCAL_API_KEY: 'engine', WORK_MARK: 'engine', NODE_EXTRA_CA_CERTS: cert, http_proxy: 'http://127.0.0.1:1', no_proxy: '' } })
   const workspaceB = join(sandbox.root, 'ws-B'); mkdirSync(workspaceB)
   try {
-    const a = await createUiSession({ sandbox, artifacts: join(sandbox.root, 'frames'), env: envs.A, argv: ['--allow-all'] }); windows.push(a)
-    const b = await createUiSession({ sandbox: { ...sandbox, workspace: workspaceB }, artifacts: join(sandbox.root, 'frames'), env: envs.B, argv: ['--allow-all'] }); windows.push(b)
+    const a = await createUiSession({ sandbox, artifacts: join(sandbox.root, 'frames'), env: envs.A, argv: [] }); windows.push(a)
+    const b = await createUiSession({ sandbox: { ...sandbox, workspace: workspaceB }, artifacts: join(sandbox.root, 'frames'), env: envs.B, argv: [] }); windows.push(b)
     for (const [window, label] of [[a, 'A'], [b, 'B']] as const) {
       await window.send(`工作${label}`, { until: { text: `工作${label}` } }); await window.key('enter')
     }
@@ -103,7 +103,7 @@ test('两个真实终端共享 Engine；网络、工具与 MCP 环境隔离，�
     const db = readDatabase(join(sandbox.dataDir, 'records.db'))
     const session = db.sessions.find(row => JSON.parse(row.workspace!)[0] === realpathSync(sandbox.workspace))!.id; db.close()
     await a.close(); windows.splice(windows.indexOf(a), 1)
-    const c = await createUiSession({ sandbox: { ...sandbox, workspace: workspaceB }, artifacts: join(sandbox.root, 'frames'), env: envs.C, anchors: { ...sandbox.anchors, ready: () => ({ text: '工作A' }) }, argv: ['resume', session, '--allow-all'] }); windows.push(c)
+    const c = await createUiSession({ sandbox: { ...sandbox, workspace: workspaceB }, artifacts: join(sandbox.root, 'frames'), env: envs.C, anchors: { ...sandbox.anchors, ready: () => ({ text: '工作A' }) }, argv: ['resume', session] }); windows.push(c)
     expect(existsSync(join(sandbox.root, 'tool-C.json'))).toBe(false)
     for (const label of ['A', 'B']) writeFileSync(join(sandbox.root, `release-${label}`), '')
     await c.wait({ text: '环境A完成' }, { timeoutMs: 15000 }); await c.wait({ text: '○ 空闲' })

@@ -3,7 +3,6 @@ import { mkdirSync, readFileSync, statSync, writeFileSync, utimesSync } from 'no
 import { join } from 'node:path'
 import { createRecordsStore } from '@magic/records'
 import { createWorkspaceService, createSkills } from '@magic/execution'
-import { createGrantLedger } from '@magic/permission'
 import { resolveModelChoice } from '../src/agent-models.ts'
 import { loadConfig } from '@magic/config'
 import { saveProvider } from '@magic/config'
@@ -25,7 +24,7 @@ function setup() {
     raw: () => JSON.parse(readFileSync(config, 'utf8')) as Record<string, unknown> }
 }
 
-test('七类设置的实际配置消费：连接/映射/材料/角色/根/权限/呈现，保留无关字段与零Session', async () => {
+test('六类设置的实际配置消费：连接/映射/材料/角色/根/呈现，保留无关字段与零Session', async () => {
   const g = setup()
   writeFileSync(g.config, JSON.stringify({ dataDir: g.dataDir, untouched: { keep: 1 } }))
   await g.apply({ type: 'provider.save', provider: 'ds', vendor: 'deepseek', apiKey: 'SENTINEL_PROVIDER_KEY' })
@@ -38,7 +37,6 @@ test('七类设置的实际配置消费：连接/映射/材料/角色/根/权限
   const skill = join(g.workspace, 'extra', 'demo'); mkdirSync(skill, { recursive: true }); writeFileSync(join(skill, 'SKILL.md'), '---\nname: demo\ndescription: 示例技能\n---\n只读查证')
   await g.apply({ type: 'sources.set', source: 'skills.sources', paths: [join(g.workspace, 'extra')] })
   await g.apply({ type: 'workspace.set', roots: [g.workspace] })
-  await g.apply({ type: 'permissions.set', rules: [{ tool: 'read', path: '**/*.md', op: 'read' }] })
   await g.apply({ type: 'prefs.set', statusLine: { cells: ['workspace', 'model', 'reasoning', 'context', 'session'], color: false }, reducedMotion: true })
   const loaded = loadConfig({ magic: g.context.magic }), config = loaded.config
   expect(config.models?.default?.model).toBe('deepseek-v4-pro'); expect(config.models?.spell?.model).toBe('deepseek-v4-pro'); expect(config.models?.arcane?.model).toBe('deepseek-flash')
@@ -92,7 +90,6 @@ test('首次文件新建/同mtime内容外改/两入口旧快照/损坏JSON均�
 test('无效字段与数据责任拒写；角色工具缺省/空列表、清除默认与移除引用不混', async () => {
   const g = setup(); const before = readFileSync(g.config, 'utf8')
   await expect(g.apply({ type: 'workspace.set', roots: [] })).rejects.toThrow()
-  await expect(g.apply({ type: 'permissions.set', rules: [{ tool: 'read', op: 'NOT_AN_OP' }] })).rejects.toThrow('permissions.rules')
   await expect(g.apply({ type: 'sources.set', source: 'rules.sources', paths: ['relative'] })).rejects.toThrow('绝对路径')
   expect(readFileSync(g.config, 'utf8')).toBe(before)
   expect('canChangeData' in await g.settings.read()).toBe(false)
@@ -105,19 +102,6 @@ test('无效字段与数据责任拒写；角色工具缺省/空列表、清除�
   expect(loadConfig({ magic: g.context.magic }).config.agentRoles?.a?.tools).toBeUndefined()
   await g.apply({ type: 'model.clear', choice: 'default' }); await g.apply({ type: 'provider.remove', provider: 'ds' })
   expect('canChangeData' in await g.settings.read()).toBe(false)
-})
-
-test('授权撤销比较真实文件身份，重读后撤销且回读同一事实', async () => {
-  const g = setup(), grantPath = join(g.base, 'grants.json')
-  writeFileSync(grantPath, JSON.stringify({ version: 1, workspaces: { [g.workspace]: [{ tool: 'read', grantedAt: 1 }] } }))
-  const snapshot = await g.settings.read()
-  writeFileSync(grantPath, JSON.stringify({ version: 1, workspaces: { [g.workspace]: [{ tool: 'write', grantedAt: 1 }, { tool: 'read', grantedAt: 1 }] } }))
-  await expect(g.apply({ type: 'grants.revoke', workspace: g.workspace, index: 0, grantStamp: snapshot.grantStamp })).rejects.toThrow('授权已改变')
-  const fresh = await g.settings.read()
-  await g.apply({ type: 'grants.revoke', workspace: g.workspace, index: 1, grantStamp: fresh.grantStamp })
-  const current = await g.settings.read(); expect(current.grants[0]?.entries).toHaveLength(1);
-  const ledger = createGrantLedger({ workspace: g.workspace }); ledger.replace({ version: 1, workspaces: { [g.workspace]: [{ tool: 'read', grantedAt: 1 }] } }); expect(ledger.rules()).toHaveLength(1)
-  ledger.replace({ version: 1, workspaces: {} }); expect(ledger.rules()).toEqual([])
 })
 
 test('自由 ID 和敏感名称按自己的键保存，不命中对象原型', async () => {

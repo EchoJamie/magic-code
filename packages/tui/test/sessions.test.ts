@@ -8,9 +8,9 @@
 import { describe, expect, test } from 'bun:test'
 import { renderToString } from 'ink'
 import { createElement as h } from 'react'
-import type { Entry, KernelEvent, StatusLineCell } from '@magic/contracts'
+import type { Entry, KernelEvent } from '@magic/contracts'
 import { AppView } from '../src/components/app.ts'
-import { ALLOW_ALL_LABEL, StatusLine } from '../src/components/status.ts'
+import { StatusLine } from '../src/components/status.ts'
 import type { StatusLineProps } from '../src/components/status.ts'
 import { createShell } from '../src/shell.ts'
 import type { ShellStatus } from '../src/view.ts'
@@ -143,7 +143,6 @@ describe('状态行 · 可配与降级', () => {
     usage: 12400,
     window: null,
     reasoning: null,
-    allowAll: false,
     hint: HINT_IDLE,
     ...patch,
   })
@@ -169,9 +168,9 @@ describe('状态行 · 可配与降级', () => {
     )
 
   /**
-   * **锚（① 状态 ＋ ② 全放行）**——U112 起那一行分两层：
+   * **锚（① 状态）**——U112 起那一行分两层：
    *
-   * - **锚**：永不省、不可配（「① 状态永不省」＋「看不见的裸奔是最坏的一形」）；
+   * - **锚**：永不省、不可配（「① 状态永不省」）；
    * - **锚之后**：用户挑的那几格（挑哪几格、什么顺序、上不上色）。
    *
    * 这一条钉的是**形状那一维**：设计 ·「状态行可配置」那一行明写
@@ -257,48 +256,7 @@ describe('状态行 · 可配与降级', () => {
     expect((await rowOf(true)).some((cell) => cell.fg !== null)).toBe(true)
     expect((await rowOf(false)).every((cell) => cell.fg === null)).toBe(true)
   })
-
-  /**
-   * U73 · **全放行那一格**——`设计/工具执行与权限`：
-   * 「**这不是配置，是状态** ⇒ 常驻。**用户必须随时看得见自己在全放行**」。
-   *
-   * ⚠️ **U112 起它不在「可挑的那一列」里**（`STATUS_LINE_CELLS` 头注）：挑不了的东西摆进
-   * 可选项清单就是骗人——它的四条判据照旧：**在** · **位置**（① 之后、② 之前）·
-   * **不在** · **永不省**。
-   */
-  describe('全放行那一格', () => {
-    const cells: readonly StatusLineCell[] = ['session', 'model', 'context']
-
-    test('全放行时就有——挂在 ① 之后、② 之前（那几格次序一字不动）', () => {
-      const text = line({ allowAll: true }, { cells })
-
-      expect(text).toContain(ALLOW_ALL_LABEL)
-      expect(text.indexOf('○ 空闲')).toBeLessThan(text.indexOf(ALLOW_ALL_LABEL))
-      expect(text.indexOf(ALLOW_ALL_LABEL)).toBeLessThan(text.indexOf('时区修正'))
-      expect(text.indexOf('时区修正')).toBeLessThan(text.indexOf('MiniMax-M3'))
-      expect(text.indexOf('MiniMax-M3')).toBeLessThan(text.indexOf('12.4k'))
-    })
-
-    test('不在全放行时**整格不存在**——其余几格一字不动（左段逐字比）', () => {
-      const off = line({ allowAll: false }, { cells })
-      const on = line({ allowAll: true }, { cells })
-
-      expect(off).not.toContain(ALLOW_ALL_LABEL)
-      expect(leftOf(on).replace(` · ${ALLOW_ALL_LABEL}`, '')).toBe(leftOf(off))
-    })
-
-    test('够宽时**那几格齐**——多出来的那一格不是拿谁换的', () => {
-      const text = line({ allowAll: true }, { cells })
-
-      expect(text).toContain('○ 空闲')
-      expect(text).toContain(ALLOW_ALL_LABEL)
-      expect(text).toContain('时区修正')
-      expect(text).toContain('MiniMax-M3')
-      expect(text).toContain('12.4k')
-    })
-  })
 })
-
 
 /** 一行的**左段**（`space-between` 之前那一截）——右位是独立一栏，位置随左段走。 */
 function leftOf(text: string): string {

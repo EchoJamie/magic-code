@@ -27,6 +27,7 @@ import { BREATH_MS, PULSE_MS, breathColor, breathOf, pulseOf } from '../src/moti
 import { event } from './events.ts'
 import { createStage } from './screen.ts'
 import type { Frame } from './screen.ts'
+import { collaborationFixture } from './collaboration-fixture.ts'
 
 const AT = 1_700_000_000_000
 
@@ -57,6 +58,21 @@ function toolCall(
 /** 一条行的**色**（那一格吃的是什么色）——`null` ＝ 默认色。 */
 function fgAt(frame: Frame, row: number, column: number): string | null {
   return frame.cellsOf(row)[column]?.fg ?? null
+}
+
+/**
+ * 一位成员挂着待批——协作状态行进「等你定夺」。
+ *
+ * U129 之后「等你定夺」只从协作待批来（单次调用的审批卡已移除）；这里量的是**状态格**
+ * 的形状与动效，与审批从哪里来无关。
+ */
+function waitingView() {
+  return event('collaboration.view', {
+    ...collaborationFixture,
+    members: collaborationFixture.members.map((member, index) =>
+      index === 0 ? { ...member, pendingDecisions: 1 } : member,
+    ),
+  })
 }
 
 // ══ 一 · 记号：身份与状态两维 ═════════════════════════════════════════
@@ -246,10 +262,7 @@ describe('动效 · 只挂状态位', () => {
     expect(asked.statusLine).toContain(`${MARKS.dot} 工作中`)
 
     const waiting = live()
-    waiting.feed([
-      ...toolCall('exec', { cmd: 'sleep 9' }),
-      event('tool.decision.request', { call: 71, name: 'exec', material: '命令 sleep 9', weight: 'light' }, { id: 88 }),
-    ])
+    waiting.feed([waitingView()])
     const held = await waiting.screen()
     expect(held.statusLine).toContain(`${MARKS.ring} 等你定夺`)
     expect(held.statusLine).not.toContain(`${MARKS.dot} 等你定夺`)
@@ -269,10 +282,7 @@ describe('动效 · 只挂状态位', () => {
 
     // 在等你：脉冲走完之后（> PULSE_MS）几个「此刻」都定在同一色
     const waiting = live()
-    waiting.feed([
-      ...toolCall('exec', { cmd: 'sleep 9' }),
-      event('tool.decision.request', { call: 71, name: 'exec', material: '命令 sleep 9', weight: 'light' }, { id: 88 }),
-    ])
+    waiting.feed([waitingView()])
     waiting.pulseAt(AT)
     waiting.at(AT + PULSE_MS + 400)
     const settled = await waiting.screen(SCREEN)
@@ -289,10 +299,7 @@ describe('动效 · 只挂状态位', () => {
    */
   test('「在等你」**脉冲一次**：逐帧取样——一路变亮，走完定住（不是闪烁）', async () => {
     const stage = live()
-    stage.feed([
-      ...toolCall('exec', { cmd: 'sleep 9' }),
-      event('tool.decision.request', { call: 71, name: 'exec', material: '命令 sleep 9', weight: 'light' }, { id: 88 }),
-    ])
+    stage.feed([waitingView()])
     stage.pulseAt(AT)
 
     const shades: string[] = []

@@ -38,7 +38,6 @@ export type ShellKey =
 
   | { readonly kind: 'ctrl+v' }
 
-  | { readonly kind: 'decisionTop'; readonly top: number }
   | { readonly kind: 'planTop'; readonly top: number }
   | { readonly kind: 'readerTop'; readonly top: number }
   | { readonly kind: 'paste'; readonly text: string }

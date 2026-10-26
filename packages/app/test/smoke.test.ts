@@ -9,7 +9,7 @@
  * 1. **链走通**——交代 → 模型 → 工具（**经闸门**）→ 回填 → 收束；
  * 2. **落库**——持久类事件与条目都在库里，**瞬时类不在**（`TRANSIENT_EVENT_KINDS`）；
  * 3. **记录可直读**——关库后拿裸 `bun:sqlite` 打开文件，全过程看得见（不经 API 回读）；
- * 4. **裁决配对**——答复按**请求事件** id 回来（不是 `call`——两个 id 空间）。
+ * 4. **拒绝也是结果**——被拒的调用不执行，仍以 `tool-result` 回填（`ok: false`）。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -20,24 +20,14 @@ import type { FauxTurn } from '@magic/faux'
 import { eventsOfKind, makeStage, readDatabase } from './support.ts'
 
 /**
- * 冒烟剧本（U76 起**本文件自带一份**，不再用 `support.ts` 的 `SMOKE_TURNS`）。
+ * 拒绝路径的剧本——**名单里**的删除（U129：直接拒，不问）。
  *
- * ⚠️ **原锚**：`exec echo hello-magic`（判轻）；**为何变**：U76 起**判轻的不再问**
- * （默认通——「经闸门」那一段只在 `tool.decision` 上记一条 `decider: 'auto'`），
- * 拿它当夹具，`tool.decision.request` 根本不会出现，「链走通」与「拒绝路径」两支
- * 要判的那件事（请求 → 答复 → 回填）就没有对象；**U76 的新锚**：`rm -rf build && echo hello-magic`
- * ——第一段是**名单里**的删除（必问），第二段把 `hello-magic` 那串输出原样留着。
- *
- * ⚠️ **U77 又换了一次锚**：删除那一类改成**直接拒**（不问），故那条 `rm` **造不出卡**了
- * ——第一段换成 `chmod 755 .`（名单里剩下的那一条，照旧必问），第二段一字不动
- * ⇒ 下面「输出落库 / 回填送达」那几条判据的锚**照旧一个字不用换**。
- *
- * （`support.ts` 的 `SMOKE_TURNS` 仍留在原处：那是**判轻不问**那一形的现成夹具，
- * 别的用例若要它，拿默认那份即可——本文件要的是「有卡」那一形，故自带。）
+ * 「经闸门」那一段在 `tool.decision` 上记一条 `decider: 'kernel'` 的 `reject`；
+ * 被拒的那一发**一步都不跑**，结果照发。
  */
-const GATED_TURNS: readonly FauxTurn[] = [
+const REFUSED_TURNS: readonly FauxTurn[] = [
   {
-    toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 . && echo hello-magic' } }],
+    toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build' } }],
     usage: { inputTokens: 11, outputTokens: 3 },
   },
   { text: '跑完了', usage: { inputTokens: 21, outputTokens: 7 } },
@@ -49,17 +39,17 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
     const stage = makeStage()
 
     try {
-      // 夹具同上：**名单里**的命令才有卡可拒（U76 起判轻的不问，见 `GATED_TURNS`）
-      const assembly = stage.assemble({ turns: GATED_TURNS })
-      const shell = attachShell(assembly.shell, { decide: () => 'reject' })
+      // 名单里的命令（删除那族）由内核直接拒——见 `REFUSED_TURNS`
+      const assembly = stage.assemble({ turns: REFUSED_TURNS })
+      const shell = attachShell(assembly.shell)
 
-      await shell.submit('清一下构建目录，再回显一句')
+      await shell.submit('清一下构建目录')
       shell.dispose()
       assembly.close()
 
       const events = shell.events
       expect(eventsOfKind(events, 'tool.decision').map((e) => e.data.decision)).toEqual(['reject'])
-      // 问过、答过、结果照发（拒绝也是一种结果——回填不能断）
+      // 拒了、结果照发（拒绝也是一种结果——回填不能断）
       expect(eventsOfKind(events, 'tool.result')).toHaveLength(1)
 
       const raw = readDatabase(assembly.paths.database)

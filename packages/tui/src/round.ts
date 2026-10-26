@@ -32,10 +32,6 @@ export function foldRound(previous: RoundTiming | null, event: TurnTimingEvent):
       valid: next.valid && (previous.turn === null || event.turn === null || event.turn === previous.turn + 1) }
   }
   if (event.turn !== previous.turn) next = { ...next, valid: false }
-  if (event.kind === 'tool.decision.request') {
-    return { ...next, waiting: [...new Set([...next.waiting, event.data.call])],
-      waitingSince: next.waitingSince ?? event.at }
-  }
   if (event.kind === 'tool.decision') {
     if (!next.waiting.includes(event.data.call)) return { ...next, waitsKnown: next.waitsKnown && event.data.decider !== 'user' }
     const waiting = next.waiting.filter(call => call !== event.data.call)

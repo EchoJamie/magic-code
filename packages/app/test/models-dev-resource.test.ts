@@ -105,7 +105,7 @@ test('真实装配读取缓存规格，实际请求使用 512000；重新装配�
     await createModelsDevResource(base, fetcher).refresh()
     for (const output of [512_000, 500_000]) {
       if (output === 500_000) writeFileSync(join(base, MODELS_DEV_CACHE_FILE), JSON.stringify({ fetchedAt: Date.now(), data: catalog(output) }))
-      const app = assemble({ cwd: base, magic, config: loadConfig({ path, magic }), modelFetch: fetcher, grantsFile: join(base, 'grants.json') })
+      const app = assemble({ cwd: base, magic, config: loadConfig({ path, magic }), modelFetch: fetcher })
       const shell = attachShell(app.shell)
       try {
         await app.ready()

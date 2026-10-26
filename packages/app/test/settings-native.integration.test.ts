@@ -16,7 +16,6 @@ import { nativeModelsDevCatalog, holdNativeSettingsLock, runNativeSettings } fro
 import { createSettings } from '../src/settings.ts'
 import { statusLinePreview } from '@magic/tui'
 import { cliGround, waitFor } from './resident-cli-fixture.ts'
-import { commitGrants, loadGrants } from '../src/grants-file.ts'
 
 test('Swift 原生配置保存与真实 Engine 动态采用、TUI 本地保存、双入口冲突；不装配 Agent', async () => {
   const g = cliGround(), magic = { base: g.base, home: g.home }, path = join(g.base, 'config.json')
@@ -59,7 +58,6 @@ test('TS 与 Swift 按同一文件格式交叉编辑，字段校验、凭据隐�
     { type: 'mcp.save', name: 'local', server: { command: 'echo', args: ['中文'] }, secrets: { PRIVATE_TOKEN: 'MCP_SECRET_SENTINEL' } },
     { type: 'sources.set', source: 'rules.sources', paths: ['~/规则', '/tmp/来源'] },
     { type: 'workspace.set', roots: [g.home] },
-    { type: 'permissions.set', rules: [{ tool: 'exec', op: ['read', 'create'], path: '**', host: 'example.com' }] },
     { type: 'prefs.set', statusLine: { cells: ['workspace', 'model'], color: false }, reducedMotion: true },
     { type: 'diagnostics.set', debugMode: true, logLevel: 'trace' },
     { type: 'provider.save', provider: 'local', name: '重命名', apiKey: 'KEY_SECRET_SENTINEL' },
@@ -86,7 +84,6 @@ test('TS 与 Swift 按同一文件格式交叉编辑，字段校验、凭据隐�
     for (const action of [
       { type: 'provider.save', provider: 'local', baseURL: 'https://user:password@example.com', apiKey: 'KEY_SECRET_SENTINEL' },
       { type: 'model.override', provider: 'local', model: 'm', override: { limits: { maxInputTokens: 100, maxContextTokens: 50 } } },
-      { type: 'permissions.set', rules: [{ tool: 'exec', op: [] }] },
       { type: 'role.save', id: 'bad', role: { name: '错误', instructions: '保留草稿', model: { reasoning: { mode: 'off' } } } },
     ] as SettingsAction[]) {
       const before = readFileSync(g.configPath, 'utf8'), stamp = configStamp(g.configPath)
@@ -192,27 +189,6 @@ test('原生模型列表与 TS 缓存互通，非认证编辑沿用；换凭据�
     expect(requests).toEqual(['Bearer FIRST_SECRET', 'Bearer FIRST_SECRET', 'Bearer SECOND_SECRET'])
     expect(JSON.stringify(await native())).not.toMatch(/FIRST_SECRET|SECOND_SECRET/)
   } finally { release?.(); await server.stop(true); g.close() }
-}, 60000)
-
-test('原生撤销与 TS 授权记账交叉写入，旧指纹拒绝覆盖，新授权和其他工作区保留', async () => {
-  const g = ground(), path = join(g.base, 'grants.json'), other = join(g.home, 'other')
-  const grant = { tool: 'exec', path: '**', op: 'read' as const, grantedAt: 1 }
-  try {
-    await commitGrants(path, [{ kind: 'grant', workspace: g.home, grant }, { kind: 'grant', workspace: other, grant }])
-    const before = (await runNativeSettings(g)).snapshot!
-    await commitGrants(path, [{ kind: 'grant', workspace: g.home, grant: { ...grant, path: '*.txt' } }])
-    const conflict = await runNativeSettings({ ...g, stamp: before.stamp, action: { type: 'grants.revoke', workspace: g.home, index: 0, grantStamp: before.grantStamp } })
-    expect(conflict.saved).toBe(false); expect(loadGrants(path).file.workspaces[g.home]).toHaveLength(2)
-    const current = (await runNativeSettings(g)).snapshot!
-    const revoked = await runNativeSettings({ ...g, stamp: current.stamp, action: { type: 'grants.revoke', workspace: g.home, index: 0, grantStamp: current.grantStamp } })
-    expect(revoked.saved).toBe(true)
-    expect(loadGrants(path).file.workspaces[g.home]).toEqual([{ ...grant, path: '*.txt' }])
-    expect(loadGrants(path).file.workspaces[other]).toEqual([grant])
-    expect(statSync(path).mode & 0o777).toBe(0o600)
-    writeFileSync(path, '{ broken')
-    const failed = await runNativeSettings({ ...g, stamp: configStamp(g.configPath), action: { type: 'grants.revoke', workspace: g.home, grantStamp: configStamp(path) } })
-    expect(failed.saved).toBe(false); expect(readFileSync(path, 'utf8')).toBe('{ broken')
-  } finally { g.close() }
 }, 60000)
 
 test('App 原生模型刷新保留显式代理与 NO_PROXY，不因客户端拆分改变出站路径', async () => {

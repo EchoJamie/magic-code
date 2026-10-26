@@ -1,11 +1,11 @@
-/** 验证工具计时仅包含执行阶段：审批等待不计时，批准后起算；自动放行从调用开始起算。 */
+/** 验证工具计时：从发起那一刻起算，落地耗时＝发起 → 落地；没跑的那一笔不报耗时。 */
 
 import { describe, expect, test } from 'bun:test'
 import { createView, reduce } from '../src/view.ts'
 import type { ShellView } from '../src/view.ts'
 import { TEST_AT, event } from './events.ts'
 import { createStage } from './screen.ts'
-import type { Frame, Stage } from './screen.ts'
+import type { Stage } from './screen.ts'
 
 const WIDE = { columns: 200, rows: 40 } as const
 
@@ -15,35 +15,6 @@ function live(): Stage {
   stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '时区修正' }] })])
 
   return stage
-}
-
-/** 一件**要问**的工具：发起 → 询问（卡挂着）。三个 id 都钉死——起算点就是这些信封的 `at`。 */
-const ASKED = [
-  event('turn.start', {}),
-  event('tool.call', { name: 'exec', args: { cmd: 'sleep 9' } }, { id: 71 }),
-  event(
-    'tool.decision.request',
-    { call: 71, name: 'exec', material: '命令 sleep 9', weight: 'light' },
-    { id: 88 },
-  ),
-] as const
-
-/** 屏上那一行的**钟**（U112：`1.4s`）——工具行的第二行（**无记号**，只有读数）。 */
-const clockLine = (frame: Frame): string | undefined =>
-  frame.record
-    .map((line) => line.text.trim())
-    .find((text) => /^\d+(?:\.\d+)?(?:ms|s)$/u.test(text))
-
-/**
- * 那一行**头一行**的身份那半句（`▸ 工具名(关键参数)`）。
- *
- * U112 起身份记号右边多了一位状态（2026-10-01 改定：紧挨 `▸`，不再靠右）——
- * 取身份时把它去掉，只回名字与参数那一段（这条判据问的正是「名字与参数还在不在」）。
- */
-const headLine = (frame: Frame): string | undefined => {
-  const text = frame.record.map((line) => line.text.trim()).find((one) => /^▸ \S/u.test(one))
-
-  return text?.replace(/^▸ \S /u, '▸ ')
 }
 
 /** 一屏的记录行（真归约那一侧）。 */
@@ -56,110 +27,17 @@ const rowsOf = (view: ShellView): readonly Extract<ShellView['rows'][number], { 
 const viewed = (events: readonly Parameters<typeof reduce>[1][]): ShellView =>
   events.reduce((view, one) => reduce(view, one), createView())
 
-describe('卡片挂着时那一行不说「跑了多久」', () => {
-  test('挂着 2.8 秒——那行**还在**（名字与参数照旧），**一个数都不报**', async () => {
-    const stage = live()
-    stage.feed(ASKED)
-
-    // 卡挂了 2.8 秒（改前这儿写着 `⟳ 2.8s`——那正是用户看见的「还在涨」）
-    stage.at(TEST_AT + 88 + 2800)
-    const frame = await stage.screen(WIDE)
-
-    expect(frame.has('◊ 等你定夺')).toBe(true) // 前提：这一段真是在等你
-    expect(headLine(frame)).toBe('▸ exec(sleep 9)')
-    // **底下那行不画**——不报秒数，也不回退「运行中」（它没在跑，两个说法都不成立）
-    expect(frame.has('2.8s')).toBe(false)
-    expect(frame.has('运行中')).toBe(false)
-    expect(clockLine(frame)).toBeUndefined()
-  })
-
-  test('挂多久都不报数——时间走过去，**整屏**一个读数都不冒出来', async () => {
-    const stage = live()
-    stage.feed(ASKED)
-
-    stage.at(TEST_AT + 88 + 60_000) // 挂着整整一分钟
-    const frame = await stage.screen(WIDE)
-    const readings = frame.screen.lines.flatMap((line) => [...line.matchAll(/(\d+(?:\.\d+)?)(ms|s)(?![0-9a-zA-Z])/gu)])
-
-    expect(frame.has('◊ 等你定夺')).toBe(true)
-    expect(readings).toEqual([]) // `ms` / `s` 一个都没有（卡上的材料与状态行也都不带）
-  })
-})
-
-describe('批准之后从那刻重新起算', () => {
-  /**
-   * 挂满 2.8 秒之后答「批准」——**答复那一刻就是新的起算点**。
-   *
-   * 三个 id 在这儿排成一条时间线（信封的 `at` ＝ `TEST_AT + id`）：**发起 `71` → 挂卡
-   * 2.8 秒 → 答复 `2900` → 真跑 100ms → 落地 `3000`**。两个锚差得够远，屏上才分得出
-   * 「从提请算」与「从批准算」——挨得太近的话两处渲染成同一个数，判据就白写了。
-   */
-  const APPROVED = event(
-    'tool.decision',
-    { call: 71, decision: 'approve', decider: 'user', elapsedMs: 2800 },
-    { id: 2900 },
-  )
-
-  test('屏上：批准之后 1.4 秒 ⇒ 报 `1.4s`（不是「发起 → 此刻」的 `4.2s`）', async () => {
-    const stage = live()
-    stage.feed(ASKED)
-
-    stage.feed([APPROVED])
-    // 批准那一刻（信封 `2900`）之后 1400ms
-    stage.at(TEST_AT + 2900 + 1400)
-    const frame = await stage.screen(WIDE)
-
-    expect(frame.has('● 工作中')).toBe(true)
-    expect(frame.has('1.4s')).toBe(true)
-    // 挂卡那 2.8 秒**不算**进去：改前这一格是 `4.2s`（发起 → 此刻）
-    expect(frame.has('4.2s')).toBe(false)
-  })
-
-  test('视图上：起算点挪到**答复那一刻**（`startedAt` ＝ 裁决事件的 `at`）', () => {
-    const view = viewed([...ASKED, APPROVED])
-
-    expect(rowsOf(view)[0]).toMatchObject({
-      state: 'running',
-      startedAt: TEST_AT + 2900, // 改前是 `TEST_AT + 71`（发起）
-    })
-    // 答完了 ⇒ **停表那一位摘掉**（不是留着 `false`／`undefined` 占位——键本身不在）
-    expect(rowsOf(view)[0]?.awaitingDecision).toBeUndefined()
-  })
-
-  test('落地：耗时＝**批准 → 落地**（不是发起 → 落地）', () => {
-    const view = viewed([
-      ...ASKED,
-      APPROVED,
-      event('tool.result', { call: 71, ok: true, output: { text: '跑完了' } }, { id: 3000 }),
-    ])
-
-    // 3000 − 2900 ＝ 100（改前是 3000 − 71 ＝ 2929：那近三秒里含着他想的那 2.8 秒）
-    expect(rowsOf(view)[0]).toMatchObject({ state: 'ok', elapsedMs: 100 })
-  })
-
-  test('**轮收束**（卡被撤）也摘掉那一位——否则那一行此后永不报数', () => {
-    const asked = viewed(ASKED)
-    expect(rowsOf(asked)[0]).toMatchObject({ awaitingDecision: true })
-
-    const ended = viewed([...ASKED, event('turn.end', { reason: 'aborted' })])
-
-    expect(rowsOf(ended)[0]?.awaitingDecision).toBeUndefined()
-  })
-})
-
-describe('反面：没弹卡的（自动放行）照旧从发起算', () => {
-  test('自动放行**不挪**起算点——`startedAt` 还是发起那一刻', () => {
+describe('工具计时从发起算', () => {
+  test('起算点就是发起那一刻', () => {
     const view = viewed([
       event('tool.call', { name: 'exec', args: { cmd: 'echo hi' } }, { id: 71 }),
-      // 自动放行：**没有** `tool.decision.request`（没问过），只有一条裁决事件
       event('tool.decision', { call: 71, decision: 'approve', decider: 'auto', elapsedMs: 0 }, { id: 90 }),
     ])
 
     expect(rowsOf(view)[0]).toMatchObject({ startedAt: TEST_AT + 71 })
-    expect(rowsOf(view)[0]?.awaitingDecision).toBeUndefined()
   })
 
-  test('落地耗时＝**发起 → 落地**（与改动前逐字相同）', () => {
+  test('落地耗时＝**发起 → 落地**', () => {
     const view = viewed([
       event('tool.call', { name: 'exec', args: { cmd: 'echo hi' } }, { id: 71 }),
       event('tool.decision', { call: 71, decision: 'approve', decider: 'auto', elapsedMs: 0 }, { id: 90 }),
@@ -187,7 +65,7 @@ describe('反面：没弹卡的（自动放行）照旧从发起算', () => {
 describe('没跑的那一笔没有「耗了多久」', () => {
   test('被拒：落地也不报耗时（`✗ 未获批准，未执行`——那个数会是「他想的时间」）', () => {
     const view = viewed([
-      ...ASKED,
+      event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
       event('tool.decision', { call: 71, decision: 'reject', decider: 'user', elapsedMs: 2800 }, { id: 90 }),
       event('tool.result', { call: 71, ok: false, output: { text: '（未获批准，未执行）' } }, { id: 271 }),
     ])

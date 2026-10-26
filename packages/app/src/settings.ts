@@ -4,14 +4,12 @@ import { saveDiagnostics } from './diagnostics.ts'
 import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import type { SettingsAction, SettingsSnapshot, ModelSelectionRef, ModelSwitchRequest } from '@magic/contracts'
-import { expandHome, GRANTS_FILE_NAME, apiKeyEnvVarOf } from '@magic/contracts'
+import { expandHome, apiKeyEnvVarOf } from '@magic/contracts'
 import { createWorkspaceService, DEEPSEEK_WEB_ORIGIN } from '@magic/execution'
-import { parseRules } from '@magic/permission'
 import type { FetchLike, ModelInfoService } from '@magic/model'
 import { createModelInfoService, resolveConnection, selectModel, vendorCatalog } from '@magic/model'
 import { loadConfig, parseConfig, webReferenceProblem, type LoadedConfig } from '@magic/config'
 import { editConfigFile, saveProvider, removeProvider, configureModel, configureWeb, setPrefs } from '@magic/config'
-import { commitGrants, loadGrants } from './grants-file.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
 import { createModelsDevResource } from './models-dev-resource.ts'
 import { configStamp } from '@magic/config'
@@ -29,7 +27,6 @@ const book = (v: unknown): Record<string, unknown> => Object.assign(Object.creat
 
 export function createSettings(context: SettingsContext) {
   const configPath = context.configPath ?? `${context.magic.base}/config.json`
-  const grantPath = `${context.magic.base}/${GRANTS_FILE_NAME}`
   const processToken = crypto.randomUUID()
   let currentLoaded: LoadedConfig | undefined
   let info: ModelInfoService | undefined
@@ -63,7 +60,6 @@ export function createSettings(context: SettingsContext) {
       providers, models: config.models ?? {}, web: config.web ?? {}, agentRoles: raw.agentRoles ?? {},
       mcp: { servers }, rules: raw.rules ?? {}, skills: raw.skills ?? {},
       ...(raw.workspaceRoots === undefined ? {} : { workspaceRoots: raw.workspaceRoots }),
-      permissions: config.permissions ?? {},
       statusLine: config.statusLine ?? { cells: ['session', 'context'], color: true }, motion: config.motion ?? {},
     }
     const sources = ['rules.sources', 'rules.linkSources', 'skills.sources'].flatMap(source => {
@@ -80,16 +76,10 @@ export function createSettings(context: SettingsContext) {
     if (Object.keys(config.providers).length) await currentInfo.refreshMetadata()
     const reader = await readModelCatalog(loaded, context.magic, undefined, undefined, context.now ?? Date.now, currentInfo)
     const catalog = providerCatalog({ ...reader, env: context.environment }).entries
-    const grantStamp = configStamp(grantPath)
-    const grants = loadGrants(grantPath)
-    if (configStamp(grantPath) !== grantStamp) throw new Error('授权在读取期间已改变，请重新读取')
     if (configStamp(configPath) !== stamp) throw new Error('配置在读取期间已改变，请重新读取')
     return {
       configPath, base: context.magic.base, stamp, configuration, catalog,
       vendors: vendorCatalog(), sources,
-      grants: Object.entries(grants.file.workspaces).map(([workspace, entries]) => ({ workspace, entries })),
-      grantStamp,
-      ...(grants.unreadable === undefined && grants.rejected.length === 0 ? {} : { grantProblem: '授权文件存在无法读取的内容，请定位文件修复' }),
     }
   }
   async function apply(action: SettingsAction, stamp: string | null): Promise<string> {
@@ -141,10 +131,6 @@ export function createSettings(context: SettingsContext) {
         }
       }
       if (action.type === 'workspace.set' && config.workspaceRoots !== undefined) createWorkspaceService({ roots: config.workspaceRoots })
-      if (action.type === 'permissions.set') {
-        const rejected = parseRules(config.permissions?.rules).rejected
-        if (rejected.length) throw new Error(`permissions.rules[${rejected[0]!.index}]：${rejected[0]!.reason}`)
-      }
       if (action.type === 'sources.set') for (const path of action.paths) if (!isAbsolute(expandHome(path, context.magic.home))) throw new Error(`${action.source}：须使用绝对路径或 ~ 开头的路径`)
     }
     const input = { path: configPath, expectedStamp: stamp, validate }
@@ -162,16 +148,6 @@ export function createSettings(context: SettingsContext) {
         const metadataFailure = currentInfo.describe(action.provider, []).metadata?.failure
         if (result.failure || metadataFailure) throw new Error([result.failure?.reason, metadataFailure].filter(Boolean).join('；'))
         return currentInfo.canFetch(action.provider) ? '模型列表与 Models.dev 资料已刷新；未发起模型调用' : 'Models.dev 资料已刷新；未发起模型调用'
-      }
-      case 'grants.revoke': {
-        if (configStamp(grantPath) !== action.grantStamp) throw new Error('授权已改变，请重新读取后再撤销')
-        const loadedGrants = loadGrants(grantPath)
-        if (loadedGrants.unreadable !== undefined) throw new Error('授权文件不可读取，未做修改')
-        const rule = action.index === undefined ? undefined : loadedGrants.file.workspaces[action.workspace]?.[action.index]
-        if (action.index !== undefined && rule === undefined) throw new Error('该授权已不存在，请重新读取')
-        outcome = await commitGrants(grantPath, rule === undefined ? [{ kind: 'section', workspace: action.workspace }] : [{ kind: 'revoke', workspace: action.workspace, index: action.index!, rule }], () => configStamp(grantPath) === action.grantStamp)
-        if (!outcome.ok) throw new Error(outcome.reason)
-        return '已撤销授权；配置权限规则另行管理'
       }
       default: {
         outcome = await editConfigFile({ ...input, update(raw) {
@@ -204,7 +180,6 @@ export function createSettings(context: SettingsContext) {
               next.agentRoles = roles; break
             }
             case 'workspace.set': if (action.roots === null) delete next.workspaceRoots; else next.workspaceRoots = action.roots; break
-            case 'permissions.set': next.permissions = { ...book(raw.permissions), rules: action.rules }; break
           }
           return { ok: true, raw: next }
         } })

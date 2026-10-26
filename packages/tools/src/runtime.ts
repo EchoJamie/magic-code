@@ -19,6 +19,7 @@ import type {
   OutputDelta,
   PermissionGate,
   Sandbox,
+  SudoAuth,
   WorkspaceService,
 } from '@magic/contracts'
 import type { ToolDefinition } from './registry.ts'
@@ -92,4 +93,11 @@ export type ToolRuntimeOptions = {
    * （同 `callRef` · `grants` 之例）。
    */
   readonly trashAvailable: boolean
+  /**
+   * **sudo 专用认证端口**（U129）——`exec` 认出形状合格的短 sudo 时经它取密码。
+   *
+   * 不给 ＝ 这一形用不了（`exec` 照实回一句「这次装配没有认证通道」，不执行）。
+   * 它由装配给：密码的 UI 通道与 `sudo -S -v` 的执行都在那一层。
+   */
+  readonly sudoAuth?: SudoAuth | undefined
 }

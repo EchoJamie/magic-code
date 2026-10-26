@@ -42,6 +42,9 @@ export type ManagerClient = {
   readonly unread: readonly RunNotice[]
   onNotice(listener: (notice: RunNotice) => void): void
   onLine(listener: (text: string) => void): void
+  /** sudo 密码组件（U129）。 */
+  onSudo(listener: (event: { readonly kind: 'request'; readonly requestId: string; readonly command: string } | { readonly kind: 'settled'; readonly requestId: string }) => void): void
+  answerSudo(requestId: string, password: string | null): void
   onClose(listener: (error?: Error) => void): void
   send(command: Command): void
   /** 仅供实际呈现后的明确确认；握手、列表与摘要不调用。 */
@@ -59,7 +62,6 @@ export type ConnectOptions = {
   readonly environment?: Readonly<Record<string, string | undefined>>
   readonly session?: string | undefined
   readonly switch?: ModelSwitchRequest | undefined
-  readonly allowAll?: boolean | undefined
   readonly cwd?: string | undefined
   readonly label?: string | undefined
   readonly timeoutMs?: number | undefined
@@ -106,6 +108,7 @@ export async function connectManager(socketPath: string, options: ConnectOptions
   const detachedListeners: ((why: string) => void)[] = []
   let lateDetached: string | undefined
   const lineListeners: ((text: string) => void)[] = []
+  const sudoListeners: ((event: { readonly kind: 'request'; readonly requestId: string; readonly command: string } | { readonly kind: 'settled'; readonly requestId: string }) => void)[] = []
   let lateResumed: { gen: number; snapshot: RunSnapshot } | undefined
 
   // hello 前接收；welcome 前后到来的 session.state/history 都保留到 TUI 订阅。
@@ -157,6 +160,12 @@ export async function connectManager(socketPath: string, options: ConnectOptions
       case 'line':
         for (const listener of [...lineListeners]) listener(message.text)
         return
+      case 'sudo.request':
+        for (const listener of [...sudoListeners]) listener({ kind: 'request', requestId: message.requestId, command: message.command })
+        return
+      case 'sudo.settled':
+        for (const listener of [...sudoListeners]) listener({ kind: 'settled', requestId: message.requestId })
+        return
     }
   })
   link.onClose((error) => { closeError = error })
@@ -173,7 +182,6 @@ export async function connectManager(socketPath: string, options: ConnectOptions
       ...(options.session === undefined ? {} : { session: options.session }),
       ...(options.reattach === true ? { reattach: true } : {}),
       ...(options.switch === undefined ? {} : { switch: options.switch }),
-      ...(options.allowAll === true ? { allowAll: true } : {}),
     }, options.timeoutMs ?? 30_000)
     assertHostIdentity(welcome.identity, expected)
     if (normalizeDataDir(welcome.base) !== normalizeDataDir(welcome.identity.base)) throw new Error('Magic Code welcome 的数据目录与服务身份不一致')
@@ -236,6 +244,8 @@ export async function connectManager(socketPath: string, options: ConnectOptions
     },
     onStopped: (listener) => { stoppedListeners.push(listener) },
     onLine: (listener) => { lineListeners.push(listener) },
+    onSudo: (listener) => { sudoListeners.push(listener) },
+    answerSudo: (requestId, password) => { link.send(password === null ? { t: 'sudo.answer', requestId, cancelled: true } : { t: 'sudo.answer', requestId, password }) },
     onClose: (listener) => { link.onClose((error) => listener(error ?? closeError)) },
     send: (cmd) => { link.send({ t: 'cmd', gen, cmd, ...(establishesWork(cmd) ? { environment } : {}) }) },
     stop: (session, scope) => { link.send({ t: 'stop', session, scope }) },

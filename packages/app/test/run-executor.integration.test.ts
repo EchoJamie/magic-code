@@ -39,7 +39,7 @@ function ground(name: string, mode: 'held' | 'settled' | 'background' | 'backgro
   const complete = { kind: 'text' as const, text: '核心隔离回合完成', chunks: 1, chunkDelayMs: 0 }
   const fixture = startFixture({ turns: turns ?? (mode.startsWith('background')
     ? [{ kind: 'tool', name: 'exec', args: { cmd: mode === 'background-finish' ? 'sleep 1.5' : 'sleep 300', background: true } }, complete]
-    : [mode === 'settled' ? complete : { kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 .' } }]),
+    : [mode === 'settled' ? complete : { kind: 'text', text: '受控等待中', chunks: 200, chunkDelayMs: 100 }]),
   })
   const environment: Record<string, string> = { ...Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined)), HOME: home, MAGIC_HOME: base }
   for (const key of Object.keys(environment)) if (/^MAGIC_.*_API_KEY$/.test(key)) environment[key] = ''
@@ -223,7 +223,7 @@ describe('一个窗口一条执行者', () => {
       await waitFor('七个执行者都起来', () => manager.executors().length === 7)
       // **等它们各自把会话认出来**再读——那一格是事件到达才填的，早读一步读到的是
       // 一排 `null`（它们是七个**还没开张**的执行者，各自等着自己那一条首条消息）
-      await waitFor('七条都真在等待审批', () => manager.runs().filter((one) => one.state === 'waiting').length === 7)
+      await waitFor('七条都真在等待审批', () => manager.runs().filter((one) => one.state === 'running').length === 7)
 
       const live = manager.executors()
       // **七代各是各的**——号不重、进程不重、会话不重
@@ -241,7 +241,7 @@ describe('一个窗口一条执行者', () => {
       )
       // 而且它们还真的在跑——不是「表里还在、进程没了」
       for (const one of manager.executors()) {
-        expect(manager.runs().find(row => row.session === one.session)?.state).toBe('waiting')
+        expect(manager.runs().find(row => row.session === one.session)?.state).toBe('running')
       }
     } finally {
       for (const client of clients) client.close()
@@ -263,7 +263,7 @@ describe('一个窗口一条执行者', () => {
       clients.push(first)
       seedSession(g, session, '并发接回')
       first.send({ type: 'session.open', session })
-      await submitAndWait(first, '受控待答', '第一代待答', () => manager.runs().some((row) => row.session === session && row.state === 'waiting'))
+      await submitAndWait(first, '受控待答', '第一代待答', () => manager.runs().some((row) => row.session === session && row.state === 'running'))
       const original = manager.executors()[0]!
 
       // ——同时——（两个窗口在同一刻发同一条 open，不是「一个接一个看它接得上」）
@@ -365,7 +365,7 @@ describe('独占与代次', () => {
       link.send({ t: 'cmd', gen: null, cmd: { type: 'input.submit', text: '受控待答' } })
       await waitFor('正常那条起了执行者', () => manager.executors().length === 1)
       const live = manager.executors()[0] as { readonly gen: number }
-      await waitFor('正常输入进入待答', () => manager.runs().some((row) => row.state === 'waiting'))
+      await waitFor('正常输入进入待答', () => manager.runs().some((row) => row.state === 'running'))
 
       link.send({ t: 'cmd', gen: live.gen + 7, cmd: { type: 'input.submit', text: '旧代次不得执行' } })
       await waitFor('旧号又被拒', () => lines.length > 0)
@@ -399,7 +399,7 @@ describe('停止中那一行（真进程 · 真窗口那一瞬）', () => {
       const client = await open(g, manager, 'a')
       client.send({ type: 'session.open', session: SESSION })
       await submitAndWait(client, '受控待答', '真执行者起来并接上那条会话', () =>
-        manager.runs().some((row) => row.session === SESSION && row.state === 'waiting'),
+        manager.runs().some((row) => row.session === SESSION && row.state === 'running'),
       )
 
       // **发起收摊**——`bye` 刚发出去，那一代还在（收尾两跳还没走完）
@@ -629,10 +629,10 @@ test('在途执行者动态调整诊断等级，代次与审批保持；错误�
   observer.send({ t: 'hello', role: 'observer', ...manager.identity })
   try {
     client.send({ type: 'input.submit', text: 'PRIVATE_DIAGNOSTICS_INPUT' })
-    await waitFor('真实执行者待答', () => manager.runs().some(row => row.state === 'waiting'))
+    await waitFor('真实执行者待答', () => manager.runs().some(row => row.state === 'running'))
     const before = manager.executors()
     expect(await applyHostDiagnostics(discovery, { debugMode: true, logLevel: 'trace' })).toContain('已保存')
-    expect(manager.executors()).toEqual(before); expect(manager.runs().some(row => row.state === 'waiting')).toBe(true)
+    expect(manager.executors()).toEqual(before); expect(manager.runs().some(row => row.state === 'running')).toBe(true)
     const readLogs = () => readdirSync(join(g.dataDir, 'logs')).filter(n => n.startsWith(`executor-${process.pid}-`)).map(n => readFileSync(join(g.dataDir, 'logs', n), 'utf8')).join('')
     await waitFor('trace 消息已落盘', () => readLogs().includes('control.settings.sync'))
     let catalogs = 0
@@ -642,7 +642,7 @@ test('在途执行者动态调整诊断等级，代次与审批保持；错误�
     await waitFor('降低日志等级已实际采用', () => adopted === saved)
     const filtered = readLogs()
     expect(manager.executors()).toEqual(before)
-    expect(manager.runs().some(row => row.state === 'waiting')).toBe(true)
+    expect(manager.runs().some(row => row.state === 'running')).toBe(true)
     client.send({ type: 'model.list' })
     await waitFor('已处理后续命令', () => catalogs > 0)
     expect(readLogs()).toBe(filtered)
@@ -658,8 +658,8 @@ test('配置文件争锁与大输出期间仍能查询并独立停止另一工�
   ])
   const { acquireFileLock } = await import('@magic/config')
   const manager = await standUp(g)
-  const a = (await connectManager(manager.socketPath, { cwd: g.ws, environment: g.environment, allowAll: true }))!
-  const b = (await connectManager(manager.socketPath, { cwd: g.ws, environment: g.environment, allowAll: true }))!
+  const a = (await connectManager(manager.socketPath, { cwd: g.ws, environment: g.environment, }))!
+  const b = (await connectManager(manager.socketPath, { cwd: g.ws, environment: g.environment, }))!
   let lock: Awaited<ReturnType<typeof acquireFileLock>> | undefined
   try {
     let firstCompleted = false

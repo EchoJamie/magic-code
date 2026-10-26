@@ -46,12 +46,10 @@ describe('输入召回与清空', () => {
     s.spy.emit(event('input.settled', { ref, ok: false, reason: 'execution failed' }))
     s.key('down'); expect(s.view().draft).toBe('C'); s.shell.dispose()
   })
-  test('拒绝或材料失败保留临时批次，审批 Ctrl+C 不清隐藏草稿', () => {
+  test('拒绝或材料失败保留临时批次', () => {
     const s = input(); s.clear('A'); const ref = s.send('C')
     s.spy.emit(event('input.settled', { ref, ok: false, reason: 'refused' }))
-    s.key('up'); expect(s.view().draft).toBe('A'); s.key('down'); expect(s.view().draft).toBe('C')
-    s.spy.emit(event('tool.decision.request', { call: 99, name: 'exec', material: 'command', weight: 'heavy' }))
-    s.key('ctrl+c'); s.key('ctrl+c'); expect(s.view().stashed?.draft).toBe('C'); s.shell.dispose()
+    s.key('up'); expect(s.view().draft).toBe('A'); s.key('down'); expect(s.view().draft).toBe('C'); s.shell.dispose()
   })
   test('完整图片引用和光标随清稿召回；成功回执只处理原会话批次', () => {
     const s = input()
@@ -75,7 +73,6 @@ describe('输入召回与清空', () => {
     s.key('up'); expect(s.view().draft).toBe('A'); s.key('down'); s.key('ctrl+c')
     s.paste('/config '); s.key('enter')
     s.spy.emit(event('model.catalog',{entries:[]}))
-    s.spy.emit(event('grants.catalog',{workspace:'/tmp',grants:[],stale:[],decisions:{total:0,uncovered:0,vetoed:0},history:{total:0,auto:0,kernel:0}}))
     s.spy.emit(event('mcp.catalog',{servers:[]}))
     s.spy.emit(event('web.state',{}))
     s.key('escape'); s.key('up'); expect(s.view().draft).toBe('/config ')

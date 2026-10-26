@@ -10,7 +10,7 @@ const artifacts = mkdtempSync(join(tmpdir(), 'magic-u124-pty-'))
 const finish = join(artifacts, 'finish')
 const copied = join(artifacts, 'clipboard')
 writeFileSync(join(artifacts, 'pbcopy'), '#!/bin/sh\ncat > "$U124_COPY_FILE"\n', { mode: 0o755 })
-const ui = await createUiSession({ columns: 200, rows: 40, label: 'background-commands-', artifacts, env: { PATH: `${artifacts}:${process.env.PATH}`, U124_COPY_FILE: copied }, argv: ['--allow-all'], turns: [
+const ui = await createUiSession({ columns: 200, rows: 40, label: 'background-commands-', artifacts, env: { PATH: `${artifacts}:${process.env.PATH}`, U124_COPY_FILE: copied }, argv: [], turns: [
   { kind: 'tool', name: 'exec', args: { cmd: `while [ ! -f '${finish}' ]; do sleep 0.02; done; printf 后台测试完成`, background: true }, following: [
     { name: 'exec', args: { cmd: 'sleep 90 # 中文常驻服务', background: true } },
   ] },

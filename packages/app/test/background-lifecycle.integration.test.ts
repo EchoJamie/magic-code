@@ -16,7 +16,7 @@ test('Engine 无 TUI：只等待有限测试，完成自动进入原会话一次
     ] }
     if (call.index === 1) return { tool: 'background_wait', args: { ids: ['bg-2'] } }
     return { text: '测试结果已经处理，服务继续运行。' }
-  }, { allowAll: true })
+  })
   try {
     f.client.send({ type: 'input.submit', text: '保留服务并等待测试' })
     await f.wait('后台等待', () => f.manager.runs().some(run => run.backgroundWaiting))
@@ -48,7 +48,7 @@ test('Engine 用户只停选定命令，过期或跨工作身份失败，停止�
   const f = await collaborationRuntime('u124-stop', call => call.index === 0 ? { tools: [
     { tool: 'exec', args: { cmd: 'sleep 60', background: true } },
     { tool: 'exec', args: { cmd: 'sleep 60', background: true } },
-  ] } : call.index === 1 ? { tool: 'background_wait', args: { ids: ['bg-2'] } } : { text: '已理解用户停止，继续其他工作。' }, { allowAll: true })
+  ] } : call.index === 1 ? { tool: 'background_wait', args: { ids: ['bg-2'] } } : { text: '已理解用户停止，继续其他工作。' })
   try {
     f.client.send({ type: 'input.submit', text: '两个命令，仅等第二个' })
     await f.wait('后台等待', () => f.shell.getView().background?.waiting.length === 1)
@@ -75,7 +75,7 @@ test('Engine 用户只停选定命令，过期或跨工作身份失败，停止�
 test('Engine 模型停止结果已承接，不再产生第二条完成输入；读快照不调用模型', async () => {
   const f = await collaborationRuntime('u124-model-stop', call => call.index === 0
     ? { tool: 'exec', args: { cmd: 'sleep 60', background: true } }
-    : call.index === 1 ? { tool: 'background_stop', args: { id: 'bg-1' } } : { text: '已停止。' }, { allowAll: true })
+    : call.index === 1 ? { tool: 'background_stop', args: { id: 'bg-1' } } : { text: '已停止。' })
   try {
     f.client.send({ type: 'input.submit', text: '启动并主动停止' })
     await f.wait('本轮结束', () => f.calls.length === 3 && f.manager.runs()[0]?.state === 'idle')
@@ -94,7 +94,7 @@ test('Engine 模型停止结果已承接，不再产生第二条完成输入；�
 test('Engine 整体停止先取消接续资格，迟到终态只记录，不唤醒模型', async () => {
   const f = await collaborationRuntime('u124-scope-stop', call => call.index === 0
     ? { tool: 'exec', args: { cmd: 'sleep 60', background: true } }
-    : { tool: 'background_wait', args: { ids: ['bg-1'] } }, { allowAll: true })
+    : { tool: 'background_wait', args: { ids: ['bg-1'] } })
   try {
     f.client.send({ type: 'input.submit', text: '等待后台测试' })
     await f.wait('等待', () => f.manager.runs().some(one => one.backgroundWaiting))
@@ -166,7 +166,7 @@ test('成员已交付仍持有服务；无 TUI 时异常结束在原成员协调
     if (call.index === 4) return { tool: 'background_stop', args: { id: 'bg-1' } }
     if (call.index === 5) return { tool: 'agent_message', args: { action: 'send', operationId: 'service-exit', recipients: [f.collaboration()!.coordinatorId], purpose: 'inform', body: [{ kind: 'text', text: 'SERVICE_EXIT_7：原服务退出，请协调处理。' }] } }
     return { text: '已回报退出事实，不重开委派。' }
-  }, { allowAll: true, launch })
+  }, { launch })
   try {
     f.client.send({ type: 'input.submit', text: '委派启动服务，交付后继续托管' })
     await f.wait('已收下交付且服务仍在', () => f.delegation()?.state === 'received' && f.requests().length === 5 && f.requests('member-model').length === 4)
@@ -206,7 +206,7 @@ test('整件工作跨深层成员平铺，同名成员及三个 bg-1 仍按执�
       operationId: 'deep', name: '实现', responsibility: '深层检查', scope: '深层后台服务', body: [{ kind: 'text', text: '启动自身服务' }], model: { choice: 'arcane' }, modelReason: '深层检查',
     } }
     return call.index > 3 ? { text: '尊重用户停止，不重启。' } : wait
-  }, { allowAll: true })
+  })
   try {
     f.client.send({ type: 'input.submit', text: '主与深层成员分别托管服务' })
     await f.wait('三个原生身份均已等待', () => f.shell.getView().background?.commands.length === 3 && f.shell.getView().background?.waiting.length === 3)
@@ -231,7 +231,7 @@ test('整件工作跨深层成员平铺，同名成员及三个 bg-1 仍按执�
 test('执行实例已空闲退出后，旧详情停止仍从持久终态回已经结束，不重启执行者', async () => {
   const f = await collaborationRuntime('u124-ended-target', call => call.index === 0
     ? { tool: 'exec', args: { cmd: `while [ ! -f ${quote(join(f.workspace, 'finished'))} ]; do sleep 0.02; done`, background: true } }
-    : call.index === 1 ? { tool: 'background_wait', args: { ids: ['bg-1'] } } : { text: '完成已处理。' }, { allowAll: true })
+    : call.index === 1 ? { tool: 'background_wait', args: { ids: ['bg-1'] } } : { text: '完成已处理。' })
   try {
     f.client.send({ type: 'input.submit', text: '等一个有限命令' })
     await f.wait('已等待', () => f.shell.getView().background?.waiting.length === 1)

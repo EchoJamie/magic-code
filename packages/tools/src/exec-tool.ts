@@ -35,7 +35,7 @@
  * （见 `OUTPUT_EXEC_BACKGROUND_WITH_TIMEOUT` 的注）。
  */
 
-import type { ExecResult } from '@magic/contracts'
+import type { ExecResult, SudoPlan } from '@magic/contracts'
 import {
   backgroundStarted,
   backgroundStartFailed,
@@ -45,6 +45,9 @@ import {
   OUTPUT_EXEC_BACKGROUND_WITH_TIMEOUT,
   OUTPUT_EXEC_BAD_TIMEOUT,
   OUTPUT_EXEC_NO_CMD,
+  OUTPUT_SUDO_CANCELED,
+  OUTPUT_SUDO_NO_CHANNEL,
+  sudoAuthFailedOutput,
 } from './messages.ts'
 import { defineTool } from './registry.ts'
 import type { ToolDefinition, ToolRunContext, ToolRunResult } from './registry.ts'
@@ -206,6 +209,31 @@ function readTimeout(value: unknown): { readonly ms: number | null } | { readonl
   return { ms: value }
 }
 
+/**
+ * **sudo 专用认证**（U129）——密码只交给认证端口，工具域从不持有它。
+ *
+ * 认证通过才返回 `ok`；取消与失败各说各的，**都不启动原命令**、也不自动重试。
+ */
+async function authenticateSudo(
+  plan: SudoPlan,
+  ctx: ToolRunContext,
+  cwd: string | undefined,
+): Promise<ToolRunResult | 'ok'> {
+  const auth = ctx.sudoAuth
+  if (auth === undefined) return refused(OUTPUT_SUDO_NO_CHANNEL)
+  try {
+    const result = await auth.authenticate({
+      command: plan.command,
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
+    })
+    if (result.ok) return 'ok'
+    return refused(result.reason === 'cancelled' ? OUTPUT_SUDO_CANCELED : sudoAuthFailedOutput(result.detail))
+  } catch (error) {
+    return refused(sudoAuthFailedOutput(error instanceof Error ? error.message : String(error)))
+  }
+}
+
 /** 造 `exec` 的工具定义。 */
 export function defineExecTool(): ToolDefinition {
   const row = rowOf('exec')
@@ -224,8 +252,17 @@ export function defineExecTool(): ToolDefinition {
       return { cmd, cwd, background, timeoutMs: timeout.ms }
     },
     async run(args, ctx): Promise<ToolRunResult> {
-      if (args.background === true) return startBackground(args.cmd, ctx, args.cwd)
-      const result = await ctx.sandbox.exec(args.cmd, {
+      // sudo 先认证、再执行；认证没通过时原命令一个字节都不碰（U129）。
+      // 实际交给沙箱的是 `plan.run`（`sudo` 后已插入 `-n`），不是模型原句。
+      const plan = ctx.sudo
+      if (plan !== undefined) {
+        const authenticated = await authenticateSudo(plan, ctx, args.cwd)
+        if (authenticated !== 'ok') return authenticated
+      }
+      const command = plan === undefined ? args.cmd : plan.run
+
+      if (args.background === true) return startBackground(command, ctx, args.cwd)
+      const result = await ctx.sandbox.exec(command, {
         cwd: args.cwd, timeoutMs: args.timeoutMs, maxOutputBytes: EXEC_MAX_OUTPUT_BYTES,
         onOutput: ctx.onOutput, signal: ctx.signal,
       })

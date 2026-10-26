@@ -26,7 +26,7 @@ for (const limited of [false, true]) test(`可信用途优先于普通全工具�
     { name: 'write', args: { path: 'probe.txt', content: '错误副作用' } }, { name: 'read', args: { path: 'probe.txt' } },
   ] }, { text: '建议' }]
   let gateway: ReturnType<typeof createFauxGateway> | undefined
-  const app = stage.assemble({ session: 'advisor', allowAll: true, modelGateway(stamper) {
+  const app = stage.assemble({ session: 'advisor', modelGateway(stamper) {
     gateway = createFauxGateway({ stamper, turns })
     return gateway
   } }) // 刻意不给 collaboration，真实分发仍限制咨询用途的写入。
@@ -46,7 +46,7 @@ for (const limited of [false, true]) test(`可信用途优先于普通全工具�
     if (evidence) {
       mkdirSync(evidence, { recursive: true })
       writeFileSync(join(evidence, `u115-assembly-${limited}.json`), JSON.stringify({ proof: 'real-assembly-tool-runtime-faux-model-no-collaboration-boundary',
-        limitedOriginTools: limited, consultationIdentity: advisor.agent, allowAll: true, requests: gateway!.requests, events: shell.events,
+        limitedOriginTools: limited, consultationIdentity: advisor.agent, requests: gateway!.requests, events: shell.events,
         probe: readFileSync(join(stage.workspace, 'probe.txt'), 'utf8') }, null, 2))
     }
   } finally { shell.dispose(); app.close(); stage.dispose() }

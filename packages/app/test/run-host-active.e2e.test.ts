@@ -16,7 +16,7 @@ async function waitFor(check: () => boolean) {
 
 for (const how of ['shutdown', 'signal'] as const) {
   test(`有待答责任时明确停止 Engine ${how}：Agent 与资源收妥后关闭连接`, async () => {
-    const fixture = startFixture({ turns: [{ kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 .' } }] })
+    const fixture = startFixture({ turns: [{ kind: 'text', text: '受控等待中', chunks: 200, chunkDelayMs: 100 }] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
     let host: Awaited<ReturnType<typeof startResidentHost>> | undefined
     let client: ManagerClient | undefined
@@ -24,13 +24,13 @@ for (const how of ['shutdown', 'signal'] as const) {
       host = await startResidentHost(sandbox)
       client = await connectManager(host.discovery.socket, { cwd: sandbox.workspace })
       expect(client).toBeDefined()
-      client!.send({ type: 'input.submit', text: '受控待答，不批准工具' })
-      await waitFor(() => client!.runs().some((row) => row.state === 'waiting'))
+      client!.send({ type: 'input.submit', text: '受控等待，不结束这一轮' })
+      await waitFor(() => client!.runs().some((row) => row.state === 'running'))
       const runs = join(dirname(host.discovery.socket), 'runs.json')
       await waitFor(() => {
         if (!existsSync(runs)) return false
         const registry = JSON.parse(readFileSync(runs, 'utf8')) as { runs: { gen: number; state: string }[] }
-        return registry.runs.some(row => row.state === 'waiting' && row.gen > 0)
+        return registry.runs.some(row => row.state === 'running' && row.gen > 0)
       })
       expect(host.executorStarts()).toBe(1)
       expect(fixture.requests().filter((one) => one.path.endsWith('/chat/completions'))).toHaveLength(1)

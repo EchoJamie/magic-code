@@ -193,7 +193,7 @@ describe('判据 ① · 在途识别（真库）', () => {
 })
 
 describe('判据 ② · 裁决轨迹（真库）', () => {
-  test('问了已答（批准 / 拒绝）——结论与裁者都在', async () => {
+  test('裁决已落（批准 / 拒绝）——结论与裁者都在', async () => {
     const dir = tempDataDir()
     try {
       const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
@@ -203,12 +203,6 @@ describe('判据 ② · 裁决轨迹（真库）', () => {
       records.appendEvent(stamp('turn.start', {}, 1))
 
       const approved = startCall(records, stamp, { cmd: 'mkdir src' })
-      const requestId = stamp(
-        'tool.decision.request',
-        { call: approved.callRef, name: 'exec', material: '命令分解（1 段）', weight: 'heavy' },
-        1,
-      )
-      records.appendEvent(requestId)
       records.appendEvent(
         stamp(
           'tool.decision',
@@ -229,7 +223,7 @@ describe('判据 ② · 裁决轨迹（真库）', () => {
       const scan = await store.recoveryScan(SESSION)
 
       expect(scan.calls.map((call) => [call.args['cmd'], call.requested, call.decision, call.decider])).toEqual([
-        ['mkdir src', true, 'approve', 'user'],
+        ['mkdir src', false, 'approve', 'user'],
         ['rm -rf build', false, 'reject', 'user'],
       ])
 
@@ -239,7 +233,7 @@ describe('判据 ② · 裁决轨迹（真库）', () => {
     }
   })
 
-  test('问了**未答**——decision 留 null（④按「拒绝」落账的判据）', async () => {
+  test('没有裁决事件——decision 留 null', async () => {
     const dir = tempDataDir()
     try {
       const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
@@ -247,18 +241,11 @@ describe('判据 ② · 裁决轨迹（真库）', () => {
       const { stamp } = makeStamper(records)
 
       records.appendEvent(stamp('turn.start', {}, 1))
-      const started = startCall(records, stamp, { cmd: 'cat /etc/hosts' })
-      records.appendEvent(
-        stamp(
-          'tool.decision.request',
-          { call: started.callRef, name: 'exec', material: '读（根外）', weight: 'light' },
-          1,
-        ),
-      )
+      startCall(records, stamp, { cmd: 'cat /etc/hosts' })
 
       const scan = await store.recoveryScan(SESSION)
 
-      expect(scan.calls[0]?.requested).toBe(true)
+      expect(scan.calls[0]?.requested).toBe(false)
       expect(scan.calls[0]?.decision).toBe(null)
 
       store.close()

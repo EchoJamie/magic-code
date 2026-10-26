@@ -16,6 +16,7 @@ import type {
   Sandbox,
   SessionId,
   Skills,
+  SudoAuth,
   Timestamp,
   ToolRuntime,
   WebSource,
@@ -27,11 +28,10 @@ import { createConversationSession, createPlanReader } from '@magic/conversation
 import { createProjectRules } from '@magic/execution'
 import type { ModelRegistry } from '@magic/model'
 import { createPageDistiller } from '@magic/model'
-import { createPermissionGate, parseRules } from '@magic/permission'
+import { createPermissionGate } from '@magic/permission'
 import type { RecordsStore } from '@magic/records'
 import type { ToolDefinition } from '@magic/tools'
 import {
-  PLAN_TOOL_NAMES,
   createToolRuntime,
   defineAgentTools,
   defineBackgroundTools,
@@ -46,11 +46,10 @@ import { join } from 'node:path'
 import type { bindModelChoice } from '../agent-models.ts'
 import { createBackgroundSession } from '../background-session.ts'
 import { createCollaborationBoundary } from '../collaboration-boundary.ts'
-import { loadConfig, type LoadedConfig } from '@magic/config'
+import type { LoadedConfig } from '@magic/config'
 import { noModelRefusal } from '../run/observation.ts'
 import type { WorkEnvironment } from '../work-environment.ts'
 import { createStamper } from './events.ts'
-import type { createAssemblyGrants } from './grants.ts'
 
 /** 提示词注入项的环境来源——只放**环境**；`cwd` 是工作区默认根，两处必须同一个值。 */
 export type EnvironmentVars = {
@@ -81,20 +80,18 @@ export function createAgentSession(input: {
   prompt: EnvironmentVars | undefined
   webSource: WebSource | undefined
   modelGateway: ((stamper: EventStamper) => ModelGateway) | undefined
-  allowAll: boolean | undefined
   collaboration: ((session: SessionId, request: CollaborationRequest) => Promise<CollaborationReply>) | undefined
   collaborationChanged: (() => void) | undefined
   loaded: LoadedConfig
   recordsStore: RecordsStore
   workspace: WorkspaceService
-  grantState: ReturnType<typeof createAssemblyGrants>
+  sudoAuth: SudoAuth | undefined
   sink: EventSink
   now: () => Timestamp
   signal: AbortSignal
   network: WorkEnvironment
   executionId: string
   backgroundRuns: BackgroundRuns | undefined
-  backgroundDir: string | undefined
   sandbox: Sandbox
   projectRules: ProjectRules
   skills: Skills
@@ -110,10 +107,10 @@ export function createAgentSession(input: {
   }
 }): AgentSession {
   const {
-    session, magic, context, prompt, webSource, modelGateway, allowAll,
+    session, context, prompt, webSource, modelGateway,
     collaboration, collaborationChanged, loaded, recordsStore, workspace,
-    grantState, sink, now,
-    signal, network, executionId, backgroundRuns, backgroundDir,
+    sudoAuth, sink, now,
+    signal, network, executionId, backgroundRuns,
     sandbox, projectRules, skills, materials, mcpTools, model,
   } = input
   const identity = recordsStore.collaboration.agentForSession(session)
@@ -155,16 +152,7 @@ export function createAgentSession(input: {
     },
   })
   const webSearchTool = defineWebSearchTool({ web: webService })
-  const gate = createPermissionGate({
-    sink,
-    stamper,
-    now,
-    rules: () => [...parseRules(loadConfig({ path: loaded.path, magic }).config.permissions?.rules ?? []).rules, ...PLAN_TOOL_NAMES.map(tool => ({ tool }))],
-    refreshGrants: grantState.refresh,
-    grants: grantState.ledger,
-    ...(backgroundDir === undefined ? {} : { readOnlyDirs: [workspace.resolve(backgroundDir).absolute] }),
-    ...(allowAll === true ? { allowAll: true } : {}),
-  })
+  const gate = createPermissionGate({ sink, stamper, now })
 
   const planReader = createPlanReader({
     records,
@@ -254,6 +242,7 @@ export function createAgentSession(input: {
     trashAvailable: commandOnPath('trash', network.env),
 
     ...(background === undefined ? {} : { background: background.port }),
+    ...(sudoAuth === undefined ? {} : { sudoAuth }),
   })
   const validateRoleTools = (): void => {
     const known = new Set(rawTools.definitions().map(tool => tool.name))

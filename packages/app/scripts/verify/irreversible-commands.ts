@@ -3,7 +3,6 @@
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { ALLOW_ALL_LABEL } from '@magic/tui'
 import { createSandbox, createUiSession, startFixture, statusLineOf } from '../../test/ui/index.ts'
 import type { Capture, FixtureTurn, Sandbox, UiSession } from '../../test/ui/index.ts'
 import { tempDir } from '../../test/tmp.ts'
@@ -281,18 +280,14 @@ async function sceneWithoutTrash(): Promise<void> {
   }
 }
 
-// ══ ⑥ · 全放行下：`rm` 照拒 ═════════════════════════════════════════
+// ══ ⑥ · 默认放行下：`rm` 照拒 ═════════════════════════════════════════
 
 /**
- * 工单第六格（规划侧定，**不是留给领取者判的**）：
- *
- * > **全放行（`--allow-all`）下 `rm` 也照拒**——**拒的理由是"这个命令不可逆"，
- * > 不是"你该问我"**；而 `--allow-all` **只动「问不问」那一维**。两件事不混。
+ * U129 第六格：**默认放行下 `rm` 照拒**——禁止清单不因「默认通」而放行删除。
  */
 async function sceneAllowAll(): Promise<void> {
   const scene = await openScene({
-    label: 'irreversible-commands-全放行',
-    argv: ['--allow-all'],
+    label: 'irreversible-commands-默认放行',
     turns: [
       { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf u77-build' } },
       { kind: 'text', text: '那我改用 trash。' },
@@ -304,17 +299,16 @@ async function sceneAllowAll(): Promise<void> {
   try {
     await ask(scene.session, '把 u77-build 删掉', '那我改用 trash。')
 
-    const shot = await scene.session.capture({ label: '07-全放行里rm照拒' })
-    keep(shot, '07-全放行里rm照拒')
+    const shot = await scene.session.capture({ label: '07-默认放行里rm照拒' })
+    keep(shot, '07-默认放行里rm照拒')
 
-    check(!has(shot, '· 不可逆'), '⑥ 全放行下删除**也不问**（这一档的承诺照旧兑现）')
+    check(!has(shot, '· 不可逆'), '⑥ 默认放行下删除**不问**')
     check(has(shot, '已拒绝'), '⑥ **但也不放**——照拒（拒的理由不是"你该问我"）')
-    check(statusLineOf(shot.lines).includes(ALLOW_ALL_LABEL), '⑥ 状态行那一格**照报着**')
-    check(existsSync(join(scene.sandbox.workspace, 'u77-build', 'sub', 'deep.txt')), '⑥ 那棵目录还在')
+        check(existsSync(join(scene.sandbox.workspace, 'u77-build', 'sub', 'deep.txt')), '⑥ 那棵目录还在')
 
     // 而这一档的承诺本身没变：判轻的照旧什么都不问、直接跑
     await ask(scene.session, '看一眼仓库状态', '状态看过了。')
-    const pass = await scene.session.capture({ label: '07b-全放行里判轻的照旧不问' })
+    const pass = await scene.session.capture({ label: '07b-默认放行里判轻的照旧不问' })
     check(!has(pass, '· 不可逆'), '⑥ 判轻的照旧不问')
     check(has(pass, '状态看过了。'), '⑥ 而且真跑了')
   } finally {
@@ -390,8 +384,8 @@ if (import.meta.main) {
       await sceneWithoutTrash()
     }
 
-    if (wanted('allow-all')) {
-      console.log('\n══ ⑥ 全放行下 `rm` 照拒 ══')
+    if (wanted('allow-all') || wanted('default-allow')) {
+      console.log('\n══ ⑥ 默认放行下 `rm` 照拒 ══')
       await sceneAllowAll()
     }
 

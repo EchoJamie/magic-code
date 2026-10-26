@@ -104,20 +104,13 @@ function distillOf(fixture: Fixture, model = DISTILL_MODEL): FixtureRequest | un
 }
 
 /**
- * 走完一趟「要取网页 → 批卡 → 提炼 → 收束」，**等这一轮真回到等待输入**才交回。
+ * 走完一趟「要取网页 → 提炼 → 收束」，**等这一轮真回到等待输入**才交回。
  *
- * ⚠️ **按第 n 次等**（不是「有过就算」）：上一趟那张早已答过的卡 / 上一条 `turn.end`
- * 都还留在事件流里——照「有过」等，第二趟会拿着**上一趟**的 id 去答，这一轮当场挂住。
- * 回到等待输入同理：不等它，下一趟提交时上一轮还在跑（走的是排队那条路，不是同一件事）。
+ * ⚠️ **按第 n 次等**（不是「有过就算」）：上一趟的 `turn.end` 还留在事件流里；
+ * 不等回到等待输入，下一趟提交时上一轮还在跑（走的是排队那条路，不是同一件事）。
  */
 async function runOneFetch(handle: ShellHandle, round: number, text: string): Promise<void> {
   handle.send({ type: 'input.submit', text })
-  await waitFor(
-    handle,
-    `第 ${round} 张卡挂上`,
-    () => eventsOfKind(handle.events, 'tool.decision.request').length >= round,
-  )
-  answer(handle, eventsOfKind(handle.events, 'tool.decision.request')[round - 1]?.id as number, 'approve')
   await waitFor(
     handle,
     `第 ${round} 次回到等待输入`,
@@ -288,9 +281,4 @@ async function waitFor(
     if (Bun.nanoseconds() > until) throw new Error(`等「${what}」超时`)
     await Bun.sleep(10)
   }
-}
-
-/** 答一次裁决（`id` 是那一条询问事件）。 */
-function answer(handle: ShellHandle, id: number, decision: 'approve' | 'reject'): void {
-  handle.send({ type: 'decision.answer', id: id as never, decision })
 }

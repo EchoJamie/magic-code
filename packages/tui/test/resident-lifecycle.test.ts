@@ -3,20 +3,19 @@ import { createShell } from '../src/shell.ts'
 import { createSpyTransport } from './fakes.ts'
 import { event } from './events.ts'
 
-test('执行者已核销后撤去失效裁决，归还草稿并保留记录', () => {
+test('执行者已核销后保留未发送草稿与记录（在飞工具标失败）', () => {
   const spy = createSpyTransport()
   let detached: (why: string) => void = () => {}
   const shell = createShell(spy.transport, { magicBase: '/test/.magic', detached: (listener) => { detached = listener } })
   for (const char of '未发送草稿') shell.key({ kind: 'char', char })
   spy.emit(event('turn.start', {}))
   spy.emit(event('tool.call', { name: 'exec', args: { cmd: 'echo fixture' } }, { id: 71 }))
-  spy.emit(event('tool.decision.request', { call: 71, name: 'exec', material: 'echo fixture', weight: 'light' }, { id: 88 }))
-  expect(shell.getView().dock.kind).toBe('decision')
+  expect(shell.getView().dock.kind).toBe('input')
   detached('执行者已退出')
   expect(shell.getView().dock.kind).toBe('input')
   expect(shell.getView().draft).toBe('未发送草稿')
   expect(shell.getView().status.state).toBe('idle')
-  expect(shell.getView().settled.some((row) => row.kind === 'tool' && row.state === 'unexecuted')).toBe(true)
+  expect(shell.getView().settled.some((row) => row.kind === 'tool' && row.state === 'failed')).toBe(true)
   shell.dispose()
 })
 

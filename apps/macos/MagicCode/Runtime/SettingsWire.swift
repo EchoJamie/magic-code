@@ -79,9 +79,6 @@ struct SettingsSnapshot: Codable, Equatable {
     let catalog: [SettingsValue]
     let vendors: [SettingsValue]
     let sources: [SettingsValue]
-    let grants: [SettingsValue]
-    let grantStamp: String?
-    let grantProblem: String?
 }
 
 extension SettingsValue {
@@ -121,8 +118,6 @@ extension SettingsValue {
         case "role.save": return text("id") && object("role")
         case "role.remove": return text("id")
         case "workspace.set": return self["roots"] == .null || strings("roots")
-        case "permissions.set": if case .array = self["rules"] { return true }; return false
-        case "grants.revoke": return text("workspace") && (self["grantStamp"] == .null || text("grantStamp")) && (v["index"] == nil || self["index"].number.map { $0 >= 0 && $0.rounded() == $0 } == true)
         default: return false
         }
     }
@@ -132,24 +127,21 @@ extension SettingsValue {
     }
 }
 extension SettingsSnapshot {
-    private enum Keys: String, CodingKey { case preview, configPath, base, stamp, configuration, catalog, vendors, sources, grants, grantStamp, grantProblem }
+    private enum Keys: String, CodingKey { case preview, configPath, base, stamp, configuration, catalog, vendors, sources }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         preview = try c.decode(SettingsValue.self, forKey: .preview)
         configPath = try c.decode(String.self, forKey: .configPath); base = try c.decode(String.self, forKey: .base)
-        stamp = try c.decode(String?.self, forKey: .stamp); grantStamp = try c.decode(String?.self, forKey: .grantStamp)
+        stamp = try c.decode(String?.self, forKey: .stamp)
         configuration = try c.decode(SettingsValue.self, forKey: .configuration)
         catalog = try c.decode([SettingsValue].self, forKey: .catalog); vendors = try c.decode([SettingsValue].self, forKey: .vendors); sources = try c.decode([SettingsValue].self, forKey: .sources)
-        grants = try c.decode([SettingsValue].self, forKey: .grants)
-        grantProblem = c.contains(.grantProblem) ? try c.decode(String.self, forKey: .grantProblem) : nil
         guard case .object = configuration, case .object = preview else { throw WireError.invalid("设置快照必须包含已知配置与预览对象") }
     }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
         try c.encode(preview, forKey: .preview); try c.encode(configPath, forKey: .configPath); try c.encode(base, forKey: .base)
-        try c.encode(stamp, forKey: .stamp); try c.encode(grantStamp, forKey: .grantStamp); try c.encode(configuration, forKey: .configuration)
-        try c.encode(catalog, forKey: .catalog); try c.encode(vendors, forKey: .vendors); try c.encode(sources, forKey: .sources); try c.encode(grants, forKey: .grants)
-        try c.encodeIfPresent(grantProblem, forKey: .grantProblem)
+        try c.encode(stamp, forKey: .stamp); try c.encode(configuration, forKey: .configuration)
+        try c.encode(catalog, forKey: .catalog); try c.encode(vendors, forKey: .vendors); try c.encode(sources, forKey: .sources)
     }
 }
 

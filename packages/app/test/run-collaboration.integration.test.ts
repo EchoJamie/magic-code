@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { collaborationRuntime, latch, requestText, spawnMember } from './run-collaboration-fixture.ts'
 
@@ -112,169 +112,6 @@ for (const response of ['reject', 'accept'] as const) {
     } finally { memberReply.release(); await f.close() }
   }, 30000)
 }
-
-test('成员工具审批在根 TUI 只有同一份，根窗口答复回成员并实际执行', async () => {
-  const f = await collaborationRuntime('member-decision', call => {
-    if (call.model === 'entry-model') return call.index === 0 ? spawnMember : { text: '等待成员审查。' }
-    if (call.index === 0) return { tool: 'agent_message', args: { action: 'respond', operationId: 'accept', delegation: f.delegation()!.delegationId, response: 'accept' } }
-    if (call.index === 1) return { tool: 'exec', args: { cmd: 'chmod 700 approved.sh' } }
-    return { text: '成员审批操作已完成。' }
-  })
-  const path = join(f.workspace, 'approved.sh')
-  writeFileSync(path, '#!/bin/sh\nexit 0\n', { mode: 0o600 })
-  try {
-    f.shell.key({ kind: 'paste', text: '分出检查并确认成员操作。' }); f.shell.key({ kind: 'enter' })
-    await f.wait('成员 exec 待答到根窗口',()=>f.events.some(one=>one.kind==='tool.decision.request'&&one.data.name==='exec'))
-    await f.wait('成员 exec 审批到根窗口', () => {
-      const dock = f.shell.getView().dock
-      return dock.kind === 'decision' && dock.pending.name === 'exec'
-    })
-    const dock = f.shell.getView().dock
-    if (dock.kind !== 'decision') throw new Error('审批没有展示')
-    expect(dock.pending.member).toBe('实现')
-    expect(f.shell.getView().sessionId).toBe(f.collaboration()!.originSessionId)
-    expect(statSync(path).mode & 0o777).toBe(0o600)
-    f.client.send({ type: 'collaboration.read', member: f.member()!.agentId })
-    await f.wait('主动查询后仍是同一张卡', () => f.events.filter(one => one.kind === 'tool.decision.request' && one.id === dock.pending.id).length >= 2)
-    const requests = f.events.filter(one => one.kind === 'tool.decision.request' && one.data.name === 'exec')
-    expect(new Set(requests.map(one => one.id)).size).toBe(1)
-    expect(requests.every(one => one.session === f.member()!.sessionId)).toBe(true)
-    f.shell.key({ kind: 'down' }); f.shell.key({ kind: 'enter' }); f.shell.key({ kind: 'enter' })
-    await f.wait('成员实际改完权限', () => (statSync(path).mode & 0o777) === 0o700)
-    await f.wait('成员操作后的 HTTP 请求', () => f.requests('member-model').length >= 3)
-    expect(f.commands.filter(one => one.type === 'decision.answer' && one.id === dock.pending.id)).toHaveLength(1)
-    expect(f.events.filter(one => one.kind === 'tool.decision' && one.data.call === dock.pending.call && one.session === f.member()!.sessionId)).toHaveLength(1)
-    expect(f.shell.getView().dock.kind).not.toBe('decision')
-    expect(f.shell.getView().sessionId).toBe(f.collaboration()!.originSessionId)
-    expect(f.errors).toEqual([])
-    expect(f.events.filter(one => one.kind === 'error')).toEqual([])
-  } finally { await f.close() }
-}, 30000)
-
-test('真实入口 detached 后根窗口保留成员审批、目标及草稿，答复仍回原成员', async () => {
-  const rootReply = latch()
-  const memberReply = latch()
-  const f = await collaborationRuntime('window-detached-decision', async call => {
-    if (call.model === 'entry-model') {
-      if (call.index === 0) return spawnMember
-      await rootReply.promise
-      return { text: '入口本轮结束，成员继续。' }
-    }
-    if (call.index === 0) {
-      await memberReply.promise
-      return { tool: 'agent_message', args: { action: 'respond', operationId: 'accept', delegation: f.delegation()!.delegationId, response: 'accept' } }
-    }
-    if (call.index === 1) return { tool: 'exec', args: { cmd: 'chmod 700 approved.sh' } }
-    return { text: '成员已收到原窗口答复并执行。' }
-  })
-  const path = join(f.workspace, 'approved.sh')
-  writeFileSync(path, '#!/bin/sh\nexit 0\n', { mode: 0o600 })
-  const detached: string[] = []
-  f.client.onDetached(why => detached.push(why))
-  try {
-    f.shell.key({ kind: 'paste', text: '分出检查，入口本轮结束后保留成员操作。' }); f.shell.key({ kind: 'enter' })
-    await f.wait('双方实际 HTTP 已进入受控屏障', () => f.requests().length === 2 && f.requests('member-model').length === 1)
-    const origin = f.session()!
-    const root = f.manager.executors().find(one => one.session === origin)!
-    const member = f.member()!
-    f.shell.key({ kind: 'paste', text: '整体保留原稿' })
-    await f.openMember(); f.pick('input')
-    f.shell.key({ kind: 'paste', text: '成员保留原稿 ' }); f.shell.key({ kind: 'char', char: '@' })
-    await f.wait('真实文件引用候选', () => {
-      const dock = f.shell.getView().dock
-      return dock.kind === 'picker' && dock.picker.source === 'paths' && dock.picker.rows.some(one => one.value === path)
-    })
-    f.pick(path)
-    const draft = f.shell.getView().draft
-    const refs = f.shell.getView().refs
-    memberReply.release()
-    await f.wait('成员 chmod 待答提示',()=>f.events.some(one=>one.kind==='tool.decision.request'&&one.data.name==='exec'))
-    await f.wait('成员 chmod 待审批', () => { const dock = f.shell.getView().dock; return dock.kind === 'decision' && dock.pending.name === 'exec' })
-    const dock = f.shell.getView().dock
-    if (dock.kind !== 'decision') throw new Error('成员审批没有展示')
-    rootReply.release()
-    await f.wait('入口真实退出且窗口收到 detached', () => detached.length > 0 && f.agentExits.some(one => one.gen === root.gen)
-      && !f.manager.executors().some(one => one.session === origin))
-    expect(f.manager.clients()).toBe(1)
-    expect(f.shell.getView().sessionId).toBe(origin)
-    expect(f.shell.getView().inputMember).toBe(member.agentId)
-    // 审批接管输入时，原稿与引用保存在既有 stashed；答复后必须原样归还。
-    expect(f.shell.getView().stashed).toMatchObject({ draft, refs })
-    expect(f.shell.getView().dock).toMatchObject({ kind: 'decision', pending: { id: dock.pending.id, member: '实现' } })
-    expect(statSync(path).mode & 0o777).toBe(0o600)
-    f.client.send({ type: 'collaboration.read', member: member.agentId })
-    await f.wait('只读重发仍为原审批', () => f.events.filter(one => one.kind === 'tool.decision.request' && one.id === dock.pending.id).length >= 2)
-    expect(f.manager.executors().some(one => one.session === origin)).toBe(false)
-    f.shell.key({ kind: 'down' }); f.shell.key({ kind: 'enter' }); f.shell.key({ kind: 'enter' })
-    await f.wait('无入口 executor 时答复仍交成员执行', () => (statSync(path).mode & 0o777) === 0o700 && f.requests('member-model').length === 3)
-    expect(f.commands.filter(one => one.type === 'decision.answer' && one.id === dock.pending.id)).toHaveLength(1)
-    expect(f.events.filter(one => one.kind === 'tool.decision' && one.session === member.sessionId && one.data.call === dock.pending.call)).toHaveLength(1)
-    expect(f.shell.getView().dock.kind).not.toBe('decision')
-    expect(f.shell.getView().inputMember).toBe(member.agentId)
-    expect(f.shell.getView().draft).toBe(draft)
-    expect(f.shell.getView().refs).toEqual(refs)
-    f.shell.key({ kind: 'tab' })
-    await f.wait('返回整体目标选择', () => { const dock = f.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'collaboration' })
-    f.pick('whole')
-    expect(f.shell.getView().draft).toBe('整体保留原稿')
-    expect(f.shell.getView().inputMember).toBeUndefined()
-    expect(f.requests()).toHaveLength(2)
-    expect(f.manager.executors().some(one => one.session === origin)).toBe(false)
-    expect(f.errors).toEqual([])
-    expect(f.events.filter(one => one.kind === 'error')).toEqual([])
-  } finally { rootReply.release(); memberReply.release(); await f.close() }
-}, 30000)
-
-test('审批等待期间发布共同约束：批准旧 chmod 后仍须重审，不能执行旧工具', async () => {
-  const constraintText = 'APPROVAL_WINDOW_CONSTRAINT：保持 approved.sh 权限不变，先重新核对新要求。'
-  const f = await collaborationRuntime('approval-shared-constraint', call => {
-    if (call.model === 'entry-model') return call.index === 0 ? spawnMember : { text: '共同要求已记录。' }
-    if (call.index === 0) return { tool: 'agent_message', args: { action: 'respond', operationId: 'accept', delegation: f.delegation()!.delegationId, response: 'accept' } }
-    if (call.index === 1) return { tool: 'exec', args: { cmd: 'chmod 700 approved.sh' } }
-    return { text: '已根据新要求重审，保持权限不变。' }
-  })
-  const path = join(f.workspace, 'approved.sh')
-  writeFileSync(path, '#!/bin/sh\nexit 0\n', { mode: 0o600 })
-  try {
-    f.shell.key({ kind: 'paste', text: '分出检查并确认成员操作。' }); f.shell.key({ kind: 'enter' })
-    await f.wait('旧 chmod 待答',()=>f.events.some(one=>one.kind==='tool.decision.request'&&one.data.name==='exec'))
-    await f.wait('旧 chmod 已弹审批卡', () => {
-      const dock = f.shell.getView().dock
-      return dock.kind === 'decision' && dock.pending.name === 'exec'
-    })
-    const dock = f.shell.getView().dock
-    if (dock.kind !== 'decision') throw new Error('旧工具没有进入审批等待')
-    const member = f.member()!
-    expect(f.requests('member-model')).toHaveLength(2)
-    expect(statSync(path).mode & 0o777).toBe(0o600)
-
-    // 走根入口的真实控制命令；不直接写 records，也不在批准后才补约束。
-    f.client.send({ type: 'collaboration.input', shared: true, input: { text: constraintText, ref: 'approval-window-constraint' } })
-    await f.wait('共同约束已持久发布且成员尚未消费', () => {
-      const constraint = f.store.collaboration.listConstraints(f.collaboration()!.collaborationId).at(-1)
-      return constraint !== undefined && f.store.collaboration.inbox(member.agentId).some(one => one.messageId === constraint.messageId && one.state === 'pending')
-    })
-    const constraint = f.store.collaboration.listConstraints(f.collaboration()!.collaborationId).at(-1)!
-    expect(f.store.collaboration.readMessage(member.agentId, constraint.messageId)?.userSource?.sessionId).toBe(f.session()!)
-    expect(f.requests('member-model')).toHaveLength(2)
-    const pending = f.shell.getView().dock
-    expect(pending.kind === 'decision' && pending.pending.id).toBe(dock.pending.id)
-
-    f.shell.key({ kind: 'down' }); f.shell.key({ kind: 'enter' })
-    await f.wait('批准旧工具后的下一成员 HTTP 请求', () => f.requests('member-model').length >= 3)
-    const nextRequest = requestText(f.requests('member-model')[2])
-    expect(nextRequest).toContain(constraintText)
-    expect(nextRequest).toContain('先重新判断，再执行工具')
-    await f.wait('成员完成重审', () => f.manager.runs().find(one => one.session === member.sessionId)?.state === 'idle')
-    expect(statSync(path).mode & 0o777).toBe(0o600)
-    expect(f.requests('member-model')).toHaveLength(3)
-    const result = (await Array.fromAsync(f.store.readEntries(member.sessionId))).findLast(one => one.kind === 'tool-result')
-    expect(result?.payload).toMatchObject({ ok: false })
-    expect(f.events.some(one => one.kind === 'tool.decision' && one.session === member.sessionId && one.data.call === dock.pending.call && one.data.decision === 'approve')).toBe(true)
-    expect(f.store.collaboration.constraintStatus(constraint.messageId).find(one => one.agentId === member.agentId)?.state).toBe('included')
-    expect(f.errors).toEqual([])
-  } finally { await f.close() }
-}, 30000)
 
 test('显式正常收尾：收下成员交付后仍能写最终正文，资源退出才 closed 且记录可读', async () => {
   const memberReply = latch()
@@ -433,7 +270,7 @@ for (const response of ['clarify', 'reject'] as const) {
       }
       return { text: `成员已 ${response}` }
     // 本例只运行受控协作工具，显式采用生产全放行开关；关闭窗口后没有隐藏审批客户端。
-    }, { allowAll: true })
+    })
     try {
       f.shell.key({ kind: 'paste', text: '分出检查并等待成员，关闭窗口后仍需承接明确回应。' }); f.shell.key({ kind: 'enter' })
       await f.wait('入口持久等待且已让出', () => {
@@ -511,7 +348,7 @@ test('生产 shell.hangUp 关窗不停止协作：持久 wait 保留，成员回
         response: 'clarify', reason } }
     }
     return { text: '成员已向无窗口入口提出澄清。' }
-  }, { allowAll: true })
+  })
   try {
     f.shell.key({ kind: 'paste', text: '分出检查，等待成员回应；关闭窗口只离开界面。' }); f.shell.key({ kind: 'enter' })
     await f.wait('入口持久等待且已让出', () => {

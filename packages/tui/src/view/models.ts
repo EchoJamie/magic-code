@@ -321,7 +321,7 @@ export function modelHint(
   // 「详情」那一个键放在这儿（不在右位）：右位那条键位提示是**共用**的
   // （`HINT_PICKER`，五扇抽屉同一句），各屏另加一个键就得各写一句——而它一变，
   // 认它当判据的装置（`app/test/ui/scenarios.ts` 的抽屉场景）当场全红。
-  // 列表下方报键位有先例（`/grants` 的「回车＝撤销选定那条」），照它。
+
   // **折起来如实报数**（见 `MAX_MODEL_NOTES`）——超出的那几条不逐行铺，指到管理页去
   const metadata = entries.find(entry => entry.metadata !== undefined)?.metadata
   if (metadata?.failure) lines.push(metadata.failure)

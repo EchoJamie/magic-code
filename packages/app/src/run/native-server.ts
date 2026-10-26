@@ -12,7 +12,6 @@ export type NativeServerOptions = {
   readonly inspect: (session: string) => Promise<NativeWork | undefined>
   readonly works: () => Promise<readonly NativeWork[]>
   readonly sessions: (query: { archived?: boolean; workspace?: readonly string[]; search?: string }) => Promise<readonly NativeSession[]>
-  readonly currentRequests: (session: string) => readonly Extract<KernelEvent, { kind: 'tool.decision.request' }>[]
   readonly manage: (item: SessionManagement) => SessionManagementResult
   readonly configuration?: () => NativeProjection['configuration']
   readonly engineStop?: (request: string, idleOnly: boolean) => Promise<void>
@@ -182,7 +181,7 @@ export function createNativeServer(options: NativeServerOptions) {
                 if (event !== undefined) events.push(event)
                 if (events.length === 0) throw new Error('原事件暂不可达，请重新读取')
               }
-              link.send({ ...target, entries, events, currentRequests: options.currentRequests(message.session), done, ...(!done && entries.length > 0 ? { next: entries.at(-1)!.id } : {}) })
+              link.send({ ...target, entries, events, done, ...(!done && entries.length > 0 ? { next: entries.at(-1)!.id } : {}) })
             } catch (error) { link.send({ ...target, done: true, error: error instanceof Error ? error.message : String(error) }) }
           })()
           break

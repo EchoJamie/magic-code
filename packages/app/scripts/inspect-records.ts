@@ -166,8 +166,6 @@ function describeEvent(row: EventRow): string {
         ? shown
         : `${shown} · 参数原文 ${inline(String(raw), 60)}`
     }
-    case 'tool.decision.request':
-      return `询问 ${String(data['name'])}（${String(data['weight'])}）· 调用链 #${String(data['call'])}`
     case 'tool.decision':
       return `裁决 ${String(data['decision'])} · 裁者 ${String(data['decider'])} · ${String(data['elapsedMs'])}ms · 调用链 #${String(data['call'])}`
     case 'tool.result':
@@ -339,14 +337,12 @@ function main(): number {
             }
           })
 
-        const request = chain('tool.decision.request')
         const decision = chain('tool.decision')
         const result = chain('tool.result')
         const name = (JSON.parse(call.data) as { name?: string }).name ?? '?'
 
         console.log(
-          `  #${call.id} ${name} → 询问 #${request?.id ?? '—'} → ` +
-            `裁决 #${decision?.id ?? '—'} → 结果 #${result?.id ?? '—'}`,
+          `  #${call.id} ${name} → 裁决 #${decision?.id ?? '—'} → 结果 #${result?.id ?? '—'}`,
         )
         if (decision !== undefined) {
           const data = JSON.parse(decision.data) as { decision?: string; elapsedMs?: number }

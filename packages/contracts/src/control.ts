@@ -12,8 +12,7 @@ import type { InputManage, InputPurpose } from './input.ts'
 
 import type { StatusLineConfig } from './config.ts'
 import type { InputRefPlace } from './entries.ts'
-import type { Decision } from './events.ts'
-import type { BlobRef, DecisionId, SessionId } from './ids.ts'
+import type { BlobRef, SessionId } from './ids.ts'
 import type { ModelChoice, ReasoningSetting } from './model.ts'
 import type { CollaborationCommand } from './collaboration-control.ts'
 
@@ -134,32 +133,6 @@ export type UserInput = {
  */
 export type InputSubmit = { readonly type: 'input.submit' } & UserInput
 
-/**
- * `decision.answer`——裁决答复，与 `tool.decision.request` **配对**。
- * 配对键＝**请求事件** `id`（`DecisionId`）；首站＝人工裁决（批准 / 拒绝）。
- */
-export type DecisionAnswer = {
-  readonly type: 'decision.answer'
-  readonly id: DecisionId
-  readonly decision: Decision
-  /**
-   * **「总是允许」——答复意图，不是裁决词表的第三词**（技术方案 · 领域划分 · 端口内类型）。
-   *
-   * `Decision`（`approve` / `reject`）是**结果词**——`tool.decision.decision` 用的是同一个
-   * 两词表，不扩。而「总是允许」是**用户答复时的意图**（批准 ＋ 记住），故落在**命令侧**
-   * 这一个可选的位上。**向后兼容**——不给 ＝ 一次性批准，与阶段 1 逐字同义。
-   *
-   * 流转：控制域**原样转手**（`gate.resolve(id, decision, { remember })`），**不由它翻译**；
-   * 授权的落点归**权限域**（按 工具 × 路径模式 × 操作类型 记）。
-   *
-   * **落点＝工作区**（U22 · 技术方案 · 权限「授权的落点」）——`a` 说的是「这类事在这个项目里
-   * 我信任」：**会话不是信任的边界**（会话必然结束是实现的副产品，不是设计的安全边界）。
-   * 故这一位写下的是**这个工作区**的授权，存 `~/.magic/grants.json`，跨会话存活。
-   * **只在批准时生效**——规则的条目只有「允许」这一形，没有「总是拒绝」。
-   */
-  readonly remember?: boolean
-}
-
 /** `turn.interrupt`——中断（首站：Ctrl+C）。 */
 export type TurnInterrupt = {
   readonly type: 'turn.interrupt'
@@ -254,162 +227,6 @@ export type HistoryRead = {
  * 失败缘由——**那不是读面**（读面不该以「换失败了」作答，也不该因此落库一笔）。
  */
 export type ModelList = { readonly type: 'model.list' }
-
-/**
- * `grants.list`——**授权名录的读侧命令**（U22 · 技术方案 · 权限「授权的落点」：
- * 「配两件：**查看 / 撤销**（`/grants`）与**陈旧节**的显式列出」）。
- *
- * **由头**：授权存 `~/.magic/grants.json`（内核自持的一个文件），而外壳够不着它——
- * 与 `model.list` / `history.read` 同一处境：**控制面是唯一一直通的路**。
- * 答复走事件（`grants.catalog`，**不落库**）——它是**读出来的**，落库＝把同一张表存 N 遍。
- *
- * **无参**——问的就是「本工作区记着哪些、别处还有哪些节」；分节键（本工作区）由答复里的
- * `workspace` 一并给（同一次往返说清一整屏）。
- */
-export type ProviderList = { readonly type: 'provider.list' }
-
-/**
- * 保存一条连接（U41）——**接入 / 改名 / 更新认证 / 改地址**共一个动作。
- *
- * `provider` 是在**没接过的 id** 上给 ＝ 新建（那时 `vendor` 必给：新建官方连接必有）；
- * 在已有 id 上给 ＝ 改那一条。**改名保留 id**（改名是改 `name`，不是换 id——
- * id 是引用键，换掉它等于把默认选择、记录里的归属一起切断）。
- *
- * `apiKey` **缺省 ＝ 不动已存的那个**：管理页改个名字不该顺手把凭据抹掉。
- * 给了空串 ＝ **清除**（回到环境变量回退）。
- *
- * 保存**不静默改**别的东西：不动默认选择、不动思考设置、不动别的连接
- * （设计 · 模型与上下文「维护连接」）。
- */
-export type ProviderSave = { readonly type: 'provider.save' } & ProviderSaveRequest
-
-/** `provider.save` 的负载——命令负载与路由入参同一形态（同 `ModelSwitchRequest` 之例）。 */
-export type ProviderSaveRequest = {
-  readonly expectedStamp?: string | null
-  readonly protocol?: import('./model.ts').ModelProtocol | null
-  readonly auth?: import('./model.ts').ProviderAuth
-  /** 连接 id（`providers` 的键）——新建时就是用户起的那一个。 */
-  readonly provider: string
-  /** 内置供应商适配名——**只在接入 / 更换供应商时给**；认不出就不猜（不换适配）。 */
-  readonly vendor?: string
-  readonly name?: string
-  readonly region?: string
-  readonly baseURL?: string
-  /** 凭据——**缺省 ＝ 不改**；空串 ＝ 清除（回退环境变量）。**不入日志 / 事件 / 记录**。 */
-  readonly apiKey?: string
-}
-
-/**
- * 移除一条连接（U41）——**不静默级联**（设计 · 模型与上下文「维护连接」）。
- *
- * 有引用（默认选择 / 角色 / 正在用）时**先要求替换或取消**：命令照发，答复说明缘由，
- * 由用户决定。已发生的记录**不随移除而删除**。
- */
-export type ProviderRemove = {
-  readonly type: 'provider.remove'
-  readonly provider: string
-}
-
-/**
- * **设为默认**（U41）——把这条连接与这个模型写成「新建普通会话采用的默认选择」。
- *
- * 与 `model.switch` **分开**（设计明文「换当前模型与保存默认分开」）：那条只改**当下**
- * 走谁、**不写配置**；这一条写配置、**不改当前**。两个动作各有各的时机与后果，
- * 混成一条会让人分不清「我刚才改的是这次还是以后」。
- */
-export type ModelConfigure = { readonly type: 'model.configure' } & ModelConfigureRequest
-export type ModelConfigureRequest = {
-  readonly expectedStamp?: string | null
-  readonly choice: ModelChoice
-  readonly provider: string
-  readonly model: string
-  /** 首次明确保存 Default 时初始化尚未配置的档位。 */
-  readonly initialize?: boolean
-}
-
-/**
- * **读网页服务配置**（U94）——`/config` 与 `/web` 打开时问一次。
- *
- * 答复走 `web.state`：当前连接、Cantrip 映射与一句说明。**不复用模型列表事件**
- * 冒充网页状态（那一屏说的是两件事）。
- */
-export type WebList = { readonly type: 'web.list' }
-
-/**
- * **设置网页服务连接**（U94）——`provider: null` ＝ 清除引用。
- *
- * 与 App 的 `web.configure` 设置动作同一份校验、同一份原子写入；`expectedStamp`
- * 缺省＝由执行侧按当下配置水位补。
- */
-export type WebConfigure = {
-  readonly type: 'web.configure'
-  readonly expectedStamp?: string | null
-  readonly provider: string | null
-}
-
-export type PrefsSet = { readonly type: 'prefs.set' } & PrefsSetRequest
-
-/**
- * `prefs.set` 的负载——**给什么改什么**（不带的键原样不动）。
- *
- * `statusLine` 与 `reducedMotion` 两件各自独立：勾一次格子不该顺手把动效的开关翻过去，
- * 反之亦然。**两件都不带**＝什么都不改（合法，但没意义——外壳那一侧不会发）。
- *
- * ⚠️ **`statusLine` 是整份替换**（不是「加一格 / 去一格」）：用户在这一屏上挑的是一个
- * **有序清单**（顺序即屏上顺序），增量语义在有序表上说不清（「加在哪儿」）。
- */
-export type PrefsSetRequest = {
-  readonly statusLine?: StatusLineConfig
-  readonly turnDuration?: import('./config.ts').TurnDurationMode
-  readonly reducedMotion?: boolean
-}
-
-/**
- * `model.refresh`——**显式刷新意图**（U41）。
- *
- * 由头：自动检查走**有效期**（新鲜就用、过期先回旧缓存再后台刷），而用户有时明确要知道
- * 「现在供应商那儿有哪些」——**手动刷新可绕过时效**（设计 · 模型与上下文「刷新」）。
- *
- * `provider` 缺省 ＝ **当前选中那条连接**（`/model` 停在哪儿就刷哪儿）。
- * 答复走 `model.catalog`：**先回旧缓存那一屏，刷新完成后按同一条 kind 再回一屏**
- * （不落库）。不刷新没有缓存的连接也不报错——如实说「还没取过」即可。
- * 撞上 60 秒退避窗口时**不硬闯**（缘由写在答复的 `note` 上），不自行循环重试。
- */
-export type ModelRefresh = {
-  readonly type: 'model.refresh'
-  readonly provider?: string
-}
-
-/**
- * `grants.list`——**授权名录的读侧命令**（U22 · 技术方案 · 权限「授权的落点」：
- * 「配两件：**查看 / 撤销**（`/grants`）与**陈旧节**的显式列出」）。
- *
- * **由头**：授权存 `~/.magic/grants.json`（内核自持的一个文件），而外壳够不着它——
- * 与 `model.list` / `history.read` 同一处境：**控制面是唯一一直通的路**。
- * 答复走事件（`grants.catalog`，**不落库**）——它是**读出来的**，落库＝把同一张表存 N 遍。
- *
- * **无参**——问的就是「本工作区记着哪些、别处还有哪些节」；分节键（本工作区）由答复里的
- * `workspace` 一并给（同一次往返说清一整屏）。
- */
-export type GrantsList = { readonly type: 'grants.list' }
-
-/**
- * `grants.revoke`——**撤销**（授权落点那两件里的第二件）。
- *
- * 两形共一个命令（省得为「撤一条」与「撤一整节」长两条命令）：
- * - `index` 给了 ＝ 撤**本工作区**那一节里的**第 index 条**（`/grants` 选定即撤）；
- * - `index` 不给 ＋ `workspace` 给了 ＝ **整节撤掉**（陈旧节那条路：路径已不在 → 你删或留）。
- *
- * ⚠️ **不自动删**（`B11`）：内核**只在用户按下撤销时**才动这个文件——
- * 删用户数据不归内核自己拿主意。
- */
-export type GrantsRevoke = {
-  readonly type: 'grants.revoke'
-  /** 撤哪一节——**缺省＝本工作区那一节**。 */
-  readonly workspace?: string
-  /** 撤这一节里的哪一条——**缺省＝整节撤掉**。 */
-  readonly index?: number
-}
 
 /**
  * `skills.list`——**技能目录的读侧命令**（U33 · 终端入口）。
@@ -560,11 +377,79 @@ export type ImageExport = {
  * ＋ U110 的导出原图）
  * ——外壳发往内核的全部消息。
  */
+/** **显式刷新模型信息**（U41）——答复走 `model.catalog`，先回旧缓存再回刷新后的一份。 */
+export type ModelRefresh = {
+  readonly type: 'model.refresh'
+  readonly provider?: string
+}
+
+/** 连接一览（**管理面读侧** · U41）——答复走 `provider.catalog`（不落库）。 */
+export type ProviderList = { readonly type: 'provider.list' }
+
+/**
+ * 保存一条连接（U41）——**接入 / 改名 / 更新认证 / 改地址**共一个动作。
+ *
+ * `apiKey` **缺省 ＝ 不动已存的那个**；给了空串 ＝ 清除（回到环境变量回退）。
+ */
+export type ProviderSave = { readonly type: 'provider.save' } & ProviderSaveRequest
+
+/** `provider.save` 的负载——命令负载与路由入参同一形态。 */
+export type ProviderSaveRequest = {
+  readonly expectedStamp?: string | null
+  readonly protocol?: import('./model.ts').ModelProtocol | null
+  readonly auth?: import('./model.ts').ProviderAuth
+  readonly provider: string
+  readonly vendor?: string
+  readonly name?: string
+  readonly region?: string
+  readonly baseURL?: string
+  /** 凭据——**缺省 ＝ 不改**；空串 ＝ 清除。**不入日志 / 事件 / 记录**。 */
+  readonly apiKey?: string
+}
+
+/** 移除一条连接（U41）——**不静默级联**。 */
+export type ProviderRemove = {
+  readonly type: 'provider.remove'
+  readonly provider: string
+}
+
+/** **设为默认**（U41）——写配置里的默认选择，**不改当下**。 */
+export type ModelConfigure = { readonly type: 'model.configure' } & ModelConfigureRequest
+export type ModelConfigureRequest = {
+  readonly expectedStamp?: string | null
+  readonly choice: ModelChoice
+  readonly provider: string
+  readonly model: string
+  readonly initialize?: boolean
+}
+
+/** **读网页服务配置**（U94）——答复走 `web.state`。 */
+export type WebList = { readonly type: 'web.list' }
+
+/** **设置网页服务连接**（U94）——`provider: null` ＝ 清除引用。 */
+export type WebConfigure = {
+  readonly type: 'web.configure'
+  readonly expectedStamp?: string | null
+  readonly provider: string | null
+}
+
+export type PrefsSet = { readonly type: 'prefs.set' } & PrefsSetRequest
+
+/**
+ * `prefs.set` 的负载——**给什么改什么**（不带的键原样不动）。
+ *
+ * `statusLine` 与 `reducedMotion` 两件各自独立；`statusLine` 是整份替换。
+ */
+export type PrefsSetRequest = {
+  readonly statusLine?: StatusLineConfig
+  readonly turnDuration?: import('./config.ts').TurnDurationMode
+  readonly reducedMotion?: boolean
+}
+
 export type Command = import('./background.ts').BackgroundCommandRequest
   | CollaborationCommand
   | InputSubmit
   | InputManage
-  | DecisionAnswer
   | TurnInterrupt
   | ModelSwitch
   | SessionCommand
@@ -578,8 +463,6 @@ export type Command = import('./background.ts').BackgroundCommandRequest
   | ProviderList
   | ProviderSave
   | ProviderRemove
-  | GrantsList
-  | GrantsRevoke
   | SkillList
   | PathList
   | PathIdentify
@@ -588,6 +471,3 @@ export type Command = import('./background.ts').BackgroundCommandRequest
   | InputPaste
   | ImageExport
   | PrefsSet
-
-/** 裁决配对的事件侧——内核发此事件（带呈现材料），外壳以 `decision.answer` 答复。 */
-export const DECISION_REQUEST_KIND = 'tool.decision.request'

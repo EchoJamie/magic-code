@@ -23,7 +23,7 @@ test('同批立即受理与独立写入、定向种子、自行取证、幂等�
     if (call.index === 0) { await advisor.promise; return { tool: 'read', args: { path: 'evidence.txt' }, usage } }
     expect(requestText(call)).toContain('关键证据-实际读取-8391')
     return { text: '证据来自 evidence.txt:1：关键证据-实际读取-8391。建议核对初始化次序；本次仅查证，修复尚未验证。', usage }
-  }, { allowAll: true })
+  })
   writeFileSync(join(f.workspace, 'evidence.txt'), '关键证据-实际读取-8391')
   try {
     f.shell.key({ kind: 'paste', text: '查启动失败原因。无关历史唯一串-NOT-FOR-ADVISOR-915' }); f.shell.key({ kind: 'enter' })
@@ -61,7 +61,7 @@ for (const name of ['write', 'edit', 'exec', 'plan_update', 'agent_spawn', 'cons
       }
       expect(requestText(call)).toContain('原值')
       return { text: 'probe.txt:1 仍为原值；未执行禁止动作。' }
-    }, { allowAll: true })
+    })
     writeFileSync(join(f.workspace, 'probe.txt'), '原值')
     try {
       f.shell.key({ kind: 'paste', text: '请只读顾问查证' }); f.shell.key({ kind: 'enter' })
@@ -77,7 +77,7 @@ for (const name of ['write', 'edit', 'exec', 'plan_update', 'agent_spawn', 'cons
 for (const reply of [{ text: '' }, { text: '半截建议', finish: 'length' }]) {
   test(`${reply.finish ?? '空正文'} 作为失败主动回报，半截内容不成为建议`, async () => {
     const f = await collaborationRuntime(`u115-failure-${reply.finish ?? 'empty'}`, call => call.kind === 'agent'
-      ? call.index === 0 ? consult : { text: '原执行者等待真实意见。' } : reply, { allowAll: true })
+      ? call.index === 0 ? consult : { text: '原执行者等待真实意见。' } : reply)
     try {
       f.shell.key({ kind: 'paste', text: '先咨询再执行' }); f.shell.key({ kind: 'enter' })
       await f.wait('失败投递', () => f.delegation()?.deliveryMessageId !== undefined)
@@ -113,7 +113,7 @@ test('plan/history 绑定发起 Session，主计划不自动入种子，跨独�
     if (call.index === 2) { expect(requestText(call)).toContain('ORIGIN-HISTORY-EVIDENCE-771'); return { tool: 'history_read', args: { entry: foreignEntry } } }
     expect(requestText(call)).not.toContain('FOREIGN-SECRET-991')
     return { text: '只读查证了原工作计划与历史；独立工作记录不可读。' }
-  }, { allowAll: true })
+  })
   foreignEntry = f.store.serviceFor('foreign-work').appendEntry({ kind: 'user', content: { text: 'FOREIGN-SECRET-991' }, at: Date.now() })
   try {
     f.shell.key({ kind: 'paste', text: 'ORIGIN-HISTORY-EVIDENCE-771：查启动失败，先写计划，再咨询' }); f.shell.key({ kind: 'enter' })
@@ -150,7 +150,7 @@ for (const mainFirst of [false, true]) {
         return { text: '顾问建议：先核对证据。' }
       }
       return { text: '顾问建议：先核对证据。' }
-    }, { allowAll: true })
+    })
     const path = join(f.magic.base, 'config.json')
     const config = JSON.parse(readFileSync(path, 'utf8'))
     config.models.arcane = config.models.default
@@ -179,7 +179,7 @@ for (const whole of [false, true]) {
       await pending.promise
       replyReleased = true
       return { text: '停止后迟到的建议不触发实施。' }
-    }, { allowAll: true })
+    })
     try {
       f.shell.key({ kind: 'paste', text: '启动咨询并保持原工作' }); f.shell.key({ kind: 'enter' })
       await f.wait('顾问在途', () => f.requests('descendant-model').length === 1 && f.requests().length >= 2)
@@ -204,7 +204,7 @@ test('窗口断线仍完成咨询，原工作被结果唤起；重复终态不�
     if (call.kind === 'agent') return call.index === 0 ? consult : { text: '原工作看到顾问结果继续核对。' }
     await pending.promise
     return { text: '后台顾问的完整建议。' }
-  }, { allowAll: true })
+  })
   try {
     f.shell.key({ kind: 'paste', text: '启动后台只读查证' }); f.shell.key({ kind: 'enter' })
     await f.wait('原轮结束和顾问在途', () => f.requests().length >= 2 && f.requests('descendant-model').length === 1)
@@ -239,7 +239,7 @@ test('咨询在途映射稳定，下次新咨询读取新映射，主 reasoning 
     if (!requestText(call).includes('新映射不能改变已有咨询')) return { tool: 'read', args: { path: 'evidence.txt' } }
     expect(requestText(call)).toContain('新映射不能改变已有咨询')
     return { text: '新映射下的独立咨询完成。' }
-  }, { allowAll: true })
+  })
   writeFileSync(join(f.workspace, 'evidence.txt'), '新映射不能改变已有咨询')
   const configPath = join(f.magic.base, 'config.json')
   try {
@@ -270,7 +270,7 @@ test('咨询在途映射稳定，下次新咨询读取新映射，主 reasoning 
 test('缺 Arcane 配置或思考不支持在模型调用前拒绝，不换档', async () => {
   const f = await collaborationRuntime('u115-config-reject', call => call.index === 0 ? consult : call.index === 1
     ? { tool: 'consult_arcane', args: { operationId: 'unsupported', question: '不支持的思考设置', reasoning: { mode: 'level', level: 'impossible' } } }
-    : { text: '报告配置问题，不绕过咨询条件。' }, { allowAll: true })
+    : { text: '报告配置问题，不绕过咨询条件。' })
   const path = join(f.magic.base, 'config.json')
   try {
     const config = JSON.parse(readFileSync(path, 'utf8'))
@@ -305,7 +305,7 @@ test('运行中纠正到安全边界，历史保留旧证据，原工作采纳�
     expect(requestText(call)).toContain('用户纠正-不得立即修改-778')
     if (!requestText(call).includes('CURRENT-EVIDENCE-202')) return { tool: 'read', args: { path: 'evidence.txt' } }
     return { text: '顾问查证：首次 OLD-EVIDENCE-101，纠正后重读 CURRENT-EVIDENCE-202。建议保持只读，原工作核现场。' }
-  }, { allowAll: true })
+  })
   writeFileSync(join(f.workspace, 'evidence.txt'), 'OLD-EVIDENCE-101')
   try {
     f.shell.key({ kind: 'paste', text: '查证' }); f.shell.key({ kind: 'enter' })
@@ -328,7 +328,7 @@ test('顾问模型流失败主动报未完成，不重发咨询，原工作仍�
   const f = await collaborationRuntime('u115-crash', async call => {
     if (call.kind === 'agent') return call.index === 0 ? consult : { text: '收到未完成原因，保留原工作责任。' }
     await pending.promise; return { text: '', malformed: true }
-  }, { allowAll: true })
+  })
   try {
     f.shell.key({ kind: 'paste', text: '先查证' }); f.shell.key({ kind: 'enter' })
     await f.wait('顾问实际调用', () => f.requests('descendant-model').length === 1)
@@ -358,7 +358,7 @@ test('主模型与Arcane同实际型号仍创建独立上下文，咨询不继�
     advisorCalls++
     expect(requestText(call)).not.toContain('SAME-MODEL-UNRELATED-HISTORY-887')
     return { text: '同型号、独立上下文的顾问建议。' }
-  }, { allowAll: true })
+  })
   const path = join(f.magic.base, 'config.json')
   const config = JSON.parse(readFileSync(path, 'utf8'))
   config.models.arcane = config.models.default
@@ -383,7 +383,7 @@ test('原始条目图片进入咨询能力检查，明确不支持时零顾问�
       return { tool: 'consult_arcane', args: { operationId: 'image', question: '核对原图证据', body: [{ kind: 'entry', ref: { sessionId: f.session()!, entryId: imageEntry } }] } }
     }
     return { text: '咨询无法读取原图，不能按文字降级后的意见执行。' }
-  }, { allowAll: true })
+  })
   const blob = await f.store.blobs.put(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64'))
   const path = join(f.magic.base, 'config.json')
   const config = JSON.parse(readFileSync(path, 'utf8'))
@@ -401,7 +401,7 @@ test('原始条目图片进入咨询能力检查，明确不支持时零顾问�
 for (const fault of [{ httpStatus: 429 }, { httpStatus: 503 }, { malformed: true as const }]) test(`上游失败 ${fault.httpStatus ?? '异常SSE'} 不成为成功建议，不换档`, async () => {
   const f = await collaborationRuntime(`u115-upstream-${fault.httpStatus ?? 'sse'}`, call => call.kind === 'agent'
     ? call.index === 0 ? consult : { text: '咨询未完成，继续核对原因。' }
-    : { text: '', ...fault }, { allowAll: true })
+    : { text: '', ...fault })
   try {
     f.shell.key({ kind: 'paste', text: '核对证据' }); f.shell.key({ kind: 'enter' })
     await f.wait('上游失败落账', () => f.delegation()?.deliveryMessageId !== undefined || f.errors.length > 0)

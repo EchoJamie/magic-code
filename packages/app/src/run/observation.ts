@@ -1,9 +1,7 @@
 import type { MagicConfig, McpConnection, RulesProblem } from '@magic/contracts'
-import type { RuleProblem } from '@magic/permission'
 /** 常驻核心的只读控制面：只取配置、目录、缓存和记录，不装配执行者或连接外部服务。 */
 import type {
   Command,
-  DecisionHistory,
   EventDataOf,
   EventKind,
   KernelEvent,
@@ -18,7 +16,7 @@ import type {
   SkillCatalog,
   WorkspaceService,
 } from '@magic/contracts'
-import { GRANTS_FILE_NAME, apiKeyEnvVarOf } from '@magic/contracts'
+import { apiKeyEnvVarOf } from '@magic/contracts'
 import { DEFAULT_CANDIDATES, createMaterials, createSkills, createWorkspaceService } from '@magic/execution'
 import type { ModelInfoService } from '@magic/model'
 import {
@@ -28,14 +26,10 @@ import {
   resolveConnection,
   vendorCatalog,
 } from '@magic/model'
-import { createGrantLedger } from '@magic/permission'
 import type { RecordsStore } from '@magic/records'
-import { statSync } from 'node:fs'
-import { join } from 'node:path'
 import { resolveModelChoice } from '../agent-models.ts'
 import { cacheAccessFor } from '../cache-access.ts'
 import { ConfigError, loadConfig, type LoadedConfig } from '@magic/config'
-import { loadGrants } from '../grants-file.ts'
 import { createFileModelInfoCache } from '../model-cache.ts'
 import { createModelsDevResource } from '../models-dev-resource.ts'
 
@@ -130,21 +124,6 @@ export async function pathsCatalog(materials: Materials, query: string): Promise
   }
 }
 
-export function grantsCatalog(
-  view: Pick<EventDataOf['grants.catalog'], 'workspace' | 'grants' | 'stale'>,
-  decisions: EventDataOf['grants.catalog']['decisions'],
-  history: DecisionHistory,
-  ...notes: readonly (string | undefined)[]
-): EventDataOf['grants.catalog'] {
-  const note = notes.filter((line): line is string => line !== undefined).join('；')
-  return { ...view, decisions, history, ...(note === '' ? {} : { note }) }
-}
-
-export function grantsTrouble(path: string, unreadable?: string): string | undefined {
-  return unreadable === undefined ? undefined : `授权文件读不懂——${path}：${unreadable}` +
-    '。本次一条都没加载，也不改动这个文件；改对之后，下次启动就恢复'
-}
-
 export function mcpCatalog(servers: readonly McpCatalogRow[], note?: string): EventDataOf['mcp.catalog'] {
   return { servers, ...(note === undefined ? {} : { note }) }
 }
@@ -152,7 +131,7 @@ export function mcpCatalog(servers: readonly McpCatalogRow[], note?: string): Ev
 export type ObservationContext = {
   readonly magic: MagicHome
   readonly cwd: string
-  readonly store: Pick<RecordsStore, 'readEntries' | 'blobs' | 'listSessions' | 'decisionHistory'>
+  readonly store: Pick<RecordsStore, 'readEntries' | 'blobs' | 'listSessions'>
   readonly session?: string | null
   /** 无执行者时保存的明确模型选择；缺省读配置默认，不构造注册表。 */
   readonly selection?: ModelSelectionRef
@@ -163,7 +142,7 @@ export type ObservationContext = {
 }
 
 const READ_COMMANDS = new Set<Command['type']>([
-  'model.list', 'provider.list', 'skills.list', 'paths.list', 'grants.list', 'mcp.list',
+  'model.list', 'provider.list', 'skills.list', 'paths.list', 'mcp.list',
 ])
 
 /** undefined 只表示这不是本出口处理的只读命令；读取失败抛出具体错误，由管理者回报。 */
@@ -191,12 +170,6 @@ export async function query(command: Command, context: ObservationContext): Prom
     sources: loaded.config.skills?.sources ?? [],
   }).discover())))
   if (command.type === 'paths.list') return stamp('paths.catalog', await pathsCatalog(createMaterials({ workspace }), command.query))
-  if (command.type === 'grants.list') {
-    const file = readGrantView(context.magic, workspace, now)
-    return stamp('grants.catalog', grantsCatalog(file.view,
-      { total: 0, uncovered: 0, vetoed: 0 }, context.store.decisionHistory(workspace.roots()),
-      grantsTrouble(file.path, file.unreadable), file.note))
-  }
   return undefined
 }
 
@@ -229,18 +202,6 @@ export async function readModelCatalog(loaded: LoadedConfig, magic: MagicHome, s
       const config = providers[provider]
       return config === undefined ? undefined : modelSpecOf(config, model, info.model(provider, model)).inputBudget
     },
-  }
-}
-
-/** 配置诊断与核心目录共用的纯文件读面；活跃执行者仍读自己的内存账本。 */
-export function readGrantView(magic: MagicHome, workspace: WorkspaceService, now = Date.now) {
-  const file = loadGrants(join(magic.base, GRANTS_FILE_NAME))
-  const grants = createGrantLedger({ workspace: workspace.defaultRoot(), file: file.file, now })
-  return {
-    ...file, view: {
-      workspace: workspace.defaultRoot(), grants: grants.view(),
-      stale: grants.sections().filter((path) => { try { return !statSync(path).isDirectory() } catch { return true } }),
-    }
   }
 }
 
@@ -304,22 +265,13 @@ export function providerRemovedNote(
 }
 
 export function noticesOf(
-  rejectedRules: readonly RuleProblem[],
-  grantsNotes: readonly string[],
-  configPath: string,
   rulesProblems: readonly RulesProblem[],
   connections: readonly McpConnection[],
 ): readonly string[] {
   const said: string[] = []
 
-  if (rejectedRules.length > 0) {
-    said.push(
-      `配置里有 ${rejectedRules.length} 条权限规则读不懂（未生效）——${configPath}（\`--check\` 看缘由）`,
-    )
-  }
   // **只数「坏了」那一类**（2026-09-20 裁）：取舍那类（原生顶掉同名的兼容规则、AGENTS
   // 顶掉 CLAUDE）是**产品按设计做的选择**——为它每次开屏报一句就是噪音，而它**不是故障**。
-  // 用户要查「我写的那份为什么没在管」，`--check` 里逐条列着（口径同权限规则那句）。
   const broken = rulesProblems.filter((problem) => problem.kind === 'error')
   if (broken.length > 0) {
     said.push(`项目规约里有 ${broken.length} 条没能加载（\`--check\` 看缘由）`)
@@ -333,7 +285,6 @@ export function noticesOf(
       })),
     ),
   )
-  said.push(...grantsNotes)
 
   return said
 }
