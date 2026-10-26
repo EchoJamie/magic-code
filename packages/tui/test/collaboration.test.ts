@@ -296,6 +296,24 @@ test('等待查询时取消保留草稿，晚到快照不重新打开协作界�
   expect(shell.getView().draft).toBe('继续编辑的整体草稿')
 })
 
+test('/resume 只列顶层会话：子会话不占行，选主会话即返回', () => {
+  const app = collaborationStage()
+  app.enter()
+  app.text('/resume ')
+  app.key('enter')
+  app.spy.emit(event('session.state', { active: 'member', sessions: [
+    { archived: false, id: 'origin', title: '修复回调', at: 0 },
+    { archived: false, id: 'member', at: 0 },
+  ] }))
+  const dock = app.view().dock
+  if (dock.kind !== 'picker' || dock.picker.source !== 'session') throw new Error('会话目录没有打开')
+  expect(dock.picker.rows.some(row => row.value === 'member')).toBe(false)
+  expect(dock.picker.rows.some(row => row.value === 'origin')).toBe(true)
+  app.pick('origin')
+  expect(app.view().sessionId).toBe('origin')
+  expect(app.spy.commands.some(command => command.type === 'session.open' && command.session === 'origin')).toBe(true)
+})
+
 test('从子会话退出时给出主会话的恢复命令', () => {
   const app = collaborationStage()
   app.enter()
