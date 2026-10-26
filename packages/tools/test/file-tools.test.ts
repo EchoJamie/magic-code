@@ -94,6 +94,46 @@ describe('read', () => {
     expect(sandbox.reads).toEqual([])
   })
 
+  test('未声明字段一次报出工具名与可用字段——去掉 offset 即可改，不必绕 exec（D64）', async () => {
+    // 实测：模型两次带 offset，两次只收到「未声明字段 offset」，随后改走 sed。
+    // 这一条钉的是「一次就够改」——工具名 ＋ 可用字段都在同一句里，且在授权之前返回。
+    const { runtime, sandbox, gate } = makeToolDeps()
+
+    const result = await runtime.invoke(
+      { id: 'c1', name: 'read', args: { path: 'a.txt', offset: 10 } },
+      {},
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.output).toBe('参数错误（read）：未声明字段 offset；可用字段：path')
+    expect(sandbox.reads).toEqual([])
+    expect(gate.requests).toHaveLength(0) // D58：参数错在授权之前，不会先问一次
+  })
+
+  test('描述说清只接受 path、整文件读取与截断（D64：行范围不是这一件的参数）', () => {
+    const { runtime } = makeToolDeps()
+    const spec = runtime.definitions().find((definition) => definition.name === 'read')
+    const parameters = spec?.parameters as {
+      description?: string
+      properties?: Record<string, unknown>
+    } | undefined
+
+    expect(parameters?.description).toContain('只接受 path')
+    expect(parameters?.description).toContain('整个文件')
+    expect(parameters?.description).toContain('截断')
+    expect(parameters?.description).toContain('没有 offset')
+    expect(Object.keys(parameters?.properties ?? {})).toEqual(['path'])
+  })
+
+  test('有效调用照旧只经过既有权限判定一次（D64 只改错误文案）', async () => {
+    const { runtime, gate } = makeToolDeps()
+
+    const result = await runtime.invoke({ id: 'c1', name: 'read', args: { path: 'a.txt' } }, {})
+
+    expect(result.ok).toBe(true)
+    expect(gate.requests).toHaveLength(1)
+  })
+
   test('危险归类＝轻（照契约冻结行声明，本域不判）', async () => {
     const { runtime } = makeToolDeps()
     const spec = runtime.definitions().find((definition) => definition.name === 'read')
