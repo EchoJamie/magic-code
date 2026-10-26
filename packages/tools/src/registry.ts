@@ -130,7 +130,19 @@ export function defineTool<A extends Readonly<Record<string, unknown>>>(definiti
       const prepared = definition.prepare(args)
       const schema = definition.spec.parameters
       if (schema.additionalProperties === false && typeof schema.properties === 'object' && schema.properties !== null) {
-        for (const key of Object.keys(args)) if (!Object.hasOwn(schema.properties, key)) throw new Error(`参数错误：未声明字段 ${key}`)
+        /**
+         * **一次就够改**（D64）：只说「未声明字段」，模型只能猜允许哪些——
+         * 实测里它两次撞同一句，然后改走 `exec`（一条绕开工具语义的路）。
+         * 这条错要一次把**可用字段**交出来：读到 `可用字段：path`，去掉多给的键即可，
+         * 不必换工具、不必试第二遍。工具名也带上——几件工具同时在场时，光看键名不知是谁。
+         */
+        const available = Object.keys(schema.properties)
+        const listed = available.length === 0 ? '无（本工具不接受参数）' : available.join('、')
+        for (const key of Object.keys(args)) {
+          if (!Object.hasOwn(schema.properties, key)) {
+            throw new Error(`参数错误（${definition.spec.name}）：未声明字段 ${key}；可用字段：${listed}`)
+          }
+        }
       }
       return prepared
     },

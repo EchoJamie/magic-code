@@ -116,6 +116,54 @@ describe('grep', () => {
     expect(sandbox.matches).toEqual([])
   })
 
+  test('路径与模式传反：失败一次说清两个键是什么并给出调用形状（D64）', async () => {
+    // 实测：模型把模式塞进 path，沙箱回「不是目录——模式 …」，模型只能再猜。
+    // 判据：同一条失败里读得到「pattern 是正则 / path 是可选目录 / 须为目录 /
+    // grep(pattern, path?)」，且名分只出现一次（D41 的重复随搜索措辞一并收掉）。
+    for (const reason of [
+      '搜索失败（/work/proj/a.ts）：不是目录——模式 a.ts',
+      '搜索失败（/work/proj/no-such）：目录不存在——模式 x',
+    ]) {
+      const failing = { ...makeFauxSandbox(), match: () => Promise.reject(new Error(reason)) }
+      const { runtime, gate } = makeToolDeps({ sandbox: failing })
+
+      const result = await runtime.invoke(
+        { id: 'c1', name: 'grep', args: { pattern: 'src/a.ts', path: 'a.ts' } },
+        {},
+      )
+
+      expect(result.ok).toBe(false)
+      expect(result.output).toContain('pattern 是正则')
+      expect(result.output).toContain('path 是可选目录')
+      expect(result.output).toContain('须为目录')
+      expect(result.output).toContain('grep(pattern, path?)')
+      expect(result.output.split('搜索失败').length - 1).toBe(1)
+      // 两个键都是串 ⇒ 先走既有权限判定；失败发生在裁决之后（权限路径不变）
+      expect(gate.requests).toHaveLength(1)
+    }
+  })
+
+  test('描述写清 pattern 是正则、path 是可选目录（D64）', () => {
+    const { runtime } = makeToolDeps()
+    const spec = runtime.definitions().find((definition) => definition.name === 'grep')
+    const parameters = spec?.parameters as {
+      properties?: Record<string, { description?: string }>
+    } | undefined
+
+    expect(parameters?.properties?.['pattern']?.description).toContain('正则')
+    expect(parameters?.properties?.['pattern']?.description).toContain('不是路径')
+    expect(parameters?.properties?.['path']?.description).toContain('可选目录')
+  })
+
+  test('有效调用照旧只经过既有权限判定一次（D64 只改错误文案）', async () => {
+    const { runtime, gate } = makeToolDeps()
+
+    const result = await runtime.invoke({ id: 'c1', name: 'grep', args: { pattern: 'x' } }, {})
+
+    expect(result.ok).toBe(true)
+    expect(gate.requests).toHaveLength(1)
+  })
+
   test('危险归类＝轻（照契约冻结行声明）', async () => {
     const { runtime } = makeToolDeps()
     const spec = runtime.definitions().find((definition) => definition.name === 'grep')

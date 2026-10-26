@@ -14,6 +14,7 @@ import type { ListEntry, MatchHit } from '@magic/contracts'
 import { isText } from './args.ts'
 import {
   cappedOutput,
+  grepFailedOutput,
   OUTPUT_EMPTY_DIR,
   OUTPUT_NO_MATCH,
   OUTPUT_PATH_REQUIRED,
@@ -42,11 +43,20 @@ const SCOPE_KEY = {
 
 export const GREP_PARAMETERS = {
   type: 'object',
+  /**
+   * **两个键各是什么，描述里就写清**（D64）——实测里模型把路径与模式传反，
+   * 直到沙箱回一句「不是目录」才停。`pattern` 是正则、`path` 是**可选目录**；
+   * 正确形状 `grep(pattern, path?)`。描述与失败文案说同一句话，免得两处口径不一。
+   */
   description:
-    '按正则搜索文件内容（逐行匹配，命中给「路径:行号: 该行原文」）。递归搜索；跳过 .git 与 node_modules；命中数有上限。',
+    '按正则搜索文件内容（逐行匹配，命中给「路径:行号: 该行原文」）。递归搜索；跳过 .git 与 node_modules；命中数有上限。' +
+    '参数形状：grep(pattern, path?)——pattern 是正则，path 是可选目录。',
   properties: {
-    pattern: { ...PATTERN_KEY, description: 'JavaScript 正则（不是 glob 模式）' },
-    path: SCOPE_KEY,
+    pattern: { ...PATTERN_KEY, description: 'JavaScript 正则（不是路径，也不是 glob 模式）' },
+    path: {
+      ...SCOPE_KEY,
+      description: '可选目录——搜索起点；相对按工作区默认根，工作区外目标需明确授权；缺省＝工作区根',
+    },
   },
   required: ['pattern'],
   additionalProperties: false,
@@ -131,7 +141,9 @@ async function runSearch(
     })
     return { ok: true, output: composeHits(hits, SEARCH_MAX_RESULTS) }
   } catch (error) {
-    return refused(searchFailedOutput(reasonOf(error)))
+    // grep 那一支补上「键各是什么 ＋ 调用形状」（D64）；glob 措辞不动（见 messages.ts 注）
+    const reason = reasonOf(error)
+    return refused(mode === 'grep' ? grepFailedOutput(reason) : searchFailedOutput(reason))
   }
 }
 

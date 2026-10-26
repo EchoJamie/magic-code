@@ -49,7 +49,15 @@ import { refused, reasonOf, rowOf } from './toolkit.ts'
  */
 export const READ_PARAMETERS = {
   type: 'object',
-  description: '读一个文件。内容超长会被截断（只读到前一段）。',
+  /**
+   * **只接受 `path`**（D64）——实测里模型两次带 `offset` 调 `read`，两次撞在
+   * 「未声明字段 offset」上，随后改走 `sed`。本单不扩行范围（那会把「读一个文件」
+   * 变成另一件工具），但要**在描述里就说清**：一次读整份，超长才截断；行范围不是
+   * 这一件的参数。模型据此去掉 `offset` 即可，不必绕 `exec`。
+   */
+  description:
+    '读一个文件——只接受 path，一次读取整个文件（内容超长时只读到前一段，并明确标注截断）。' +
+    '没有 offset / limit 之类的行范围参数。',
   properties: {
     path: {
       type: 'string',
