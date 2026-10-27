@@ -1,8 +1,7 @@
 import { materialTextOf } from './material.ts'
-import { projectMemoryPlan } from './memory.ts'
 /**
- * 计划只从当前事项投影。
- * 历史分页沿实际摘要覆盖边界读取公开材料，旧摘要仍按原记录结构兼容读取。
+ * 计划从真实 plan_update 工具结果读取。
+ * 历史分页沿已提交覆盖边界读取原始材料。
  */
 
 import type {
@@ -16,7 +15,7 @@ import type {
   RecordsService,
   SessionId,
 } from '@magic/contracts'
-import { DEFAULT_NEAR_ENTRIES, toolCallPayloadOf } from './context.ts'
+import { toolCallPayloadOf } from './context.ts'
 
 /**
  * 历史回查定位摘要的反向扫描页大小。
@@ -32,14 +31,19 @@ export const HISTORY_ENTRY_CHARS = 2000
 /** 一页正文合计上限（字符）——条数与字符数两道闸，谁先到算谁。 */
 export const HISTORY_PAGE_CHARS = 8000
 
-/** 当前计划从同一份工作记忆投影，读取不迁移或修改记录。 */
-export async function readPlanOf(records: RecordsService): Promise<PlanSnapshot> {
-  const memory = records.memory.read()
-  const plan = projectMemoryPlan(memory)
-  const knowledge = plan === null ? [] : memory.items.filter(item => item.status === 'active').flatMap(item => item.knowledge ?? [])
-  return { ...(knowledge.length ? { knowledge } : {}), revision: memory.revision,
-    entry: memory.inspectedThrough ?? memory.items.flatMap(item => item.sources.map(source => source.entry)).at(-1) ?? null,
-    plan }
+/** 当前计划独立保存，读取不迁移或修改记录。 */
+export function readPlanOf(records: RecordsService, session: SessionId): PlanSnapshot {
+  let before: number | undefined
+  for (;;) {
+    const entries = records.readEntriesBack(session, before, SCAN_CHUNK)
+    for (const entry of entries.toReversed()) {
+      if (entry.kind === 'tool-result' && entry.payload !== undefined && 'plan' in entry.payload && entry.payload.ok && entry.payload.plan !== undefined) {
+        return { entry: entry.id, plan: entry.payload.plan }
+      }
+    }
+    if (entries.length < SCAN_CHUNK) return { entry: null, plan: null }
+    before = entries[0]!.id
+  }
 }
 
 // ══ 历史回查 ═════════════════════════════════════════════════════════
@@ -91,96 +95,15 @@ async function historyEntryOf(
   }
 }
 
-/**
- * 当前**活动窗口**在记录里的位置——回查据此知道「打到哪儿为止」。
- *
- * 三支各对应 `planContext` 的一支（**同一个答案，只是不必把整条会话读进来**）：
- *
- * | 会话 | `planContext.entries[0]` | 这一支 |
- * | --- | --- | --- |
- * | 没压过 | 会话第一条 | `none`——整条会话都在窗口里，更早的一条没有 |
- * | 压过、留了 K 条近段 | 摘要之前第 K 条 | `before: 它`——那之前的都在窗口之外 |
- * | 压过、近段为空（`nearEntries: 0`） | 摘要之后第一条 | 那一支同上；**一条都没有**（窗口是空的）时给 `anywhere` |
- *
- * ⚠️ **「近段为空」不能漏**（`nearEntries: 0` 是合法策略）：漏了就会把下沿算成
- * 「摘要之前那一条」，于是压缩掉的历史**一条都读不回来**——而它正是回查要去的地方。
- * ⚠️ **`none` 与 `anywhere` 是两回事**，别都写成一个 `undefined`：
- * 前者是「更早的没有」，后者是「窗口里一条都没有，随你从头读」。
- */
-type WindowStart =
-  | { readonly mode: 'none' }
-  | { readonly mode: 'anywhere' }
-  | { readonly mode: 'before'; readonly id: RecordId }
-
-async function windowStart(
-  records: RecordsService,
-  session: SessionId,
-  nearEntries: number,
-): Promise<WindowStart> {
-  const memory = records.memory.read()
-  if (memory.coveredThrough !== null) return { mode: 'before', id: memory.coveredThrough + 1 }
-  const summary = await latestSummaryId(records, session)
-  // 没压过＝整条会话都在窗口里 ⇒ 窗口之前没有更早的记录
-  if (summary === undefined) return { mode: 'none' }
-
-  if (nearEntries > 0) {
-    const near = await records.readEntriesBack(session, summary, nearEntries)
-    const earliest = near[0]
-    if (earliest !== undefined) return { mode: 'before', id: earliest.id }
-  }
-
-  const after = await firstEntryAfter(records, session, summary)
-  return after === undefined ? { mode: 'anywhere' } : { mode: 'before', id: after.id }
-}
-
-/** 摘要之后的第一条条目（近段为空时，窗口就是从它起的）。 */
-async function firstEntryAfter(
-  records: RecordsService,
-  session: SessionId,
-  id: RecordId,
-): Promise<Entry | undefined> {
-  for await (const entry of records.readEntries(session, { from: id + 1 })) return entry
-  return undefined
-}
-
-/** 最近一条 `summary` 条目（压过几次就以最新那次为准——与 `planContext` 同一条）。 */
-async function latestSummaryId(
-  records: RecordsService,
-  session: SessionId,
-): Promise<RecordId | undefined> {
-  let before: RecordId | undefined
-
-  for (;;) {
-    const page = await records.readEntriesBack(session, before, SCAN_CHUNK)
-    if (page.length === 0) return undefined
-
-    for (let index = page.length - 1; index >= 0; index -= 1) {
-      const entry = page[index]
-      if (entry?.kind === 'summary') return entry.id
-    }
-
-    if (page.length < SCAN_CHUNK) return undefined
-    before = page[0]?.id
-    if (before === undefined) return undefined
-  }
-}
-
 /** 缺位置时读的那一页——`before` 之前最近的一页（到头了就是空页 ＋ 一句说明）。 */
 async function readPage(
   records: RecordsService,
   session: SessionId,
-  nearEntries: number,
   before: RecordId | undefined,
 ): Promise<HistoryPage> {
-  const window = before === undefined ? await windowStart(records, session, nearEntries) : undefined
-  if (window?.mode === 'none') {
-    return {
-      entries: [],
-      note: '当前上下文之前还没有更早的记录（还没压缩过；以前发生的事都在现在的上下文里）。',
-    }
-  }
-
-  const floor = before ?? (window?.mode === 'before' ? window.id : undefined)
+  const covered = records.coverage.read().coveredThrough
+  if (before === undefined && covered === null) return { entries: [], note: '当前上下文之前还没有更早的记录（还没压缩过）。' }
+  const floor = before ?? covered! + 1
   const page = await records.readEntriesBack(session, floor, HISTORY_PAGE_ENTRIES)
   if (page.length === 0) {
     return { entries: [], note: '再往前没有更早的记录了（这条会话的开头就是这个位置）。' }
@@ -243,7 +166,6 @@ async function readOne(
 export async function readHistoryOf(
   records: RecordsService,
   session: SessionId,
-  nearEntries: number,
   query: HistoryQuery,
 ): Promise<HistoryPage> {
   if (query.before !== undefined && query.entry !== undefined) {
@@ -254,29 +176,21 @@ export async function readHistoryOf(
   }
 
   return query.entry === undefined
-    ? readPage(records, session, nearEntries, query.before)
+    ? readPage(records, session, query.before)
     : readOne(records, session, query.entry, query.offset ?? 0)
 }
 
 // ══ 端口落地 ═════════════════════════════════════════════════════════
 
-/**
- * 造一对**会话绑定**的只读回调（契约 `PlanReader`）——装配按会话各造一份，交给工具域。
- *
- * `nearEntries` 要与对话域那份上下文策略**同一个数**（窗口边界照它认）：装配把
- * `ContextPolicy` 的覆盖位同时递给两处，两处因此不会各认一段（见 `./policy.ts`）。
- */
+/** 会话绑定的独立计划与有界历史读取。 */
 export function createPlanReader(input: {
   readonly records: RecordsService
   readonly session: SessionId
-  /** 「近段」条数——缺省与上下文装配同源（`DEFAULT_NEAR_ENTRIES`）。 */
-  readonly nearEntries?: number | undefined
 }): PlanReader {
-  const nearEntries = input.nearEntries ?? DEFAULT_NEAR_ENTRIES
 
   return {
-    readPlan: () => readPlanOf(input.records),
-    readHistory: (query) => readHistoryOf(input.records, input.session, nearEntries, query),
+    readPlan: async () => readPlanOf(input.records, input.session),
+    readHistory: (query) => readHistoryOf(input.records, input.session, query),
   }
 }
 

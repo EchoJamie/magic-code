@@ -90,24 +90,21 @@ export function makeFauxRecords(options: FauxRecordsOptions = {}): FauxRecords {
     },
   }
 
-  let memory: import('@magic/contracts').MemorySnapshot = { session: 's', revision: 0, items: [], inspectedThrough: null, summary: null, coveredThrough: null }
   const pendingInputs = new Map<string, StoredInput>()
   return {
-    memory: {
-      read: () => structuredClone(memory),
-      update(input) {
-        if (input.expectedRevision !== memory.revision) return { ok: false, reason: 'revision conflict', snapshot: memory }
-        const items = new Map(memory.items.map(item => [item.id, item]))
-        for (const change of input.changes) items.set(change.id, { ...change, revision: (items.get(change.id)?.revision ?? 0) + 1 })
-        if (input.changes.length > 0 || input.inspectedThrough !== undefined) memory = { ...memory, revision: memory.revision + 1, items: [...items.values()], inspectedThrough: input.inspectedThrough ?? memory.inspectedThrough }
-        return { ok: true, snapshot: memory }
+    coverage: {
+      read() {
+        const summary = entries.findLast(entry => entry.kind === 'summary' && entry.payload !== undefined && 'coveredThrough' in entry.payload && entry.payload.notesSaved === true)
+        return { summary: summary?.id ?? null, coveredThrough: summary?.payload && 'coveredThrough' in summary.payload ? summary.payload.coveredThrough : null }
       },
-      publishSummary(input) {
-        if (input.expectedRevision !== memory.revision || input.previousSummary !== memory.summary) return { ok: false, reason: 'revision conflict', snapshot: memory }
+      publish(input) {
+        const current = this.read()
+        if (current.summary !== input.previousSummary) throw new Error('coverage conflict')
         const id = next++
-        entries.push({ id, kind: 'summary', content: input.content, payload: input.coverage, at: input.at })
-        memory = { ...memory, summary: id, coveredThrough: input.coverage.coveredThrough }
-        return { ok: true, snapshot: memory }
+        entries.push({ id, kind: 'summary', at: input.at, content: { text: '接续材料已保存于本会话工作笔记' }, payload: {
+          from: input.from, coveredThrough: input.through, previousSummary: input.previousSummary, notesSaved: true, sources: [],
+        } })
+        return id
       },
     },
     inputs:{
@@ -152,6 +149,7 @@ export function makeFauxRecords(options: FauxRecordsOptions = {}): FauxRecords {
     readEntries: (_sessionId: SessionId, range?: EntryRange): AsyncIterable<Entry> =>
       (async function* (): AsyncIterable<Entry> {
         for (const entry of entries) {
+          if (entry.kind === 'continuation' && !range?.auxiliary) continue
           if (range?.from !== undefined && entry.id < range.from) continue
           if (range?.to !== undefined && entry.id > range.to) continue
           yield entry
@@ -164,10 +162,10 @@ export function makeFauxRecords(options: FauxRecordsOptions = {}): FauxRecords {
       _sessionId: SessionId,
       before: RecordId | undefined,
       limit: number,
-    ): Promise<readonly Entry[]> => {
+    ): readonly Entry[] => {
       const ceiling = before ?? Number.MAX_SAFE_INTEGER
-      const picked = entries.filter((entry) => entry.id < ceiling).slice(-Math.max(limit, 0))
-      return Promise.resolve(limit <= 0 ? [] : picked)
+      const picked = entries.filter((entry) => entry.id < ceiling && entry.kind !== 'continuation').slice(-Math.max(limit, 0))
+      return limit <= 0 ? [] : picked
     },
 
     readEvents: (sessionId: SessionId): AsyncIterable<KernelEvent> =>

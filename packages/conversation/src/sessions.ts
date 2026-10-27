@@ -66,7 +66,7 @@ export const TITLE_LIMIT = 20
 export type SessionRecordsFace = {
   listSessions(query?: SessionQuery): Promise<readonly SessionSummary[]>
   readEntries(session: SessionId, range?: EntryRange): AsyncIterable<Entry>
-  readEntriesBack(session: SessionId, before: number | undefined, limit: number): Promise<readonly Entry[]>
+  readEntriesBack(session: SessionId, before: number | undefined, limit: number): readonly Entry[]
   readEvents(session: SessionId): AsyncIterable<KernelEvent>
   readonly blobs: BlobStore
 }

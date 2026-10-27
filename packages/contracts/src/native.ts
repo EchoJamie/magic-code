@@ -62,7 +62,8 @@ export type SessionManagement = { readonly session: string; readonly action: 'ar
 export type SessionManagementResult = SessionManagement & { readonly ok: boolean; readonly archived?: boolean; readonly error?: string }
 
 export type NativeRequest =
-  | { readonly t: 'native.memory'; readonly request: string; readonly session: string; readonly offset?: number }
+  | { readonly t: 'native.knowledge'; readonly request: string; readonly session: string; readonly query?: import('./knowledge.ts').KnowledgeQuery }
+  | ({ readonly t: 'native.memory'; readonly request: string; readonly session: string } & import('./notes.ts').NoteReadQuery)
   | ({ readonly t: 'native.memory.source'; readonly request: string; readonly session: string } & Omit<import('./control.ts').MemorySourceRead, 'type' | 'requestId' | 'session'>)
   | { readonly t: 'native.sessions'; readonly request: string; readonly archived?: boolean; readonly workspace?: readonly string[]; readonly search?: string }
   | { readonly t: 'native.history'; readonly request: string; readonly session: string; readonly after?: number; readonly source?: AttentionItem['source'] }
@@ -78,7 +79,8 @@ export type NativeRequest =
   | { readonly t: 'native.delivered'; readonly serviceInstance: string; readonly ids: readonly string[] }
 
 export type NativeResponse =
-  | { readonly t: 'native.memory.result'; readonly request: string; readonly serviceInstance: string; readonly session: string; readonly memory?: import('./memory.ts').MemorySnapshot; readonly unprocessed?: boolean; readonly knowledge?: import('./knowledge.ts').KnowledgePage; readonly material?: import('./memory.ts').MaterialPage; readonly error?: string }
+  | { readonly t: 'native.knowledge.result'; readonly request: string; readonly serviceInstance: string; readonly session: string; readonly knowledge?: import('./knowledge.ts').KnowledgePage; readonly error?: string }
+  | { readonly t: 'native.memory.result'; readonly request: string; readonly serviceInstance: string; readonly session: string; readonly notes?: import('./notes.ts').NoteState; readonly material?: import('./memory.ts').MaterialPage; readonly error?: string }
   | { readonly t: 'native.sessions.result'; readonly request: string; readonly serviceInstance: string; readonly sessions?: readonly NativeSession[]; readonly error?: string }
   | { readonly t: 'native.history.result'; readonly request: string; readonly serviceInstance: string; readonly session: string; readonly entries?: readonly Entry[]; readonly events?: readonly KernelEvent[]; readonly next?: number; readonly done: boolean; readonly error?: string }
   | { readonly t: 'native.session.managed'; readonly request: string; readonly serviceInstance: string; readonly results: readonly SessionManagementResult[] }

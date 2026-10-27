@@ -199,13 +199,11 @@ export function hasPlan(view: ShellView): boolean {
   return (view.plan.plan?.steps.length ?? 0) > 0
 }
 
-/** 工作记忆修订优先；旧记录投影只在尚未收到工作记忆时比较来源记录号。 */
-export function withPlan(view: ShellView, entry: RecordId | null, plan: PlanNote | null, revision?: number): ShellView {
+/** 计划按自身保存记录判断先后，不依赖笔记更新。 */
+export function withPlan(view: ShellView, entry: RecordId | null, plan: PlanNote | null): ShellView {
   const current = view.plan
-  if (revision !== undefined) {
-    if (current.revision !== undefined && revision <= current.revision) return view
-  } else if (current.revision !== undefined || entry === null || current.entry !== null && entry <= current.entry) return view
-  return { ...view, plan: { entry, plan, ...(revision === undefined ? {} : { revision }) } }
+  if (entry === null || current.entry !== null && entry <= current.entry) return view
+  return { ...view, plan: { entry, plan } }
 }
 
 // ══ 左下交互区（四种用法同一位置）════════════════════════════════════
@@ -343,7 +341,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: '/connect', summary: '重连当前会话并刷新，保留草稿' },
   { name: '/clear', summary: '新建会话并清屏，保留历史记录' },
   { name: '/ps', summary: '查看协作成员与后台命令' },
-  { name: '/memory', summary: '查看工作记忆与适用知识' },
+  { name: '/memory', summary: '查看工作笔记与适用知识' },
   { name: '/compact', summary: '压缩当前会话，可附本次重点' },
   { name: '/resume', summary: '查看记录或接回工作' },
   { name: '/rename', summary: '修改当前会话名称' },
@@ -897,7 +895,7 @@ export function reduce(
     case 'plan.changed':
       if (view.sessionId !== null && event.session !== view.sessionId) return view
 
-      return withPlan(view, event.data.entry, event.data.plan, event.data.revision)
+      return withPlan(view, event.data.entry, event.data.plan)
 
     case 'session.managed':
       return view
@@ -1319,7 +1317,7 @@ function appendSettled(view: ShellView, row: LogRow): ShellView {
 
 export function rebuild(view: ShellView, entries: readonly Entry[], options: { readonly plan?: PlanSnapshot; readonly collapseTools?: boolean; readonly timing?: readonly TurnTimingEvent[]; readonly messages?: readonly AgentMessage[] } = {}): ShellView {
 
-  const projected = options.plan === undefined ? view : withPlan(view, options.plan.entry, options.plan.plan, options.plan.revision)
+  const projected = options.plan === undefined ? view : withPlan(view, options.plan.entry, options.plan.plan)
 
   let round: RoundTiming | null = null
   const rounds: RoundTiming[] = []

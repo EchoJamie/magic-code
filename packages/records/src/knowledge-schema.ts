@@ -31,11 +31,6 @@ export function initKnowledgeSchema(db: Database): void {
       revision INTEGER NOT NULL,
       active INTEGER NOT NULL CHECK(active IN (0, 1))
     );
-    CREATE TABLE IF NOT EXISTS knowledge_progress (
-      session TEXT PRIMARY KEY,
-      memory_revision INTEGER NOT NULL,
-      items TEXT NOT NULL
-    );
     `)
     if (rebuild) db.exec("INSERT INTO knowledge_search(id,topic,terms,conclusion,conditions) SELECT id,topic,terms,conclusion,conditions FROM knowledge WHERE status IN ('active','pending')")
   }).immediate()

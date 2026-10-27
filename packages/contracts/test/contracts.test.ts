@@ -234,7 +234,7 @@ export function kernelTransportIsImplementable(): void {
 export function recordsServiceIsImplementable(): void {
   let next = 1
   const records: RecordsService = {
-    get memory(): RecordsService['memory'] { throw new Error('memory not scripted') },
+    get coverage(): RecordsService['coverage'] { throw new Error('memory not scripted') },
     get inputs(): RecordsService['inputs'] { throw new Error('inputs not scripted') },
     get collaboration(): RecordsService['collaboration'] { throw new Error('collaboration not scripted') },
     nextId: () => next++,
@@ -242,7 +242,7 @@ export function recordsServiceIsImplementable(): void {
     appendEvent: () => {},
     readEntries: () => (async function* (): AsyncIterable<Entry> {})(),
     // 倒序、有界读（U34）——空库从后往前也没有
-    readEntriesBack: async () => [],
+    readEntriesBack: () => [],
     readEvents: () => (async function* (): AsyncIterable<KernelEvent> {})(),
     // 在途识别（恢复 ① · U25）——「干净会话」就是一条也说不出：空扫描
     scanInFlight: async (session) => ({ session, openTurn: null, lastTurn: null, calls: [] }),

@@ -1,4 +1,4 @@
-/** 计划投影与历史读取；事项写入由 memory_update 负责。 */
+/** 独立计划更新与原始历史读取。 */
 
 import type {
   HistoryEntry,
@@ -20,10 +20,12 @@ import { refused, reasonOf } from './toolkit.ts'
  * 而那正是「每次都弹卡」或「悄悄免审」两头之一）。
  */
 export const PLAN_READ_TOOL = 'plan_read'
+export const PLAN_UPDATE_TOOL = 'plan_update'
 export const HISTORY_READ_TOOL = 'history_read'
 
-/** 两个读工具名字齐——装配与权限域共用的一处清单。 */
+/** 独立计划与历史工具名——装配与权限域共用。 */
 export const PLAN_TOOL_NAMES: readonly string[] = [
+  PLAN_UPDATE_TOOL,
   PLAN_READ_TOOL,
   HISTORY_READ_TOOL,
 ]
@@ -92,15 +94,9 @@ export function planTextOf(plan: PlanNote): string {
 }
 
 /** 没建立过计划时的回执——**如实说没有**，不编一份空的。 */
-const NO_PLAN = '这个会话还没有计划笔记。需要时用 memory_update 增量维护目标与步骤事项。'
+const NO_PLAN = '这个会话还没有计划。需要时用 plan_update 更新目标与步骤。'
 
-/**
- * 读的回执（`plan_read`）。
- *
- * ⚠️ **读的回执里必须有完整正文**：上下文装配据「这一条结果是不是完整落在窗口里」
- * 判「模型手上有没有最新计划」（`@magic/conversation` · `context.ts` 的计划材料）。
- * 少了正文，模型在压缩之后就真的什么都没有了。
- */
+/** 读取回执保留计划正文；宿主不另造计划消息。 */
 function readReceipt(snapshot: PlanSnapshot): string {
   if (snapshot.entry === null) return NO_PLAN
   if (snapshot.plan === null) {
@@ -170,7 +166,37 @@ function kindLabelOf(entry: HistoryEntry): string {
  * 也按会话各造一份：它们手里的读写范围就是那一条会话，模型给不出第二条。
  */
 export function definePlanTools(reader: PlanReader): readonly ToolDefinition[] {
-  return [readTool(reader), historyTool(reader)]
+  return [updateTool(reader), readTool(reader), historyTool(reader)]
+}
+
+export const PLAN_UPDATE_PARAMETERS = {
+  type: 'object',
+  description: '独立更新当前计划。steps 整体替换；goal/notes 不给时保留，空字符串时清除。清步骤不会删除工作笔记。',
+  properties: {
+    goal: { type: 'string', description: '当前目标' },
+    steps: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] } }, required: ['text', 'status'], additionalProperties: false } },
+    notes: { type: 'string', description: '少量计划补充；认识和依据维护在工作笔记中' },
+  },
+  required: ['steps'], additionalProperties: false,
+} as const
+
+function updateTool(reader: PlanReader): ToolDefinition {
+  return defineTool({
+    spec: { name: PLAN_UPDATE_TOOL, summary: '更新当前目标、步骤及进展', parameters: PLAN_UPDATE_PARAMETERS, danger: { level: 'light' } },
+    prepare(args) {
+      if (!Array.isArray(args.steps) || args.steps.some(step => !step || typeof step.text !== 'string' || !step.text.trim() || !['pending', 'in_progress', 'completed'].includes(step.status))) throw new Error('steps 必须包含有效的 text 和 status')
+      if (args.goal !== undefined && typeof args.goal !== 'string') throw new Error('goal 必须是文字')
+      if (args.notes !== undefined && typeof args.notes !== 'string') throw new Error('notes 必须是文字')
+      return args as { steps: PlanStep[]; goal?: string; notes?: string }
+    },
+    async run(args) {
+      const previous = (await reader.readPlan()).plan
+      const goal = (args.goal ?? previous?.goal)?.trim()
+      const notes = args.notes ?? previous?.notes ?? ''
+      const plan = { ...(goal ? { goal } : {}), steps: args.steps, notes }
+      return { ok: true, output: planTextOf(plan), plan }
+    },
+  })
 }
 
 function readTool(reader: PlanReader): ToolDefinition {

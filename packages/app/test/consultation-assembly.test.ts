@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { realpathSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, realpathSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRecordsStore } from '@magic/records'
 import { createFauxGateway, type FauxTurn } from '@magic/faux'
@@ -20,7 +20,7 @@ for (const limited of [false, true]) test(`可信用途优先于普通全工具�
     scope: '查证', source: origin, authorization: [origin], body: [{ kind: 'text', text: '只读问题' }], at: 1 })
   r.respondToDelegation(advisor.agent.agentId, { operationId: 'accept', delegationId: advisor.delegation.delegationId, response: 'accept', at: 1 })
   writeFileSync(join(stage.workspace, 'probe.txt'), '原值')
-  const advisorSource = store.serviceFor('advisor').appendEntry({ kind: 'user', content: { text: '只读核对并维护自身记忆' }, at: 2 })
+  store.serviceFor('advisor').appendEntry({ kind: 'user', content: { text: '只读核对并维护自身记忆' }, at: 2 })
   expect(store.knowledge.write([{ id: 'known', expectedRevision: 0, scope: { kind: 'project', workspace: [realpathSync(stage.workspace)] }, topic: '已知', terms: [], conclusion: '已有可复用认识', conditions: '核对后使用', evidence: 'fact', status: 'active', sources: [{ session: 'origin', entry: entryId }], dependencies: [] }]).ok).toBe(true)
   store.close()
   const turns: readonly FauxTurn[] = [{ toolCalls: [
@@ -29,8 +29,8 @@ for (const limited of [false, true]) test(`可信用途优先于普通全工具�
     { name: 'knowledge_source', args: { id: 'known', session: 'origin', entry: entryId } },
     { name: 'knowledge_update', args: { id: 'known', expectedRevision: 1, changes: { conclusion: '越权修改' } } },
     { name: 'write', args: { path: 'probe.txt', content: '错误副作用' } }, { name: 'read', args: { path: 'probe.txt' } },
-    { name: 'memory_update', args: { expectedRevision: 0, changes: [{ id: 'own', kind: 'requirement', text: '只读核对', evidence: 'fact', status: 'active', sources: [{ session: 'advisor', entry: advisorSource }] }] } },
-    { name: 'memory_update', args: { session: 'origin', expectedRevision: 1, changes: [{ id: 'foreign', kind: 'fact', text: '伪造其他会话来源', evidence: 'fact', status: 'active', sources: [{ session: 'origin', entry: entryId }] }] } },
+    { name: 'write', args: { path: join(stage.dataDir, 'notes', 'advisor', 'MEMORY.md'), content: '只读核对' } },
+    { name: 'write', args: { path: join(stage.dataDir, 'notes', 'origin', 'MEMORY.md'), content: '越权写入' } },
   ] }, { text: '建议' }]
   let gateway: ReturnType<typeof createFauxGateway> | undefined
   const app = stage.assemble({ session: 'advisor', collaboration: async () => ({ ok: false, reason: '未调用协作操作' }), modelGateway(stamper) {
@@ -44,8 +44,8 @@ for (const limited of [false, true]) test(`可信用途优先于普通全工具�
     expect(readFileSync(join(stage.workspace, 'probe.txt'), 'utf8')).toBe('原值')
     const outputs = shell.events.filter(event => event.kind === 'tool.result')
     expect(outputs.map(event => event.data.ok)).toEqual([true, true, true, false, false, true, true, false])
-    expect(app.records.serviceFor('advisor').memory.read().items.map(item => item.id)).toEqual(['own'])
-    expect(app.records.serviceFor('origin').memory.read().items).toHaveLength(0)
+    expect(readFileSync(join(stage.dataDir, 'notes', 'advisor', 'MEMORY.md'), 'utf8')).toBe('只读核对')
+    expect(existsSync(join(stage.dataDir, 'notes', 'origin', 'MEMORY.md'))).toBe(false)
     expect(JSON.stringify(gateway!.requests)).toContain('原值')
     const names = gateway!.requests[0]!.tools!.map(tool => tool.name)
     expect(names).toContain('knowledge_search')
@@ -66,20 +66,20 @@ for (const limited of [false, true]) test(`可信用途优先于普通全工具�
 test('普通角色仅开放read时仍可实际维护自身记忆，业务写入仍被白名单拒绝', async () => {
   const stage = makeStage({ config: { agentRoles: { reader: { name: '查证', instructions: '只读检查', tools: ['read'] } } } })
   const store = createRecordsStore({ dataDir: stage.dataDir, workspace: [realpathSync(stage.workspace)] })
-  const source = store.serviceFor('reader').appendEntry({ kind: 'user', content: { text: '只读要求' }, at: 1 })
+  store.serviceFor('reader').appendEntry({ kind: 'user', content: { text: '只读要求' }, at: 1 })
   store.collaboration.registerAgent({ operationId: 'reader', sessionId: 'reader', name: '查证', role: 'reader',
     model: { protocol: 'chat-completions', endpoint: 'https://models.example/v1', choice: 'default', provider: 'test', model: 'test' }, at: 1 })
   store.close()
   writeFileSync(join(stage.workspace, 'probe.txt'), '原值')
   const app = stage.assemble({ session: 'reader', turns: [{ toolCalls: [
-    { name: 'memory_update', args: { expectedRevision: 0, changes: [{ id: 'rule', kind: 'requirement', text: '只读要求', evidence: 'fact', status: 'active', sources: [{ session: 'reader', entry: source }] }] } },
+    { name: 'write', args: { path: join(stage.dataDir, 'notes', 'reader', 'MEMORY.md'), content: '只读要求' } },
     { name: 'write', args: { path: 'probe.txt', content: '不允许的改动' } },
   ] }, { text: '完成查证' }] })
   const shell = attachShell(app.shell)
   try {
     await shell.submit('继续只读检查')
     expect(shell.events.filter(event => event.kind === 'tool.result').map(event => event.data.ok)).toEqual([true, false])
-    expect(app.records.serviceFor('reader').memory.read().items[0]?.text).toBe('只读要求')
+    expect(readFileSync(join(stage.dataDir, 'notes', 'reader', 'MEMORY.md'), 'utf8')).toBe('只读要求')
     expect(readFileSync(join(stage.workspace, 'probe.txt'), 'utf8')).toBe('原值')
   } finally { shell.dispose(); app.close(); stage.dispose() }
 })

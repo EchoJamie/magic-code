@@ -13,7 +13,7 @@ import { attachShell } from '../src/shell.ts'
 import { magicAt, tempDir, removeDir } from './tmp.ts'
 
 type Wire = { route: string; body: Record<string, unknown> }
-const readerTools = ['read', 'memory_read', 'memory_update', 'source_read', 'knowledge_search', 'knowledge_read', 'knowledge_source', 'knowledge_update']
+const readerTools = ['read', 'write', 'edit', 'grep', 'glob', 'ls', 'source_read', 'knowledge_search', 'knowledge_read', 'knowledge_source', 'knowledge_update', 'plan_update', 'plan_read']
 function setup(rolePatch: Partial<AgentRoleConfig> = {}, image?: boolean) {
   const root = tempDir('magic-collaboration-models-')
   const magic = magicAt(root)
@@ -238,7 +238,7 @@ describe('成员主机装配', () => {
     }
   })
 
-  test('即使绕过协作循环准入，隐藏的 write 也不能执行', async () => {
+  test('即使绕过协作循环准入，面向自身笔记的 write 不能越权写业务文件', async () => {
     const f = setup()
     const app = f.open('member', false)
     const shell = attachShell(app.shell)

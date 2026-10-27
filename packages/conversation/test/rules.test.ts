@@ -287,19 +287,17 @@ describe('无路径规则 —— 首次模型调用前载入', () => {
     expect(JSON.stringify(stage.records.entries)).not.toContain('本项目一律中文')
   })
 
-  test('**压缩过也还在**：摘要顶掉的是旧对话，规约挂在系统提示词上', async () => {
+  test('**压缩过也还在**：覆盖移出的是旧对话，规约挂在系统提示词上', async () => {
     const answer = (): RulesLoad => load([doc('AGENTS.md', '本项目一律中文')])
     const { stage, runtime } = stageWith(answer, [{ text: '好' }])
-    // 造一条摘要条目（真压缩的产物）——它一进来，旧段就被顶掉了
-    stage.records.appendEntry({ kind: 'summary', content: { text: '此前对话的摘要' }, at: 1 })
+    const through = stage.records.appendEntry({ kind: 'user', content: { text: '旧交代' }, at: 1 })
+    stage.records.coverage.publish({ previousSummary: null, from: through, through, at: 2, notesSaved: true })
 
     await run(runtime, '接着干')
 
     expect(systemOf(stage, 0)).toContain('本项目一律中文')
-    // 摘要确实生效了（这一趟真有它），故上面那条断言不是空转
-    const summary = stage.gateway.requests[0]?.messages[1]
-    expect(summary?.role).toBe('user')
-    expect(summary?.role === 'user' ? summary.content : '').toContain('此前对话的摘要')
+    expect(JSON.stringify(stage.gateway.requests[0]?.messages)).not.toContain('旧交代')
+    expect(stage.gateway.requests[0]?.messages[1]).toEqual({ role: 'user', content: '接着干' })
   })
 
   test('改过的规约**下一趟就是新的**（每趟现读，不缓存）', async () => {

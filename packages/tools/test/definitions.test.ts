@@ -53,7 +53,7 @@ describe('定义与注册', () => {
       }
     }
 
-    expect(keysOf('read')).toEqual({ properties: ['path'], required: ['path'] })
+    expect(keysOf('read')).toEqual({ properties: ['offset', 'limit', 'path'], required: ['path'] })
     expect(keysOf('write')).toEqual({ properties: ['path', 'content'], required: ['path', 'content'] })
     expect(keysOf('edit')).toEqual({
       properties: ['path', 'old', 'new'],

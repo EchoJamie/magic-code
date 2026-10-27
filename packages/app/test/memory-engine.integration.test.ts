@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { expect, test } from 'bun:test'
 import { createRecordsStore } from '@magic/records'
 import { createShell } from '@magic/tui'
@@ -22,7 +24,10 @@ test('真实 TUI→Engine→记录读取/来源链不启动执行者，纠正绑
   const original = '必须保持这一条原始要求。'.repeat(900) + '来源原文末尾'
   const entry = records.appendEntry({ kind: 'user', content: { text: original }, at: 1 })
   store.serviceFor('other').appendEntry({ kind: 'user', content: { text: '另一会话' }, at: 2 })
-  records.memory.update({ expectedRevision: 0, inspectedThrough: entry, changes: [{ id: 'requirement', kind: 'requirement', text: '长期要求', evidence: 'fact', status: 'active', sources: [{ session: 'session', entry }] }] })
+  const note = join(magic.base, 'notes', 'session', 'MEMORY.md')
+  mkdirSync(join(magic.base, 'notes', 'session'), { recursive: true })
+  const content = `长期要求 [原文](session#${entry})`
+  writeFileSync(note, content)
   let launched = 0
   const started = await startManager({ magic, paths: runPathsOf(magic, '/tmp'), launch: { spawn() { launched++; throw new Error('只读操作不得启动执行者') } } })
   if (started.role !== 'manager') { store.close(); removeDir(root); throw new Error(`Engine 未启动：${JSON.stringify(started)}`) }
@@ -45,7 +50,7 @@ test('真实 TUI→Engine→记录读取/来源链不启动执行者，纠正绑
     await until(() => shell.getView().sessionId === 'session')
     type('/memory '); shell.key({ kind: 'enter' })
     await until(() => events.some(event => event.kind === 'memory.state'))
-    select('item:requirement'); select('source:0')
+    select('link:0')
     await until(() => events.some(event => event.kind === 'memory.source'))
     const source = events.find(event => event.kind === 'memory.source')
     if (source?.kind !== 'memory.source' || !source.data.page) throw new Error('未取得来源分页')
@@ -62,20 +67,20 @@ test('真实 TUI→Engine→记录读取/来源链不启动执行者，纠正绑
     expect(pages).toBeGreaterThan(1)
     expect(text).toBe(original)
     for (let n = 0; n < pages; n++) shell.key({ kind: 'escape' })
-    select('correct')
-    expect(shell.getView().refs[0]).toMatchObject({ kind: 'memory', source: 'requirement', revision: 1, scope: { kind: 'session', session: 'session' } })
-    expect(records.memory.read().revision).toBe(1)
+    select('correct-note')
+    expect(shell.getView().refs[0]).toMatchObject({ kind: 'note', source: 'MEMORY.md', session: 'session' })
+    expect(readFileSync(note, 'utf8')).toBe(content)
     expect(commands.some(command => command.type === 'input.submit')).toBe(false)
     // 换目标后不得把旧会话的纠正变成对新会话的交代，更不能为拒绝动作启动 Agent。
     client.send({ type: 'session.open', session: 'other' })
     await until(() => shell.getView().sessionId === 'other')
     client.send({ type: 'input.submit', ref: 'wrong-correction-target', text: '纠正旧事项', refs: [{
-      kind: 'memory', source: 'requirement', revision: 1, scope: { kind: 'session', session: 'session' }, at: 0, marker: '纠正旧事项',
+      kind: 'note', source: 'MEMORY.md', session: 'session', at: 0, marker: '纠正旧事项',
     }] })
     await until(() => events.some(event => event.kind === 'input.settled' && event.data.ref === 'wrong-correction-target'))
     expect(events.findLast(event => event.kind === 'input.settled')).toMatchObject({ session: 'other', data: { ok: false, reason: expect.stringContaining('发送目标不一致') } })
     expect(store.serviceFor('other').inputs.list()).toEqual([])
-    expect(records.memory.read().revision).toBe(1)
+    expect(readFileSync(note, 'utf8')).toBe(content)
     expect(launched).toBe(0)
     expect(started.manager.executors()).toHaveLength(0)
   } finally {
@@ -83,7 +88,7 @@ test('真实 TUI→Engine→记录读取/来源链不启动执行者，纠正绑
   }
 })
 
-test('真实shell到Engine执行器：会话引用落盘并送达模型，召回守住上界，普通纠正携带对象修订', async () => {
+test('真实shell到Engine执行器：会话引用落盘并送达模型，召回守住上界，普通纠正读取目标当前正文', async () => {
   const { collaborationRuntime } = await import('./run-collaboration-fixture.ts')
   const f = await collaborationRuntime('memory-reference-delivery', () => ({ text: '引用与纠正对象已收到' }))
   const type = (text: string) => { for (const char of text) f.shell.key({ kind: 'char', char }) }
@@ -119,20 +124,22 @@ test('真实shell到Engine执行器：会话引用落盘并送达模型，召回
     await f.wait('历史召回实际送达', () => f.calls.length === 2 && idle())
     expect(main(1)).not.toContain('AFTER_ACCEPT_MUST_STAY_OUT')
     expect(records.inputs.list().filter(row => row.state === 'included')).toHaveLength(2)
-    expect(records.memory.update({ expectedRevision: records.memory.read().revision, changes: [{ id: 'requirement', kind: 'requirement', text: '保留当前约束', evidence: 'fact', status: 'active', sources: [{ session: target, entry: first.entry! }] }] }).ok).toBe(true)
-    const before = records.memory.read()
+    const note = join(f.magic.base, 'notes', target, 'MEMORY.md')
+    mkdirSync(join(f.magic.base, 'notes', target), { recursive: true })
+    const before = '保留当前约束'
+    writeFileSync(note, before)
     type('/memory '); f.shell.key({ kind: 'enter' })
-    await f.wait('工作记忆实际返回', () => { const dock = f.shell.getView().dock; return dock.kind === 'picker' && dock.picker.rows.some(row => row.value === 'item:requirement') })
-    f.pick('item:requirement'); f.pick('correct')
+    await f.wait('工作记忆实际返回', () => { const dock = f.shell.getView().dock; return dock.kind === 'picker' && dock.picker.rows.some(row => row.value === 'correct-note') })
+    f.pick('correct-note')
     expect(f.shell.getView().flash ?? '').not.toContain('已加入纠正对象')
     type(' 修改为仍需逐项验证'); f.shell.key({ kind: 'enter' })
     await f.wait('纠正对象实际送达', () => f.calls.length === 3 && idle())
     expect(main(2)).toContain('本次材料 · 所选纠正对象')
     expect(main(2)).toContain('保留当前约束')
-    const correction = records.inputs.list().find(row => row.input.refs?.some(ref => ref.kind === 'memory'))!
+    const correction = records.inputs.list().find(row => row.input.refs?.some(ref => ref.kind === 'note'))!
     const correctionEntry = (await Array.fromAsync(records.readEntries(target))).find(entry => entry.id === correction.entry)
-    expect(correctionEntry?.payload && 'refs' in correctionEntry.payload && correctionEntry.payload.refs?.[0]).toMatchObject({ kind: 'memory', source: 'requirement', revision: before.items[0]!.revision, scope: { kind: 'session', session: target } })
-    expect(records.memory.read()).toEqual(before)
+    expect(correctionEntry?.payload && 'refs' in correctionEntry.payload && correctionEntry.payload.refs?.[0]).toMatchObject({ kind: 'note', source: 'MEMORY.md', session: target })
+    expect(readFileSync(note, 'utf8')).toEqual(before)
     expect(f.events.filter(event => event.kind === 'error')).toEqual([])
     expect(f.errors).toEqual([])
   } finally { await f.close() }

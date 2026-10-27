@@ -1,57 +1,4 @@
-/**
- * Context 装配 —— **由会话条目重建模型消息**（技术方案 · 领域划分：上下文由对话域装配）。
- *
- * 四步（阶段 3 添了第 ④ 步）：
- * ① 系统提示词即 `role:'system'` 的**首条**消息（提示词部件在 `./prompt/`，装配在 `./service.ts`）；
- * ② **定边界**（`planContext`）——压过的会话：旧段由一条 `summary` 顶掉，近段与新增照旧；
- * ③ 余下条目按序展开——`user` / `assistant`（带 `toolCalls`）/ `tool`（`callId` / `name` / `ok` / `output`）；
- * ④ 条目里的 blob 引用在装配时**解析为文本**（按策略截断）——记录只存引用，正文归装配取回。
- *
- * **工具消息的正文取条目正文、不取载荷**（第 2 轮 · 契约补锚）——工具条目的两个字段载两样
- * 东西：正文＝**面向模型的文本**（工具域 `ToolResult.output`，按上限截断）；载荷＝**记录侧
- * 形态**（`ToolResult.content`，全量，可能是 blob）。送模型的是前者——重放时逐字复原模型
- * 当时看到的那一份；后者留给审计与阶段 2 恢复的处置。
- *
- * **为什么由条目重建**（不是维护一个内存数组）——技术方案 · 记录：「上下文由条目重建」；
- * 恢复（阶段 2）走的也是这条路。代价是每轮多读一次条目，换来的是**记录即真源**：
- * 循环中途崩掉 / 被中止，下一轮装配出来的仍是记录里那个现场。
- *
- * **两处形态缺口（规约 4：本单元自决形态 · 只增不改 · 随回报备案）**：
- *
- * 1. **配对键由条目 id 派生**（`pairingKeyOf`）。契约的 `ToolCall.id` 是**供应商侧**调用 id
- *    （「只用于回填配对」），而条目侧的 `ToolCallPayload` 只有 `{ name, args }`——供应商 id
- *    **不入记录**。故重建期的配对键取「该次 `tool-call` 条目的 id」：回填配对只要求
- *    「助手消息的 `ToolCall.id`」与「工具消息的 `callId`」**同一次请求内自洽**，条目 id
- *    唯一且跨轮稳定，正合此用。供应商 id 是**线上概念**（一次调用内有效），不入记录并无损失。
- *
- * 2. **落单的 `tool-call` 不进上下文**——有调用条目而无结果条目＝进程被杀那一路留下的**在途**
- *    调用（U02 备案：在途识别＝有 `tool.call` 无 `tool.result`）。带 `toolCalls` 而无对应
- *    工具消息的助手消息**会被供应商拒**（整条上下文作废），故此处**不送**；怎么处置这条在途
- *    （重放 / 补偿 / 拒绝）是**恢复**的判据——U25 起在 `@magic/actions`；本单元只保证装配出的
- *    上下文合法（恢复补记之后，那条落单的调用就有回填了，故它不再被跳过）。
- *
- * ## 压缩（阶段 3 · U19）：摘要 ＋ 近段原文
- *
- * 压缩**只动上下文装配，不动记录**（技术方案 · 上下文压缩：append-only 不破）——
- * 记录里一条都不少，少的是**送模型的那一份**：旧段被一条 `summary` 条目顶掉，近段照旧原文。
- *
- * **边界由 `summary` 条目的位置定**（`planContext`）：条目只能追加，故摘要写在旧段**之后**，
- * 而它前面的**最后 `nearEntries` 条**就是「近段」——那是压缩那一刻刻意没压的尾巴，
- * 位置既已固定，装配随时能按同一条规则把它认回来：
- *
- * ```text
- * 条目流： [ 旧段（被压） ][ 近段（原文，K 条） ][ summary ][ 其后新增的（原文）… ]
- *                              ↑ 窗口 = 摘要前 K 条        ↑ 摘要之后的照常展开
- * 送模型： [system][摘要块][近段展开…][其后新增展开…]
- * ```
- *
- * **为什么要留近段**——压成光秃秃一份摘要，模型接着干活的现场感就没了（刚跑的命令、
- * 刚看到的报错都在摘要里磨平了）；近段原文保的正是「接着干」这一口气。
- *
- * **窗口按条目数、不按回合切**——边界可能落在一次工具往返的中间，那半截的 `tool` 消息
- * 按上面注 2 被丢掉（供应商侧仍然合法）。真实代价如实记：边界附近至多丢一次工具结果，
- * 而它本就在摘要覆盖的那一侧。
- */
+/** 由已提交覆盖之后的原始业务记录重建上下文；笔记由模型真实读取，辅助准备历史不注入。 */
 
 import type {
   AgentId,
@@ -73,29 +20,7 @@ import type {
   UserMessageContent,
   UsedSkillEntry,
 } from '@magic/contracts'
-import { memoryBlock } from './memory.ts'
-import { initialKnowledge, knowledgeBlock } from './knowledge.ts'
-import { entryKnowledgeReferences, HISTORICAL_KNOWLEDGE_NOTICE, prepareKnowledgeMaterials, staleKnowledge, STALE_KNOWLEDGE_NOTICE } from './knowledge-material.ts'
-import { substantiveEntries } from './organize.ts'
-
-/**
- * blob 解析回文本的缺省上限（**字符**）——「按策略截断」（技术方案 · 领域划分 · 端口内类型）。
- * 只定「一条 blob 正文最多带多少进上下文」——**与压缩是两件事**：这个管单条的粗细，
- * 压缩管整段的去留（阈值 / 近段边界见 `./policy.ts`）。
- * 缺省值与策略对象（`./policy.ts`）同源——读侧单独用时不至于各写一个数。
- *
- * ⚠️ **这一格是「头 ＋ 尾」两段的总量，不是「只取头部」**（U82 改定，见 `deliveredTextOf`）。
- * 由头（`D40`）：工具的结论（构建报错、测试结果）**在末尾**，而只取头部的那一版把
- * 8 KiB～64 KiB 之间、`exec` 已认定「值得留下」的输出砍成开头 2000 字符
- * （`EXEC_MAX_OUTPUT_BYTES` 是 64 KiB，两把尺子差 30 倍）——模型看不见错误，
- * 于是改写新命令去探（用户会话 `c5df9940` 现场）。保留中间那一段并没有让模型更能干活：
- * 它要的是「开头说了什么 ＋ 结尾怎么了」。
- *
- * **为什么从 2000 抬到 4000**：头部**一个字不减**（还是 2000——既有行为不动，不制造回归），
- * 抬的那 2000 全给尾部。代价是每条大结果至多多带 2000 字符（中文约 1～2k token），
- * 而这条路径本来就只对**越过 `BLOB_THRESHOLD_BYTES` 的那几笔**生效——拿它换「结论看得到」是划算的。
- */
-export const DEFAULT_BLOB_TEXT_LIMIT = 4000
+import { entryKnowledgeReferences } from './knowledge-material.ts'
 
 /**
  * 引用表里**文本那几支**（技能 / 文件 / 目录）——`inlineOf` 的入参面（U37）。
@@ -105,16 +30,7 @@ export const DEFAULT_BLOB_TEXT_LIMIT = 4000
  */
 export type TextRefEntry = Exclude<InputRefEntry, { kind: 'image' }>
 
-/**
- * 「近段」边界（条目数）——压缩时**不压**的尾部，也是装配时从摘要往前认回来的那一段
- * （技术方案 · 上下文压缩：「上下文＝摘要 ＋ 近段原文」）。
- *
- * 缺省 20 的由头：工具往返一轮吃掉 3–4 条（助手 ＋ 调用 ＋ 结果），20 条 ≈ 最近五六轮的
- * **真身**——够模型接着干活，又不至于让压缩刚做完就再撞阈值。
- *
- * **两处必须同一个数**（压缩写、装配读）——故策略对象（`./policy.ts`）取的就是这一个常量，
- * 不与读侧各写一个（同 `DEFAULT_BLOB_TEXT_LIMIT` 的既定姿势）。
- */
+/** 压缩保留的近段条数；完整工具交互可能使实际保留范围更大。 */
 export const DEFAULT_NEAR_ENTRIES = 20
 
 export type AssembleContextInput = {
@@ -127,10 +43,6 @@ export type AssembleContextInput = {
   readonly session: SessionId
   /** 系统提示词全文——由提示词部件装配好后传入（本文件不认知提示词的段结构）。 */
   readonly systemPrompt: string
-  /** blob 正文上限（字符）——缺省 `DEFAULT_BLOB_TEXT_LIMIT`。 */
-  readonly blobTextLimit?: number
-  /** 「近段」条数（压缩后从摘要往前认几条原文）——缺省 `DEFAULT_NEAR_ENTRIES`。 */
-  readonly nearEntries?: number
   /**
    * 本次成功装配实际展开的协作消息。只报告，不写“已带入”事实；宿主在实际请求发出时
    * 对照已消费收件标记。包括发出消息；撤回、压出窗口且已带入的消息不在其中。
@@ -142,55 +54,6 @@ export type AssembleContextInput = {
 }
 
 /**
- * 装配的计划——**哪些条目进上下文、旧段被哪条摘要顶掉**。
- *
- * 摘要是**条目**（`content` 里有正文），由调用方解析正文（可能要取 blob）——本函数
- * 只做**位置的算术**，不碰内容，故是纯函数、可直接断言。
- */
-export type ContextPlan = {
-  /** 顶掉旧段的那条 `summary` 条目——**没压过就是 `undefined`**。 */
-  readonly summary: Entry | undefined
-  /** 要展开成消息的条目——压过＝近段窗口 ＋ 摘要之后的条目；没压过＝全部。 */
-  readonly entries: readonly Entry[]
-}
-
-/**
- * 定边界——最新那条 `summary` 条目即分水岭：它**往前 `nearEntries` 条**是近段（原文照送），
- * 再往前是旧段（已被它顶掉），它之后的新条目照常展开。
- *
- * **为什么认「摘要之前 K 条」而不是「最后 K 条」**：条目只能追加，摘要落在近段之后——
- * 若按「最后 K 条」算，摘要一进来就会把刚留下的近段判成「更早」，当场自相矛盾。
- * 按「摘要前 K 条」算，边界就此钉在压缩那一刻的位置上，后续追加不影响它。
- *
- * 反复压缩（B6）不需要特判：旧摘要就在新摘要的覆盖段里，会被一并再摘要一遍——
- * 记录 append-only 不破，条目流只是多了一条更靠后的 `summary`。
- */
-export function planContext(input: {
-  readonly entries: readonly Entry[]
-  readonly nearEntries: number
-}): ContextPlan {
-  const { entries } = input
-
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index]
-    if (entry?.kind !== 'summary') continue
-
-    if (entry.payload !== undefined && 'coveredThrough' in entry.payload) {
-      const coveredThrough = entry.payload.coveredThrough
-      return { summary: entry, entries: entries.filter(one => one.id > coveredThrough && one.kind !== 'summary') }
-    }
-    const from = Math.max(0, index - input.nearEntries)
-    return {
-      summary: entry,
-      entries: [...entries.slice(from, index), ...entries.slice(index + 1)],
-    }
-  }
-
-  // 没压过——全部条目原文进上下文（阶段 1 / 2 的既有行为，一字不动）
-  return { summary: undefined, entries: [...entries] }
-}
-
-/**
  * 装配上下文——由**会话条目**重建模型消息。
  *
  * 空会话的产物＝只有系统提示词一条（首条对话必是 `user`，故不会出现空对话的畸形请求）。
@@ -198,7 +61,6 @@ export function planContext(input: {
 export async function assembleContext(
   input: AssembleContextInput,
 ): Promise<readonly ModelMessage[]> {
-  const limit = input.blobTextLimit ?? DEFAULT_BLOB_TEXT_LIMIT
   const messages: ModelMessage[] = [{ role: 'system', content: input.systemPrompt }]
   const supplied = new Map<string, import('@magic/contracts').KnowledgeReference>()
   const provided = (references: readonly import('@magic/contracts').KnowledgeReference[] = []) => {
@@ -207,49 +69,16 @@ export async function assembleContext(
 
   // 条目一次取尽——`assistant` 消息的 `toolCalls` 来自**紧随其后**的调用条目（需前瞻一拍），
   // 故先缓冲再走。上下文本就整条送模型，缓冲不增峰值（压缩也只多读一遍，见 `./compact.ts`）。
-  const memory = input.records.memory.read()
-  let all: Entry[] = []
-  if (memory.summary !== null) {
-    for await (const entry of input.records.readEntries(input.session, { from: memory.summary, to: memory.summary })) all.push(entry)
-  }
-  const range = memory.coveredThrough === null ? undefined : { from: memory.coveredThrough + 1 }
+  const coverage = input.records.coverage.read()
+  const all: Entry[] = []
+  const range = coverage.coveredThrough === null ? undefined : { from: coverage.coveredThrough + 1 }
   for await (const entry of input.records.readEntries(input.session, range)) {
-    if (entry.id !== memory.summary && (memory.revision === 0 || entry.kind !== 'summary')) all.push(entry)
-  }
-  all.sort((a, b) => a.id - b.id)
-  if (input.knowledge !== undefined) {
-    // 新受理引用首次带入，以及最后一段主动读取的完整工具交互；后继助手/用户结束本次交付。
-    const explicit = new Set(input.records.inputs.list().filter(row => row.state === 'consumed' && row.entry !== undefined).map(row => row.entry!))
-    const boundary = all.findLastIndex(entry => entry.kind === 'assistant' || entry.kind === 'user')
-    const interaction = all.filter(entry => entry.kind !== 'agent-message')
-    for (let index = 1; index < interaction.length; index += 1) {
-      const result = interaction[index]!
-      const call = interaction[index - 1]
-      if (result.id > (all[boundary]?.id ?? 0) && result.kind === 'tool-result' && call?.kind === 'tool-call' && call.payload !== undefined && 'name' in call.payload
-        && (['source_read', 'history_read', 'knowledge_read', 'knowledge_source'].includes(call.payload.name)
-          || (call.payload.name === 'agent_message' && call.payload.args.action === 'read'))) explicit.add(result.id)
-    }
-    all = [...(await prepareKnowledgeMaterials(all, input.knowledge, explicit)).entries]
-  }
-  if (input.knowledge !== undefined) {
-    const candidates = initialKnowledge(input.knowledge, input.latestInput ?? '', memory.items)
-    const block = knowledgeBlock(candidates)
-    if (block) messages.push({ role: 'user', content: block })
-    provided(candidates.map(({ id, revision }) => ({ id, revision })))
+    if (entry.kind !== 'summary' && entry.kind !== 'continuation') all.push(entry)
   }
 
   const users: RecordId[] = []
 
-  // 压缩过就先摆摘要头，再展开「近段 ＋ 摘要之后的条目」（见文件头注 · 边界由摘要位置定）
-  const plan = planContext({ entries: all, nearEntries: input.nearEntries ?? DEFAULT_NEAR_ENTRIES })
-  if (plan.summary !== undefined) {
-    if (plan.summary.payload !== undefined && 'knowledge' in plan.summary.payload) provided(plan.summary.payload.knowledge)
-    messages.push(
-      summaryMessage(await rawTextOf(plan.summary.content, input.records)),
-    )
-  }
-
-  const entries = plan.entries.filter(entry => entry.kind !== 'agent-message')
+  const entries = all.filter(entry => entry.kind !== 'agent-message')
   let index = 0
   while (index < entries.length) {
     const entry = entries[index]
@@ -305,10 +134,7 @@ export async function assembleContext(
         // **不是**载荷里的记录形态：那是全量（可能是 blob），送模型的是这份截断文本。
         // 重放时因此逐字复原模型当时看到的那一份。
         //
-        const preserve = resultEntry.id > (memory.inspectedThrough ?? 0) || ['memory_read', 'memory_update', 'source_read', 'knowledge_search', 'knowledge_read', 'knowledge_source', 'knowledge_update'].includes(call.name)
-        const content = preserve
-          ? { text: await rawTextOf(result.output, input.records), complete: true }
-          : await deliveredTextOf(resultEntry.content, input.records, limit, resultEntry.id)
+        const content = { text: await rawTextOf(resultEntry.content, input.records), complete: true }
 
         toolMessages.push({
           role: 'tool',
@@ -316,7 +142,7 @@ export async function assembleContext(
           // 工具名**取自发起它的调用条目**，不从助手消息反查——压缩（阶段 3）来时反查会静默退化
           name: call.name,
           ok: result.ok,
-          output: staleKnowledge(entryKnowledgeReferences(resultEntry), input.knowledge) ? `${HISTORICAL_KNOWLEDGE_NOTICE}\n${content.text}` : content.text,
+          output: content.text,
         })
         provided(entryKnowledgeReferences(resultEntry))
         cursor += 2
@@ -325,7 +151,7 @@ export async function assembleContext(
       if (entry.payload !== undefined && 'knowledge' in entry.payload) provided(entry.payload.knowledge)
       messages.push({
         role: 'assistant',
-        content: await contentTextOf(entry.content, input.records, limit, entry.id),
+        content: await rawTextOf(entry.content, input.records),
         ...(toolCalls.length > 0 ? { toolCalls } : {}),
         // **该次答复的思考**（U41）——载荷里留着就带回去（供应商要求回传时用得上，
         // 送不送由模型域的适配决定）。不在条目里就一个字不加（旧记录照读）
@@ -336,37 +162,23 @@ export async function assembleContext(
       continue
     }
 
-    // `summary`——它落在**近段窗口里**（旧摘要离得太近，还没被新摘要顶掉）。照旧当一段
-    // 摘要块送出去：窗口里出现的摘要**没被新摘要覆盖**，丢了就是真丢（见 `planContext`）。
-    if (entry.kind === 'summary') {
-      messages.push(summaryMessage(await contentTextOf(entry.content, input.records, limit, entry.id)))
-      index += 1
-      continue
-    }
-
     // `tool-call` / `tool-result` 已在上面按对消费；走到这里＝落单者（在途 / 无来处），不进上下文。
     index += 1
   }
 
-  // 当前工作记忆独立于历史覆盖，按事项保留有效要求与继续入口。
   // 协作材料放在已完成的工具配对之后；压缩只能裁掉已经带入过的收件材料。
   const projected: MessageId[] = []
-  if (all.some(entry => entry.kind === 'agent-message')) {
-    const collaboration = input.records.collaboration
-    const agent = collaboration.agentForSession(input.session)
-    if (agent === undefined) throw new Error(`协作条目没有所属 Agent：${input.session}`)
-    const selected = new Set(plan.entries.filter(entry => entry.kind === 'agent-message').map(messageIdOf))
+  const collaboration = input.records.collaboration
+  const agent = collaboration.agentForSession(input.session)
+  if (agent === undefined && all.some(entry => entry.kind === 'agent-message')) throw new Error(`协作条目没有所属 Agent：${input.session}`)
+  if (agent !== undefined) {
     const pending = collaboration.inbox(agent.agentId)
       .filter(item => item.state === 'consumed' && item.includedAt === undefined)
-    for (const item of pending) selected.add(item.messageId)
-    // 按本会话引用顺序装配，Set 去重；messageId 不充当跨发送方的入队游标。
-    // 读取条目期间新消费的收件也按其持久位置追加，不能因初次缓冲尚未看到它而跳过。
-    const ordered = new Set([
-      ...all.filter(entry => entry.kind === 'agent-message').map(messageIdOf),
-      ...pending.map(item => item.messageId),
-    ])
-    for (const id of ordered) {
-      if (!selected.has(id)) continue
+    // 覆盖外仍未带入的收件与近段按真实记录位置合并，不以消息身份代替入队顺序。
+    const positions = new Map<MessageId, number>()
+    for (const entry of all) if (entry.kind === 'agent-message' && !positions.has(messageIdOf(entry))) positions.set(messageIdOf(entry), entry.id)
+    for (const item of pending) if (!positions.has(item.messageId)) positions.set(item.messageId, item.entryId ?? Infinity)
+    for (const [id] of [...positions].sort((a, b) => a[1] - b[1])) {
       const message = collaboration.readMessage(agent.agentId, id)
       if (message === undefined) throw new Error(`协作消息 ${id} 不存在或无权读取`)
       if (message.withdrawn) continue
@@ -375,15 +187,6 @@ export async function assembleContext(
       projected.push(id)
     }
   }
-  if (memory.revision > 0) {
-    messages.push({ role: 'assistant', content: memoryBlock(memory, { latestInput: input.latestInput }) })
-    for (const item of memory.items) if (item.status !== 'invalid') provided(item.knowledge)
-  }
-  const fresh = substantiveEntries(plan.entries).filter(entry => entry.kind !== 'summary' && entry.id > (memory.inspectedThrough ?? 0))
-  if (fresh.length > 0) messages.push({ role: 'assistant', content: `〔本次材料来源位置 · 会话 ${input.session}〕\n${fresh.map(entry => `#${entry.id} ${entry.kind}`).join(' · ')}\n以上材料尚未确认整理；更新工作记忆时按原始来源引用，仅对已检查范围确认 inspectedThrough。` })
-
-  const incomplete = entries.find((entry, index) => entry.kind === 'tool-call' && entries[index + 1]?.kind !== 'tool-result')
-  input.onSourceRange?.((incomplete === undefined ? plan.entries : plan.entries.filter(entry => entry.id < incomplete.id)).at(-1)?.id ?? memory.coveredThrough ?? 0)
   input.onIncluded?.(projected)
   input.onUserEntries?.(users)
   input.onKnowledge?.([...supplied.values()])
@@ -418,8 +221,7 @@ export async function collaborationBodyOf(
     for await (const source of records.readEntries(message.generatedFrom.sessionId, { from: message.generatedFrom.entryId, to: message.generatedFrom.entryId })) generated = entryKnowledgeReferences(source)
   }
   for (const part of message.body) {
-    if (part.kind !== 'entry' && staleKnowledge(part.knowledge ?? [], projection?.knowledge)) pushText(parts, STALE_KNOWLEDGE_NOTICE)
-    else if (part.kind === 'text') { pushText(parts, part.text); projection?.provided?.(part.knowledge ?? []) }
+    if (part.kind === 'text') { pushText(parts, part.text); projection?.provided?.(part.knowledge ?? []) }
     else if (part.kind === 'blob') { pushText(parts, await rawTextOf({ blob: part.blob }, records)); projection?.provided?.(part.knowledge ?? []) }
     else {
       const { sessionId, entryId } = part.ref
@@ -428,8 +230,8 @@ export async function collaborationBodyOf(
         if (entry.id === entryId) { referenced = entry; break }
       }
       if (referenced === undefined) throw new Error(`协作材料引用不存在：${sessionId}#${entryId}`)
-      pushText(parts, `〔引用材料 · ${sessionId}#${entryId} · ${referenced.kind}${part.label === undefined || staleKnowledge(generated, projection?.knowledge) ? '' : ` · ${part.label}`}〕\n`)
-      if (part.label !== undefined && !staleKnowledge(generated, projection?.knowledge)) projection?.provided?.(generated)
+      pushText(parts, `〔引用材料 · ${sessionId}#${entryId} · ${referenced.kind}${part.label === undefined ? '' : ` · ${part.label}`}〕\n`)
+      if (part.label !== undefined) projection?.provided?.(generated)
       let content: UserMessageContent
       if (referenced.kind === 'agent-message') {
         const nestedId = messageIdOf(referenced)
@@ -437,9 +239,7 @@ export async function collaborationBodyOf(
         if (nested === undefined || nested.withdrawn) throw new Error(`引用的协作消息 ${nestedId} 不可读取`)
         content = await collaborationBodyOf(nested, actor, records, path, projection)
       } else {
-        const prepared = await prepareKnowledgeMaterials([referenced], projection?.knowledge)
-        referenced = prepared.entries[0]!
-        projection?.provided?.(prepared.knowledge)
+        projection?.provided?.(entryKnowledgeReferences(referenced))
         // 用户正文必须完整取回：截断 blob 再套 refs 的原文位置，会让图片/材料错位。
         const text = await rawTextOf(referenced.content, records)
         content = referenced.kind === 'user'
@@ -460,16 +260,6 @@ export async function collaborationBodyOf(
 }
 
 /**
- * 摘要块——**以 `user` 消息送出**（而不是往系统提示词里拼）：
- * 系统提示词由内核持有、随版本治理（技术方案 · 系统提示词），压缩是**会话内**发生的事，
- * 混进去会让「提示词说了什么」随会话历史而变。另起一条 `user` 消息也让摘要的**位置**是对的
- * ——它讲的事都发生在近段之前。
- */
-export function summaryMessage(text: string): ModelMessage {
-  return { role: 'user', content: `【此前对话的摘要（上下文已压缩；原文仍在记录里）】\n${text}` }
-}
-
-/**
  * 配对键——由 `tool-call` 条目的 id 派生（见文件头注 1）。
  *
  * 前缀是刻意的：供应商 id 形如 `call_1`，两串 id 在日志里**一眼分得开**，
@@ -479,15 +269,7 @@ export function pairingKeyOf(entryId: RecordId): string {
   return `entry_${entryId}`
 }
 
-// —— 内容 → 文本（blob 解析 ＋ 截断）——
-
-/**
- * 条目内容 → **原始文本**（不做任何截断）：内联者原样，blob 引用者取回。
- *
- * 一处解码、两处按各自的口径切：装配那一侧按 `blobTextLimit` 截（送模型的那一份要细），
- * 回查那一侧按记录位置切片（U34 的历史回查——`./plan.ts`）。
- * 两个解码器＝两处可能不同的编码假设，故只此一处。
- */
+/** 按实际记录解码全文；分页由具体读取工具限定。 */
 export async function rawTextOf(
   content: Content,
   records: { readonly blobs: BlobStore },
@@ -495,79 +277,6 @@ export async function rawTextOf(
   if ('text' in content) return content.text
 
   return new TextDecoder().decode(await records.blobs.get(content.blob))
-}
-
-/**
- * 条目内容 → 文本：内联者原样，blob 引用者取回按策略截断。
- *
- * **导出给压缩用**（`./compact.ts` 把旧段渲染成摘要请求时要取同一份正文）——
- * 两处各写一遍截断，迟早截出两种口径（同一段原文，送模型的和进摘要的长度不一样）。
- */
-export async function contentTextOf(
-  content: Content,
-  records: { readonly blobs: BlobStore },
-  limit: number,
-  record: RecordId,
-): Promise<string> {
-  return (await deliveredTextOf(content, records, limit, record)).text
-}
-
-/**
- * 与 `contentTextOf` 同一份文本，另带**「完整送达了吗」**——U34 的计划材料据它判
- * 「最新笔记是不是已经完整落在这一次的消息里」（设计：正文被截断的不算已经送达）。
- *
- * ## ⚠️ 那条 `limit` **只管 blob 的节选**（内联正文一个字都不截）
- *
- * 这是**既有语义**，不是本单元新定的：内联条文本来就是「面向模型的文本」（工具域按自己的
- * 上限截好了才交过来），而这条 `limit` 的由头是**blob 取回**——记录只存引用、正文归装配取回，
- * 取回的那一份可能极长，故按策略截断。把内联正文也套上这条，等于**凭空给所有条目加了一道
- * 2000 字符的暗限**：用户输入、助手正文、摘要、工具结果一起被截，而使用者一个字都看不见
- * （实测：2225 字符的用户交代在真装配里只剩 2030，尾巴上的要求当场丢掉）。
- *
- * 故此处按内容形态分两支：**内联＝原样、恒为完整**；**blob＝按 `limit` 节选**，
- * 截断留痕照旧（模型看得到「这里被截了」与原文规模，才不会把半截结果当完整事实下结论）。
- *
- * ## ⚠️ blob 那一支**取头也取尾**（U82 改定）
- *
- * 原写法是 `slice(0, limit)`——**只留开头**。而工具结果里最要紧的那一段在**末尾**：
- * 构建日志的报错、测试报告的失败清单、编译器最后那几行，全在结尾。只取头部等于
- * 把「结论」换成「开场白」，模型据此只会再发一条命令去探（`D40` 的现场）。
- * 故这一支改成**头 `limit` 的一半 ＋ 尾 `limit` 的一半**（总量见 `DEFAULT_BLOB_TEXT_LIMIT`）。
- *
- * 省略处**必须说得出两件事**，缺一条都不行：
- * - **省略了多少**——省掉多少字符 / 原文多长 / 给的是哪两段（不报数就是让模型
- *   把半截当完整事实下结论，那正是原先这条注自己担心的事）；
- * - **怎么看全**——全文仍在会话记录里，`history_read` 带 `entry=<记录 id>` 能分段读回
- *   （`record` 就是这个 id）。**光截不指路**＝把「这里还有」变成一句没法行动的话
- *   （`plan-tools.ts` 的 `cutHintOf` 那条注释骂的就是这个）。
- *
- * 尾部那一支按字符切（不按行）：一段长行被切开也比丢掉整段结论强，且切点有省略标记兜着。
- */
-export async function deliveredTextOf(
-  content: Content,
-  records: { readonly blobs: BlobStore },
-  limit: number,
-  record: RecordId,
-): Promise<{ readonly text: string; readonly complete: boolean }> {
-  if ('text' in content) return { text: content.text, complete: true }
-
-  const text = new TextDecoder().decode(await records.blobs.get(content.blob))
-  if (text.length <= limit) return { text, complete: true }
-
-  // 头上取整（`limit` 是奇数时多出的那一个字符归头部）——总量恒为 `limit`
-  const head = Math.ceil(limit / 2)
-  const tail = limit - head
-
-  return {
-    text: [
-      text.slice(0, head),
-      `…（截断：中间省略 ${text.length - limit} 字符，原文共 ${text.length} 字符；` +
-        `以上是开头 ${head} 字符、以下是结尾 ${tail} 字符。全文仍在会话记录里——` +
-        `要读全就用 history_read（entry=${record}），它一次给一段，不够时会给续读位置）`,
-      text.slice(text.length - tail),
-    ].join('\n'),
-    complete: false,
-  }
 }
 
 // —— 载荷收窄（契约的 `Entry.payload` 是松散联合；域间不得互 import，故自持一份）——
@@ -708,6 +417,10 @@ export function refsPayloadOf(payload: EntryPayload | undefined): readonly Input
       if (typeof through === 'number' && Number.isSafeInteger(through) && through >= 0 && text !== undefined) {
         refs.push({ kind: 'session', at, marker, source: from, through, label, text })
       }
+      continue
+    }
+    if (item['kind'] === 'note') {
+      if (typeof item['session'] === 'string' && text !== undefined) refs.push({ kind: 'note', at, marker, source: from, session: item['session'], label, text })
       continue
     }
     if (item['kind'] === 'memory') {
@@ -931,7 +644,7 @@ function blockOf(ref: TextRefEntry): string | undefined {
  * 也不能让模型以为手里是全份（设计：不能静默缺材料）。
  */
 function materialBlockOf(ref: TextRefEntry, body: string): string {
-  const kind = ref.kind === 'session' ? '历史会话' : ref.kind === 'memory' ? '所选纠正对象' : ref.kind === 'skill' ? '技能' : ref.kind === 'dir' ? '目录' : '文件'
+  const kind = ref.kind === 'session' ? '历史会话' : ref.kind === 'memory' || ref.kind === 'note' ? '所选纠正对象' : ref.kind === 'skill' ? '技能' : ref.kind === 'dir' ? '目录' : '文件'
   const external = ref.kind === 'file' && ref.external === true ? '（工作区外 · 只读附件）' : ''
   const cut = ref.kind === 'file' && ref.truncated === true ? '（原文更长，这里是前一段）' : ''
   const more = ref.kind === 'dir' && ref.omitted !== undefined ? `（只列了这一层，另有 ${ref.omitted} 项未列）` : ''

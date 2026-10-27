@@ -88,5 +88,5 @@ export type { WebSearchDeps } from './web-search-tool.ts'
 export { AGENT_TOOL_NAMES, defineAgentTools } from './agent-tools.ts'
 export { defineBackgroundTools } from './background-tools.ts'
 
-export { defineMemoryTools, MEMORY_TOOL_NAMES } from './memory-tools.ts'
+export { defineSourceTool } from './memory-tools.ts'
 export { defineKnowledgeTools, KNOWLEDGE_TOOL_NAMES } from './knowledge-tools.ts'

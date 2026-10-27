@@ -146,6 +146,14 @@ export function createNativeServer(options: NativeServerOptions) {
           void result.then(response => { if (!link.closed) link.send(response) })
           break
         }
+        case 'native.knowledge': {
+          const target = { t: 'native.knowledge.result' as const, request: message.request, serviceInstance: options.identity.serviceInstance, session: message.session }
+          void (async () => {
+            const workspace = await memoryWorkspace(options.store, message.session, [])
+            return { ...target, knowledge: options.store.forWorkspace(workspace).knowledge.search(message.query ?? {}) }
+          })().catch(error => ({ ...target, error: String(error) })).then(response => { if (!link.closed) link.send(response) })
+          break
+        }
         case 'native.memory':
         case 'native.memory.source': {
           const target = { t: 'native.memory.result' as const, request: message.request, serviceInstance: options.identity.serviceInstance, session: message.session }
@@ -153,8 +161,8 @@ export function createNativeServer(options: NativeServerOptions) {
             const workspace = await memoryWorkspace(options.store, message.session, [])
             const records = options.store.forWorkspace(workspace)
             if (message.t === 'native.memory.source') return { ...target, material: await readMemorySource(records, message) }
-            const data = await readMemory(records, message.session, workspace)
-            return { ...target, memory: data.memory, unprocessed: data.unprocessed, knowledge: records.knowledge.search({ offset: message.offset }) }
+            const data = await readMemory(records, message.session, workspace, message)
+            return { ...target, notes: data.notes }
           })().then(result => { if (!link.closed) link.send(result) }, error => { if (!link.closed) link.send({ ...target, error: String(error) }) })
           break
         }

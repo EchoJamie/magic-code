@@ -103,7 +103,7 @@ test('用途选择和取消不发，下一件仅一次提交后回默认',()=>{
  expect(s.shell.getView().inputPurpose).toBe('current')
 })
 
-test('延迟受理与拒绝如实还稿，已受理也保留配对身份且不盖后来编辑',()=>{
+test('延迟受理与拒绝如实还稿，已受理也保留配对身份且不盖后来编辑',async()=>{
  const s=createStage();s.type('delayed');s.press(enter)
  const submit=s.commands().find(c=>c.type==='input.submit'&&c.local!==true)
  if(submit?.type!=='input.submit')throw Error('没有提交')
@@ -113,6 +113,9 @@ test('延迟受理与拒绝如实还稿，已受理也保留配对身份且不�
  expect(s.shell.getView().rows.find(r=>r.kind==='user')?.inputState).toBe('待带入')
  s.feed([event('input.settled',{ref:submit.ref,ok:false,reason:'受控拒绝'})])
  expect(s.shell.getView().draft).toBe('delayed')
+ const rejected=await s.screen({columns:100,rows:40})
+ expect(rejected.has('失败：受控拒绝')).toBe(true)
+ expect(rejected.has('提交中：')).toBe(false)
  s.press(enter);const second=s.commands().filter(c=>c.type==='input.submit').at(-1)
  if(second?.type!=='input.submit')throw Error('没有第二次提交')
  s.type('new draft')

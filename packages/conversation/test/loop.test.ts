@@ -93,7 +93,7 @@ describe('主循环 · Faux 全链', () => {
 
     // —— 回填**送达模型**（循环写给模型看的证据）——
     expect(stage.gateway.requests).toHaveLength(2)
-    expect(rolesOf(stage, 1)).toEqual(['system', 'user', 'assistant', 'tool', 'assistant'])
+    expect(rolesOf(stage, 1)).toEqual(['system', 'user', 'assistant', 'tool'])
     expect(stage.gateway.requests[1]?.messages.findLast(message => message.role === 'tool')).toMatchObject({
       role: 'tool',
       name: 'exec',
@@ -118,12 +118,12 @@ describe('主循环 · Faux 全链', () => {
     expect(await run(runtime, '第二件')).toBe('settled')
 
     // 第二次交代的第一轮：把**前面几轮的内容**原样带上（由条目重建，不是另存一份）
-    expect(rolesOf(stage, 1)).toEqual(['system', 'user', 'assistant', 'user', 'assistant'])
+    expect(rolesOf(stage, 1)).toEqual(['system', 'user', 'assistant', 'user'])
     expect(stage.gateway.requests[1]?.messages[1]).toEqual({ role: 'user', content: '第一件' })
     expect(stage.gateway.requests[1]?.messages[2]).toEqual({ role: 'assistant', content: '好' })
 
     // 第二次交代的工具回填同样送达
-    expect(rolesOf(stage, 2)).toEqual(['system', 'user', 'assistant', 'user', 'assistant', 'tool', 'assistant'])
+    expect(rolesOf(stage, 2)).toEqual(['system', 'user', 'assistant', 'user', 'assistant', 'tool'])
 
     // 轮号跨批次续着走（阶段 2 恢复要按记录重建同一串）
     expect(stage.stamper.turns).toEqual([1, undefined, 2, undefined, 3, undefined])
@@ -493,6 +493,6 @@ describe('主循环 · D6（空 assistant 条目）', () => {
 
     // **锚的实证**：第二次模型调用的上下文里，工具往返整段都在
     // （锚一旦被 D6 误删，这里会退化成只有 system ＋ user）
-    expect(rolesOf(stage, 1)).toEqual(['system', 'user', 'assistant', 'tool', 'assistant'])
+    expect(rolesOf(stage, 1)).toEqual(['system', 'user', 'assistant', 'tool'])
   })
 })

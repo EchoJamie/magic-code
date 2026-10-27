@@ -154,10 +154,13 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     opts: ToolInvokeOptions,
     onOutput: (delta: OutputDelta) => void,
     target?: ResolvedPath,
+    ownNote = false,
   ): Promise<ToolRunResult> => {
 
     let finish: (() => void) | undefined
-    const binding = target === undefined ? undefined : options.sandbox.bindTarget?.(target, call.name)
+    const binding = target === undefined ? undefined : ownNote
+      ? options.notes!.bindTarget(target, call.name, opts.signal)
+      : options.sandbox.bindTarget?.(target, call.name)
     try {
       if (opts.signal?.aborted) return refused(OUTPUT_CANCELED_BEFORE_RUN)
       finish = options.beginExecution?.(call)
@@ -199,12 +202,16 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     catch (error) { return refused(reasonOf(error)) }
     if (opts.signal?.aborted) return refused(OUTPUT_CANCELED_BEFORE_RUN)
     let target: ResolvedPath | undefined
+    let ownNote = false
     // 已准备的参数与固定目标同时用于审批和执行。
     if (definition.external === undefined) {
       const key = call.name === 'exec' ? 'cwd'
         : ['read', 'write', 'edit', 'ls', 'grep', 'glob'].includes(call.name) ? 'path' : undefined
       if (key !== undefined) {
-        target = options.workspace.resolve((call.args[key] as string | undefined) ?? '.')
+        const path = (call.args[key] as string | undefined) ?? '.'
+        const noteTarget = key === 'path' ? options.notes?.resolve(path) : undefined
+        ownNote = noteTarget !== undefined
+        target = noteTarget ?? options.workspace.resolve(path)
         call = { ...call, args: { ...call.args, [key]: target.absolute } }
         resolvedTarget(target)
       }
@@ -219,7 +226,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
       ...(definition.via === undefined ? {} : { via: definition.via }),
     }
 
-    const decision = await raceAbort(options.gate.decide(asked, contextOf(), callRef, opts.signal), opts.signal)
+    const decision = ownNote ? 'approve' : await raceAbort(options.gate.decide(asked, contextOf(), callRef, opts.signal), opts.signal)
     if (decision === ABORTED) return refused(OUTPUT_CANCELED_BEFORE_RUN)
 
     // **被拒**分两种，说的不是同一句话（U77）：
@@ -238,7 +245,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
       )
     }
 
-    return execute(asked, definition, opts, onOutput, target)
+    return execute(asked, definition, opts, onOutput, target, ownNote)
   }
 
   return {

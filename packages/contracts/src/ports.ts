@@ -225,7 +225,7 @@ export interface PermissionGate {
 
 /** 对话域 → 记录域。 */
 export interface RecordsService {
-  readonly memory: import('./memory.ts').MemoryRecords
+  readonly coverage: import('./notes.ts').CoverageRecords
   readonly inputs: InputRecords
   readonly collaboration: CollaborationRecords
   /**
@@ -255,6 +255,7 @@ export interface RecordsService {
    *
    * `limit` 由调用方给（有界），本域不另设上限；返回不足 `limit` 条 ＝ 到头了
    * （没有更多更早的记录）。
+   * 直接同步读取已落库记录；最终覆盖校验可据此与同步提交保持在同一执行边界。
    *
    * ⚠️ 与 `readEntries` 一样**按会话分束**：`before` 取自别的会话不会串线
    * （那一侧本来就被会话条件滤掉）。
@@ -263,7 +264,7 @@ export interface RecordsService {
     sessionId: SessionId,
     before: RecordId | undefined,
     limit: number,
-  ): Promise<readonly Entry[]>
+  ): readonly Entry[]
   /** 恢复 / 审计。 */
   readEvents(sessionId: SessionId): AsyncIterable<KernelEvent>
   /**
@@ -353,8 +354,10 @@ export interface Sandbox {
    *
    * 目标已由上游闸门批准；执行层不另设工作区或产物目录准入名单。
    */
-  read(path: string, opts?: { maxBytes?: number }): Promise<ReadResult>
+  read(path: string, opts?: { maxBytes?: number; offset?: number; limit?: number }): Promise<ReadResult>
   write(path: string, data: WriteData, opts?: { expectedContent?: string }): Promise<void>
+  /** 自身笔记可在完整最新正文中唯一替换，不把大文件截断后写回。 */
+  edit?(path: string, old: string, replacement: string): Promise<void>
   list(path: string): Promise<readonly ListEntry[]>
   match(pattern: string, opts: MatchOptions): Promise<readonly MatchHit[]>
 }
@@ -1174,14 +1177,13 @@ export type HistoryPage = {
 }
 
 /**
- * **模型侧的笔记与历史读取面**（U34）——对话域实现、装配按**会话**绑定后注入工具域。
+ * **模型侧的计划与历史读取面**（U34）——对话域实现、装配按**会话**绑定后注入工具域。
  *
  * ## 为什么在对话域而不在工具域
  *
  * 两件都有「**当前上下文到哪儿了**」这一层判断，而那是对话域的专利：
  * - `readPlan` —— 当前计划 ＝ 最近一条成功且含 `plan` 的工具结果（**记录即真源**）；
- * - `readHistory` —— 缺位置时**从活动窗口之前**读起（窗口边界＝摘要 ＋ 近段，
- *   那条判据在 `context.ts` 的 `planContext`，别处再算一遍就是第二套边界）。
+ * - `readHistory` —— 缺位置时从已提交覆盖上界向前读取，与上下文装配共享同一覆盖事实。
  *
  * 故工具域只拿这一对**只读回调**：它不认识记录、不认识上下文，也不经 shell 访问数据库
  * （工具域**不碰文件系统**——那条纪律照旧）。
@@ -1623,6 +1625,7 @@ export type ExecOptions = {
  * `truncated` 即「到上限为止」，工具侧据它措辞（`edit` 放大到 1 MiB 再读，仍超限才拒）。
  */
 export type ReadResult = {
+  readonly note?: Omit<import('./notes.ts').NotePage, 'cursor' | 'links'>
   readonly content: string
   readonly truncated?: boolean
 }
@@ -1949,7 +1952,7 @@ export type ToolSetRow = Omit<ToolSpec, 'parameters'>
  * 权限域**分析**都按它取字段（危险归类＝按命令 / 按路径判定，见 `by-call` 支）。
  *
  * - `exec` —— `cmd`（命令；阶段 1 即锚定，**收窄为单一键**，不按候选键兜底）
- * - `read` —— `path`
+ * - `read` —— `path`；自身工作笔记另支持字符分页 `offset` / `limit`
  * - `write` —— `path` · `content`（**整写**——不是追加；空串＝写空文件）
  * - `edit` —— `path` · `old` · `new`（`old` 须在文件中**唯一**出现；`new` 空串＝删除）
  * - `grep` —— `pattern`（正则）· `path?`（搜索起点）

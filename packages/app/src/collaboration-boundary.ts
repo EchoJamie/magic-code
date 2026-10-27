@@ -1,10 +1,10 @@
-import { MEMORY_TOOL_NAMES } from '@magic/tools'
 import type { AgentIdentity, AgentModelConfig, Collaboration, CollaborationRecords, CollaborationReply, CollaborationRequest, CollaborationWait, Delegation, EntryReference, KnowledgeRecords, KnowledgeReference, RecordsService, StopResult, ToolCall } from '@magic/contracts'
 import type { CollaborationBoundary } from '@magic/conversation'
 
 /** 每个执行实例只认自己的持久身份。模型参数没有重绑身份/委派的入口。 */
 export function createCollaborationBoundary(input: {
   readonly records: CollaborationRecords
+  readonly ownNoteCall?: (call: ToolCall) => boolean
   readonly materials?: Pick<RecordsService, 'readEntries'>
   readonly knowledge?: KnowledgeRecords
   readonly session: string
@@ -16,7 +16,7 @@ export function createCollaborationBoundary(input: {
   readonly now: () => number
 }) {
   const resourceControl = (name: string) => name === 'background_stop' || name === 'background_wait'
-  const coordinating = (call?: ToolCall) => call === undefined || call.name.startsWith('agent_') || MEMORY_TOOL_NAMES.includes(call.name) || resourceControl(call.name)
+  const coordinating = (call?: ToolCall) => call === undefined || call.name.startsWith('agent_') || ['plan_read', 'plan_update', 'history_read', 'source_read'].includes(call.name) || input.ownNoteCall?.(call) === true || resourceControl(call.name)
   const records = input.records
   let requestedWaits: readonly number[] = []
   const actor = (): AgentIdentity | undefined => {
@@ -40,7 +40,6 @@ export function createCollaborationBoundary(input: {
     if (text === undefined || source === undefined || input.materials === undefined) return text
     for await (const entry of input.materials.readEntries(source.sessionId, { from: source.entryId, to: source.entryId })) {
       const references = entry.payload !== undefined && 'knowledge' in entry.payload ? entry.payload.knowledge ?? [] : []
-      if (input.knowledge !== undefined && references.some(reference => !input.knowledge!.isCurrent(reference))) return '〔原描述依赖的知识已失效；责任仍在，请沿有效用户交代重新核对。〕'
       provided?.(references)
     }
     return text

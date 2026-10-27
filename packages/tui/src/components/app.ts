@@ -577,7 +577,7 @@ function showsExitArmed(view: ShellView): boolean {
 /** 左下交互区的内容（四种用法）。 */
 function inputNotices(view:ShellView,columns:number):readonly string[]{
   const known=new Set(view.pendingInputs.map(one=>one.ref))
-  const sending=[...view.settled,...view.rows].filter(row=>row.kind==='user'&&row.inputRef!==undefined&&!known.has(row.inputRef)&&row.inputState!==undefined).map(row=>row.kind==='user'?`${view.status.state==='lost'?'受理未确认':'提交中'}：${row.text}`:'')
+  const sending=[...view.settled,...view.rows].filter(row=>row.kind==='user'&&row.inputRef!==undefined&&!known.has(row.inputRef)&&row.inputState!==undefined).map(row=>row.kind==='user'?`${view.status.state==='lost'&&row.inputState==='提交中'?'受理未确认':row.inputState}：${row.text}`:'')
   const pending=view.pendingInputs.filter(one=>one.state==='pending'||one.state==='consumed').map(one=>`${one.reason??(one.purpose==='next'?'下一件排队中':one.state==='consumed'?'待请求带入':'待带入')}：${one.input.text}`)
   return [...sending,...pending].map(line=>clip(line,columns))
 }

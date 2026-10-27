@@ -94,7 +94,15 @@ export function createRefDelivery(sources: {
   readonly records?: RecordsService
   readonly session?: SessionId
   readonly knowledge?: Pick<KnowledgeAccess, 'read'>
+  readonly notes?: import('@magic/contracts').WorkingNotes
 }): RefDelivery {
+  async function readNote(ref: Extract<InputRef, { kind: 'note' }>): Promise<InputRefEntry> {
+    if (ref.session !== sources.session || sources.notes === undefined) throw new Error('纠正对象与当前会话不一致；请回到原目标交代')
+    const current = await sources.notes.read({ path: ref.source })
+    if (!current.page) throw new Error('所选笔记已不存在；草稿保留，未执行纠正')
+    const page = current.page
+    return { ...ref, label: ref.source, text: `请按本条普通交代纠正笔记 ${page.absolute}，保留无关内容。受理不表示已保存；整篇覆盖前须用 read 实际完整读取，局部修改可用 edit。\n当前内容${page.complete ? '' : `（节选，后续从字符 ${page.next} 读取）`}：\n${page.text}` }
+  }
   async function readSession(ref: Extract<InputRef, { kind: 'session' }>): Promise<InputRefEntry> {
     if (ref.through === undefined) throw new Error(`会话引用 ${ref.marker} 尚未固定保存范围`)
     const label = ref.marker.slice(1)
@@ -106,11 +114,13 @@ export function createRefDelivery(sources: {
     const knowledge = new Map<string, import('@magic/contracts').KnowledgeReference>()
     try {
       const recent = await records.readEntriesBack(ref.source, ref.through + 1, 32)
-      let summary = recent.findLast(entry => entry.kind === 'summary')
+      // 新覆盖条目只记文件位置，不是可供引用的历史摘要正文。
+      const isSummary = (entry: import('@magic/contracts').Entry) => entry.kind === 'summary' && !(entry.payload && 'notesSaved' in entry.payload && entry.payload.notesSaved)
+      let summary = recent.findLast(isSummary)
       let before = recent[0]?.id
       while (summary === undefined && before !== undefined) {
         const page = await records.readEntriesBack(ref.source, before, 50)
-        summary = page.findLast(entry => entry.kind === 'summary')
+        summary = page.findLast(isSummary)
         before = page.length === 50 ? page[0]?.id : undefined
       }
       const coveredThrough = summary === undefined ? 0 : summary.payload !== undefined && 'coveredThrough' in summary.payload
@@ -144,13 +154,8 @@ export function createRefDelivery(sources: {
   function readCorrection(ref: Extract<InputRef, { kind: 'memory' }>): InputRefEntry {
     let text: string
     let knowledge: readonly import('@magic/contracts').KnowledgeReference[] = []
-    if (ref.scope.kind === 'session') {
-      if (ref.scope.session !== sources.session || sources.records === undefined) throw new Error('纠正对象与当前会话不一致；请回到原目标交代')
-      const item = sources.records.memory.read().items.find(item => item.id === ref.source)
-      knowledge = item?.knowledge ?? []
-      text = item === undefined ? '所选事项已不存在；未执行纠正。' :
-        `请根据本条普通交代处理所选事项，尚未更新时不能称已修正。所见修订 ${ref.revision}，当前修订 ${item.revision}${ref.revision === item.revision ? '' : '（内容已变化，请先说明当前情况）'}。\n当前内容：${item.text}\n性质：${item.evidence}；状态：${item.status}${item.progress ? `；进展：${item.progress}` : ''}\n${item.detail ?? ''}\n范围：${item.scope ?? '当前会话'}\n来源：${item.sources.map(source => `${source.session}#${source.entry}`).join('、')}`
-    } else {
+    if (ref.scope.kind === 'session') throw new Error('旧事项引用已退出使用，请重新选择实际笔记')
+    {
       if (sources.knowledge === undefined) throw new Error('知识纠正未接读取服务')
       const item = sources.knowledge.read(ref.source)
       if (item !== undefined) knowledge = [{ id: item.id, revision: item.revision }]
@@ -309,8 +314,8 @@ export function createRefDelivery(sources: {
       let at = 0
 
       for (const ref of ordered) {
-        if (ref.kind === 'session' || ref.kind === 'memory') {
-          try { refs2.push(ref.kind === 'session' ? await readSession(ref) : readCorrection(ref)) }
+        if (ref.kind === 'session' || ref.kind === 'memory' || ref.kind === 'note') {
+          try { refs2.push(ref.kind === 'session' ? await readSession(ref) : ref.kind === 'note' ? await readNote(ref) : readCorrection(ref)) }
           catch (error) { return { ok: false, reason: messageOf(error) } }
           continue
         }

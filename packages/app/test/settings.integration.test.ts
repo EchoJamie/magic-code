@@ -6,6 +6,7 @@ import { createRecordsStore } from '@magic/records'
 import { createSettings, type SettingsContext } from '../src/settings.ts'
 
 import { cliGround } from './resident-cli-fixture.ts'
+import { nativeModelsDevCatalog } from './native-settings-fixture.ts'
 import type { SettingsAction } from '@magic/contracts'
 const cleanups: (() => void)[] = []
 afterEach(() => { while (cleanups.length) cleanups.pop()!() })
@@ -14,7 +15,8 @@ function setup() {
   mkdirSync(workspace)
   const store = createRecordsStore({ dataDir: g.dataDir, workspace: [] })
   cleanups.push(() => { store.close(); g.close() })
-  const context: SettingsContext = { magic: { base: g.base, home: g.home }, environment: {}, fetch: globalThis.fetch }
+  const context: SettingsContext = { magic: { base: g.base, home: g.home }, environment: {}, fetch: (input, init) =>
+    String(input) === 'https://models.dev/api.json' ? Promise.resolve(Response.json(nativeModelsDevCatalog)) : fetch(input, init) }
   const settings = createSettings(context)
   return { ...g, workspace, config, store, settings, context,
     apply: async (action: SettingsAction) => settings.apply(action, (await settings.read()).stamp),

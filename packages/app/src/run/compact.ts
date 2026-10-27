@@ -33,6 +33,7 @@ export function createCompactController(input: {
   }
   return {
     query,
+    active: (session: string) => flights.has(session),
     async request(request: Request, run: (signal: AbortSignal, started: () => void) => Promise<CompactState>): Promise<CompactState> {
       if (!input.store.hasSession(request.session)) return { requestId: request.requestId, state: 'no-material', reason: '没有可压缩的会话；未建立新会话' }
       const known = (await states(request.session)).get(request.requestId)
@@ -57,11 +58,11 @@ export function createCompactController(input: {
             for await (const event of input.store.serviceFor(request.session).readEvents(request.session)) if (event.kind === 'compact.state' && event.data.requestId === request.requestId && event.data.state === 'completed') input.publish(event)
             return
           }
-          if (outcome.state === 'completed') write(request.session, { ...accepted, state: 'failed', reason: '压缩未取得原子发布的成功终态，请查询记录' })
-          else write(request.session, { ...accepted, ...outcome })
+          if (outcome.state === 'completed') write(request.session, { ...accepted, ...committed, state: 'failed', reason: '压缩未取得原子发布的成功终态，请查询记录' })
+          else write(request.session, { ...accepted, ...committed, ...outcome, ...(outcome.notesSaved || committed?.notesSaved ? { notesSaved: true } : {}) })
         } catch (error) {
           const committed = (await states(request.session)).get(request.requestId)
-          if (committed?.state !== 'completed') write(request.session, { ...accepted, state: controller.signal.aborted ? 'cancelled' : 'failed', reason: controller.signal.aborted ? '本次压缩已取消' : String(error) })
+          if (committed?.state !== 'completed') write(request.session, { ...accepted, ...committed, state: controller.signal.aborted ? 'cancelled' : 'failed', reason: controller.signal.aborted ? '本次压缩已取消' : String(error) })
         } finally { if (flights.get(request.session) === flight) flights.delete(request.session) }
       })()
       return accepted

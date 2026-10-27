@@ -92,3 +92,4 @@ export { spawnOwned } from './process.ts'
  */
 export { validateSudoPassword } from './sudo.ts'
 export type { SudoValidation } from './sudo.ts'
+export { createWorkingNotes, noteDirectory, normalizeNotePath } from './notes.ts'

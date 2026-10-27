@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import type { Command, Knowledge } from '@magic/contracts'
+import type { Command, Knowledge, NoteState } from '@magic/contracts'
 import { createStage } from './screen.ts'
 import { event } from './events.ts'
 
@@ -23,7 +23,7 @@ function openKnowledge(archived = false) {
   stage.type('/memory '); stage.press(enter)
   const command = stage.commands().findLast(command => command.type === 'knowledge.query' || command.type === 'memory.read')!
   if (command.type === 'memory.read') {
-    stage.feed([event('memory.state', { requestId: command.requestId, session: command.session, workspace: [], memory: { session: command.session!, revision: 1, items: [], inspectedThrough: null, summary: null, coveredThrough: null } })])
+    stage.feed([event('memory.state', { requestId: command.requestId, session: command.session, workspace: [], notes: { directory: '/isolated/notes', path: 'MEMORY.md', status: 'empty', files: [] } })])
     choose(stage, 'knowledge')
   }
   const query = last(stage, 'knowledge.query')
@@ -81,8 +81,11 @@ test('遗忘未确认时退出阅读后仍查询原请求，不生成第二次�
   const stage = openKnowledge()
   choose(stage, 'forget'); choose(stage, 'confirm-forget')
   const request = last(stage, 'knowledge.forget')
-  for (let n = 0; n < 3; n++) stage.press({ kind: 'escape' })
+  for (let n = 0; n < 4; n++) stage.press({ kind: 'escape' })
   stage.type('/memory '); stage.press(enter)
+  const read = last(stage, 'memory.read')
+  stage.feed([event('memory.state', { requestId: read.requestId, workspace: [] })])
+  choose(stage, 'knowledge')
   const query = last(stage, 'knowledge.query')
   stage.feed([event('knowledge.state', { requestId: query.requestId, workspace: [], page: { items: [knowledge] } })])
   choose(stage, `pending-forget:${request.requestId}`)
@@ -103,4 +106,94 @@ test('已受理会话引用可沿来源入口读取，始终携带原输入身�
   choose(stage, 'reference:0'); choose(stage, 'reference-source:0')
   expect(last(stage, 'memory.source')).toMatchObject({ session: 'target', inputRef: 'accepted-input', source: { session: 'origin', entry: 7 } })
   expect(stage.commands().some(command => command.type === 'input.submit')).toBe(false)
+})
+
+function openNotes() {
+  const stage = createStage()
+  stage.feed([event('session.state', { active: 'notes-session', sessions: [{ id: 'notes-session', title: '中文任务 👩🏽‍💻', at: 1, archived: false }] })])
+  stage.type('/memory '); stage.press(enter)
+  return stage
+}
+function deliverNotes(stage: ReturnType<typeof createStage>, notes?: NoteState) {
+  const request = last(stage, 'memory.read')
+  stage.feed([event('memory.state', { requestId: request.requestId, session: request.session, workspace: [], notes })])
+}
+function noteState(path = 'MEMORY.md', text = '正文 👩🏽‍💻 é', next?: number): NoteState {
+  return { directory: '/isolated/notes', path, status: 'ready', files: [path], page: {
+    session: 'notes-session', path, absolute: '/isolated/notes/' + path, text, offset: 0,
+    total: next === undefined ? text.length : 9999, complete: next === undefined, next, cursor: 'opaque-version',
+    links: [{ kind: 'note', label: '同名主题', path: '子目录/主题.md' }, { kind: 'unavailable', label: '越界位置', target: '../业务.md', reason: '不在本会话笔记范围' }, { kind: 'source', label: '原始交代', source: { session: 'notes-session', entry: 2 } }],
+  } }
+}
+function picker(stage: ReturnType<typeof createStage>) {
+  const dock = stage.shell.getView().dock
+  if (dock.kind !== 'picker') throw new Error('应在阅读层')
+  return dock.picker
+}
+test('笔记空态与仅主题可辨，读取不查询知识，主题纠正以路径身份入稿和召回', async () => {
+  const stage = openNotes()
+  deliverNotes(stage, { directory: '/isolated/notes', path: 'MEMORY.md', status: 'entry-missing', files: ['子目录/主题.md'] })
+  expect(picker(stage).hint).toContain('尚无入口笔记')
+  choose(stage, 'file:子目录/主题.md')
+  expect(last(stage, 'memory.read')).toMatchObject({ session: 'notes-session', path: '子目录/主题.md' })
+  deliverNotes(stage, noteState('子目录/主题.md'))
+  for (const columns of [100, 200]) {
+    const screen = await stage.screen({ columns, rows: 40 })
+    expect(screen.has('子目录/主题.md')).toBe(true)
+    expect(screen.has('修订')).toBe(false)
+    expect(screen.has('opaque-version')).toBe(false)
+  }
+  choose(stage, 'correct-note')
+  expect(stage.shell.getView().refs[0]).toMatchObject({ kind: 'note', source: '子目录/主题.md', session: 'notes-session' })
+  expect(stage.commands().some(command => ['input.submit', 'knowledge.query'].includes(command.type))).toBe(false)
+  stage.type(' 请纠正这段'); stage.press(enter)
+  const input = last(stage, 'input.submit')
+  expect(input.refs?.[0]).toMatchObject({ kind: 'note', source: '子目录/主题.md', session: 'notes-session' })
+  stage.press({ kind: 'up' })
+  expect(stage.shell.getView().refs[0]).toMatchObject({ kind: 'note', source: '子目录/主题.md', session: 'notes-session' })
+})
+test('笔记续读带宿主游标，变化不混拼，重新读取与来源往返保持身份', () => {
+  const stage = openNotes()
+  deliverNotes(stage, noteState('MEMORY.md', '旧片段', 3))
+  choose(stage, 'next-note')
+  expect(last(stage, 'memory.read')).toMatchObject({ offset: 3, cursor: 'opaque-version', path: 'MEMORY.md' })
+  deliverNotes(stage, { directory: '/isolated/notes', path: 'MEMORY.md', status: 'changed', files: ['MEMORY.md'] })
+  expect(picker(stage).hint).toContain('内容已变化')
+  expect(picker(stage).detail).toContain('旧片段')
+  expect(picker(stage).rows.some(row => row.value === 'next-note')).toBe(false)
+  choose(stage, 'refresh')
+  expect(last(stage, 'memory.read').cursor).toBeUndefined()
+  expect(last(stage, 'memory.read').offset).toBeUndefined()
+  deliverNotes(stage, noteState('MEMORY.md', '外部编辑后的当前正文'))
+  expect(picker(stage).detail).toContain('外部编辑后的当前正文')
+  expect(picker(stage).detail).not.toContain('旧片段')
+  choose(stage, 'link:1')
+  expect(picker(stage).hint).toContain('不在本会话笔记范围')
+  choose(stage, 'link:2')
+  expect(last(stage, 'memory.source')).toMatchObject({ path: 'MEMORY.md', source: { session: 'notes-session', entry: 2 } })
+  stage.press({ kind: 'escape' })
+  expect(picker(stage).detail).toContain('外部编辑后的当前正文')
+})
+test('笔记读取失败和缺失保留旧内容，迟到主题响应不覆盖返回页', () => {
+  const stage = openNotes()
+  deliverNotes(stage, noteState())
+  choose(stage, 'refresh')
+  stage.feed([event('memory.state', { requestId: last(stage, 'memory.read').requestId, workspace: [], session: 'notes-session', error: '读取被拒绝' })])
+  expect(picker(stage).detail).toContain('正文 👩🏽‍💻 é')
+  expect(picker(stage).hint).toContain('读取被拒绝')
+  choose(stage, 'refresh')
+  deliverNotes(stage, { directory: '/isolated/notes', path: 'MEMORY.md', status: 'missing', files: [] })
+  expect(picker(stage).detail).toContain('正文 👩🏽‍💻 é')
+  expect(picker(stage).hint).toContain('文件已不存在')
+  choose(stage, 'refresh')
+  deliverNotes(stage, { directory: '/isolated/notes', path: 'MEMORY.md', status: 'empty', files: [] })
+  expect(picker(stage).detail).toContain('正文 👩🏽‍💻 é')
+  expect(picker(stage).hint).toContain('此前已读内容保留')
+  choose(stage, 'refresh'); deliverNotes(stage, noteState())
+  choose(stage, 'link:0')
+  const request = last(stage, 'memory.read')
+  stage.press({ kind: 'escape' })
+  stage.feed([event('memory.state', { requestId: request.requestId, workspace: [], session: 'notes-session', notes: noteState('子目录/主题.md', '迟到主题') })])
+  expect(picker(stage).detail).toContain('正文 👩🏽‍💻 é')
+  expect(picker(stage).detail).not.toContain('迟到主题')
 })

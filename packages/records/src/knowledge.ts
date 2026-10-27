@@ -22,8 +22,8 @@ function knowledgeOf(row: Row): Knowledge {
 }
 class Rejected extends Error {}
 
-/** 同一连接内完成正文、来源、修订、索引和遗忘；失效回调也必须只做同步数据库操作。 */
-export function createKnowledgeRecords(db: Database, workspace: readonly string[], invalidate: (items: readonly Knowledge[]) => readonly string[], changed?: (sessions: readonly string[]) => void): KnowledgeRecords {
+/** 同一连接内完成正文、来源、修订、索引和遗忘。 */
+export function createKnowledgeRecords(db: Database, workspace: readonly string[]): KnowledgeRecords {
   const project = JSON.stringify(workspace)
   const select = db.query<Row, [string]>('SELECT * FROM knowledge WHERE id=?')
   function allowed(scope: string): boolean { return scope === project || scope === 'user' }
@@ -53,24 +53,8 @@ export function createKnowledgeRecords(db: Database, workspace: readonly string[
     // 具体可读范围由对话域的绑定材料读取校验；记录域只核对原文真实存在。
     return db.query('SELECT 1 FROM entries WHERE session=? AND id=?').get(source.session, source.entry) !== null
   }
-  function progress(session: string): ReturnType<KnowledgeRecords['progress']> {
-    const row = db.query<{ memory_revision: number; items: string }, [string]>('SELECT * FROM knowledge_progress WHERE session=?').get(session)
-    return { memoryRevision: row?.memory_revision ?? 0, items: row === null ? {} : JSON.parse(row.items) }
-  }
   function reject(reason: string): never { throw new Rejected(reason) }
-  // 每次调用只收集本事务实际改动；提交失败时不发布，查询和幂等重投也没有通知。
-  function commit<T>(operation: (sessions: Set<string>) => T): T {
-    const sessions = new Set<string>()
-    const result = operation(sessions)
-    if (sessions.size > 0) changed?.([...sessions])
-    return result
-  }
-  function writeInside(changes: readonly KnowledgeChange[], checkpoint: Parameters<KnowledgeRecords['write']>[1], sessions: Set<string>): KnowledgeWriteResult {
-    if (checkpoint !== undefined) {
-      const memory = db.query<{ revision: number }, [string]>('SELECT revision FROM working_memory WHERE session=?').get(checkpoint.session)
-      const session = db.query<{ workspace: string | null }, [string]>('SELECT workspace FROM sessions WHERE id=?').get(checkpoint.session)
-      if (session?.workspace !== project || memory?.revision !== checkpoint.expectedMemoryRevision || progress(checkpoint.session).memoryRevision !== checkpoint.previousRevision) reject('知识整理依据已变化，请读取最新工作记忆')
-    }
+  function writeInside(changes: readonly KnowledgeChange[]): KnowledgeWriteResult {
     const seen = new Set<string>()
     const output: Knowledge[] = []
     const replaced: Knowledge[] = []
@@ -126,12 +110,11 @@ export function createKnowledgeRecords(db: Database, workspace: readonly string[
     }
     for (const item of output) save(item)
     // 旧版材料可生成同批新版；只撤回其他旧派生，不让本批输出被自身替换的旧值再次失效。
-    if (replaced.length > 0) invalidateDependents(replaced, sessions, seen)
-    if (checkpoint !== undefined) db.query('INSERT INTO knowledge_progress VALUES (?,?,?) ON CONFLICT(session) DO UPDATE SET memory_revision=excluded.memory_revision, items=excluded.items')
-      .run(checkpoint.session, checkpoint.expectedMemoryRevision, JSON.stringify(checkpoint.items))
+    if (replaced.length > 0) invalidateDependents(replaced, seen)
+
     return { ok: true, items: output }
   }
-  function invalidateDependents(roots: readonly Knowledge[], sessions: Set<string>, published?: ReadonlySet<string>): Knowledge[] {
+  function invalidateDependents(roots: readonly Knowledge[], published?: ReadonlySet<string>): Knowledge[] {
     const affected = new Map(roots.map(item => [item.id, item]))
     let changed = true
     while (changed) {
@@ -146,7 +129,6 @@ export function createKnowledgeRecords(db: Database, workspace: readonly string[
         }
       }
     }
-    for (const session of invalidate([...affected.values()])) sessions.add(session)
     return [...affected.values()]
   }
   function forgetResult(input: KnowledgeForgetRequest): KnowledgeForgetResult {
@@ -158,7 +140,7 @@ export function createKnowledgeRecords(db: Database, workspace: readonly string[
     if (mark !== null && allowed(mark.scope)) return { status: 'changed', ...(current === undefined ? {} : { current }) }
     return { status: current !== undefined && current.revision !== input.expectedRevision ? 'changed' : 'unconfirmed', ...(current === undefined ? {} : { current }) }
   }
-  const forget = db.transaction((input: KnowledgeForgetRequest, sessions: Set<string>): KnowledgeForgetResult => {
+  const forget = db.transaction((input: KnowledgeForgetRequest): KnowledgeForgetResult => {
     if (!input.requestId?.trim() || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) throw new Error('遗忘请求身份或修订无效')
     const prior = forgetResult(input)
     if (prior.status !== 'unconfirmed') return prior
@@ -167,7 +149,7 @@ export function createKnowledgeRecords(db: Database, workspace: readonly string[
     const current = read(input.id)
     if (current === undefined) return { status: 'unconfirmed' }
     if (current.status === 'forgotten') return { status: 'changed', current }
-    const affected = invalidateDependents([current], sessions)
+    const affected = invalidateDependents([current])
     db.query(`INSERT INTO knowledge_forgetting VALUES (?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET
       sources=excluded.sources, request=excluded.request, expected_revision=excluded.expected_revision, revision=excluded.revision, active=1`)
       .run(current.id, scopeKey(current.scope), JSON.stringify(uniqueSources(affected.flatMap(item => item.sources))), input.requestId, input.expectedRevision, current.revision + 1)
@@ -176,8 +158,8 @@ export function createKnowledgeRecords(db: Database, workspace: readonly string[
     return { status: 'completed', current: forgotten, affected: affected.map(item => item.id) }
   })
   const transaction = db.transaction(writeInside)
-  function write(changes: readonly KnowledgeChange[], checkpoint?: Parameters<KnowledgeRecords['write']>[1]): KnowledgeWriteResult {
-    try { return commit(sessions => transaction.immediate(changes, checkpoint, sessions)) }
+  function write(changes: readonly KnowledgeChange[]): KnowledgeWriteResult {
+    try { return transaction.immediate(changes) }
     catch (error) { if (error instanceof Rejected) return { ok: false, reason: error.message }; throw error }
   }
   function search(query: KnowledgeQuery = {}): KnowledgePage {
@@ -202,19 +184,19 @@ export function createKnowledgeRecords(db: Database, workspace: readonly string[
     const rows = db.query<Row, [typeof params]>(`SELECT k.* FROM knowledge k ${join} WHERE ${where} ORDER BY ${order} LIMIT $limit OFFSET $offset`).all(params)
     return { items: rows.slice(0, limit).map(knowledgeOf), ...(rows.length > limit ? { next: offset + limit } : {}) }
   }
-  const restore = db.transaction((change: KnowledgeChange, source: MemorySource, sessions: Set<string>): KnowledgeWriteResult => {
+  const restore = db.transaction((change: KnowledgeChange, source: MemorySource): KnowledgeWriteResult => {
     const current = read(change.id)
     if (current === undefined || current.status !== 'forgotten' || current.revision !== change.expectedRevision) reject('知识不是所见修订的已遗忘对象')
     const mark = db.query<ForgetRow, [string]>('SELECT * FROM knowledge_forgetting WHERE id=? AND active=1').get(change.id)
     if (mark === null || !userBodySource(db, source) || (JSON.parse(mark.sources) as MemorySource[]).some(prior => prior.session === source.session && prior.entry === source.entry)) reject('重新记住需要区别于旧依据的明确用户交代')
     db.query('UPDATE knowledge_forgetting SET active=0 WHERE id=?').run(change.id)
-    return writeInside([{ ...change, sources: uniqueSources([...change.sources, source]) }], undefined, sessions)
+    return writeInside([{ ...change, sources: uniqueSources([...change.sources, source]) }])
   })
   return { read, isCurrent(reference) {
     const row = select.get(reference.id)
     return row !== null && row.revision === reference.revision && (row.status === 'active' || row.status === 'pending')
-  }, search, write, progress, forget: input => commit(sessions => forget.immediate(input, sessions)), forgetResult, remember(change, source) {
-    try { return commit(sessions => restore.immediate(change, source, sessions)) }
+  }, search, write, forget: input => forget.immediate(input), forgetResult, remember(change, source) {
+    try { return restore.immediate(change, source) }
     catch (error) { if (error instanceof Rejected) return { ok: false, reason: error.message }; throw error }
   } }
 }

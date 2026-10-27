@@ -1,14 +1,13 @@
 import { expect, test } from 'bun:test'
 import { realpathSync } from 'node:fs'
 import { createRecordsStore } from '@magic/records'
-import { createConversationSession, createMemoryAccess, createPlanReader } from '@magic/conversation'
-import { createFauxGateway, makeFauxSink, makeFauxToolRuntime } from '@magic/faux'
+import { createMaterialReader, createPlanReader } from '@magic/conversation'
+import { createFauxGateway } from '@magic/faux'
 import { createCollaborationActions } from '@magic/actions'
-import type { EntryReference, MemoryUpdate, ModelRequest } from '@magic/contracts'
+import type { EntryReference, ModelRequest } from '@magic/contracts'
 import { attachShell } from '../src/index.ts'
 import { lastModel, makeStage } from './support.ts'
 import { requestFromStoredSession } from './conversation-request.ts'
-import { createStamper } from '../src/agent-assembly/events.ts'
 
 const OLD = 'collaboration-derived-K-unique'
 function fixture() {
@@ -35,7 +34,7 @@ function fixture() {
     close() { store.close(); stage.dispose() } }
 }
 
-for (const form of ['entry', 'blob', 'nested'] as const) test(`协作${form}真实材料保留修订，遗忘不复活且独立用户交代和回报保留`, async () => {
+for (const form of ['entry', 'blob', 'nested'] as const) test(`协作${form}真实材料保留修订，遗忘后仍保留原始交代与回报`, async () => {
   const f = fixture()
   try {
     const member = f.spawn('member')
@@ -53,45 +52,32 @@ for (const form of ['entry', 'blob', 'nested'] as const) test(`协作${form}真�
     }
     const sent = f.records.send(actor.agentId, { operationId: 'send', recipients: [target.agent.agentId], purpose: 'inform', body: [{ kind: 'entry', ref }], at: 13 })
     f.records.send(f.coordinator.agentId, { operationId: 'independent', recipients: [target.agent.agentId], purpose: 'inform', body: [{ kind: 'text', text: '独立回报：现场文件未变' }], at: 14 })
-    const mixed = f.records.send(f.coordinator.agentId, { operationId: 'mixed', recipients: [target.agent.agentId], purpose: 'inform',
+    f.records.send(f.coordinator.agentId, { operationId: 'mixed', recipients: [target.agent.agentId], purpose: 'inform',
       body: [{ kind: 'entry', ref: f.origin }, { kind: 'entry', ref: { sessionId: 'origin', entryId: original } }], at: 15 })
     f.records.consumeInbox(target.agent.agentId, 16)
     const inbox = f.records.inbox(target.agent.agentId)
     const session = target.agent.sessionId
     const receiver = f.store.serviceFor(session)
     const source = { session, entry: inbox.find(item => item.messageId === sent.messageId)!.entryId! }
-    const userSource = { session, entry: inbox.find(item => item.messageId === mixed.messageId)!.entryId! }
-    const before = await createMemoryAccess({ records: receiver, session }).source(source)
+    const before = await createMaterialReader({ records: receiver, session })(source)
     expect(before.text).toContain(OLD)
     expect(before.knowledge).toContainEqual({ id: 'K', revision: 1 })
-    expect(receiver.memory.update({ expectedRevision: 0, changes: [
-      { id: 'derived', kind: 'requirement', text: OLD, evidence: 'fact', status: 'active', sources: [source] },
-      { id: 'user', kind: 'requirement', text: '共同用户要求：仅核对，不修改业务', evidence: 'fact', status: 'active', sources: [userSource] },
-      { id: 'derived-goal', kind: 'goal', text: OLD, evidence: 'fact', status: 'active', sources: [source] },
-      { id: 'user-goal', kind: 'goal', text: '仅核对当前工作', evidence: 'fact', status: 'active', sources: [userSource] },
-    ] }).ok).toBe(true)
     expect(f.store.knowledge.write([{ ...f.change, id: 'derived', conclusion: '收到的认识', sources: [source] }]).ok).toBe(true)
     f.records.markIncluded(target.agent.agentId, inbox.map(item => item.messageId), 17)
     const delegation = f.records.getDelegation(target.delegation.delegationId)
     expect(f.store.knowledge.forget({ id: 'K', expectedRevision: 1, requestId: 'forget' }).status).toBe('completed')
     expect(f.records.getDelegation(target.delegation.delegationId)).toEqual(delegation)
     expect(f.records.getAgent(target.agent.agentId)?.reachability).toBe('active')
-    expect(receiver.memory.read().items.find(item => item.id === 'derived')?.status).toBe('invalid')
-    expect(receiver.memory.read().items.find(item => item.id === 'user')?.status).toBe('active')
-    expect(receiver.memory.read().items.find(item => item.id === 'derived-goal')?.status).toBe('invalid')
-    expect(receiver.memory.read().items.find(item => item.id === 'user-goal')?.status).toBe('active')
     expect(f.store.knowledge.read('derived')?.status).toBe('invalid')
     const request = await requestFromStoredSession({ records: receiver, session, cwd: f.stage.workspace, knowledge: f.store.knowledge, text: '继续独立工作' })
-    expect(JSON.stringify(request.messages)).not.toContain(OLD)
+    expect(JSON.stringify(request.messages)).toContain(OLD)
     expect(JSON.stringify(request.messages)).toContain('独立回报：现场文件未变')
     expect(JSON.stringify(request.messages)).toContain('共同用户要求：仅核对，不修改业务')
     const historical = await createPlanReader({ records: receiver, session }).readHistory({ entry: source.entry })
     expect(historical.entries[0]?.text).toContain(OLD)
     expect(historical.entries[0]?.knowledge).toContainEqual({ id: 'K', revision: 1 })
-    expect(receiver.memory.update({ expectedRevision: receiver.memory.read().revision, changes: [{ id: 'revive', kind: 'fact', text: OLD, evidence: 'fact', status: 'active', sources: [source] }] }).ok).toBe(false)
     expect(f.store.knowledge.write([{ ...f.change, id: 'revive', sources: [source] }]).ok).toBe(false)
-    const reopened = createRecordsStore({ dataDir: f.stage.dataDir, workspace: f.workspace })
-    try { expect(reopened.serviceFor(session).memory.read()).toEqual(receiver.memory.read()) } finally { reopened.close() }
+
   } finally { f.close() }
 })
 
@@ -126,23 +112,22 @@ test('实际模型调用参数与协作发送绑定同次请求；text/blob继�
     const update = entries.find(entry => entry.kind === 'tool-call' && entry.payload !== undefined && 'name' in entry.payload && entry.payload.name === 'knowledge_update')!
     const source = { session: 'origin', entry: update.id }
     f.store.knowledge.forget({ id: 'K', expectedRevision: 1, requestId: 'forget' })
-    const page = await createMemoryAccess({ records: f.service, session: 'origin' }).source(source)
+    const page = await createMaterialReader({ records: f.service, session: 'origin' })(source)
     expect(page.text).toContain(OLD)
     expect(page.knowledge).toEqual([{ id: 'K', revision: 1, provided: true }])
-    expect(f.service.memory.update({ expectedRevision: 0, changes: [{ id: 'revive', kind: 'fact', text: OLD, evidence: 'fact', status: 'active', sources: [source] }] }).ok).toBe(false)
     const request = await requestFromStoredSession({ records: f.service, session: 'origin', cwd: f.stage.workspace, knowledge: f.store.knowledge, text: '下一件事' })
-    expect(JSON.stringify(request.messages)).not.toContain(OLD)
+    expect(JSON.stringify(request.messages)).toContain(OLD)
     const calls = request.messages.flatMap(message => message.role === 'assistant' ? message.toolCalls ?? [] : [])
     const results = request.messages.filter(message => message.role === 'tool')
     expect(calls.map(call => call.name)).toContain('knowledge_update')
     expect(calls.map(call => call.id)).toEqual(results.map(result => result.callId))
-    expect(calls.find(call => call.name === 'knowledge_update')?.args).toHaveProperty('notice')
+    expect(calls.find(call => call.name === 'knowledge_update')?.args).toEqual({ id: 'K', expectedRevision: 99, changes: { conclusion: OLD } })
     const receiver = await requestFromStoredSession({ records: f.store.serviceFor('member'), session: 'member', cwd: f.stage.workspace, knowledge: f.store.knowledge, text: '继续独立工作' })
-    expect(JSON.stringify(receiver.messages)).not.toContain(OLD)
+    expect(JSON.stringify(receiver.messages)).toContain(OLD)
   } finally { shell.dispose(); await app.shutdown(); f.close() }
 })
 
-test('实际系统请求中的派生职责/委派范围/等待描述退出，身份与原责任仍保留', async () => {
+test('实际系统请求中的职责/委派范围/等待描述保留，身份与原责任仍保留', async () => {
   const f = fixture()
   let app: ReturnType<typeof f.stage.assemble> | undefined
   let shell: ReturnType<typeof attachShell> | undefined
@@ -159,9 +144,7 @@ test('实际系统请求中的派生职责/委派范围/等待描述退出，身
     f.records.consumeInbox(child.agent.agentId, 14)
     const through = (await Array.fromAsync(own.readEntries('child'))).at(-1)!.id
     f.records.markIncluded(child.agent.agentId, f.records.inbox(child.agent.agentId).map(item => item.messageId), 15)
-    own.memory.update({ expectedRevision: 0, changes: [], inspectedThrough: through })
-    own.memory.publishSummary({ expectedRevision: 1, previousSummary: null, content: { text: '已承接原记录' }, at: 16,
-      coverage: { from: 1, coveredThrough: through, memoryRevision: 1, previousSummary: null, sources: [{ session: 'child', entry: through }] } })
+    own.coverage.publish({ previousSummary: null, from: 1, through, at: 16, notesSaved: true })
     const requests: ModelRequest[] = []
     const actions = createCollaborationActions({ records: f.records, now: Date.now, origin: async () => f.origin,
       resolveModel: async () => f.model, start: async () => {}, wake: () => {}, cancel: async () => {}, changed: () => {} })
@@ -179,19 +162,19 @@ test('实际系统请求中的派生职责/委派范围/等待描述退出，身
     await shell.submit('继续核对当前工作')
     expect(requests).toHaveLength(4)
     const system = requests[2]!.messages[0]!
-    expect(JSON.stringify(system)).not.toContain(OLD)
+    expect(JSON.stringify(system)).toContain(OLD)
     expect(JSON.stringify(system)).toContain(child.agent.agentId)
     expect(JSON.stringify(system)).toContain(String(child.delegation.delegationId))
-    expect(JSON.stringify(requests[3]!.messages)).not.toContain(OLD)
+    expect(JSON.stringify(requests[3]!.messages)).toContain(OLD)
     expect(requests[3]!.messages.some(message => message.role === 'tool' && message.name === 'agent_list' && message.ok)).toBe(true)
     expect(f.records.getDelegation(child.delegation.delegationId)?.state).toBe('accepted')
     expect(f.records.listWaits(f.collaboration.collaborationId)[0]?.state).toBe('waiting')
     const last = (await Array.fromAsync(own.readEntries('child'))).findLast(entry => entry.kind === 'assistant')!
-    expect(last.payload !== undefined && 'knowledge' in last.payload && last.payload.knowledge?.some(reference => reference.id === 'K')).toBe(false)
+    expect(last.payload !== undefined && 'knowledge' in last.payload && last.payload.knowledge?.some(reference => reference.id === 'K')).toBe(true)
   } finally { shell?.dispose(); await app?.shutdown(); f.close() }
 })
 
-test('模型生成label的显式来源带修订，自动隐藏label仍保留独立entry正文', async () => {
+test('模型生成label的显式来源带修订，遗忘后label及entry正文保持原样', async () => {
   const f = fixture()
   try {
     const child = f.spawn('child')
@@ -201,24 +184,23 @@ test('模型生成label的显式来源带修订，自动隐藏label仍保留独�
     f.records.consumeInbox(child.agent.agentId, 12)
     const receipt = f.records.inbox(child.agent.agentId).find(item => item.messageId === message.messageId)!
     const own = f.store.serviceFor('child')
-    const access = createMemoryAccess({ records: own, session: 'child' })
-    const page = await access.source({ session: 'child', entry: receipt.entryId! })
+    const access = createMaterialReader({ records: own, session: 'child' })
+    const page = await access({ session: 'child', entry: receipt.entryId! })
     expect(page.text).toContain(OLD)
     expect(page.knowledge).toContainEqual({ id: 'K', revision: 1 })
     const before = await requestFromStoredSession({ records: own, session: 'child', knowledge: f.store.knowledge, cwd: f.stage.workspace, text: '查看标签' })
     expect(JSON.stringify(before.messages)).toContain(OLD)
     f.store.knowledge.forget({ id: 'K', expectedRevision: 1, requestId: 'forget' })
     const after = await requestFromStoredSession({ records: own, session: 'child', knowledge: f.store.knowledge, cwd: f.stage.workspace, text: '继续独立工作' })
-    expect(JSON.stringify(after.messages)).not.toContain(OLD)
+    expect(JSON.stringify(after.messages)).toContain(OLD)
     expect(JSON.stringify(after.messages)).toContain('共同用户要求：仅核对，不修改业务')
-    const historical = await access.source({ session: 'child', entry: receipt.entryId! })
+    const historical = await access({ session: 'child', entry: receipt.entryId! })
     expect(historical.text).toContain(OLD)
     expect(historical.knowledge).toContainEqual({ id: 'K', revision: 1 })
-    expect(own.memory.update({ expectedRevision: 0, changes: [{ id: 'label-copy', kind: 'fact', text: OLD, evidence: 'fact', status: 'active', sources: [historical.source] }] }).ok).toBe(false)
   } finally { f.close() }
 })
 
-test('实际模型交付沿调用来源失效，交付/接收事实不随遗忘撤回', async () => {
+test('实际模型交付沿调用保留来源，交付/接收事实不随遗忘撤回', async () => {
   const f = fixture()
   const member = f.spawn('member')
   const actions = createCollaborationActions({ records: f.records, now: Date.now, origin: async () => f.origin,
@@ -240,57 +222,9 @@ test('实际模型交付沿调用来源失效，交付/接收事实不随遗忘�
     f.records.receiveDelivery(f.coordinator.agentId, member.delegation.delegationId, 21)
     f.store.knowledge.forget({ id: 'K', expectedRevision: 1, requestId: 'forget' })
     const request = await requestFromStoredSession({ records: f.service, session: 'origin', knowledge: f.store.knowledge, cwd: f.stage.workspace, text: '继续独立工作' })
-    expect(JSON.stringify(request.messages)).not.toContain(OLD)
+    expect(JSON.stringify(request.messages)).toContain(OLD)
     expect(f.records.getDelegation(member.delegation.delegationId)?.state).toBe('received')
   } finally { shell.dispose(); await app.shutdown(); f.close() }
-})
-
-for (const interleaved of [false, true]) for (const complete of [false, true]) test(`实际发送夹在工具对内=${interleaved}，完整=${complete}时来源上界与连续压缩同口径`, async () => {
-  const f = fixture()
-  let service: ReturnType<typeof createConversationSession> | undefined
-  try {
-    const child = f.spawn('child')
-    f.service.appendEntry({ kind: 'assistant', content: { text: '准备发送' }, at: 10 })
-    const call = f.service.appendEntry({ kind: 'tool-call', content: { text: '' }, payload: { name: 'agent_message', args: { action: 'send' } }, at: 11 })
-    if (interleaved) f.records.send(f.coordinator.agentId, { operationId: 'interleaved', recipients: [child.agent.agentId], purpose: 'inform', body: [{ kind: 'text', text: '真实发送材料仍保留' }], at: 12 })
-    if (complete) f.service.appendEntry({ kind: 'tool-result', content: { text: '发送结果独有' }, payload: { ok: true, output: { text: '发送结果独有' } }, at: 13 })
-    let end = call
-    for (let index = 0; index < 10; index++) {
-      f.service.appendEntry({ kind: 'user', content: { text: `后续交代${index}` }, at: 20 + index * 2 })
-      end = f.service.appendEntry({ kind: 'assistant', content: { text: `后续结果${index}` }, at: 21 + index * 2 })
-    }
-    const stamper = createStamper({ records: f.service, session: 'origin', now: Date.now })
-    const gateway = createFauxGateway({ stamper, turns: [
-      { toolCalls: [{ name: 'memory_update', args: { expectedRevision: 0, changes: [], inspectedThrough: end } }] }, { text: '已核对来源上界' },
-    ] })
-    const tools = makeFauxToolRuntime({ definitions: [{ name: 'memory_update', summary: '确认整理位置', parameters: {}, danger: { level: 'light' } }],
-      handlers: { memory_update: call => { const result = f.service.memory.update(call.args as MemoryUpdate); return { ok: result.ok, output: JSON.stringify(result) } } } })
-    const summaries = createFauxGateway({ stamper, turns: [{ text: '阶段一摘要' }, { text: '阶段二摘要' }] })
-    service = createConversationSession({ records: f.service, session: 'origin', gateway, tools, stamper, sink: makeFauxSink(),
-      prompt: { cwd: f.stage.workspace, platform: 'test', date: '2026-10-26' }, context: { nearEntries: 2 }, compression: () => ({ gateway: summaries }) })
-    service.submit({ text: '确认完整来源范围' })
-    const deadline = Date.now() + 2000
-    while (service.busy() && Date.now() < deadline) await Bun.sleep(2)
-    expect(service.busy()).toBe(false)
-    expect(tools.calls.length).toBe(complete ? 1 : 0)
-    expect(gateway.requests[0]!.messages.some(message => message.role === 'tool' && message.output === '发送结果独有')).toBe(complete)
-    const checked = (await Array.fromAsync(f.service.readEntries('origin'))).at(-1)!.id
-    f.service.memory.update({ expectedRevision: f.service.memory.read().revision, changes: [], inspectedThrough: checked })
-    expect((await service.compact({ requestId: 'first' }, new AbortController().signal, () => {})).state).toBe('completed')
-    const first = f.service.memory.read().coveredThrough!
-    f.service.appendEntry({ kind: 'user', content: { text: '新的交代' }, at: 60 })
-    const second = await service.compact({ requestId: 'second' }, new AbortController().signal, () => {})
-    if (complete) {
-      expect(second.state).toBe('completed')
-      expect(f.service.memory.read().coveredThrough!).toBeGreaterThan(first)
-      expect(first).toBeGreaterThan(call)
-    } else {
-      expect(second.state).toBe('no-material')
-      expect(f.service.memory.read().coveredThrough).toBe(first)
-      expect(first).toBeLessThan(call)
-    }
-    if (interleaved) expect(f.records.listMessages(f.coordinator.agentId).some(message => message.body.some(part => part.kind === 'text' && part.text === '真实发送材料仍保留'))).toBe(true)
-  } finally { await service?.shutdown(); f.close() }
 })
 
 test('模型停止理由沿本次调用保留依赖，固定宿主理由独立保留且停止事实不变', async () => {
@@ -314,7 +248,7 @@ test('模型停止理由沿本次调用保留依赖，固定宿主理由独立�
     expect(f.records.listWaits(f.collaboration.collaborationId)[0]?.reasonFrom).toEqual(stopped.reasonFrom)
     f.store.knowledge.forget({ id: 'K', expectedRevision: 1, requestId: 'forget-stop' })
     await shell.submit('核对当前责任与等待')
-    expect(JSON.stringify(lastModel(f.stage).requests.slice(2).flatMap(request => request.messages))).not.toContain(OLD)
+    expect(JSON.stringify(lastModel(f.stage).requests.slice(2).flatMap(request => request.messages))).toContain(OLD)
     expect(f.records.getDelegation(child.delegation.delegationId)?.state).toBe('cancelled')
     expect(f.records.listWaits(f.collaboration.collaborationId)[0]?.state).toBe('interrupted')
     const other = f.spawn('other')

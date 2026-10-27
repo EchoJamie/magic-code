@@ -10,7 +10,7 @@ import { connectManager } from '../src/run/client.ts'
 import { startManager, type Manager } from '../src/run/manager.ts'
 import { runPathsOf } from '../src/run/paths.ts'
 
-test('真实Engine查询/证据/遗忘/重连回查不启动Agent，退出实际上下文并保持原文', async () => {
+test('真实Engine查询/证据/遗忘/重连回查不启动Agent，停止发现且保留原历史', async () => {
   const root = mkdtempSync('/tmp/magic-k-')
   const home = join(root, 'home'), base = join(root, 'data'), workspace = join(root, 'project')
   for (const dir of [home, base, workspace]) mkdirSync(dir)
@@ -28,10 +28,8 @@ test('真实Engine查询/证据/遗忘/重连回查不启动Agent，退出实际
     const scope = { kind: 'project' as const, workspace: [workspace] }
     expect(store.knowledge.write([{ id: 'auth', expectedRevision: 0, scope, topic: '认证', terms: ['鉴权'], conclusion: '旧认证认识', conditions: '某特定条件',
       evidence: 'fact', status: 'active', sources: [{ session: 'original', entry }], dependencies: [] }]).ok).toBe(true)
-    expect(records.memory.update({ expectedRevision: 0, inspectedThrough: secret, changes: [{ id: 'derived', kind: 'fact', text: '旧认证认识', evidence: 'fact', status: 'active',
-      sources: [{ session: 'original', entry }], knowledge: [{ id: 'auth', revision: 1 }] }, { id: 'requirement', kind: 'requirement', text: '仍须保留的用户要求', evidence: 'fact', status: 'active', sources: [{ session: 'original', entry }] }] }).ok).toBe(true)
-    expect(records.memory.publishSummary({ expectedRevision: 1, previousSummary: null, at: 3, content: { text: '摘要中的旧认证认识' },
-      coverage: { from: entry, coveredThrough: secret, memoryRevision: 1, previousSummary: null, sources: [{ session: 'original', entry }], knowledge: [{ id: 'auth', revision: 1 }] } }).ok).toBe(true)
+    records.appendEntry({ kind: 'assistant', content: { text: '原答复中的旧认证认识' }, payload: { knowledge: [{ id: 'auth', revision: 1 }] }, at: 3 })
+    records.appendEntry({ kind: 'user', content: { text: '仍须保留的用户要求' }, at: 4 })
     store.setSessionArchived('original', true)
     store.close()
     const started = await startManager({ paths, magic, launch: { spawn() { launches += 1; throw new Error('知识管理不应启动执行者') } } })
@@ -102,7 +100,7 @@ test('真实Engine查询/证据/遗忘/重连回查不启动Agent，退出实际
       expect(service.busy()).toBe(false)
       expect(events.filter(event => event.kind === 'error')).toEqual([])
       expect(gateway.requests).toHaveLength(1)
-      expect(JSON.stringify(gateway.requests[0]!.messages)).not.toContain('摘要中的旧认证认识')
+      expect(JSON.stringify(gateway.requests[0]!.messages)).toContain('原答复中的旧认证认识')
       expect(JSON.stringify(gateway.requests[0]!.messages)).toContain('仍须保留的用户要求')
     } finally { await service.shutdown() }
     expect((await Array.fromAsync(store.readEntries('original'))).some(item => item.id === entry)).toBe(true)

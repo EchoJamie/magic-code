@@ -20,15 +20,6 @@ export const NEXT_ID_KEY = 'next_id'
 export type NamedParams = Record<string, string | number | null>
 
 const DDL = `
-CREATE TABLE IF NOT EXISTS working_memory (
-  session TEXT PRIMARY KEY NOT NULL,
-  revision INTEGER NOT NULL,
-  items TEXT NOT NULL,
-  inspected_through INTEGER,
-  summary INTEGER,
-  covered_through INTEGER
-);
-
 CREATE TABLE IF NOT EXISTS ${SESSIONS_TABLE} (
   id         TEXT    PRIMARY KEY,
   at         INTEGER NOT NULL,

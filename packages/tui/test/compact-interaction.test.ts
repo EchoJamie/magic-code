@@ -51,8 +51,27 @@ test('无会话不创建；补全与召回不执行；终态不被迟到 pending
   expect(stage.shell.getView().flash).toBe('压缩完成')
   stage.feed([event('compact.state', { requestId: request.requestId, state: 'pending', accepted: true })])
   expect(stage.shell.getView().compactions.at(-1)?.state.state).toBe('completed')
+  expect(stage.shell.getView().flash).toBe('压缩完成')
   const before = stage.commands().length
   stage.press({ kind: 'up' })
   expect(stage.shell.getView().draft.startsWith('/compact ')).toBe(true)
   expect(stage.commands()).toHaveLength(before)
+})
+
+test.each(['failed', 'cancelled', 'interrupted'] as const)('部分笔记保存后的 %s 保留保存事实，查询沿原请求', state => {
+  const stage = stageFor()
+  stage.feed([event('compact.state', { requestId: 'saved-notes', accepted: true, state: 'running', notesSaved: true })])
+  stage.type('/status '); stage.press({ kind: 'enter' })
+  let dock = stage.shell.getView().dock
+  if (dock.kind !== 'picker') throw new Error('缺少压缩请求面板')
+  expect(dock.picker.rows[0]?.detail).toContain('已保存的笔记保留，本次历史收缩未完成')
+  stage.press({ kind: 'escape' })
+  stage.feed([event('compact.state', { requestId: 'saved-notes', accepted: true, state, notesSaved: true })])
+  expect(stage.shell.getView().flash).toContain('已保存的笔记保留，本次历史收缩未完成')
+  stage.type('/status '); stage.press({ kind: 'enter' })
+  dock = stage.shell.getView().dock
+  if (dock.kind !== 'picker') throw new Error('缺少压缩请求面板')
+  expect(dock.picker.rows.map(row => row.value)).toEqual(['query:saved-notes', 'back'])
+  stage.press({ kind: 'enter' })
+  expect(stage.commands().at(-1)).toEqual({ type: 'compact.query', session: 'session-test', requestId: 'saved-notes' })
 })

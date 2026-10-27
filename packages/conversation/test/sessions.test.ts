@@ -63,7 +63,7 @@ function makeLedger(rows: readonly LedgerRow[]): Ledger {
   }
 
   const records: RecordsService = {
-    get memory() { return makeFauxRecords().memory },
+    get coverage() { return makeFauxRecords().coverage },
     get inputs() { return makeFauxRecords().inputs },
     get collaboration(): RecordsService['collaboration'] { throw new Error('collaboration not scripted') },
     nextId: () => 1,
@@ -76,7 +76,7 @@ function makeLedger(rows: readonly LedgerRow[]): Ledger {
         yield { id: 1, kind: 'user', content: { text: row.first }, at: row.at + 1 }
       })(),
     // 倒序、有界读（U34）——本文件的用例不验回查，空即可
-    readEntriesBack: async (): Promise<readonly Entry[]> => [],
+    readEntriesBack: (): readonly Entry[] => [],
     readEvents: (): AsyncIterable<KernelEvent> => (async function* (): AsyncIterable<KernelEvent> {})(),
     // 在途识别（恢复 ① · U25）——本文件的用例不验扫描，一律「干净会话」
     scanInFlight: async (session: SessionId) => ({ session, openTurn: null, lastTurn: null, calls: [] }),
@@ -579,7 +579,7 @@ describe('读面（history.read）——重建展示的条目块', () => {
       open: (session) => makeInstance(session),
       records: {
         listSessions: async () => [],
-        readEntriesBack: async () => [],
+        readEntriesBack: () => [],
         readEvents: async function* () {},
         readEntries: (): AsyncIterable<Entry> =>
           (async function* (): AsyncIterable<Entry> {
@@ -647,7 +647,7 @@ test('目录先筛元数据；默认标题首条即停，近期摘要只读尾�
   const rows = await readSessionCatalog({
     async listSessions(actual) { expect(actual).toEqual(query); return [{ id: 'selected', at: 999, archived: false }] },
     async *readEntries(session) { expect(session).toBe('selected'); forward++; yield { id: 1, kind: 'user', content: { text: '第一条交代' }, at: 1 }; throw new Error('默认标题不应继续展开全文') },
-    async readEntriesBack(session, before, limit) { expect(session).toBe('selected'); expect(before).toBeUndefined(); expect(limit).toBe(HISTORY_CHUNK); backward++; return tail },
+    readEntriesBack(session, before, limit) { expect(session).toBe('selected'); expect(before).toBeUndefined(); expect(limit).toBe(HISTORY_CHUNK); backward++; return tail },
     async *readEvents() {},
     blobs: { async put() { return 'unused' }, async get(id) { blobs.push(id); if (id !== 'latest') throw new Error('不应加载旧全文'); return new TextEncoder().encode('最近进展') } },
   }, undefined, query)

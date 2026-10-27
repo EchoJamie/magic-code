@@ -87,20 +87,9 @@ function contentText(content: any): string {
   return typeof content === 'string' ? content : (content ?? []).filter((p: Wire) => ['text', 'input_text', 'output_text'].includes(p.type)).map((p: Wire) => p.text).join('')
 }
 
-// 本例没有压缩或记忆写入：每次请求的待整理来源须精确对应当刻已落库的全部业务记录。
-// 只移除核验过的末尾来源提示，任何其他 assistant 正文仍参与历史与配对检查。
+// 业务历史逐字参与协议回放，不剥除或补造助手材料。
 function conversationOf(request: WireRequest): Wire[] {
-  const messages: Wire[] = request.body.input ?? request.body.messages
-  expect(request.sources.length).toBeGreaterThan(0)
-  const session = request.sources[0]!.session
-  expect([...new Set(request.sources.map(source => source.session))]).toEqual([session])
-  const text = `〔本次材料来源位置 · 会话 ${session}〕\n${request.sources.map(source => `#${source.id} ${source.kind}`).join(' · ')}\n以上材料尚未确认整理；更新工作记忆时按原始来源引用，仅对已检查范围确认 inspectedThrough。`
-  const notice = messages.at(-1)!
-  expect(notice.role).toBe('assistant')
-  expect(contentText(notice.content)).toBe(text)
-  expect(notice.tool_calls ?? []).toEqual([])
-  if (Array.isArray(notice.content)) expect(notice.content.every((part: Wire) => ['text', 'output_text'].includes(part.type))).toBe(true)
-  return messages.slice(0, -1)
+  return request.body.input ?? request.body.messages
 }
 
 // 只归一公开对话与工具配对，以比较跨协议历史；私有状态另按原始请求体逐字段断言。

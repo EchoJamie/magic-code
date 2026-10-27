@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ModelRequest } from '@magic/contracts'
 import { createFauxGateway, type FauxTurn } from '@magic/faux'
@@ -17,7 +17,7 @@ for (const state of ['accepted', 'queued', 'stopped'] as const) test(`显式read
   const collaboration = store.collaboration.openCollaboration(root.agentId, { operationId: 'open', origin, at: 1 })
   const member = store.collaboration.spawn(root.agentId, { operationId: 'spawn', sessionId: 'member', name: '普通成员', role: 'reader', model,
     scope: '只读查证', source: origin, authorization: [origin], body: [{ kind: 'text', text: '核对知识' }], at: 1 })
-  const ownSource = store.serviceFor('member').appendEntry({ kind: 'user', content: { text: '只读核对要求' }, at: 1 })
+  store.serviceFor('member').appendEntry({ kind: 'user', content: { text: '只读核对要求' }, at: 1 })
   if (state !== 'queued') store.collaboration.respondToDelegation(member.agent.agentId, { operationId: 'accept', delegationId: member.delegation.delegationId, response: 'accept', at: 1 })
   expect(store.knowledge.write([{ id: 'known', expectedRevision: 0, scope: { kind: 'project', workspace: [realpathSync(stage.workspace)] },
     topic: '已知', terms: [], conclusion: '可复用认识', conditions: '核对条件', evidence: 'fact', status: 'active', sources: [{ session: 'origin', entry: rootSource }], dependencies: [] }]).ok).toBe(true)
@@ -27,7 +27,7 @@ for (const state of ['accepted', 'queued', 'stopped'] as const) test(`显式read
     { name: 'knowledge_search', args: {} },
     { name: 'knowledge_read', args: { id: 'known' } },
     { name: 'knowledge_source', args: { id: 'known', session: 'origin', entry: rootSource } },
-    { name: 'memory_update', args: { expectedRevision: 0, changes: [{ id: 'own', kind: 'requirement', text: '只读核对要求', evidence: 'fact', status: 'active', sources: [{ session: 'member', entry: ownSource }] }] } },
+    { name: 'write', args: { path: join(stage.dataDir, 'notes', 'member', 'MEMORY.md'), content: '只读核对要求' } },
     { name: 'read', args: { path: 'probe.txt' } },
     { name: 'write', args: { path: 'probe.txt', content: '越权修改' } },
   ] }, { text: '已核对' }]
@@ -46,8 +46,7 @@ for (const state of ['accepted', 'queued', 'stopped'] as const) test(`显式read
     await shell.submit('核对知识并维护自身记忆')
     expect(requests.length).toBeGreaterThan(0)
     const names = requests[0]!.tools!.map(tool => tool.name)
-    for (const name of ['knowledge_search', 'knowledge_read', 'knowledge_source', 'memory_update']) expect(names).toContain(name)
-    expect(names).not.toContain('write')
+    for (const name of ['knowledge_search', 'knowledge_read', 'knowledge_source', 'write']) expect(names).toContain(name)
     const outputs = eventsOfKind(shell.events, 'tool.result')
     if (state === 'accepted') {
       expect(outputs.map(event => event.data.ok)).toEqual([true, true, true, true, true, false])
@@ -60,8 +59,8 @@ for (const state of ['accepted', 'queued', 'stopped'] as const) test(`显式read
       expect(outputs.some(event => event.data.ok)).toBe(false)
       expect(app.records.collaboration.getCollaboration(collaboration.collaborationId)?.state).toBe('stopped')
     }
-    expect(app.records.serviceFor('member').memory.read().items.map(item => item.id)).toEqual(state === 'stopped' ? [] : ['own'])
-    expect(app.records.serviceFor('origin').memory.read().items).toEqual([])
+    expect(existsSync(join(stage.dataDir, 'notes', 'member', 'MEMORY.md'))).toBe(state !== 'stopped')
+    expect(existsSync(join(stage.dataDir, 'notes', 'origin', 'MEMORY.md'))).toBe(false)
     expect(readFileSync(join(stage.workspace, 'probe.txt'), 'utf8')).toBe('原值')
   } finally { shell.dispose(); await app.shutdown(); stage.dispose() }
 })

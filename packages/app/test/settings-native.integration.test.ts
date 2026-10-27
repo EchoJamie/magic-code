@@ -206,7 +206,8 @@ test('原生模型列表与 TS 缓存互通，非认证编辑沿用；换凭据�
     if (hold) await hold
     return Response.json({ data: [{ id: 'deepseek-chat', name: '受控列表', context_window: 64000, max_output_tokens: 4096, capabilities: { tools: true }, reasoning: { disable: true, default: 'off' } }] })
   } })
-  const settings = createSettings({ magic: g, environment: {}, fetch })
+  const settings = createSettings({ magic: g, environment: {}, fetch: (input, init) =>
+    String(input) === 'https://models.dev/api.json' ? Promise.resolve(Response.json(nativeModelsDevCatalog)) : fetch(input, init) })
   const row = (snapshot: Pick<SettingsSnapshot, 'catalog'>) => snapshot.catalog[0] as ModelCatalogRow
   const native = (action?: SettingsAction) => runNativeSettings({ ...g, ...(action ? { action, stamp: configStamp(g.configPath) } : {}) })
   try {

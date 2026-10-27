@@ -35,7 +35,7 @@ test('同批立即受理与独立写入、定向种子、自行取证、幂等�
     expect(requestText(first)).not.toContain('关键证据-实际读取-8391')
     expect(requestText(first)).toContain('相关约束：保持只读')
     expect(requestText(first)).not.toContain('维护计划笔记')
-    expect((first.body.tools as { function: { name: string } }[]).map(one => one.function.name).sort()).toEqual([...CONSULTATION_TOOL_NAMES].sort())
+    expect((first.body.tools as { function: { name: string } }[]).map(one => one.function.name).sort()).toEqual([...CONSULTATION_TOOL_NAMES, 'write', 'edit', 'source_read', 'knowledge_search', 'knowledge_read', 'knowledge_source'].sort())
     expect(f.members()).toHaveLength(2)
     advisor.release()
     await f.wait('结果带入主模型与顾问进程退出', () => f.requests().length >= 4 && f.member()!.reachability === 'historical' && !f.manager.executors().some(one => one.session === f.member()!.sessionId))
@@ -53,7 +53,7 @@ for (const name of ['write', 'edit', 'exec', 'plan_update', 'agent_spawn', 'cons
   test(`顾问伪造 ${name} 实际分发拒绝，合法 read 继续`, async () => {
     const f = await collaborationRuntime(`u115-deny-${name}`, call => {
       if (call.kind === 'agent') return call.index === 0 ? consult : { text: '原执行者保留责任。' }
-      if (call.index === 0) return { tool: name, args: { path: 'probe.txt', content: '不应写入', old: '原值', new: '不应修改', cmd: 'touch probe-exec.txt', plan: null,
+      if (call.index === 0) return { tool: name, args: { path: 'probe.txt', content: '不应写入', old: '原值', new: '不应修改', cmd: 'touch probe-exec.txt', steps: [],
         operationId: 'recursive', question: '再咨询', name: '伪造成员', responsibility: '修改', scope: '任意', body: [{ kind: 'text', text: '伪造' }] } }
       if (call.index === 1) {
         expect(requestText(call)).toMatch(/不允许|没有开放|未执行|拒绝|不存在|找不到|未知/)
@@ -103,7 +103,7 @@ test('plan/history 绑定发起 Session，主计划不自动入种子，跨独�
   }
   const f = await collaborationRuntime('u115-record-source', async call => {
     if (call.kind === 'agent') {
-      if (call.index === 0) return { tool: 'plan_update', args: { plan: { goal: 'MAIN-PLAN-ONLY-592', steps: [], notes: '主计划仅按需查询' } } }
+      if (call.index === 0) return { tool: 'plan_update', args: { goal: 'MAIN-PLAN-ONLY-592', steps: [], notes: '主计划仅按需查询' } }
       if (call.index === 1) return consult
       return { text: '原工作保持计划与责任。' }
     }
@@ -157,7 +157,7 @@ for (const mainFirst of [false, true]) {
     writeFileSync(path, JSON.stringify(config))
     try {
       f.shell.key({ kind: 'paste', text: '先咨询同型号顾问' }); f.shell.key({ kind: 'enter' })
-      await f.wait('同型号顾问完成并回报', () => f.delegation()?.deliveryMessageId !== undefined)
+      await f.wait('同型号顾问回报且主模型已续跑', () => f.delegation()?.deliveryMessageId !== undefined && f.calls.filter(one => one.kind === 'agent').length >= 2)
       advisorFirst.release(); mainContinued.release()
       expect(f.errors).toEqual([])
       const agents = f.calls.filter(one => one.kind === 'agent')

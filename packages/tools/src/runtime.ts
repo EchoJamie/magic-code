@@ -58,6 +58,7 @@ export type ToolInvokeOptions = {
  *   **随连接实况走**：连上就有、断开就没有——这是如实，不是抖动。
  */
 export type ToolRuntimeOptions = {
+  readonly notes?: import('@magic/contracts').WorkingNotes
   /** 权限裁决之后、真实执行之前登记宿主准入；返回本次执行的收尾。 */
   readonly beginExecution?: ((call: ToolCall) => () => void) | undefined
   readonly sandbox: Sandbox

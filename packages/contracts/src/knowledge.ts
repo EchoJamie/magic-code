@@ -1,5 +1,4 @@
-import type { MemoryItem, MemorySource, MaterialPage } from './memory.ts'
-import type { SessionId } from './ids.ts'
+import type { MemorySource, MaterialPage } from './memory.ts'
 
 export type KnowledgeScope = { readonly kind: 'project'; readonly workspace: readonly string[] } | { readonly kind: 'user' }
 export type KnowledgeReference = {
@@ -15,7 +14,7 @@ export type Knowledge = {
   readonly terms: readonly string[]
   readonly conclusion: string
   readonly conditions: string
-  readonly evidence: MemoryItem['evidence']
+  readonly evidence: 'fact' | 'hypothesis' | 'unresolved'
   readonly status: 'active' | 'pending' | 'invalid' | 'forgotten'
   readonly revision: number
   readonly sources: readonly MemorySource[]
@@ -34,7 +33,6 @@ export type KnowledgeQuery = {
   readonly limit?: number
 }
 export type KnowledgePage = { readonly items: readonly Knowledge[]; readonly next?: number }
-export type KnowledgeProgress = { readonly memoryRevision: number; readonly items: Readonly<Record<string, number>> }
 export type KnowledgeWriteResult =
   | { readonly ok: true; readonly items: readonly Knowledge[] }
   | { readonly ok: false; readonly reason: string }
@@ -62,8 +60,7 @@ export interface KnowledgeRecords {
   read(id: string): Knowledge | undefined
   /** 仅核验已有材料关系的状态/修订；不发现知识，也不返回跨范围正文。 */
   isCurrent(reference: KnowledgeReference): boolean
-  write(changes: readonly KnowledgeChange[], progress?: { readonly session: SessionId; readonly expectedMemoryRevision: number; readonly previousRevision: number; readonly items: Readonly<Record<string, number>> }): KnowledgeWriteResult
-  progress(session: SessionId): KnowledgeProgress
+  write(changes: readonly KnowledgeChange[]): KnowledgeWriteResult
   forget(input: KnowledgeForgetRequest): KnowledgeForgetResult
   forgetResult(input: KnowledgeForgetRequest): KnowledgeForgetResult
   /** 仅明确重新记住的用户动作可调用，普通知识整理不拥有此入口。 */

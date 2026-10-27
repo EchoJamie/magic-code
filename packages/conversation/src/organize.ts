@@ -1,124 +1,162 @@
-import { knowledgeOutputReferences, staleKnowledge, STALE_KNOWLEDGE_NOTICE } from './knowledge-material.ts'
+import type { Entry, EventSink, EventStamper, ModelGateway, ModelMessage, RecordsService, SessionId, ToolRuntime, ToolSpec, WorkingNotes } from '@magic/contracts'
 import { callMemoryModel } from './memory-model.ts'
-import type { Entry, ModelGateway, RecordsService, SessionId, ToolSpec, MemoryUpdate, RecordId, ModelMessage, MemorySource, EventSink, EventStamper } from '@magic/contracts'
 import { materialTextOf } from './material.ts'
-import { announceMemoryPlan, createMemoryAccess, createMemorySourceReader, memoryBlock } from './memory.ts'
-import { appendTextEntry, appendToolCallEntry, appendToolResultEntry, type EntryLog } from './entries.ts'
+import { readPlanOf } from './plan.ts'
 
-export const MEMORY_TOOLS = new Set(['memory_read', 'memory_update', 'source_read'])
-
-/** 内务工具的结果不再作为待整理业务材料；公开正文仍保留。 */
-export function substantiveEntries(entries: readonly Entry[]): readonly Entry[] {
-  const skip = new Set<RecordId>()
-  const interaction = entries.filter(entry => entry.kind !== 'agent-message')
-  for (let index = 0; index < interaction.length; index += 1) {
-    const entry = interaction[index]!
-    if (entry.kind !== 'tool-call' || entry.payload === undefined || !('name' in entry.payload) || !MEMORY_TOOLS.has(entry.payload.name)) continue
-    skip.add(entry.id)
-    if (interaction[index + 1]?.kind === 'tool-result') skip.add(interaction[index + 1]!.id)
-    const anchor = interaction[index - 1]
-    if (anchor?.kind === 'assistant' && 'text' in anchor.content && anchor.content.text.trim() === '') skip.add(anchor.id)
-  }
-  return entries.filter(entry => entry.kind !== 'summary' && !skip.has(entry.id))
+export const NOTE_TOOLS = new Set(['read', 'write', 'edit', 'ls', 'grep', 'glob'])
+export const substantiveEntries = (entries: readonly Entry[]): readonly Entry[] => entries.filter(entry => entry.kind !== 'summary' && entry.kind !== 'continuation')
+export class PreparationFailure extends Error {
+  constructor(readonly kind: 'capacity' | 'changed' | 'incomplete', message: string) { super(message) }
 }
+export const preparationReserve = (inputBudget: number) => Math.max(512, Math.ceil(inputBudget * .15))
+export type PreparationCapacity = { readonly inputBudget?: number; readonly maxOutputTokens?: number; readonly identity?: string }
+export type PreparationDeps = {
+  readonly records: RecordsService; readonly session: SessionId
+  readonly notes: WorkingNotes; readonly tools: (notes: WorkingNotes) => ToolRuntime
+  readonly gateway: ModelGateway; readonly capacity: PreparationCapacity
+  readonly sink: EventSink; readonly stamper: EventStamper; readonly now: () => number
+  readonly checkBasis: () => void
+  readonly saved: () => void
+}
+export const noteSignature = (files: Readonly<Record<string, string>>) => JSON.stringify(Object.entries(files).sort(([a], [b]) => a.localeCompare(b)))
 
-/** 仅在历史即将移出且尚未承接时调用当前模型；允许补读后提交，失败保留整个范围。 */
-export async function organizeWorkingMemory(input: {
-  readonly knowledge?: import('@magic/contracts').KnowledgeRecords
-  readonly records: RecordsService
-  readonly session: SessionId
-  readonly gateway: ModelGateway
-  readonly tools: readonly ToolSpec[]
-  readonly entries: readonly Entry[]
-  readonly through: RecordId
-  readonly signal?: AbortSignal
-  readonly sink: EventSink
-  readonly stamper: EventStamper
-  readonly now: () => number
-  readonly blobThreshold: number
-}): Promise<void> {
-  input.signal?.throwIfAborted()
-  const access = createMemoryAccess(input)
-  const before = input.records.memory.read()
-  const source = createMemorySourceReader(input, before, input.through)
-  if ((before.inspectedThrough ?? 0) >= input.through) return
-  const fresh = substantiveEntries(input.entries).filter(entry => entry.id > (before.inspectedThrough ?? 0))
-  if (fresh.length === 0) {
-    const result = input.records.memory.update({ expectedRevision: before.revision, changes: [], inspectedThrough: input.through })
-    if (!result.ok) throw new Error(result.reason)
-    announceMemoryPlan(input, result.snapshot, input.through)
-    return
+/** 按可用容量合并连续材料；每批使用真实工具取回正文，全部保存后才返回覆盖候选。 */
+export async function prepareContinuation(deps: PreparationDeps, entries: readonly Entry[], signal?: AbortSignal, focus?: string): Promise<Readonly<Record<string, string>>> {
+  const budget = deps.capacity.inputBudget ?? 16000
+  const reserve = preparationReserve(budget)
+  let inputRatio = .5
+  let expected = { ...await deps.notes.snapshot() }
+  async function unchanged() {
+    signal?.throwIfAborted()
+    if (noteSignature(await deps.notes.snapshot()) !== noteSignature(expected)) throw new PreparationFailure('changed', '准备期间笔记发生外部修改，原覆盖保留')
+    deps.checkBasis()
   }
-  const specs = input.tools.filter(tool => MEMORY_TOOLS.has(tool.name))
-  if (!specs.some(tool => tool.name === 'memory_update')) throw new Error('当前模型未装配工作记忆维护工具；未移走原材料')
-  const provided = new Map<string, import('@magic/contracts').KnowledgeReference>()
-  const include = (references: readonly import('@magic/contracts').KnowledgeReference[]) => {
-    for (const reference of references) provided.set(`${reference.id}\0${reference.revision}`, reference)
-  }
-  for (const item of before.items) if (item.status !== 'invalid') include(item.knowledge ?? [])
-  const rendered = await Promise.all(fresh.map(async entry => {
-    const body = await materialTextOf(entry, input.records, input.session, input.knowledge)
-    include(body.knowledge)
-    return `【来源 ${input.session}#${entry.id} · ${body.speaker} · ${entry.kind}】\n${body.text}`
-  }))
-  input.signal?.throwIfAborted()
-  const messages: ModelMessage[] = [
-    { role: 'system', content: '这是当前工作的受限记忆整理。只维护自身工作记忆，不执行业务、不给用户答复。下面提供待整理公开材料。保留有效要求、最新纠正、全部未决点、事实/假设/已验证范围与准确来源，不把协作回报升级为用户授权。可以 memory_read 或 source_read 补查，只能读取冻结上界内的材料。最后用 memory_update 一次提交必要增量和 inspectedThrough；无需改变时 changes=[]。不要改无关事项；整理位置只证明检查过，不证明语义完整。' },
-    { role: 'user', content: `${memoryBlock(before)}\n\n冻结上界：${input.through}；预期修订：${before.revision}\n\n${rendered.join('\n\n')}` },
-  ]
-  const log: EntryLog = { records: input.records, now: input.now, blobThreshold: input.blobThreshold }
-  for (;;) {
-    input.signal?.throwIfAborted()
-    if (input.records.memory.read().revision !== before.revision) throw new Error('整理期间工作记忆修订已变化；请按最新认识重新处理')
-    const { text, reasoning, result, failure } = await callMemoryModel({
-      purpose: 'organize', gateway: input.gateway, request: { messages, tools: specs },
-      ...(input.signal === undefined ? {} : { signal: input.signal }), sink: input.sink, stamper: input.stamper, now: input.now,
-    })
-    input.signal?.throwIfAborted()
-    if (failure !== undefined || !result.complete) throw new Error(failure?.message ?? '工作记忆整理未完整结束')
-    const calls = result.toolCalls ?? []
-    if (calls.length === 0) throw new Error('整理未确认冻结范围；原材料保留')
-    if (calls.some(call => !MEMORY_TOOLS.has(call.name))) throw new Error('受限整理不允许业务工具')
-    const updates = calls.filter(call => call.name === 'memory_update')
-    if (updates.length > 1 || (updates.length === 1 && calls.at(-1)?.name !== 'memory_update')) throw new Error('整理应在读完材料后最后提交一次 memory_update')
-    if (updates.length === 1) {
-      const update = updates[0]!.args as MemoryUpdate
-      if (update.expectedRevision !== before.revision || update.inspectedThrough !== input.through || !Array.isArray(update.changes)) throw new Error('整理提交未对应冻结的修订与来源范围')
-    }
-    messages.push({ role: 'assistant', content: text, toolCalls: calls,
-      ...(reasoning ? { reasoning } : {}), ...(result.reasoningState === undefined ? {} : { reasoningState: result.reasoningState }) })
-    const supplied = [...provided.values()]
-    await appendTextEntry(log, 'assistant', '', undefined, supplied)
-    for (const call of calls) {
-      appendToolCallEntry(log, call, supplied)
-      let output: string; let ok = false
-      try {
-        input.signal?.throwIfAborted()
-        if (call.name === 'memory_read') {
-          const current = access.read()
-          if (current.revision !== before.revision) throw new Error('整理期间工作记忆修订已变化')
-          output = JSON.stringify(current)
-          ok = true
-        } else if (call.name === 'source_read') {
-          const requested = call.args as MemorySource & { readonly limit?: number }
-          output = JSON.stringify(await source(requested))
-          ok = true
-        } else {
-          const committed = access.update(call.args as MemoryUpdate)
-          ok = committed.ok
-          output = JSON.stringify(committed)
+  const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length
+  type Source = { entry: Entry; material: Awaited<ReturnType<typeof materialTextOf>>; offset: number; end: number; provided: number; read: boolean }
+  const page = (source: Source, start = source.offset, end = source.end) => ({
+    source: { session: deps.session, entry: source.entry.id, offset: start }, speaker: source.material.speaker, kind: source.entry.kind,
+    text: source.material.text.slice(start, end), total: source.material.text.length, complete: end === source.material.text.length,
+    ...(end < source.end ? { next: end } : {}), segmentEnd: source.end,
+  })
+  const materials = new Map<number, Awaited<ReturnType<typeof materialTextOf>>>()
+  let index = 0, offset = 0
+  let materialBudget: number | undefined
+  while (index < entries.length) {
+    await unchanged()
+    const notes = deps.notes.fork(Math.max(1, Math.floor((budget - reserve) / inputRatio / 3)))
+    const tools = deps.tools(notes)
+    const specs: ToolSpec[] = [
+      ...tools.definitions().filter(tool => NOTE_TOOLS.has(tool.name)),
+      { name: 'plan_read', summary: '读取本会话独立计划；本次辅助调用不可修改计划', parameters: { type: 'object', properties: {}, additionalProperties: false }, danger: { level: 'light' } },
+      { name: 'history_read', summary: '按 entry/offset/limit 读取本次冻结材料的指定范围；只返回真实原文', parameters: { type: 'object', properties: { entry: { type: 'integer' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1 } }, required: ['entry'], additionalProperties: false }, danger: { level: 'light' } },
+    ]
+    const instruction = `这是当前模型的独立接续准备，不是业务轮次。只维护自身笔记 ${notes.directory}，通常从 MEMORY.md 读取，有主题时沿链接读取。使用 read/ls 实际取回已有笔记，并用 plan_read 取得独立计划；不得修改计划或执行业务。\n` +
+      '用 history_read 按下列位置读取本批全部真实来源；本批之外不可读取，后续材料由宿主继续提供。可在一次响应中调用多个读取工具。\n' +
+      '根据本批及当前笔记，保留仍有效要求、最新纠正、事实/假设、决定、全部未决点、已做与未验范围和继续入口；保留成员说话人及证据，不提升为用户授权。后批先读取已经更新的笔记，保留前批认识。全部来源读完后用 write/edit 保存本批接续材料；保存失败不得声称完成。准备完本批后直接结束，不填写修订号或整理位置。\n' +
+      '工具正文有界，节选按实际 next 继续；来源链接可用 [说明](会话#记录)。' + (focus ? `\n本次重点：${focus}；不能因此丢失其他有效要求或改变授权。` : '')
+    const location = (source: Source) => `会话 ${deps.session}，记录 ${source.entry.id}（${source.material.speaker}/${source.entry.kind}），字符 [${source.offset},${source.end})，该记录共 ${source.material.text.length} 字符。`
+    // 正文至少经历读取结果及保存参数两次，另留一次笔记接续的空间；实际往返仍逐次核容量。
+    const available = Math.max(0, (budget - reserve - bytes({ messages: instruction, tools: specs }) * inputRatio) / 3)
+    const allowance = Math.min(materialBudget ?? available, available)
+    const sources: Source[] = []
+    let cost = 0, nextIndex = index, nextOffset = offset
+    while (nextIndex < entries.length) {
+      const entry = entries[nextIndex]!
+      let material = materials.get(entry.id)
+      if (!material) { material = await materialTextOf(entry, deps.records, deps.session); materials.set(entry.id, material) }
+      const source: Source = { entry, material, offset: nextOffset, end: material.text.length, provided: nextOffset, read: false }
+      const estimate = (end: number) => { source.end = end; return bytes([location(source), page(source)]) * inputRatio }
+      let end = material.text.length
+      if (cost + estimate(end) > allowance) {
+        let low = nextOffset, high = end
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2)
+          if (cost + estimate(middle) <= allowance) low = middle
+          else high = middle - 1
         }
-      } catch (error) { output = error instanceof Error ? error.message : String(error) }
-      const references = knowledgeOutputReferences(call.name, output)
-      const resultId = appendToolResultEntry(log, { ok, text: output, content: { text: output } }, references)
-      messages.push({ role: 'tool', callId: call.id, name: call.name, ok,
-        output: staleKnowledge(references, input.knowledge) ? STALE_KNOWLEDGE_NOTICE : output })
-      if (!staleKnowledge(references, input.knowledge)) include(references)
-      if (!ok) throw new Error(output)
-      if (call.name === 'memory_update') {
-        announceMemoryPlan(input, input.records.memory.read(), resultId)
-        return
+        end = low
+        if (end === nextOffset && sources.length) break
+        // 最小的一条空记录或一个字符仍须实际尝试，不能因分批估算直接放弃。
+        if (end === nextOffset) end = Math.min(material.text.length, nextOffset + 1)
       }
+      cost += estimate(end); sources.push(source)
+      if (end < material.text.length) { nextOffset = end; break }
+      nextIndex++; nextOffset = 0
+    }
+    const preparation = crypto.randomUUID()
+    const messages: ModelMessage[] = [
+      { role: 'system', content: instruction + '\n' + sources.map(location).join('\n') },
+      { role: 'user', content: '请按上述范围完成本批接续准备：先通过工具读取真实材料，再保存工作笔记。' },
+    ]
+    const record = (message: ModelMessage) => deps.records.appendEntry({ kind: 'continuation', content: { text: '' }, payload: { preparation, message }, at: deps.now() })
+    const complete = () => sources.every(source => source.read && source.provided >= source.end)
+    let readNotes = false, readPlan = false, savedAfterRead = false, started = false
+    try {
+      for (;;) {
+        await unchanged()
+        const requestBytes = bytes({ messages, tools: specs })
+        if (Math.ceil(requestBytes * inputRatio) + reserve > budget) throw new PreparationFailure('capacity', '当前模型的输入预算不足以完成接续往返；原覆盖保留')
+        if (!started) { for (const message of messages) record(message); started = true }
+        const { text, reasoning, result, failure } = await callMemoryModel({ ...deps, purpose: 'compact', request: { messages, tools: specs }, ...(signal ? { signal } : {}) })
+        const calls = result.toolCalls ?? []
+        const assistant: ModelMessage = { role: 'assistant', content: text, ...(calls.length ? { toolCalls: calls } : {}),
+          ...(reasoning ? { reasoning } : {}), ...(result.reasoningState ? { reasoningState: result.reasoningState } : {}) }
+        if (text || reasoning || calls.length || result.reasoningState) { messages.push(assistant); record(assistant) }
+        if (failure || !result.complete || (result.finishReason !== 'stop' && result.finishReason !== 'tool-calls')) throw new PreparationFailure(failure?.tier === 'context-limit' || result.finishReason === 'length' ? 'capacity' : 'incomplete', failure?.message ?? '接续准备没有完整结束')
+        if (result.usage?.inputTokens !== undefined) inputRatio = Math.max(inputRatio, result.usage.inputTokens / requestBytes)
+        if (!calls.length) {
+          if (!complete() || !readNotes || !readPlan || !savedAfterRead) throw new PreparationFailure('incomplete', '本批来源尚未完整读取或笔记尚未保存，原覆盖保留')
+          break
+        }
+        let interrupted: unknown
+        for (const call of calls) {
+          let ok = false, output: string
+          try {
+            if (interrupted !== undefined) throw interrupted
+            await unchanged()
+            if (call.name === 'plan_read') {
+              output = JSON.stringify(readPlanOf(deps.records, deps.session)); readPlan = true; ok = true
+            } else if (call.name === 'history_read') {
+              const source = sources.find(source => source.entry.id === call.args.entry)
+              if (!source) throw new Error('来源不在本次冻结材料范围')
+              const start = call.args.offset ?? source.offset, length = call.args.limit ?? Math.max(1, source.end - source.offset)
+              if (!Number.isSafeInteger(start) || (start as number) < source.offset || (start as number) > source.end || !Number.isSafeInteger(length) || (length as number) < 1) throw new Error('来源不在本次冻结材料范围')
+              const finish = Math.min(source.end, (start as number) + (length as number))
+              output = JSON.stringify(page(source, start as number, finish))
+              source.read = true
+              if ((start as number) <= source.provided) source.provided = Math.max(source.provided, finish)
+              ok = true
+            } else if (NOTE_TOOLS.has(call.name)) {
+              if (typeof call.args.path !== 'string' || notes.resolve(call.args.path) === undefined) throw new Error('辅助调用只能访问本会话笔记，不可执行业务工具')
+              const before = notes.saved()
+              const result = await tools.invoke(call, signal ? { signal } : {})
+              ok = result.ok; output = result.output
+              if (notes.saved() > before) {
+                deps.saved(); expected = { ...expected, ...notes.writes() }
+                savedAfterRead ||= ok && complete() && readNotes && readPlan
+              }
+              if (ok && (call.name === 'read' || (call.name === 'ls' && Object.keys(expected).length === 0))) readNotes = true
+            } else throw new Error(`接续准备不允许工具 ${call.name}`)
+          } catch (error) {
+            output = error instanceof Error ? error.message : String(error)
+            if (error instanceof PreparationFailure || signal?.aborted) interrupted = error
+          }
+          const result: ModelMessage = { role: 'tool', callId: call.id, name: call.name, ok, output }
+          messages.push(result); record(result)
+        }
+        if (interrupted !== undefined) throw interrupted
+      }
+      await unchanged()
+      for (let done = index; done < nextIndex; done++) materials.delete(entries[done]!.id)
+      index = nextIndex; offset = nextOffset; materialBudget = undefined
+    } catch (error) {
+      if (error instanceof PreparationFailure && error.kind === 'capacity') {
+        if (sources.length > 1 || sources[0]!.end - sources[0]!.offset > 1) { materialBudget = Math.floor(Math.min(allowance, cost) / 2); continue }
+        throw new PreparationFailure('capacity', `最小来源范围仍无法完成接续：${error.message}`)
+      }
+      throw error
     }
   }
+  await unchanged()
+  return expected
 }

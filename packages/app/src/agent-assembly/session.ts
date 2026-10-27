@@ -1,5 +1,5 @@
-import { createKnowledgeAccess, createKnowledgeOrganizer, createMaterialReader, createMemoryAccess } from '@magic/conversation'
-import { defineKnowledgeTools, KNOWLEDGE_TOOL_NAMES, defineMemoryTools, MEMORY_TOOL_NAMES } from '@magic/tools'
+import { createKnowledgeAccess, createMaterialReader } from '@magic/conversation'
+import { defineKnowledgeTools, KNOWLEDGE_TOOL_NAMES, defineSourceTool } from '@magic/tools'
 import type {
   AgentModelConfig,
   AgentRoleConfig,
@@ -27,7 +27,7 @@ import type {
 import { CONSULTATION_TOOL_NAMES } from '@magic/contracts'
 import type { ContextPolicy, ConversationSession, PromptVars } from '@magic/conversation'
 import { createConversationSession, createPlanReader } from '@magic/conversation'
-import { createProjectRules } from '@magic/execution'
+import { createProjectRules, createWorkingNotes } from '@magic/execution'
 import type { ModelRegistry } from '@magic/model'
 import { createPageDistiller } from '@magic/model'
 import { createPermissionGate } from '@magic/permission'
@@ -123,6 +123,9 @@ export function createAgentSession(input: {
   }
   const consulting = identity?.purpose === 'consultation'
   const records = recordsStore.serviceFor(session)
+  const notes = createWorkingNotes(input.magic.base, session)
+  const noteToolNames = ['read', 'write', 'edit', 'ls', 'grep', 'glob']
+  const ownNoteCall = (call: import('@magic/contracts').ToolCall) => call.external === undefined && noteToolNames.includes(call.name) && typeof call.args.path === 'string' && notes.resolve(call.args.path) !== undefined
   const stamper = createStamper({ records, session, now })
   const sessionModels = model.create(identity?.model, stamper)
   const currentAcceptsImages = (): boolean | undefined => {
@@ -159,17 +162,15 @@ export function createAgentSession(input: {
   const planReader = createPlanReader({
     records,
     session,
-    nearEntries: context?.nearEntries,
   })
   const origin = consulting && identity.createdBy !== undefined ? recordsStore.collaboration.getAgent(identity.createdBy) : undefined
   if (consulting && origin === undefined) throw new Error('咨询缺少可信的发起会话')
   const originRole = origin?.role ? loaded.config.agentRoles?.[origin.role] : undefined
   if (origin?.role && originRole === undefined) throw new Error(`未知发起角色「${origin.role}」`)
   const sourceReader = origin === undefined ? planReader : createPlanReader({
-    records: recordsStore.serviceFor(origin.sessionId), session: origin.sessionId, nearEntries: context?.nearEntries,
+    records: recordsStore.serviceFor(origin.sessionId), session: origin.sessionId,
   })
-  const planTools = definePlanTools(sourceReader).filter(tool => tool.spec.name !== 'plan_update')
-  const memoryTools = defineMemoryTools(createMemoryAccess({ records, session }))
+  const planTools = definePlanTools(sourceReader).filter(tool => !consulting || tool.spec.name !== 'plan_update')
   const knowledge = recordsStore.knowledge
   const knowledgeMaterial = (source: import('@magic/contracts').MemorySource & { readonly limit?: number }, evidence?: readonly import('@magic/contracts').MemorySource[]) => {
     const references = records.inputs.list().filter(row => row.state === 'consumed' || row.state === 'included')
@@ -186,7 +187,7 @@ export function createAgentSession(input: {
   }
   const coordination = collaboration === undefined ? undefined : createCollaborationBoundary({
     records: recordsStore.collaboration, session, runId: executionId,
-    materials: records, knowledge: recordsStore.knowledge,
+    materials: records, knowledge: recordsStore.knowledge, ownNoteCall,
     model: () => opened.models?.current() as AgentModelConfig | undefined,
     tools: () => tools.definitions().map(tool => tool.name),
     now, changed: () => collaborationChanged?.(),
@@ -222,8 +223,9 @@ export function createAgentSession(input: {
     },
   })
 
-  const toolVisible = (name: string): boolean => {
-    if (MEMORY_TOOL_NAMES.includes(name)) return true
+  const businessToolVisible = (name: string): boolean => {
+    if (name === 'source_read') return true
+    if (!consulting && (name === 'plan_read' || name === 'plan_update')) return true
     if ((KNOWLEDGE_TOOL_NAMES as readonly string[]).includes(name)) return !consulting || name !== 'knowledge_update'
     if (consulting) return CONSULTATION_TOOL_NAMES.includes(name) && (originRole?.tools === undefined || originRole.tools.includes(name))
     const allowed = currentRole()?.tools
@@ -231,27 +233,34 @@ export function createAgentSession(input: {
       || ((name === 'background_stop' || name === 'background_wait') && allowed.includes('exec'))
       || (name.startsWith('agent_') && agentTools.some(tool => tool.spec.name === name))
   }
+  const sourceTool = defineSourceTool(source => {
+    const references = records.inputs.list().filter(row => row.state === 'consumed' || row.state === 'included').flatMap(row => row.input.refs?.filter((ref): ref is Extract<import('@magic/contracts').InputRef, { kind: 'session' }> => ref.kind === 'session') ?? [])
+    return createMaterialReader({ records, session, references })(source)
+  })
+  const toolVisible = (name: string) => noteToolNames.includes(name) || businessToolVisible(name)
+  const businessAllowed = (call: import('@magic/contracts').ToolCall) => ownNoteCall(call) || businessToolVisible(call.name)
   const skillTool = defineSkillTool(skills)
   const rawTools = createToolRuntime({
     beginExecution: (call) => {
       signal.throwIfAborted()
-      if (!toolVisible(call.name) || (consulting && call.external !== undefined)) throw new Error(`当前执行者没有开放工具 ${call.name}`)
+      if (!businessAllowed(call) || (consulting && call.external !== undefined)) throw new Error(`当前执行者没有开放工具 ${call.name}`)
       return coordination?.begin(call) ?? (() => undefined)
     },
     sandbox,
+    notes,
     workspace,
     gate: {
       ...gate,
-      decide: (call, context, ref, callSignal) => toolVisible(call.name) && (!consulting || call.external === undefined)
+      decide: (call, context, ref, callSignal) => businessAllowed(call) && (!consulting || call.external === undefined)
         ? gate.decide(call, context, ref, callSignal === undefined ? signal : AbortSignal.any([signal, callSignal])) : Promise.resolve('reject'),
     },
     sink,
     stamper,
     // 大块转存经记录域公开面（blob 写权唯一归它）
     blobs: records.blobs,
-    tools: () => consulting ? [...memoryTools, ...knowledgeTools, ...planTools.filter(tool => CONSULTATION_TOOL_NAMES.includes(tool.spec.name)), webFetchTool]
+    tools: () => consulting ? [sourceTool, ...knowledgeTools, ...planTools, webFetchTool]
       // 咨询只保留 Fetch——新增 Search 不自动扩大咨询的授权面
-      : [skillTool, ...memoryTools, ...knowledgeTools, ...planTools, webFetchTool, webSearchTool, ...mcpTools(), ...agentTools, ...defineBackgroundTools()],
+      : [skillTool, sourceTool, ...knowledgeTools, ...planTools, webFetchTool, webSearchTool, ...mcpTools(), ...agentTools, ...defineBackgroundTools()],
 
     trashAvailable: commandOnPath('trash', network.env),
 
@@ -262,7 +271,6 @@ export function createAgentSession(input: {
     const known = new Set(rawTools.definitions().map(tool => tool.name))
     // 网页工具按配置可能暂时 `unavailable`（未配置 / 缺凭据）——角色里点名它们
     // 不该把整条会话变成「未知工具」错误：它们仍在注册表里，只是此刻不送模型。
-    known.add('plan_update') // 历史角色配置仍可读，写入口已由 memory_update 替换
     known.add('web_fetch')
     known.add('web_search')
     for (const name of currentRole()?.tools ?? []) {
@@ -347,15 +355,19 @@ export function createAgentSession(input: {
 
   const service = createConversationSession({
     knowledge,
-    ...(consulting ? {} : { organizeKnowledge: createKnowledgeOrganizer({ session, scope: { kind: 'project', workspace: workspace.roots() },
-      memory: records.memory, knowledge, material: knowledgeMaterial,
-      compression: modelGateway === undefined ? () => model.cantrip(stamper) : () => ({ gateway: fixed }), now }) }),
     onInput: () => background?.cancelWait(),
     collaboration: coordination?.boundary,
     purpose: identity?.purpose,
     consultationAvailable: agentTools.length > 0 && toolVisible('consult_arcane'),
     session,
-    compression: modelGateway === undefined ? () => model.cantrip(stamper) : () => ({ gateway: fixed }),
+    notes,
+    continuationGateway: { stream: (request, options) => (opened.models ?? fixed).stream(request, options) },
+    noteTools: currentNotes => createToolRuntime({ sandbox, workspace, notes: currentNotes,
+      gate: createPermissionGate({ sink: { emit() {} }, stamper, now }), sink: { emit() {} }, stamper, blobs: records.blobs, trashAvailable: false }),
+    capacity: () => {
+      const selected = opened.models?.current()
+      return selected === undefined ? {} : { ...opened.models?.capacityOf(selected.provider, selected.model), identity: JSON.stringify(selected) }
+    },
     prompt: promptVarsOf(workspace, prompt, now),
     gateway,
     tools,

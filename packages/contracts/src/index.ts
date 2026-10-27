@@ -50,3 +50,4 @@ export type { BackgroundChange, BackgroundTarget, BackgroundCommand, BackgroundV
 
 export type * from './memory.ts'
 export type * from './knowledge.ts'
+export type { NoteReadQuery, NoteLink, NotePage, NoteState, WorkingNotes, ContextCoverage, CoverageRecords } from './notes.ts'

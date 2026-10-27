@@ -1837,27 +1837,90 @@ extension NativeTests {
         model.selection = ["one"]; model.choose(); model.memoryExpanded = true; model.readMemory()
         guard case .memory(let request, let session, _) = messages.requests.last else { return XCTFail("缺少真实读取命令") }
         let source = MemorySource(session: "one", entry: 1)
-        let item = MemoryItem(id: "fact", kind: "fact", text: "中文事项 😀 é", detail: "完整正文", scope: nil, evidence: "hypothesis", status: "active", sources: [source], revision: 1, progress: nil)
-        let snapshot = MemorySnapshot(session: session, revision: 2, items: [item], inspectedThrough: 1, summary: nil, coveredThrough: nil)
-        model.receive(.memoryResult(request: request, serviceInstance: testIdentity.serviceInstance, session: session, memory: snapshot, unprocessed: true, knowledge: KnowledgePage(items: [], next: nil), material: nil, error: nil))
+        let path = "主题/中文笔记.md"
+        let snapshot = NoteState(directory: "/isolated/notes", path: path, status: "ready", files: [path], page: NotePage(session: session, path: path, absolute: "/isolated/notes/" + path, text: "完整正文 👩🏽‍💻 é", offset: 0, total: 10, complete: true, next: nil, cursor: "opaque", links: []))
+        model.receive(.memoryResult(request: request, serviceInstance: testIdentity.serviceInstance, session: session, notes: snapshot, material: nil, error: nil))
         XCTAssertEqual(model.memory, snapshot)
-        XCTAssertTrue(model.memoryUnprocessed)
-        model.readSource(source, item: item.id)
-        guard case .memorySource(let sourceRequest, _, _, let id, _) = messages.requests.last else { return XCTFail("缺少来源命令") }
-        XCTAssertEqual(id, item.id)
-        model.receive(.memoryResult(request: sourceRequest, serviceInstance: testIdentity.serviceInstance, session: session, memory: nil, unprocessed: nil, knowledge: nil, material: MaterialPage(source: source, speaker: "用户", kind: "user", text: "前段", total: 4, complete: false, next: 2), error: nil))
+        model.readSource(source, path: path)
+        guard case .memorySource(let sourceRequest, _, _, let id, _, _) = messages.requests.last else { return XCTFail("缺少来源命令") }
+        XCTAssertEqual(id, path)
+        model.receive(.memoryResult(request: sourceRequest, serviceInstance: testIdentity.serviceInstance, session: session, notes: nil, material: MaterialPage(source: source, speaker: "用户", kind: "user", text: "前段", total: 4, complete: false, next: 2), error: nil))
         model.nextSource()
-        guard case .memorySource(let nextRequest, _, let nextSource, _, _) = messages.requests.last else { return XCTFail("缺少分页命令") }
+        guard case .memorySource(let nextRequest, _, let nextSource, _, _, _) = messages.requests.last else { return XCTFail("缺少分页命令") }
         XCTAssertEqual(nextSource.offset, 2)
-        model.receive(.memoryResult(request: nextRequest, serviceInstance: testIdentity.serviceInstance, session: session, memory: nil, unprocessed: nil, knowledge: nil, material: nil, error: "暂不可读"))
+        model.receive(.memoryResult(request: nextRequest, serviceInstance: testIdentity.serviceInstance, session: session, notes: nil, material: nil, error: "暂不可读"))
         XCTAssertEqual(model.materialPages.last?.text, "前段")
         XCTAssertEqual(model.memory, snapshot)
         model.disconnect()
         XCTAssertEqual(model.materialPages.last?.text, "前段")
         model.chooseMember("member")
-        model.receive(.memoryResult(request: sourceRequest, serviceInstance: testIdentity.serviceInstance, session: session, memory: snapshot, unprocessed: false, knowledge: nil, material: nil, error: nil))
+        model.receive(.memoryResult(request: sourceRequest, serviceInstance: testIdentity.serviceInstance, session: session, notes: snapshot, material: nil, error: nil))
         XCTAssertNil(model.memory)
         XCTAssertTrue(messages.reads.isEmpty)
+    }
+    @MainActor func testNoteContinuationChangeKeepsContentAndKnowledgeFailureIsIndependent() throws {
+        let (model, messages) = browser()
+        try catalog(model, messages, [sessionRow()])
+        model.selection = ["one"]; model.choose(); model.memoryExpanded = true; model.readMemory()
+        guard case .memory(let request, let session, _) = messages.requests.last else { return XCTFail("缺少笔记读取命令") }
+        let page = NotePage(session: session, path: "MEMORY.md", absolute: "/isolated/notes/MEMORY.md", text: "旧片段 👩🏽‍💻 é", offset: 0, total: 100, complete: false, next: 12, cursor: "host-cursor", links: [])
+        let notes = NoteState(directory: "/isolated/notes", path: page.path, status: "ready", files: [page.path], page: page)
+        model.receive(.memoryResult(request: request, serviceInstance: testIdentity.serviceInstance, session: session, notes: notes, material: nil, error: nil))
+        XCTAssertFalse(messages.requests.contains { if case .knowledge = $0 { return true }; return false })
+        model.nextNote()
+        guard case .memory(let continuation, _, let query) = messages.requests.last else { return XCTFail("缺少笔记续读命令") }
+        XCTAssertEqual(query, NoteReadQuery(path: "MEMORY.md", offset: 12, cursor: "host-cursor"))
+        model.receive(.memoryResult(request: continuation, serviceInstance: testIdentity.serviceInstance, session: session,
+            notes: NoteState(directory: notes.directory, path: page.path, status: "changed", files: notes.files, page: nil), material: nil, error: nil))
+        XCTAssertEqual(model.memory?.page?.text, page.text)
+        XCTAssertTrue(model.memoryError?.contains("内容已变化") == true)
+        model.readMemory()
+        guard case .memory(let reread, _, let rereadQuery) = messages.requests.last else { return XCTFail("缺少重读命令") }
+        XCTAssertNil(rereadQuery.cursor); XCTAssertNil(rereadQuery.offset)
+        model.receive(.memoryResult(request: reread, serviceInstance: testIdentity.serviceInstance, session: session, notes: notes, material: nil, error: nil))
+        model.readMemory()
+        guard case .memory(let missingRequest, _, _) = messages.requests.last else { return XCTFail("缺少入口重读命令") }
+        model.receive(.memoryResult(request: missingRequest, serviceInstance: testIdentity.serviceInstance, session: session,
+            notes: NoteState(directory: notes.directory, path: page.path, status: "empty", files: [], page: nil), material: nil, error: nil))
+        XCTAssertEqual(model.memory?.page?.text, page.text)
+        XCTAssertTrue(model.memoryError?.contains("入口笔记已不存在") == true)
+        model.readMemory()
+        guard case .memory(let restoredRequest, _, _) = messages.requests.last else { return XCTFail("缺少恢复重读命令") }
+        model.receive(.memoryResult(request: restoredRequest, serviceInstance: testIdentity.serviceInstance, session: session, notes: notes, material: nil, error: nil))
+        model.readKnowledge()
+        guard case .knowledge(let knowledgeRequest, _, _) = messages.requests.last else { return XCTFail("知识入口未独立请求") }
+        model.receive(.knowledgeResult(request: knowledgeRequest, serviceInstance: testIdentity.serviceInstance, session: session, knowledge: nil, error: "知识不可读"))
+        XCTAssertEqual(model.memory?.page?.text, page.text); XCTAssertNil(model.memoryError)
+        XCTAssertEqual(model.knowledgeError, "知识不可读")
+        model.memoryFocus = "theme"
+        model.openNote("主题.md")
+        guard case .memory(let late, _, _) = messages.requests.last else { return XCTFail("缺少主题读取") }
+        model.backNote()
+        model.receive(.memoryResult(request: late, serviceInstance: testIdentity.serviceInstance, session: session, notes: NoteState(directory: notes.directory, path: "主题.md", status: "empty", files: [], page: nil), material: nil, error: nil))
+        XCTAssertEqual(model.memory, notes); XCTAssertEqual(model.memoryFocus, "theme")
+    }
+    @MainActor func testNoteCopyPreservesExactTextAndDoesNotSendWork() {
+        let pasteboard = NSPasteboard.general
+        let previous = (pasteboard.pasteboardItems ?? []).map { item in
+            item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+        }
+        defer {
+            pasteboard.clearContents()
+            let restored = previous.map { values in
+                let item = NSPasteboardItem()
+                for (type, data) in values { item.setData(data, forType: type) }
+                return item
+            }
+            if !restored.isEmpty { pasteboard.writeObjects(restored) }
+        }
+        let (model, messages) = browser()
+        let before = messages.requests.count
+        for (text, label) in [("原始正文\n中文 👩🏽‍💻 é", "笔记正文"), ("/isolated/notes/主题/中文 é.md", "文件位置")] {
+            model.copyNote(text, label: label)
+            XCTAssertEqual(pasteboard.string(forType: .string), text)
+            XCTAssertEqual(model.operationMessage, "已复制" + label)
+        }
+        XCTAssertEqual(messages.requests.count, before)
     }
     @MainActor func testMemoryNativeReadingLightDarkAndNarrowLayout() async throws {
         _ = NSApplication.shared
@@ -1865,21 +1928,22 @@ extension NativeTests {
         try catalog(model, messages, [sessionRow()])
         model.selection = ["one"]; model.choose(); model.showDetail(); model.memoryExpanded = true; model.readMemory()
         guard case .memory(let request, let session, _) = messages.requests.last else { return XCTFail("缺少读取命令") }
-        let item = MemoryItem(id: "long", kind: "fact", text: "长中文工作记忆 👩🏽‍💻 é", detail: String(repeating: "已验证的结果与尚未确认的边界。", count: 20), scope: nil, evidence: "unresolved", status: "active", sources: [MemorySource(session: "one", entry: 1)], revision: 3, progress: nil)
-        model.receive(.memoryResult(request: request, serviceInstance: testIdentity.serviceInstance, session: session, memory: MemorySnapshot(session: session, revision: 3, items: [item], inspectedThrough: 1, summary: nil, coveredThrough: nil), unprocessed: true, knowledge: KnowledgePage(items: [], next: nil), material: nil, error: nil))
-        model.memoryFocus = item.id
+        let path = "主题/长中文工作笔记 👩🏽‍💻 é.md"
+        let page = NotePage(session: session, path: path, absolute: "/isolated/notes/" + path, text: String(repeating: "已验证的结果与尚未确认的边界。", count: 20), offset: 0, total: 320, complete: true, next: nil, cursor: "opaque", links: [NoteLink(kind: "source", label: "原始交代", source: MemorySource(session: "one", entry: 1))])
+        model.receive(.memoryResult(request: request, serviceInstance: testIdentity.serviceInstance, session: session, notes: NoteState(directory: "/isolated/notes", path: path, status: "ready", files: [path], page: page), material: nil, error: nil))
+        model.memoryFocus = "link:0"
         for (width, appearance) in [(980.0, NSAppearance.Name.aqua), (460.0, .darkAqua)] {
             let window = try await hostView(SessionWindow(model: model), size: NSSize(width: width, height: 620), appearance: appearance)
             defer { window.close() }
             try await assertFrameRender(window, name: "u131-memory-\(Int(width))")
-            model.readSource(item.sources[0], item: item.id)
-            guard case .memorySource(let sourceRequest, _, let source, _, _) = messages.requests.last else { return XCTFail("缺少来源读取请求") }
+            model.followNoteLink(page.links[0], index: 0)
+            guard case .memorySource(let sourceRequest, _, let source, _, _, _) = messages.requests.last else { return XCTFail("缺少来源读取请求") }
             let excerpt = "来源原话：先核对条件，再判断是否适用于当前任务。\n这是原用户交代，不替代当前工作的授权。\n" + String(repeating: "保留已验证结果与未决问题的区别。", count: 8)
-            model.receive(.memoryResult(request: sourceRequest, serviceInstance: testIdentity.serviceInstance, session: session, memory: nil, unprocessed: nil, knowledge: nil, material: MaterialPage(source: source, speaker: "用户", kind: "user", text: excerpt, total: 5000, complete: false, next: excerpt.count), error: nil))
+            model.receive(.memoryResult(request: sourceRequest, serviceInstance: testIdentity.serviceInstance, session: session, notes: nil, material: MaterialPage(source: source, speaker: "用户", kind: "user", text: excerpt, total: 5000, complete: false, next: excerpt.count), error: nil))
             try await assertFrameRender(window, name: "u131-memory-source-\(Int(width))")
             XCTAssertEqual(model.materialPages.last?.text, excerpt)
             model.backSource()
-            XCTAssertEqual(model.memoryFocus, item.id)
+            XCTAssertEqual(model.memoryFocus, "link:0")
         }
     }
     @MainActor func testSessionWindowNativeLightDarkAndNarrowLayout() async throws {

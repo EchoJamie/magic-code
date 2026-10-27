@@ -23,15 +23,21 @@ import AppKit
     @Published private(set) var done = false
     @Published var memoryFocus: String?
     @Published var memoryExpanded = false
-    @Published private(set) var memory: MemorySnapshot?
+    @Published private(set) var memory: NoteState?
     @Published private(set) var knowledge: [MemoryKnowledge] = []
-    @Published private(set) var memoryUnprocessed = false
     @Published private(set) var memoryReading = false
     @Published private(set) var memoryError: String?
     @Published private(set) var materialPages: [MaterialPage] = []
     @Published private(set) var knowledgeNext: Int?
     private var memoryRequest: String?
-    private var materialTarget: (source: MemorySource, item: String?, knowledge: String?)?
+    private var noteQuery = NoteReadQuery()
+    private var noteHistory: [(notes: NoteState?, query: NoteReadQuery, focus: String?)] = []
+    @Published private(set) var canBackNote = false
+    @Published var knowledgeExpanded = false
+    @Published private(set) var knowledgeReading = false
+    @Published private(set) var knowledgeError: String?
+    private var knowledgeRequest: String?
+    private var materialTarget: (source: MemorySource, path: String?, inputRef: String?, knowledge: String?)?
     @Published var historyExpanded = false
     @Published private(set) var memberSession: String?
     @Published var rename: String?
@@ -75,7 +81,7 @@ import AppKit
     }
     func disconnect() {
         online = false; loading = false; reading = false; busy = false
-        memoryRequest = nil; memoryReading = false
+        memoryRequest = nil; memoryReading = false; knowledgeRequest = nil; knowledgeReading = false
         catalogRequest = nil; historyRequest = nil; inspectRequest = nil; manageRequest = nil
         visibleNotice = nil
     }
@@ -139,34 +145,80 @@ import AppKit
     var memorySession: String? { memberSession ?? route?.notice.source?.session ?? selected?.id ?? route?.session }
     private func resetMemory() {
         memoryRequest = nil; memoryReading = false; memory = nil; knowledge = []; knowledgeNext = nil
-        materialPages = []; materialTarget = nil; memoryError = nil; memoryUnprocessed = false; memoryFocus = nil
+        materialPages = []; materialTarget = nil; memoryError = nil; memoryFocus = nil
+        noteHistory = []; noteQuery = NoteReadQuery(); canBackNote = false
+        knowledgeRequest = nil; knowledgeReading = false; knowledgeError = nil; knowledgeExpanded = false
     }
-    func readMemory(offset: Int? = nil) {
+    func readMemory(query: NoteReadQuery? = nil) {
         guard online, !memoryReading, let session = memorySession else { return }
+        let input = query ?? NoteReadQuery(path: noteQuery.path)
+        if (input.path ?? "MEMORY.md") != (memory?.page?.path ?? noteQuery.path ?? "MEMORY.md") { memory = nil }
+        noteQuery = input
         let request = UUID().uuidString; memoryRequest = request; memoryReading = true; memoryError = nil
-        if offset == nil { materialPages = []; materialTarget = nil }
-        send?(.memory(request: request, session: session, offset: offset)); expire(request)
+        materialPages = []; materialTarget = nil
+        send?(.memory(request: request, session: session, query: input)); expire(request)
     }
-    func readSource(_ source: MemorySource, item: String? = nil, knowledge: String? = nil, next: Bool = false) {
+    func openNote(_ path: String) {
+        guard online, !memoryReading else { return }
+        noteHistory.append((memory, noteQuery, memoryFocus)); canBackNote = true
+        memoryFocus = nil
+        readMemory(query: NoteReadQuery(path: path))
+    }
+    func nextNote() {
+        guard let page = memory?.page, let offset = page.next, memoryError == nil else { return }
+        noteHistory.append((memory, noteQuery, "next-note")); canBackNote = true
+        memoryFocus = nil
+        readMemory(query: NoteReadQuery(path: page.path, offset: offset, cursor: page.cursor))
+    }
+    func backNote() {
+        guard let previous = noteHistory.popLast() else { return }
+        memoryRequest = nil; memoryReading = false; memoryError = nil
+        memory = previous.notes; noteQuery = previous.query; memoryFocus = previous.focus
+        canBackNote = !noteHistory.isEmpty
+    }
+    func followNoteLink(_ link: NoteLink, index: Int) {
+        memoryFocus = "link:\(index)"
+        switch link.kind {
+        case "note": if let path = link.path { openNote(path) }
+        case "source": if let source = link.source { readSource(source, path: link.inputRef == nil ? memory?.page?.path : nil, inputRef: link.inputRef) }
+        default: memoryError = (link.target ?? link.label) + "：" + (link.reason ?? "此位置暂不能直接打开，可复制后查看。")
+        }
+    }
+    func readKnowledge(offset: Int? = nil) {
+        guard online, !knowledgeReading, let session = memorySession else { return }
+        let request = UUID().uuidString; knowledgeRequest = request; knowledgeReading = true; knowledgeError = nil
+        send?(.knowledge(request: request, session: session, query: KnowledgeQuery(offset: offset))); expire(request)
+    }
+    func readSource(_ source: MemorySource, path: String? = nil, inputRef: String? = nil, knowledge: String? = nil, next: Bool = false) {
         guard online, !memoryReading, let session = memorySession else { return }
         if !next { materialPages = [] }
-        materialTarget = (source, item, knowledge)
+        materialTarget = (source, path, inputRef, knowledge)
         let request = UUID().uuidString; memoryRequest = request; memoryReading = true; memoryError = nil
-        send?(.memorySource(request: request, session: session, source: source, item: item, knowledge: knowledge)); expire(request)
+        send?(.memorySource(request: request, session: session, source: source, path: path, inputRef: inputRef, knowledge: knowledge)); expire(request)
     }
+    var showingSource: Bool { materialTarget != nil }
     func nextSource() {
         guard let target = materialTarget, let offset = materialPages.last?.next else { return }
         var source = target.source; source.offset = offset
-        readSource(source, item: target.item, knowledge: target.knowledge, next: true)
+        readSource(source, path: target.path, inputRef: target.inputRef, knowledge: target.knowledge, next: true)
     }
     func retrySource() {
         guard let target = materialTarget else { readMemory(); return }
-        readSource(target.source, item: target.item, knowledge: target.knowledge, next: true)
+        readSource(target.source, path: target.path, inputRef: target.inputRef, knowledge: target.knowledge, next: true)
     }
     func backSource() {
         memoryRequest = nil; memoryReading = false; memoryError = nil
         if materialPages.count > 1 { materialPages.removeLast() }
         else { materialPages = []; materialTarget = nil }
+    }
+    var noteStatus: String {
+        guard let memory else { return memorySession == nil ? "尚无当前会话笔记" : "" }
+        switch memory.status {
+        case "empty": return "尚无笔记"
+        case "entry-missing": return "尚无入口笔记，可选择已有主题"
+        case "ready": return memory.page?.complete == true ? (memory.page?.offset == 0 ? "本文件已读完整" : "已读至文件末尾，当前显示节选") : "当前为节选，可继续阅读"
+        default: return ""
+        }
     }
     private func inspectSelection() {
         guard route == nil, online, let selected, inspectRequest == nil else { return }
@@ -189,6 +241,10 @@ import AppKit
         busy = true; manageRequest = request; operationMessage = nil
         send?(.manage(request: request, serviceInstance: identity.serviceInstance, items: items)); expire(request)
     }
+    func copyNote(_ text: String, label: String) {
+        NSPasteboard.general.clearContents()
+        operationMessage = NSPasteboard.general.setString(text, forType: .string) ? "已复制" + label : "复制失败，请重试。"
+    }
     func copySelected() { if let selected, !selected.archived, online { copy?(selected); operationMessage = "已复制接回命令" } }
     func detailVisible(session: String, visible: Bool) {
         guard opened, readingSession == session else { return }
@@ -208,6 +264,7 @@ import AppKit
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(8))
             guard let self else { return }
+            if self.knowledgeRequest == request { self.knowledgeRequest = nil; self.knowledgeReading = false; self.knowledgeError = "知识读取超时，已读内容保留，请重试。" }
             if self.memoryRequest == request { self.memoryRequest = nil; self.memoryReading = false; self.memoryError = "读取超时，已读内容保留，请重试。" }
             if self.catalogRequest == request { self.catalogRequest = nil; self.loading = false; self.error = "目录读取超时，请重试。" }
             if self.historyRequest == request || self.inspectRequest == request {
@@ -218,15 +275,23 @@ import AppKit
     }
     func receive(_ response: NativeResponse) {
         switch response {
-        case let .memoryResult(request, service, session, memory, unprocessed, knowledge, material, error):
+        case let .memoryResult(request, service, session, notes, material, error):
             guard request == memoryRequest, service == identity?.serviceInstance, session == memorySession, online else { return }
             memoryRequest = nil; memoryReading = false; memoryError = error
-            if let memory { self.memory = memory; memoryUnprocessed = unprocessed ?? false }
-            if let knowledge { self.knowledge = knowledge.items; knowledgeNext = knowledge.next }
+            if let notes {
+                if notes.status == "changed" { memoryError = "内容已变化；此前已读内容不再代表当前全文，请重新读取。" }
+                else if notes.status == "missing" { memoryError = "文件已不存在：" + notes.path + "。此前已读内容保留。" }
+                else if notes.page == nil, memory?.page != nil, notes.path == memory?.path { memoryError = "入口笔记已不存在；此前已读内容保留，可能已过期。" }
+                else { memory = notes }
+            }
             if let material {
                 if materialPages.last?.source == material.source { materialPages[materialPages.count - 1] = material }
                 else { materialPages.append(material) }
             }
+        case let .knowledgeResult(request, service, session, knowledge, error):
+            guard request == knowledgeRequest, service == identity?.serviceInstance, session == memorySession, online else { return }
+            knowledgeRequest = nil; knowledgeReading = false; knowledgeError = error
+            if let knowledge { self.knowledge = knowledge.items; knowledgeNext = knowledge.next }
         case let .sessionsResult(request, service, sessions, error):
             guard request == catalogRequest, service == identity?.serviceInstance, online else { return }
             catalogRequest = nil; loading = false; self.error = error
@@ -483,6 +548,7 @@ struct SessionWindow: View {
             .onChange(of: model.active) { _, active in if active { model.detailVisible(session: row.id, visible: true) } }
             .onChange(of: model.readingNotice?.id) { _, _ in model.detailVisible(session: row.id, visible: true) }
             .onChange(of: model.materialPages.count) { _, count in if count == 0, let focus = model.memoryFocus { proxy.scrollTo("memory:" + focus, anchor: .center) } }
+            .onChange(of: model.memoryFocus) { _, focus in if let focus { proxy.scrollTo("memory:" + focus, anchor: .center) } }
             .onChange(of: model.entries.map(\.id)) { previous, ids in
                 if let target = model.route?.notice.source?.entry, !previous.contains(target), ids.contains(target) { proxy.scrollTo(target, anchor: .center) }
             }
@@ -492,29 +558,38 @@ struct SessionWindow: View {
         DisclosureGroup(isExpanded: $model.memoryExpanded) {
             VStack(alignment: .leading, spacing: 12) {
                 if !model.online { Text("当前离线；以下为此前已读内容，可能已过期。").foregroundStyle(.secondary) }
-                if let page = model.materialPages.last {
+                if model.showingSource {
                     Button("返回") { model.backSource() }
+                    if let page = model.materialPages.last {
                     Text("来源 · " + (memorySpeaker(page.speaker) == memoryKind(page.kind) ? memorySpeaker(page.speaker) : memorySpeaker(page.speaker) + " · " + memoryKind(page.kind))).font(.headline)
                     Text(page.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                     Text(page.complete ? "已读至材料末尾" : "当前为节选").foregroundStyle(.secondary)
                     if page.next != nil { Button("继续阅读") { model.nextSource() }.disabled(!model.online || model.memoryReading) }
+                    }
                 } else {
-                    if let memory = model.memory {
-                        if memory.items.isEmpty { Text("尚无已整理事项").foregroundStyle(.secondary) }
-                        if model.memoryUnprocessed { Text("有尚未整理的新内容").foregroundStyle(.secondary) }
-                        ForEach(memory.items) { item in
-                            DisclosureGroup(isExpanded: Binding(get: { model.memoryFocus == item.id }, set: { model.memoryFocus = $0 ? item.id : nil })) {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(item.detail ?? item.text).textSelection(.enabled)
-                                    Text(memoryNature(item.evidence, item.status) + " · 修订 \(item.revision)").foregroundStyle(.secondary)
-                                    if let progress = item.progress { Text("进展：" + (["pending": "待进行", "in_progress": "进行中", "completed": "已完成"][progress] ?? progress)) }
-                                    ForEach(Array(item.sources.enumerated()), id: \.offset) { index, source in
-                                        Button("来源 \(index + 1) · 记录 \(source.entry)") { model.readSource(source, item: item.id) }.disabled(!model.online || model.memoryReading)
-                                    }
-                                }.padding(.top, 6)
-                            } label: { Text(item.text) }
-                            .id("memory:" + item.id)
+                    Text(model.memorySession ?? "尚无当前会话").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    if model.canBackNote { Button("返回上一笔记") { model.backNote() } }
+                    Text(model.noteStatus).foregroundStyle(.secondary)
+                    if let page = model.memory?.page {
+                        Text(page.path).font(.headline).textSelection(.enabled)
+                        Text(page.absolute).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        Text(page.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        Button(page.offset == 0 && page.complete ? "复制笔记正文" : "复制当前片段") { model.copyNote(page.text, label: page.offset == 0 && page.complete ? "笔记正文" : "当前笔记片段") }
+                        Button("复制文件位置") { model.copyNote(page.absolute, label: "文件位置") }
+                        if page.next != nil { Button("继续阅读笔记") { model.nextNote() }.disabled(!model.online || model.memoryReading || model.memoryError != nil).id("memory:next-note") }
+                        ForEach(Array(page.links.enumerated()), id: \.offset) { index, link in
+                            Button(link.label) { model.followNoteLink(link, index: index) }
+                                .disabled(!model.online || model.memoryReading).id("memory:link:\(index)")
+                            if link.kind == "unavailable" { Text((link.target ?? "") + " · " + (link.reason ?? "")).font(.caption).textSelection(.enabled) }
                         }
+                    } else if model.memory?.status == "entry-missing" {
+                        ForEach(model.memory?.files ?? [], id: \.self) { path in
+                            Button(path) { model.memoryFocus = path; model.openNote(path) }.disabled(!model.online || model.memoryReading).id("memory:" + path)
+                        }
+                    }
+                    Button("重新读取笔记") { model.readMemory() }.disabled(!model.online || model.memoryReading)
+                    Text("交代纠正请复制接回命令，在终端使用 /memory。").font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("适用知识", isExpanded: $model.knowledgeExpanded) {
                         ForEach(model.knowledge) { item in
                             DisclosureGroup(isExpanded: Binding(get: { model.memoryFocus == item.id }, set: { model.memoryFocus = $0 ? item.id : nil })) {
                                 VStack(alignment: .leading, spacing: 8) {
@@ -528,15 +603,17 @@ struct SessionWindow: View {
                             } label: { Text(item.topic + " · " + item.scope.label) }
                             .id("memory:" + item.id)
                         }
-                        if let next = model.knowledgeNext { Button("更多适用知识") { model.readMemory(offset: next) }.disabled(!model.online || model.memoryReading) }
-                        Text("维护记忆请复制接回命令，在终端使用 /memory。").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Button("刷新记忆") { model.readMemory() }.disabled(!model.online || model.memoryReading)
+                        if let next = model.knowledgeNext { Button("更多适用知识") { model.readKnowledge(offset: next) }.disabled(!model.online || model.knowledgeReading) }
+                        Button("刷新知识") { model.readKnowledge() }.disabled(!model.online || model.knowledgeReading)
+                        if model.knowledgeReading { ProgressView("正在读取知识…") }
+                        else if model.knowledge.isEmpty && model.knowledgeError == nil { Text("尚无适用知识").foregroundStyle(.secondary) }
+                        if let error = model.knowledgeError { Text(error).foregroundStyle(.secondary) }
+                    }.onChange(of: model.knowledgeExpanded) { _, expanded in if expanded { model.readKnowledge() } }
                 }
-                if model.memoryReading { ProgressView("正在读取记忆…") }
+                if model.memoryReading { ProgressView("正在读取笔记…") }
                 if let error = model.memoryError { Text(error).foregroundStyle(.secondary); Button("重新读取") { model.retrySource() }.disabled(!model.online || model.memoryReading) }
             }.padding(.top, 8)
-        } label: { Label("记忆与适用知识", systemImage: "text.book.closed").font(.headline).padding(.vertical, 8) }
+        } label: { Label("工作笔记", systemImage: "text.book.closed").font(.headline).padding(.vertical, 8) }
     }
     private func memoryKind(_ kind: String) -> String {
         ["user": "用户", "assistant": "助手", "tool-call": "工具调用", "tool-result": "工具结果", "agent-message": "协作消息", "summary": "会话摘要", "system-notice": "系统通知"][kind] ?? kind

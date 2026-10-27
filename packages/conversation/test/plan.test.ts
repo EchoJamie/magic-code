@@ -1,9 +1,8 @@
-/** 当前事项的计划投影与已有历史分页读面。 */
+/** 独立计划与原始历史分页读面。 */
 
 import { describe, expect, test } from 'bun:test'
-import type { Entry, NewEntry, PlanNote, RecordId } from '@magic/contracts'
+import type { NewEntry, PlanNote, RecordId } from '@magic/contracts'
 import { makeFauxRecords } from '@magic/faux'
-import { planContext } from '../src/context.ts'
 import {
   HISTORY_ENTRY_CHARS,
   HISTORY_PAGE_ENTRIES,
@@ -43,106 +42,28 @@ function ledger(): {
 
 // ══ ① 当前计划 ════════════════════════════════════════════════════════
 
-function seedPlan(records: ReturnType<typeof makeFauxRecords>, entry: number) {
-  const base = { evidence: 'fact' as const, status: 'active' as const, sources: [{ session: SESSION, entry }] }
-  return records.memory.update({ expectedRevision: 0, changes: [
-    { ...base, id: 'goal', kind: 'goal', text: PLAN.goal! },
-    ...PLAN.steps.map((step, order) => ({ ...base, id: `step-${order}`, kind: 'step' as const, text: step.text, progress: step.status, order })),
-    { ...base, id: 'requirement', kind: 'requirement', text: PLAN.notes },
-  ] })
+function seedPlan(records: ReturnType<typeof makeFauxRecords>, _entry: number) {
+  return records.appendEntry({ kind: 'tool-result', content: { text: '已保存计划' }, payload: { ok: true, output: { text: '已保存计划' }, plan: PLAN }, at: AT })
 }
 
-describe('当前计划只从工作记忆投影', () => {
-  test('没有目标或步骤时只返回空计划，不附未返回的旁支知识', async () => {
+describe('独立计划与覆盖边界', () => {
+  test('只认最新真实plan结果；清空步骤保留其他计划字段', async () => {
     const { records, add } = ledger()
-    const entry = add({ kind: 'user', content: { text: '调查旁支' } })
-    records.memory.update({ expectedRevision: 0, changes: [{ id: 'side', kind: 'question', text: '旁支问题', evidence: 'unresolved', status: 'active', sources: [{ session: SESSION, entry }], knowledge: [{ id: 'K', revision: 1 }] }] })
-    expect(await readPlanOf(records)).toEqual({ revision: 1, entry, plan: null })
+    expect(await readPlanOf(records, SESSION)).toEqual({ entry: null, plan: null })
+    const first = seedPlan(records, 0)
+    expect(await readPlanOf(records, SESSION)).toEqual({ entry: first, plan: PLAN })
+    add({ kind: 'assistant', content: { text: '普通笔记不改计划' } })
+    expect(await readPlanOf(records, SESSION)).toEqual({ entry: first, plan: PLAN })
+    add({ kind: 'tool-result', content: { text: '失败结果不能保存计划' }, payload: { ok: false, output: { text: '' }, plan: null } })
+    expect(await readPlanOf(records, SESSION)).toEqual({ entry: first, plan: PLAN })
+    const last = add({ kind: 'tool-result', content: { text: '清步骤' }, payload: { ok: true, output: { text: '' }, plan: { ...PLAN, steps: [] } } })
+    expect(await readPlanOf(records, SESSION)).toEqual({ entry: last, plan: { ...PLAN, steps: [] } })
   })
-  test('无记忆返回空投影，既有原始计划记录不自动迁入', async () => {
+  test('默认历史页落在已提交覆盖上界之内', async () => {
     const { records, add } = ledger()
-    const original = add({ kind: 'tool-result', content: { text: '原始计划记录' }, payload: { ok: true, output: { text: '原始计划记录' }, plan: PLAN } })
-    expect(await readPlanOf(records)).toEqual({ revision: 0, entry: null, plan: null })
-    expect(records.memory.read().revision).toBe(0)
-    expect((await readHistoryOf(records, SESSION, 0, { entry: original })).entries[0]?.text).toBe('原始计划记录')
-  })
-
-  test('增量修改步骤不会覆盖目标和要求，计划读取不产生另一份状态', async () => {
-    const { records, add } = ledger()
-    const entry = add({ kind: 'user', content: { text: '明确目标和要求' } })
-    expect(seedPlan(records, entry).ok).toBe(true)
-    expect(await readPlanOf(records)).toEqual({ revision: 1, entry, plan: PLAN })
-    const step = records.memory.read().items.find(item => item.id === 'step-1')!
-    expect(records.memory.update({ expectedRevision: 1, changes: [{ ...step, progress: 'completed' }] }).ok).toBe(true)
-    expect((await readPlanOf(records)).plan).toEqual({ ...PLAN, steps: PLAN.steps.map(item => ({ ...item, status: 'completed' })) })
-    expect(records.memory.read().revision).toBe(2)
-  })
-})
-
-// ══ ② 窗口边界 ════════════════════════════════════════════════════════
-
-describe('活动窗口边界与 planContext 同一条算术', () => {
-  /** 造一条压过的会话：12 条记录 ＋ 一条摘要。 */
-  function compactedOnce(): ReturnType<typeof ledger> {
-    const stage = ledger()
-    for (let index = 0; index < 12; index += 1) {
-      stage.add({ kind: 'user', content: { text: `第 ${index} 条` } })
-    }
-    stage.add({ kind: 'summary', content: { text: '摘要' } })
-    return stage
-  }
-
-  /**
-   * **对照**（对表：每个下结论的方法先在已知答案的样本上跑通）：
-   * 同一批条目，一边走 `planContext`（装配那一侧的口径），一边走回查默认读的那一页——
-   * 页里**不能有**窗口内的条目，且整页严格落在窗口起点之前。
-   * 合不上就说明边界有两套，而那正是「摘要 ＋ 近段」最怕出的事。
-   */
-  test('压过的会话：回查那一页与当前窗口不重叠，且严格落在窗口之前', async () => {
-    // 12 条记录 ＋ 1 条摘要：近段取到 8 时窗口之外还剩 4 条（再大就整条会话都在窗口里了）
-    for (const near of [1, 3, 8]) {
-      const { records } = compactedOnce()
-
-      const all: Entry[] = []
-      for await (const entry of records.readEntries(SESSION)) all.push(entry)
-      const plan = planContext({ entries: all, nearEntries: near })
-      const window = new Set(plan.entries.map((entry) => entry.id))
-      const start = plan.entries[0]?.id
-
-      const page = await readHistoryOf(records, SESSION, near, {})
-      expect(page.entries.length).toBeGreaterThan(0)
-      for (const entry of page.entries) expect(window.has(entry.id)).toBe(false)
-
-      const lastOfPage = page.entries[page.entries.length - 1]?.id
-      expect(lastOfPage).toBe((start ?? 0) - 1)
-    }
-  })
-
-  /**
-   * **近段为零那一支**（`nearEntries: 0` 是合法策略）：窗口里只有摘要之后的条目，
-   * 于是压缩掉的那一整段都该读得回来——一直到摘要那一条（它是这段历史的尽头）。
-   */
-  test('近段为零：压缩掉的那一段仍读得回来（页一直铺到摘要那一条）', async () => {
-    const { records } = compactedOnce()
-    const page = await readHistoryOf(records, SESSION, 0, {})
-
-    const all: Entry[] = []
-    for await (const entry of records.readEntries(SESSION)) all.push(entry)
-    const summary = all[all.length - 1]
-
-    expect(page.entries.length).toBeGreaterThan(0)
-    expect(page.entries[page.entries.length - 1]?.id).toBe(summary?.id)
-    // 摘要之前那些条目的正文都在页里（压缩掉的那一段确实读得回来）
-    expect(page.entries.some((entry) => entry.text.includes('第 11 条'))).toBe(true)
-  })
-
-  test('没压过：整条会话都在窗口里——窗口之前没有更早的记录（返回空 ＋ 说明）', async () => {
-    const { records, add } = ledger()
-    for (let index = 0; index < 5; index += 1) add({ kind: 'user', content: { text: `第 ${index} 条` } })
-
-    const page = await readHistoryOf(records, SESSION, 20, {})
-    expect(page.entries).toEqual([])
-    expect(page.note).toContain('还没压缩过')
+    const ids = Array.from({ length: 12 }, (_, index) => add({ kind: 'user', content: { text: `第${index}条` } }))
+    records.coverage.publish({ previousSummary: null, from: ids[0]!, through: ids[7]!, at: AT, notesSaved: true })
+    expect((await readHistoryOf(records, SESSION, {})).entries.map(entry => entry.id)).toEqual(ids.slice(0, 8))
   })
 })
 
@@ -154,14 +75,14 @@ function compacted(count: number): ReturnType<typeof ledger> {
   for (let index = 0; index < count; index += 1) {
     stage.add({ kind: 'user', content: { text: `第 ${index} 条` } })
   }
-  stage.add({ kind: 'summary', content: { text: '摘要' } })
+  stage.records.coverage.publish({ previousSummary: null, from: 1, through: count, at: AT, notesSaved: true })
   return stage
 }
 
 describe('历史回查是有界的', () => {
   test('一页至多十条，按记录序交回，并给出继续往前的 `nextBefore`', async () => {
     const { records } = compacted(30)
-    const page = await readHistoryOf(records, SESSION, 0, {})
+    const page = await readHistoryOf(records, SESSION, {})
 
     expect(page.entries).toHaveLength(HISTORY_PAGE_ENTRIES)
     const ids = page.entries.map((entry) => entry.id)
@@ -169,18 +90,18 @@ describe('历史回查是有界的', () => {
     expect(page.nextBefore).toBe(ids[0])
 
     // 按 `nextBefore` 继续往前：**不跳过任何一条**（新一页的最后一条紧邻上一页的第一条）
-    const older = await readHistoryOf(records, SESSION, 0, { before: page.nextBefore })
+    const older = await readHistoryOf(records, SESSION, { before: page.nextBefore })
     const lastOfOlder = older.entries[older.entries.length - 1]?.id
     expect(lastOfOlder).toBe((page.nextBefore ?? 0) - 1)
   })
 
   test('到头了：页末尾给空 ＋ 一句说明（不假装还有）', async () => {
-    // 3 条记录 ＋ 1 条摘要：近段为零时窗口之外就是这四条（摘要也在可读范围里）
+    // 只回查已提交覆盖内的三条原文。
     const { records } = compacted(3)
-    const page = await readHistoryOf(records, SESSION, 0, {})
-    expect(page.entries).toHaveLength(4)
+    const page = await readHistoryOf(records, SESSION, {})
+    expect(page.entries).toHaveLength(3)
 
-    const nothing = await readHistoryOf(records, SESSION, 0, { before: page.entries[0]?.id })
+    const nothing = await readHistoryOf(records, SESSION, { before: page.entries[0]?.id })
     expect(nothing.entries).toEqual([])
     expect(nothing.note).toContain('开头')
   })
@@ -189,15 +110,15 @@ describe('历史回查是有界的', () => {
     const long = '甲'.repeat(HISTORY_ENTRY_CHARS + 500)
     const { records, add } = ledger()
     add({ kind: 'assistant', content: { text: long } })
-    add({ kind: 'summary', content: { text: '摘要' } })
+    records.coverage.publish({ previousSummary: null, from: 1, through: 1, at: AT, notesSaved: true })
 
-    const page = await readHistoryOf(records, SESSION, 0, {})
+    const page = await readHistoryOf(records, SESSION, {})
     const first = page.entries[0]
     expect(first?.text).toHaveLength(HISTORY_ENTRY_CHARS)
     expect(first?.truncated).toBe(true)
     expect(first?.nextOffset).toBe(HISTORY_ENTRY_CHARS)
 
-    const rest = await readHistoryOf(records, SESSION, 0, {
+    const rest = await readHistoryOf(records, SESSION, {
       entry: first?.id,
       offset: first?.nextOffset,
     })
@@ -205,7 +126,7 @@ describe('历史回查是有界的', () => {
     expect(rest.entries[0]?.truncated).toBeUndefined()
 
     // 读过了头：如实说末尾，不给一段空白让人猜
-    const past = await readHistoryOf(records, SESSION, 0, { entry: first?.id, offset: long.length })
+    const past = await readHistoryOf(records, SESSION, { entry: first?.id, offset: long.length })
     expect(past.entries[0]?.text).toBe('')
     expect(past.note).toContain('末尾')
   })
@@ -213,11 +134,11 @@ describe('历史回查是有界的', () => {
   test('两种定位不混用、offset 不单独用——各说各的一句，不静默挑一个', async () => {
     const { records } = compacted(3)
 
-    const both = await readHistoryOf(records, SESSION, 0, { before: 2, entry: 1 })
+    const both = await readHistoryOf(records, SESSION, { before: 2, entry: 1 })
     expect(both.entries).toEqual([])
     expect(both.note).toContain('不能一起给')
 
-    const lone = await readHistoryOf(records, SESSION, 0, { offset: 100 })
+    const lone = await readHistoryOf(records, SESSION, { offset: 100 })
     expect(lone.entries).toEqual([])
     expect(lone.note).toContain('只配合 entry')
   })
@@ -227,7 +148,7 @@ describe('历史回查是有界的', () => {
     const { records, add } = ledger()
     add({ kind: 'user', content: { text: '这一条' } })
 
-    const page = await readHistoryOf(records, SESSION, 0, { entry: 999 })
+    const page = await readHistoryOf(records, SESSION, { entry: 999 })
     expect(page.entries).toEqual([])
     expect(page.note).toContain('不在这个会话里')
   })
@@ -239,9 +160,9 @@ describe('历史回查是有界的', () => {
       content: { text: '' },
       payload: { name: 'exec', args: { cmd: 'ls' } },
     })
-    add({ kind: 'summary', content: { text: '摘要' } })
+    records.coverage.publish({ previousSummary: null, from: 1, through: 1, at: AT, notesSaved: true })
 
-    const page = await readHistoryOf(records, SESSION, 0, {})
+    const page = await readHistoryOf(records, SESSION, {})
     expect(page.entries[0]?.kind).toBe('tool-call')
     expect(page.entries[0]?.text).toContain('exec')
     expect(page.entries[0]?.text).toContain('ls')
@@ -255,8 +176,8 @@ describe('PlanReader 端口', () => {
     const { records, add } = ledger()
     const entry = add({ kind: 'user', content: { text: '开始吧' } })
     seedPlan(records, entry)
-    add({ kind: 'summary', content: { text: '摘要' } })
-    const reader = createPlanReader({ records, session: SESSION, nearEntries: 0 })
+    records.coverage.publish({ previousSummary: null, from: 1, through: 1, at: AT, notesSaved: true })
+    const reader = createPlanReader({ records, session: SESSION })
 
     expect((await reader.readPlan()).plan).toEqual(PLAN)
     expect((await reader.readHistory({})).entries.length).toBeGreaterThan(0)

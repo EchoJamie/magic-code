@@ -22,7 +22,6 @@ test('首次受理冻结来源，历史重投保留上界，重新选入才取�
   const bound = await bindSessionReferences(selected, records)
   expect(bound.refs?.[0]).toMatchObject({ source: 'source', through: before })
   const after = source.appendEntry({ kind: 'assistant', content: { text: '提交后新增的认识' }, at: 3 })
-  source.memory.update({ expectedRevision: 0, changes: [{ id: 'current', kind: 'fact', text: '当前可变记忆不得混入', evidence: 'fact', status: 'active', sources: [{ session: 'source', entry: after }] }] })
   const delivery = createRefDelivery({ records, session: 'target' })
   const loaded = await delivery.load(bound.refs!)
   expect(loaded.ok).toBe(true)
@@ -51,20 +50,4 @@ test('受理前来源失效拒绝整条，受理后片段失效保留引用和�
   expect(entry?.kind === 'session' && entry.text).toContain('可读的原交代')
   expect(entry?.kind === 'session' && entry.text).toContain('未取得')
   expect(entry?.source).toBe('source')
-})
-
-test('普通纠正取得所选事项最新修订，不能纠正其他会话或提前变更记忆', async () => {
-  const records = makeFauxRecords()
-  const entry = records.appendEntry({ kind: 'user', content: { text: '约束依据' }, at: 1 })
-  records.memory.update({ expectedRevision: 0, changes: [{ id: 'requirement', kind: 'requirement', text: '最新约束', evidence: 'fact', status: 'active', sources: [{ session: 'target', entry }] }] })
-  const before = records.memory.read()
-  const delivery = createRefDelivery({ records, session: 'target' })
-  const loaded = await delivery.load([{ kind: 'memory', source: 'requirement', scope: { kind: 'session', session: 'target' }, revision: 0, at: 0, marker: '@纠正约束' }])
-  expect(loaded.ok).toBe(true)
-  if (!loaded.ok) throw new Error(loaded.reason)
-  const item = loaded.refs[0]
-  expect(item?.kind === 'memory' && item.text).toContain('最新约束')
-  expect(item?.kind === 'memory' && item.text).toContain('内容已变化')
-  expect(records.memory.read()).toEqual(before)
-  expect((await delivery.load([{ kind: 'memory', source: 'requirement', scope: { kind: 'session', session: 'other' }, revision: 0, at: 0, marker: '@纠正约束' }])).ok).toBe(false)
 })

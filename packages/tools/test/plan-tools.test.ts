@@ -45,14 +45,15 @@ async function run(reader: PlanReader, name: string, args: Readonly<Record<strin
   catch (error) { return { ok: false, output: (error as Error).message } }
 }
 
-describe('两个读取工具的形态', () => {
-  test('两个读取名字齐，且权限域与装配按同一串名字认它们', () => {
+describe('独立计划与历史工具的形态', () => {
+  test('更新与读取名字齐，且权限域与装配按同一串名字认它们', () => {
     const { reader } = stubReader()
     expect(definePlanTools(reader).map((tool) => tool.spec.name)).toEqual([
+      'plan_update',
       'plan_read',
       'history_read',
     ])
-    expect([...PLAN_TOOL_NAMES]).toEqual(['plan_read', 'history_read'])
+    expect([...PLAN_TOOL_NAMES]).toEqual(['plan_update', 'plan_read', 'history_read'])
   })
 
   test('读取工具的静态归类都是 light（只动协作笔记与会话记录，不碰工作区）', () => {
@@ -82,7 +83,7 @@ describe('plan_read', () => {
     const result = await run(reader, 'plan_read')
 
     expect(result.ok).toBe(true)
-    expect(result.output).toContain('还没有计划笔记')
+    expect(result.output).toContain('还没有计划')
     expect(result.plan).toBeUndefined()
   })
 

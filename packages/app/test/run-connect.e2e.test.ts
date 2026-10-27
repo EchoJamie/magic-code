@@ -35,7 +35,7 @@ for (const canonicalHome of [false, true]) for (const how of ['shutdown', 'signa
     const evidence = evidenceRoot === undefined ? tempDir('magic-connect-') : join(evidenceRoot, `${homeForm}-${how}-${crypto.randomUUID()}`)
     mkdirSync(evidence, { recursive: true })
     const fixture = startFixture({ turns: [
-      { kind: 'tool', name: 'plan_update', args: { plan: PLAN } },
+      { kind: 'tool', name: 'plan_update', args: PLAN },
       { kind: 'text', text: 'CONNECT_HISTORY_COMPLETE' },
     ] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
@@ -84,7 +84,7 @@ for (const canonicalHome of [false, true]) for (const how of ['shutdown', 'signa
         }
         const oldHost = host
         await oldHost.close(how)
-        await ui.wait({ text: '暂时无法确认任务状态' }, { timeoutMs: 20_000 })
+        await ui.wait({ text: '/connect 重连' }, { timeoutMs: 20_000 })
         const lost = await ui.capture({ label: `${action === 'Ctrl+R' ? 'ctrl-r' : 'slash'}-disconnected` })
         expect(lost.text).toContain('/connect 重连')
         expect(lost.text).not.toContain('○ 空闲')
@@ -100,7 +100,6 @@ for (const canonicalHome of [false, true]) for (const how of ['shutdown', 'signa
         }
         // 先重开本测试宿主，再触发恢复；不调用系统 open，不接触已安装 App。
         host = await startHost()
-        expect(host.discovery.base).toBe(oldHost.discovery.base)
         expect(host.discovery.base).toBe(oldHost.discovery.base)
         expect(host.discovery.serviceInstance).not.toBe(oldHost.discovery.serviceInstance)
         expect(host.pid).not.toBe(oldHost.pid)

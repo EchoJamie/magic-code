@@ -421,10 +421,11 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     try { switch (message.t) {
       case 'compact': {
         if (compactControllers.has(message.request.requestId)) return
-        if (closing || options.session === null) { link.send({ t: 'compact.result', requestId: message.request.requestId, state: { requestId: message.request.requestId, state: 'failed', reason: '执行实例已关闭或没有会话' } }); return }
+        const session = assembly.session
+        if (closing || session === undefined) { link.send({ t: 'compact.result', requestId: message.request.requestId, state: { requestId: message.request.requestId, state: 'failed', reason: '执行实例已关闭或没有会话' } }); return }
         const controller = new AbortController()
         compactControllers.set(message.request.requestId, controller)
-        trackOperation(assembly.compact(options.session, message.request, controller.signal, () => link.send({ t: 'compact.started', requestId: message.request.requestId })).then(
+        trackOperation(assembly.compact(session, message.request, controller.signal, () => link.send({ t: 'compact.started', requestId: message.request.requestId })).then(
           state => link.send({ t: 'compact.result', requestId: message.request.requestId, state }),
           error => link.send({ t: 'compact.result', requestId: message.request.requestId, state: { requestId: message.request.requestId, state: 'failed', reason: String(error) } }),
         ).finally(() => { compactControllers.delete(message.request.requestId); considerShrink() }))

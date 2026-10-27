@@ -6,7 +6,7 @@ import Foundation
         let socket: String
         let identity: ServiceIdentity
         let session: String
-        let item: String
+        let path: String
     }
     struct Output: Encodable { let responses: [NativeResponse] }
 
@@ -35,19 +35,19 @@ import Foundation
             switch response {
             case let .welcome(identity, _):
                 guard identity == input.identity else { failure = "Engine 身份不符"; return }
-                connection.send(.memory(request: pending, session: input.session, offset: nil))
-            case let .memoryResult(request, instance, session, memory, _, _, material, error):
+                connection.send(.memory(request: pending, session: input.session, query: NoteReadQuery(path: input.path)))
+            case let .memoryResult(request, instance, session, notes, material, error):
                 guard request == pending, instance == input.identity.serviceInstance, session == input.session else {
                     failure = "记忆响应关联不符"; return
                 }
                 if let error { failure = error; return }
                 responses.append(response)
                 if request == "memory" {
-                    guard let source = memory?.items.first(where: { $0.id == input.item })?.sources.first else {
-                        failure = "记忆条目缺少来源"; return
+                    guard let source = notes?.page?.links.first(where: { $0.kind == "source" })?.source else {
+                        failure = "笔记缺少来源链接"; return
                     }
                     pending = "source-0"
-                    connection.send(.memorySource(request: pending, session: input.session, source: source, item: input.item, knowledge: nil))
+                    connection.send(.memorySource(request: pending, session: input.session, source: source, path: input.path, inputRef: nil, knowledge: nil))
                 } else if let material {
                     if let next = material.next {
                         guard next > (material.source.offset ?? 0), !material.complete else {
@@ -56,7 +56,7 @@ import Foundation
                         var source = material.source
                         source.offset = next
                         pending = "source-\(next)"
-                        connection.send(.memorySource(request: pending, session: input.session, source: source, item: input.item, knowledge: nil))
+                        connection.send(.memorySource(request: pending, session: input.session, source: source, path: input.path, inputRef: nil, knowledge: nil))
                     } else {
                         guard material.complete else { failure = "来源未完成且缺少下一页"; return }
                         finished = true

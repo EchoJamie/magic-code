@@ -244,7 +244,6 @@ export function makeLoopRuntime(stage: Stage, overrides: Partial<LoopRuntime> = 
     nextTurnId: () => (turn += 1),
     now: () => FIXED_AT,
     blobThreshold: DEFAULT_CONTEXT_POLICY.blobThreshold,
-    blobTextLimit: DEFAULT_CONTEXT_POLICY.blobTextLimit,
     ...overrides,
   }
 }
@@ -257,24 +256,17 @@ export function makeLoopRuntime(stage: Stage, overrides: Partial<LoopRuntime> = 
  */
 export function makeCompactor(
   stage: Stage,
-  options: { readonly policy?: Partial<ContextPolicy>; readonly compression?: () => import('@magic/contracts').CompressionPreparation } = {},
+  options: { readonly policy?: Partial<ContextPolicy> } = {},
 ): Compactor {
   const policy: ContextPolicy = { ...DEFAULT_CONTEXT_POLICY, ...options.policy }
 
   return createCompactor({
     records: stage.records,
     session: DEFAULT_TEST_SESSION,
-    compression: options.compression ?? (() => ({ gateway: stage.gateway })),
-    // 压缩器单元用例的前置材料由受控整理器确认；真实整理接线另在应用层覆盖。
-    organize: async (_entries, through) => {
-      const result = stage.records.memory.update({ expectedRevision: stage.records.memory.read().revision, changes: [], inspectedThrough: through })
-      if (!result.ok) throw new Error(result.reason)
-    },
+    gateway: stage.gateway,
     sink: stage.sink,
     stamper: stage.stamper,
     now: () => FIXED_AT,
-    blobThreshold: policy.blobThreshold,
-    blobTextLimit: policy.blobTextLimit,
     nearEntries: policy.nearEntries,
     compactAtFraction: policy.compactAtFraction,
     compactAtTokens: policy.compactAtTokens,

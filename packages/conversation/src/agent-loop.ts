@@ -1,4 +1,3 @@
-import { announceMemoryPlan } from './memory.ts'
 /**
  * 主循环 —— `agentLoop`：模型调用（流式）→ 工具调用 → 结果回填 → 往复，直到收束。
  *
@@ -71,7 +70,7 @@ import type {
   UsedSkill,
 } from '@magic/contracts'
 import type { Compactor } from './compact.ts'
-import { DEFAULT_NEAR_ENTRIES, assembleContext, rawTextOf } from './context.ts'
+import { assembleContext, rawTextOf } from './context.ts'
 import { KNOWLEDGE_MATERIAL_TOOLS, knowledgeOutputReferences } from './knowledge-material.ts'
 import type { TextRefEntry } from './context.ts'
 import type { EntryLog, ToolOutcome } from './entries.ts'
@@ -138,7 +137,6 @@ export type LoopRuntime = {
   /** 时钟——条目时间戳（见 `./entries.ts`）。 */
   readonly now: () => Timestamp
   readonly blobThreshold: number
-  readonly blobTextLimit: number
   /**
    * 压缩器（阶段 3 · U19）——**不接线＝不压缩**（首站无压缩那几轮的行为一字不动；
    * 用例只想验循环时也不必拖一个压缩器进来）。真装配一律给（见 `./service.ts`）。
@@ -743,7 +741,6 @@ async function runTurn(
       await compact.run({ trigger: 'threshold', signal })
     }
 
-    let providedThrough = 0
     let providedKnowledge: readonly import('@magic/contracts').KnowledgeReference[] = []
     let text = ''
     /** 思考通道的正文——随助手载荷保存，供同源模型回传。 */
@@ -771,16 +768,12 @@ async function runTurn(
         records: runtime.records,
         onIncluded: ids => { included = ids },
         onUserEntries: ids => { userEntries = ids },
-        onSourceRange: through => { providedThrough = through },
         session: runtime.session,
         // **项目规约 ＋ 技能目录 ＋ 后台命令**在装配这一步接上（U32 · U33 · U89）——
         // 都现取现接：改过的、跑完的，下一趟就是新的。次序＝环境块 → 规约块 → 技能目录块
         // → 后台命令块（见 `prompt/skills.ts` / `prompt/background.ts`）；
         // 规约那一趟还顺带记账「这一趟送出去哪几版」（预查据它判「拦不拦」）
         systemPrompt: await collaborationPrompt(withBackground(runtime, (await withSkills(runtime, (await withRules(runtime, signal)), signal))), runtime.collaboration, provided),
-        blobTextLimit: runtime.blobTextLimit,
-        // 近段条数取压缩器那个数（没接压缩器＝按缺省认，与策略缺省同源）
-        nearEntries: runtime.compact?.nearEntries ?? DEFAULT_NEAR_ENTRIES,
       })
 
       if (signal.aborted || runtime.collaboration?.admit() !== undefined) return close(runtime, 'aborted', false)
@@ -852,7 +845,7 @@ async function runTurn(
         const outcome = await compact.run({ trigger: 'context-limit', signal })
         if (outcome.ok) continue
         if (signal.aborted) return close(runtime, 'aborted', false)
-        sink.emit(stamper.stamp('error', { message: '原上下文已超限，压缩未完成，本轮暂不能继续；原始记录已保留，请在 /model → 模型档位中调整 Cantrip 后再试' }))
+        sink.emit(stamper.stamp('error', { message: '原上下文已超限，压缩未完成，本轮暂不能继续；原始记录已保留，请核对当前模型的输入预算后再试' }))
       }
 
       return close(runtime, 'error', false)
@@ -940,10 +933,6 @@ async function runTurn(
         continue
       }
 
-      if (call.name === 'memory_update' && typeof call.args['inspectedThrough'] === 'number' && call.args['inspectedThrough'] > providedThrough) {
-        withholds(runtime, call, `不能确认尚未提供的来源；本次请求上界为 #${providedThrough}`, providedKnowledge)
-        continue
-      }
       const outcome = await runToolCall(runtime, call, signal, announce, watch, providedKnowledge)
       if (outcome.halt === true) stopped = true
     }
@@ -1003,9 +992,7 @@ async function runToolCall(
     ? knowledgeOutputReferences(call.name, await rawTextOf(outcome.content, runtime.records)) : [])
   const resultId = appendToolResultEntry(log, outcome, resultKnowledge)
   announcePlan(runtime, outcome, resultId)
-  if (call.name === 'memory_update' && outcome.ok) {
-    announceMemoryPlan(runtime, runtime.records.memory.read(), resultId)
-  }
+
 
   // **交回结果**（U72）——调用方据 `halt` 决定还开不开下一轮；别的字段它一个字都不读
   return outcome

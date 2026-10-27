@@ -49,16 +49,10 @@ import { refused, reasonOf, rowOf } from './toolkit.ts'
  */
 export const READ_PARAMETERS = {
   type: 'object',
-  /**
-   * **只接受 `path`**（D64）——实测里模型两次带 `offset` 调 `read`，两次撞在
-   * 「未声明字段 offset」上，随后改走 `sed`。本单不扩行范围（那会把「读一个文件」
-   * 变成另一件工具），但要**在描述里就说清**：一次读整份，超长才截断；行范围不是
-   * 这一件的参数。模型据此去掉 `offset` 即可，不必绕 `exec`。
-   */
-  description:
-    '读一个文件——只接受 path，一次读取整个文件（内容超长时只读到前一段，并明确标注截断）。' +
-    '没有 offset / limit 之类的行范围参数。',
+  description: '读取文件。工作笔记可用 offset（从 0 起的字符位置）和 limit 分段读取；工作笔记返回实际范围及续读位置，变化时须从头重读。普通文件不接受分页参数，沿原有上限读取并明确标注截断。',
   properties: {
+    offset: { type: 'integer', minimum: 0, description: '起始字符位置，从 0 起；续读使用返回的 next' },
+    limit: { type: 'integer', minimum: 1, maximum: 32000, description: '本次最多读取的字符数' },
     path: {
       type: 'string',
       /**
@@ -81,6 +75,10 @@ export const READ_PARAMETERS = {
 
 /** 读到的内容摆成面向模型的文本（空文件与截断都**明说**——空输出会被当成失败）。 */
 function composeRead(result: ReadResult): string {
+  if (result.note !== undefined) {
+    const note = result.note
+    return `笔记 ${note.absolute}（会话 ${note.session}；字符 ${note.offset}–${note.offset + note.text.length}/${note.total}；${note.complete ? '已读至末尾' : `节选，继续读取 offset=${note.next}`}）\n${result.content}`
+  }
   const body = result.content === '' ? OUTPUT_FILE_EMPTY : result.content
   if (result.truncated !== true) return body
 
@@ -99,11 +97,14 @@ export function defineReadTool(): ToolDefinition {
       const path = args['path']
       if (!isText(path)) throw new Error(OUTPUT_PATH_REQUIRED)
 
-      return { path }
+      const offset = args['offset'], limit = args['limit']
+      if (offset !== undefined && (!Number.isSafeInteger(offset) || (offset as number) < 0)) throw new Error('offset 必须是非负整数')
+      if (limit !== undefined && (!Number.isSafeInteger(limit) || (limit as number) < 1 || (limit as number) > 32000)) throw new Error('limit 必须在 1 到 32000 之间')
+      return { path, ...(offset === undefined ? {} : { offset: offset as number }), ...(limit === undefined ? {} : { limit: limit as number }) }
     },
-    async run({ path }, ctx): Promise<ToolRunResult> {
+    async run({ path, offset, limit }, ctx): Promise<ToolRunResult> {
       try {
-        return { ok: true, output: composeRead(await ctx.sandbox.read(path)) }
+        return { ok: true, output: composeRead(await ctx.sandbox.read(path, offset === undefined && limit === undefined ? undefined : { offset, limit })) }
       } catch (error) {
         // 原样回填：沙箱那句已是**一整句**（名分 ＋ 路径 ＋ 原委），本域不再加前缀
         // （U83 · D41——「写入失败：写入失败（path）：…」就是把一条事实说了两遍）
@@ -244,6 +245,10 @@ export function defineEditTool(): ToolDefinition {
     },
     async run({ path, old, new: replacement }, ctx): Promise<ToolRunResult> {
       try {
+        if (ctx.sandbox.edit !== undefined) {
+          await ctx.sandbox.edit(path, old, replacement)
+          return { ok: true, output: editDoneOutput(path) }
+        }
         // 显式放大读取上限（沙箱缺省 64 KiB 对源码文件偏小）——见 EDIT_MAX_READ_BYTES
         const current = await ctx.sandbox.read(path, { maxBytes: EDIT_MAX_READ_BYTES })
 

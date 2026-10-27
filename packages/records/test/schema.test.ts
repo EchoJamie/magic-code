@@ -223,7 +223,7 @@ describe('判据 4 · schema（结构 · 重开续写）', () => {
       } finally { again.close() }
     } finally { removeDataDir(dir) }
   })
-  test('新库包含记录、事项与协作表，不写入 schema 版本号', () => {
+  test('新库包含记录、知识与协作表，不写入 schema 版本号', () => {
     const dir = tempDataDir()
     try {
       const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
@@ -245,9 +245,9 @@ describe('判据 4 · schema（结构 · 重开续写）', () => {
           'collaboration_agents', 'collaboration_constraints', 'collaboration_delegations',
           'collaboration_executions', 'collaboration_inbox', 'collaboration_messages',
           'collaboration_operations', 'collaboration_waits', 'collaborations',
-          'entries', 'events', 'inputs', 'knowledge', 'knowledge_forgetting', 'knowledge_progress',
+          'entries', 'events', 'inputs', 'knowledge', 'knowledge_forgetting',
           'knowledge_search', 'knowledge_search_config', 'knowledge_search_content', 'knowledge_search_data',
-          'knowledge_search_docsize', 'knowledge_search_idx', 'records_meta', 'sessions', 'working_memory',
+          'knowledge_search_docsize', 'knowledge_search_idx', 'records_meta', 'sessions',
         ])
         expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()).toEqual({
           user_version: 0,

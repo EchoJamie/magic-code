@@ -26,7 +26,8 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { FauxTurn } from '@magic/faux'
+import { createFauxGateway, type FauxTurn } from '@magic/faux'
+import { continuationTurn } from './notes-support.ts'
 import type { BackgroundRuns, ModelMessage } from '@magic/contracts'
 import { attachShell } from '../src/index.ts'
 import type { ShellHandle } from '../src/shell.ts'
@@ -251,14 +252,20 @@ describe('⑤ 每请求重算（压缩碰不到它）', () => {
         { toolCalls: [{ name: 'exec', args: { cmd: 'sleep 60', background: true } }] },
         // 用量报高一点——下一轮开跑前就会触发压缩
         { text: '交出去了', usage: { inputTokens: 500, outputTokens: 5 } },
-        // 压缩那一趟（一次调用 ＝ 一段脚本）
-        { text: '摘要：前头那件事办完了' },
         { text: '答复' },
         // 收尾：停掉之后那一声带起来的一轮
         { text: '知道它停了' },
       ]
+      const systems: string[] = []
+      let mainCalls = 0
       const assembly = stage.assemble({
-        turns,
+        modelGateway: stamper => ({ stream(request, options) {
+          const system = request.messages[0]
+          const text = system?.role === 'system' && typeof system.content === 'string' ? system.content : ''
+          const auxiliary = text.startsWith('这是当前模型的独立接续准备')
+          if (!auxiliary) systems.push(text)
+          return createFauxGateway({ stamper, turns: [auxiliary ? continuationTurn(request) : turns[mainCalls++]!] }).stream(request, options)
+        } }),
         // 触发与近段都压到脚本体量（实现级常量——装配期入参，与 U19 那支同一手法）
         context: { compactAtTokens: 100, nearEntries: 1 },
       })
@@ -267,7 +274,7 @@ describe('⑤ 每请求重算（压缩碰不到它）', () => {
 
       await shell.submit('起一条后台命令')
       await until(() => eventsOfKind(shell.events, 'turn.end').length >= 2)
-      expect(systemsAt(stage)[1]).toContain(HEADING)
+      expect(systems[1]).toContain(HEADING)
 
       await shell.submit('再来一件')
       await until(() => eventsOfKind(shell.events, 'turn.end').length >= 3)
@@ -276,7 +283,7 @@ describe('⑤ 每请求重算（压缩碰不到它）', () => {
       expect(eventsOfKind(shell.events, 'context.compacted').length).toBeGreaterThanOrEqual(1)
 
       // 压完那一趟：那一块照旧在（它是每请求现算的，不进条目流，压缩碰不到）
-      const afterCompact = systemsAt(stage).at(-1) ?? ''
+      const afterCompact = systems.at(-1) ?? ''
       expect(afterCompact).toContain(HEADING)
       expect(afterCompact).toContain('sleep 60')
       expect(afterCompact).toContain('还在跑')

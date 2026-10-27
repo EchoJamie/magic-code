@@ -320,6 +320,7 @@ export function shiftedRefs(refs: readonly DraftRef[], delta: number): readonly 
 /** 一处引用 → 命令面上的那一份（`at` ＝ 起点；`marker` 随正文一起走）。 */
 export function wireOf(ref: DraftRef): InputRef {
   if (ref.kind === 'session') return { kind: 'session', at: ref.start, marker: ref.marker, source: ref.source, ...(ref.through === undefined ? {} : { through: ref.through }) }
+  if (ref.kind === 'note') return { kind: 'note', at: ref.start, marker: ref.marker, source: ref.source, session: ref.session }
   if (ref.kind === 'memory') return { kind: 'memory', at: ref.start, marker: ref.marker, source: ref.source, scope: ref.scope, revision: ref.revision }
   if (ref.kind === 'skill') {
     return { kind: 'skill', at: ref.start, marker: ref.marker, name: ref.name, source: ref.source }

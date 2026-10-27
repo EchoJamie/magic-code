@@ -78,6 +78,10 @@ export type ToolResultEntry = Entry & {
  * 变成每一行都要写一个空对象——空载荷与无载荷是两回事，落盘上多出一种毫无信息的形态。
  */
 export function assertEntryShape(entry: NewEntry): void {
+  if (entry.kind === 'continuation') {
+    if (!entry.payload || !('preparation' in entry.payload) || !entry.payload.preparation || !entry.payload.message || !['system', 'user', 'assistant', 'tool'].includes(entry.payload.message.role)) throw new Error('接续辅助记录缺少真实消息与调用身份')
+    return
+  }
   if (entry.kind === 'agent-message') {
     const p = entry.payload
     if (!p || !('messageId' in p) || !Number.isSafeInteger(p.messageId) || typeof p.collaborationId !== 'string' || typeof p.senderId !== 'string' || !('text' in entry.content) || entry.content.text !== '' || !entry.source) {
@@ -128,7 +132,7 @@ export function assertEntryShape(entry: NewEntry): void {
 
   if (entry.kind === 'summary' && entry.payload !== undefined) {
     const p = entry.payload
-    if (!('coveredThrough' in p) || !Number.isSafeInteger(p.coveredThrough) || !Number.isSafeInteger(p.from) || !Number.isSafeInteger(p.memoryRevision) || !Array.isArray(p.sources)) throw new Error('摘要覆盖载荷无效')
+    if (!('coveredThrough' in p) || !Number.isSafeInteger(p.coveredThrough) || !Number.isSafeInteger(p.from) || !Array.isArray(p.sources)) throw new Error('摘要覆盖载荷无效')
     return
   }
   if (entry.payload !== undefined) {
@@ -357,6 +361,8 @@ function isInputRefs(refs: unknown): boolean {
     }
 
     const kind = item['kind']
+    if (kind === 'note') return typeof item['session'] === 'string' && item['session'] !== '' && typeof item['text'] === 'string'
+      && !String(item['source']).startsWith('/') && !String(item['source']).split('/').some(part => !part || part === '.' || part === '..')
     if (kind === 'session') return Number.isSafeInteger(item['through']) && Number(item['through']) >= 0
       && typeof item['label'] === 'string' && typeof item['text'] === 'string'
     if (kind === 'memory') {

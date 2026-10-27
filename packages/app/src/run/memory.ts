@@ -1,6 +1,8 @@
 import type { EventDataOf, MemorySourceRead, SessionReferenceList } from '@magic/contracts'
-import { createMaterialReader, readSessionCatalog, substantiveEntries } from '@magic/conversation'
+import { createMaterialReader, readSessionCatalog } from '@magic/conversation'
 import type { RecordsStore } from '@magic/records'
+import { createWorkingNotes } from '@magic/execution'
+import { dirname } from 'node:path'
 
 export async function memoryWorkspace(store: RecordsStore, session: string | undefined, fallback: readonly string[]): Promise<readonly string[]> {
   if (session === undefined) return fallback
@@ -10,14 +12,12 @@ export async function memoryWorkspace(store: RecordsStore, session: string | und
 }
 
 /** TUI 与原生详情共用记录读面；不装配 Agent，也不改变会话归档或提醒状态。 */
-export async function readMemory(store: RecordsStore, session: string | undefined, workspace: readonly string[] = []): Promise<Omit<EventDataOf['memory.state'], 'requestId'>> {
+export async function readMemory(store: RecordsStore, session: string | undefined, workspace: readonly string[] = [], query: import('@magic/contracts').NoteReadQuery = {}): Promise<Omit<EventDataOf['memory.state'], 'requestId'>> {
   if (session === undefined) return { workspace }
   if (!store.hasSession(session)) throw new Error('会话已不可读取')
   const metadata = (await store.listSessions({ ids: [session] }))[0]
-  const memory = store.serviceFor(session).memory.read()
-  // 先用完整序列识别内务配对，再切检查边界，避免把边界后的孤立结果误认成业务。
-  const entries = await Array.fromAsync(store.readEntries(session))
-  const unprocessed = substantiveEntries(entries).some(entry => entry.id > (memory.inspectedThrough ?? 0))
+  if ((query.offset ?? 0) > 0 && query.cursor === undefined) throw new Error('续读缺少原读取身份；请从头重新读取')
+  const notes = await createWorkingNotes(dirname(store.paths.database), session).read(query)
   const references: NonNullable<EventDataOf['memory.state']['references']>[number][] = []
   for (const input of store.serviceFor(session).inputs.list()) {
     if (input.state !== 'consumed' && input.state !== 'included') continue
@@ -28,26 +28,34 @@ export async function readMemory(store: RecordsStore, session: string | undefine
         sources: entries.filter(entry => entry.kind !== 'tool-call').map(entry => ({ session: ref.source, entry: entry.id })) })
     }
   }
-  return { session, workspace: metadata?.workspace ?? workspace, memory, unprocessed, references }
+  if (notes.page) {
+    const links = notes.page.links.map(link => link.kind !== 'source' || link.source.session === session || references.some(ref => ref.source === link.source.session && link.source.entry <= ref.through)
+      ? link : { kind: 'unavailable' as const, label: link.label, target: `${link.source.session}#${link.source.entry}`, reason: '该来源不在当前会话或已受理固定引用范围内' })
+    return { session, workspace: metadata?.workspace ?? workspace, notes: { ...notes, page: { ...notes.page, links } }, references }
+  }
+  return { session, workspace: metadata?.workspace ?? workspace, notes, references }
 }
 
 export async function readMemorySource(store: RecordsStore, command: Omit<MemorySourceRead, 'type' | 'requestId'>): Promise<NonNullable<EventDataOf['memory.source']['page']>> {
   if (command.session !== undefined && !store.hasSession(command.session)) throw new Error('浏览会话已不可读取')
   const records = command.session === undefined ? undefined : store.serviceFor(command.session)
   const source = command.source
-  if ([command.item, command.inputRef, command.knowledge].filter(value => value !== undefined).length !== 1) throw new Error('请指定一份明确的来源依据')
+  if ([command.path, command.inputRef, command.knowledge].filter(value => value !== undefined).length !== 1) throw new Error('请指定一份明确的来源依据')
   let allowed = false
-  if (command.item !== undefined && command.inputRef === undefined) {
-    const item = records?.memory.read().items.find(item => item.id === command.item)
-    allowed = item?.sources.some(one => one.session === source.session && one.entry === source.entry && one.part === source.part && (source.offset ?? 0) >= (one.offset ?? 0)) === true
-  } else if (command.inputRef !== undefined && command.item === undefined) {
+  if (command.path !== undefined) {
+    if (!command.session) throw new Error('笔记来源缺少会话身份')
+    const note = await createWorkingNotes(dirname(store.paths.database), command.session).read({ path: command.path })
+    if (!note.page) throw new Error('来源所属笔记已不可读取')
+    allowed = source.session === command.session || records?.inputs.list().some(row =>
+      ['consumed', 'included'].includes(row.state) && row.input.refs?.some(ref => ref.kind === 'session' && ref.source === source.session && ref.through !== undefined && source.entry <= ref.through)) === true
+  } else if (command.inputRef !== undefined && command.path === undefined) {
     const input = records?.inputs.get(command.inputRef)
-    allowed = input?.input.refs?.some(ref => ref.kind === 'session' && ref.source === source.session && ref.through !== undefined && source.entry <= ref.through) === true
-  } else if (command.knowledge !== undefined && command.item === undefined && command.inputRef === undefined) {
+    allowed = input !== undefined && ['consumed', 'included'].includes(input.state) && input.input.refs?.some(ref => ref.kind === 'session' && ref.source === source.session && ref.through !== undefined && source.entry <= ref.through) === true
+  } else if (command.knowledge !== undefined && command.path === undefined && command.inputRef === undefined) {
     const item = store.knowledge.read(command.knowledge)
     allowed = item?.sources.some(one => one.session === source.session && one.entry === source.entry && one.part === source.part && (source.offset ?? 0) >= (one.offset ?? 0)) === true
   }
-  if (!allowed) throw new Error('该来源不在所选事项或已受理引用的允许范围内')
+  if (!allowed) throw new Error('该来源不在所选笔记会话或已受理引用的允许范围内')
   if (!store.hasSession(source.session)) throw new Error('来源会话已不可读取')
   return createMaterialReader({ records: records ?? store.serviceFor(source.session), session: command.session ?? '', allowedSources: [source] })({ ...source, ...(command.limit === undefined ? {} : { limit: command.limit }) })
 }

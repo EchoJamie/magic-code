@@ -123,8 +123,9 @@ export function createSandbox(options: SandboxOptions): Sandbox {
             ...(options.ledger === undefined ? {} : { ledger: options.ledger }),
           })
         },
-        async read(path: string, opts?: { maxBytes?: number }): Promise<ReadResult> {
+        async read(path: string, opts?: { maxBytes?: number; offset?: number; limit?: number }): Promise<ReadResult> {
           const target = targetOf(path)
+          if (opts?.offset !== undefined || opts?.limit !== undefined) throw new Error('offset/limit 分页仅用于自身工作笔记；普通文件仍使用原有读取方式')
           const cap = positiveOr(opts?.maxBytes, DEFAULT_MAX_READ_BYTES)
           return bound === undefined ? readText(target, cap) : readOpened(await fileOf(target), target.absolute, cap)
         },

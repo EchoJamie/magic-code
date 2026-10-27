@@ -238,9 +238,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   try {
     savedRuns = readRuns(paths)
     initialConfig = loadConfig({ magic: options.magic })
-    store = createRecordsStore({ dataDir: options.magic.base, workspace: [], onKnowledgeMemoryChanged: sessions => {
-      for (const session of sessions) void publishMemoryPlan(session).catch(error => options.log?.(`知识已变更，计划投影发布失败：${String(error)}`))
-    } })
+    store = createRecordsStore({ dataDir: options.magic.base, workspace: [] })
   } catch (error) {
     server.stop(true)
     clearStale(paths.socket)
@@ -310,15 +308,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       for (const conn of clients.values()) if (conn.selectedSession === event.session) conn.link.send({ t: 'ev', gen: null, event })
     },
   })
-
-  /** 知识提交可能改变多个会话；沿所选会话订阅发布，不依附请求者或 Agent 生命周期。 */
-  async function publishMemoryPlan(session: string): Promise<void> {
-    const records = store.serviceFor(session)
-    const plan = await createPlanReader({ records, session }).readPlan()
-    const event: KernelEvent = { id: records.nextId(), session, turn: null, at: now(), kind: 'plan.changed',
-      data: { ...plan, entry: plan.entry ?? 0 } }
-    for (const conn of clients.values()) if (conn.selectedSession === session) conn.link.send({ t: 'ev', gen: null, event })
-  }
 
   const environmentFor = (session: string): WorkEnvironment | undefined => environments.get(workRoot(session))
   function releaseEnvironments(): void {
@@ -1108,13 +1097,16 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     const release = root === undefined ? undefined : sessions.admit(root)
     try {
       const input = command.type === 'input.submit' ? command : command.type === 'collaboration.input' ? command.input : undefined
-      if (input?.local !== true && input?.refs?.some(ref => ref.kind === 'session' || ref.kind === 'memory')) {
+      if (input?.local !== true && input?.refs?.some(ref => ref.kind === 'session' || ref.kind === 'memory' || ref.kind === 'note')) {
         const target = command.type === 'collaboration.input' && command.member !== undefined
           ? store.collaboration.getAgent(command.member)?.sessionId : session
         try {
-          for (const ref of input.refs) if (ref.kind === 'memory' && ref.scope.kind === 'session') {
-            if (ref.scope.session !== target) throw new Error('纠正对象与发送目标不一致；请回到原目标交代')
-            if (target == null || !store.serviceFor(target).memory.read().items.some(item => item.id === ref.source)) throw new Error('所选事项已不可读取；请重新查看')
+          for (const ref of input.refs) {
+            if (ref.kind === 'memory' && ref.scope.kind === 'session') throw new Error('旧事项引用不适用于工作笔记；请重新查看并选择')
+            if (ref.kind !== 'note') continue
+            if (ref.session !== target || target == null) throw new Error('纠正对象与发送目标不一致；请回到原目标交代')
+            const latest = await readMemory(store, target, [], { path: ref.source })
+            if (!latest.notes?.page) throw new Error('所选笔记已不可读取；草稿保留，请重新查看')
           }
           const existing = target == null || input.ref === undefined ? undefined : store.serviceFor(target).inputs.get(input.ref)
           const bound = existing?.input ?? await bindSessionReferences(input, store)
@@ -1161,7 +1153,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       return
     }
     if (command.type === 'memory.read') {
-      const data = await (async () => readMemory(store, command.session, await memoryWorkspace(store, command.session, command.session === undefined ? workspaceOf(loadConfig({ magic: options.magic }), conn.cwd).roots() : [])))().catch(error => ({ ...(command.session === undefined ? {} : { session: command.session }), workspace: [], error: String(error) }))
+      const data = await (async () => readMemory(store, command.session, await memoryWorkspace(store, command.session, command.session === undefined ? workspaceOf(loadConfig({ magic: options.magic }), conn.cwd).roots() : []), command))().catch(error => ({ ...(command.session === undefined ? {} : { session: command.session }), workspace: [], error: String(error) }))
       if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: command.session ?? '', kind: 'memory.state', data: { requestId: command.requestId, ...data } } })
       return
     }
@@ -1283,7 +1275,12 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       if (command.action === 'edit') {
         try {
           const input = await bindSessionReferences(command.input, store)
-          if (input.refs?.some(ref => ref.kind === 'memory' && ref.scope.kind === 'session' && ref.scope.session !== session)) throw new Error('纠正对象与发送目标不一致')
+          for (const ref of input.refs ?? []) {
+            if (ref.kind === 'memory' && ref.scope.kind === 'session') throw new Error('旧事项引用已退出使用')
+            if (ref.kind !== 'note') continue
+            if (ref.session !== session) throw new Error('纠正对象与发送目标不一致')
+            if (!(await readMemory(store, session, [], { path: ref.source })).notes?.page) throw new Error('所选笔记已不可读取；原稿保留')
+          }
           note = inputs.edit(command.ref, command.revision, input) ? '已保存未消费输入' : '输入已消费或已改变，未修改'
         } catch (error) { note = `未修改输入：${String(error)}` }
       }
@@ -1334,6 +1331,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     const previous = conn.target
     if (command.type === 'input.submit' && previous?.run.session != null && activeCollaboration === undefined &&
       previous.run.lastTurn !== undefined && !previous.run.busy && !previous.run.turnActive &&
+      !compactions.active(previous.run.session) &&
       backgroundOf(previous.run) === 0 &&
       !store.serviceFor(previous.run.session).inputs.list().some(input => input.state === 'pending')) {
       const selected = conn.selectedSession

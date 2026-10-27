@@ -1,6 +1,5 @@
-import { createMemoryRecords } from './memory.ts'
+import { createCoverageRecords } from './coverage.ts'
 import { createKnowledgeRecords } from './knowledge.ts'
-import { invalidateKnowledgeMemory } from './knowledge-memory.ts'
 import { initKnowledgeSchema } from './knowledge-schema.ts'
 import {initInputSchema,createInputRecords} from './inputs.ts'
 import type { CollaborationRecords } from '@magic/contracts'
@@ -139,8 +138,6 @@ function parseWorkspace(column: string): readonly string[] {
 
 /** 装配期构造入参——数据目录与**本进程的工作区**（其余选择归装配根）。 */
 export type RecordsStoreOptions = {
-  /** 知识事务提交后通知实际变更的工作记忆会话；所有工作区视图共用。 */
-  readonly onKnowledgeMemoryChanged?: (sessions: readonly SessionId[]) => void
   /**
    * 数据落点。**须是字面路径**——前导 `~` 的展开归配置加载器
    * （`@magic/contracts` · `expandHome`），本库不展开（见 `assertPlainDataDir`）。
@@ -194,7 +191,7 @@ export type RecordsStore = {
     session: SessionId,
     before: RecordId | undefined,
     limit: number,
-  ): Promise<readonly Entry[]>
+  ): readonly Entry[]
   /**
    * **blob 存取**（写权唯一归本域）——**不经会话实例**：blob 引用与会话无关
    * （它是记录域内部键，契约里对消费者不透明）。会话未定时取回正文要用它（读面同例）。
@@ -330,10 +327,10 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     `INSERT INTO ${EVENTS_TABLE} (id, session, turn, at, kind, data)
      VALUES ($id, $session, $turn, $at, $kind, $data)`,
   )
-  const selectEntries = db.query<EntryRow, [string, number, number, number]>(
+  const selectEntries = db.query<EntryRow, [string, number, number, number, number]>(
     `SELECT id, session, kind, content_kind, content_text, content_blob, payload, at, source
        FROM ${ENTRIES_TABLE}
-      WHERE session = ? AND id > ? AND id <= ?
+      WHERE session = ? AND id > ? AND id <= ? AND (? = 1 OR kind != 'continuation')
       ORDER BY id
       LIMIT ?`,
   )
@@ -342,7 +339,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   const selectEntriesBack = db.query<EntryRow, [string, number, number]>(
     `SELECT id, session, kind, content_kind, content_text, content_blob, payload, at, source
        FROM ${ENTRIES_TABLE}
-      WHERE session = ? AND id < ?
+      WHERE session = ? AND id < ? AND kind != 'continuation'
       ORDER BY id DESC
       LIMIT ?`,
   )
@@ -443,7 +440,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     const ceiling = range?.to ?? Number.MAX_SAFE_INTEGER
 
     return paginate(
-      (after) => selectEntries.all(sessionId, Math.max(after, floor), ceiling, READ_CHUNK),
+      (after) => selectEntries.all(sessionId, Math.max(after, floor), ceiling, range?.auxiliary === true ? 1 : 0, READ_CHUNK),
       entryOfRow,
     )
   }
@@ -462,12 +459,12 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     sessionId: SessionId,
     before: RecordId | undefined,
     limit: number,
-  ): Promise<readonly Entry[]> {
+  ): readonly Entry[] {
     assertSessionId(sessionId)
     const ceiling = before ?? Number.MAX_SAFE_INTEGER
     const rows = limit <= 0 ? [] : selectEntriesBack.all(sessionId, ceiling, limit)
 
-    return Promise.resolve(rows.reverse().map(entryOfRow))
+    return rows.reverse().map(entryOfRow)
   }
 
   function readEvents(sessionId: SessionId): AsyncIterable<KernelEvent> {
@@ -579,14 +576,14 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
 
   return {
     paths: { database: databasePath, blobs: blobsDir },
-    knowledge: createKnowledgeRecords(db, workspace, items => invalidateKnowledgeMemory(db, items), options.onKnowledgeMemoryChanged),
+    knowledge: createKnowledgeRecords(db, workspace),
     attention,
     collaboration,
 
     serviceFor(session: SessionId): RecordsService {
       assertSessionId(session)
       return {
-        memory: createMemoryRecords(db, session, entry => appendEntry(session, entry), { nextId: () => ids.next(), appendEvent: event => appendEvent(session, event) }),
+        coverage: createCoverageRecords(db, session, entry => appendEntry(session, entry), { nextId: () => ids.next(), appendEvent: event => appendEvent(session, event) }),
         inputs:createInputRecords(db,session,entry=>appendEntry(session,entry),at=>ensureSession.run(session,at,workspaceColumn)),
         collaboration,
         nextId: () => ids.next(),

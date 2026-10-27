@@ -520,12 +520,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   })
 
   const compactDrafts = new Map<string, { session: string; text: string; refs: readonly DraftRef[]; caret: number }>()
-  const compactLabel = (state: import('@magic/contracts').CompactState['state']) => ({ pending: '等待完整交互边界', running: '正在压缩', completed: '压缩完成', failed: '压缩失败', cancelled: '已取消', interrupted: '已中断', 'no-material': '没有可压材料', unknown: '受理或结果尚未确认' })[state]
+  const compactLabel = (state: import('@magic/contracts').CompactState['state']) => ({ pending: '等待完整交互边界', running: '正在整理笔记', completed: '压缩完成', failed: '压缩失败', cancelled: '已取消', interrupted: '已中断', 'no-material': '没有可压材料', unknown: '受理或结果尚未确认' })[state]
+  const compactNote = (state: import('@magic/contracts').CompactState) => state.notesSaved && state.state !== 'completed' ? '已保存的笔记保留，本次历史收缩未完成' : ''
   const showCompactions = (): void => {
     const rows = view.compactions.filter(one => one.session === view.sessionId)
     commit(openPicker(view, { source: 'compact-status', title: '本会话压缩请求', selected: 0, rows: [
       ...rows.flatMap(one => [
-        { value: `query:${one.state.requestId}`, label: `${compactLabel(one.state.state)} · 查询结果`, meta: '', current: false, detail: [`目标 ${nameOfSession(one.session)}`, `本次重点：${one.state.focus || '未指定'}`, one.state.reason ?? ''].filter(Boolean) },
+        { value: `query:${one.state.requestId}`, label: `${compactLabel(one.state.state)} · 查询结果`, meta: '', current: false, detail: [`目标 ${nameOfSession(one.session)}`, `本次重点：${one.state.focus || '未指定'}`, one.state.reason ?? '', compactNote(one.state)].filter(Boolean) },
         ...(['pending', 'running', 'unknown'].includes(one.state.state) ? [{ value: `cancel:${one.state.requestId}`, label: '取消本次压缩', meta: '不停止其他工作', current: false }] : []),
       ]), { value: 'back', label: '返回', meta: '', current: false },
     ], hint: 'Enter 操作 · Esc 返回' }))
@@ -535,9 +536,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     get picker() { return view.dock.kind === 'picker' ? view.dock.picker : null },
     get session() { return view.sessionId },
     get archived() { return view.archived },
+    get title() { return view.sessionId === null ? '尚无会话' : nameOfSession(view.sessionId) },
     present: picker => commit(openPicker(view, picker)),
     push: () => enterLayer(), back: () => popLayer(), send: command => send(command),
     correct: ref => {
+      const target = view.inputMember === undefined ? view.sessionId : view.collaboration?.members.find(one => one.agent.agentId === view.inputMember)?.agent.sessionId
+      if (ref.kind === 'note' && ref.session !== target) { commit({ ...view, flash: `所选笔记属于 ${nameOfSession(ref.session)}；请回到该对象交代，原草稿与发送目标保留。` }); return }
       while (layers.length > 0) popLayer()
       collapseDock()
       commit(withCompletion({ ...view, ...replaceWith(view.draft, view.refs, { from: view.caret, to: view.caret }, ref, view.caret) }))
@@ -952,9 +956,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         compactDrafts.delete(event.data.requestId)
       }
       if (pending && event.data.accepted !== true && ['failed', 'no-material'].includes(event.data.state)) compactDrafts.delete(event.data.requestId)
-      commit(reduce(view, event))
+      const next = reduce(view, event)
+      if (next === view) return
+      commit(next)
       if (view.dock.kind === 'picker' && view.dock.picker.source === 'compact-status') showCompactions()
-      else if (view.sessionId === event.session) commit({ ...view, flash: ['pending', 'running'].includes(event.data.state) ? null : `${compactLabel(event.data.state)}${event.data.reason ? '：' + event.data.reason : ''}` })
+      else if (view.sessionId === event.session) commit({ ...view, flash: ['pending', 'running'].includes(event.data.state) ? null : `${compactLabel(event.data.state)}${event.data.reason ? '：' + event.data.reason : ''}${compactNote(event.data) ? '；' + compactNote(event.data) : ''}` })
       return
     }
 
@@ -2565,7 +2571,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (view.archived && view.dock.kind === 'input') {
       if (input.kind === 'char' && input.char.startsWith('/')) {
         prompt.open({ label: '只读会话命令', secret: false, value: input.char, caret: input.char.length, placeholder: '/resume',
-          submit: value => { if (value.trim() === '/memory') { prompt.clear(); memory.open(); return null }; if (value.trim() === '/resume') { models.cancelOpen(); waiting = 'session'; directory.ordinary(); return { type: 'session.list', archived: false } }; return null } })
+          submit: value => { if (value.trim() === '/memory' && value.startsWith('/memory ')) { prompt.clear(); memory.open(); return null }; if (value.trim() === '/resume') { models.cancelOpen(); waiting = 'session'; directory.ordinary(); return { type: 'session.list', archived: false } }; return null } })
         return NONE
       }
       if (!['ctrl+c', 'ctrl+o', 'escape', 'planTop', 'ctrl+t'].includes(input.kind)) {

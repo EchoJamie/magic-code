@@ -45,6 +45,7 @@ export type SkillRef = {
  */
 export type InputRef = InputRefPlace &
   (
+    | { readonly kind: 'note'; readonly source: string; readonly session: SessionId }
     | { readonly kind: 'session'; readonly source: SessionId; readonly through?: RecordId }
     | { readonly kind: 'memory'; readonly source: string; readonly scope: { readonly kind: 'session'; readonly session: SessionId } | import('./knowledge.ts').KnowledgeScope; readonly revision: number }
     | { readonly kind: 'skill'; readonly name: string; readonly source: string }
@@ -174,13 +175,15 @@ export type SessionList = { readonly type: 'session.list'; readonly archived?: b
 
 /** 引用目录只列来源，不选择或启动会话；查询与分页回执独立于当前输入目标。 */
 export type SessionReferenceList = { readonly type: 'session.references'; readonly requestId: string; readonly query: string; readonly offset?: number }
-export type MemoryRead = { readonly type: 'memory.read'; readonly requestId: string; readonly session?: SessionId }
+export type MemoryRead = { readonly type: 'memory.read'; readonly requestId: string; readonly session?: SessionId } & import('./notes.ts').NoteReadQuery
 export type MemorySourceRead = {
   readonly type: 'memory.source'; readonly requestId: string
   readonly session?: SessionId
   readonly source: import('./memory.ts').MemorySource
   /** 事项来源按 item 校验；会话引用按实际已受理输入 ref 校验范围。 */
   readonly item?: string
+  /** 当前会话笔记内的历史链接；不扩大历史授权范围。 */
+  readonly path?: string
   readonly inputRef?: string
   readonly knowledge?: string
   readonly limit?: number
@@ -190,6 +193,8 @@ export type KnowledgeCommand =
   | { readonly type: 'knowledge.read'; readonly requestId: string; readonly session?: SessionId; readonly id: string }
   | { readonly type: 'knowledge.forget' | 'knowledge.forget-result'; readonly requestId: string; readonly session?: SessionId; readonly scope: import('./knowledge.ts').KnowledgeScope; readonly id: string; readonly expectedRevision: number }
 export type CompactState = {
+  /** 本次至少一次笔记保存成功；不表示历史覆盖已提交。 */
+  readonly notesSaved?: boolean
   readonly accepted?: true
   readonly requestId: string
   readonly focus?: string

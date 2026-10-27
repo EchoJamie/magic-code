@@ -51,8 +51,8 @@ function fixture() {
     receipts.push({ position: receipts.length + 1, recipientId: self.agentId, messageId: m.messageId,
       state: 'consumed', entryId, consumedAt: 2, ...(includedAt === undefined ? {} : { includedAt }) })
   }
-  const assemble = (nearEntries?: number) => assembleContext({ records, session: self.sessionId,
-    systemPrompt: 'system', blobTextLimit: 5, ...(nearEntries === undefined ? {} : { nearEntries }),
+  const assemble = () => assembleContext({ records, session: self.sessionId,
+    systemPrompt: 'system',
     onIncluded: ids => included.push([...ids]),
   })
   return { messages, sessions, receipts, reads, included, base, records, add, assemble }
@@ -139,7 +139,7 @@ describe('协作上下文 · 权威材料投影', () => {
     f.add(message(42, [{ kind: 'text', text: '两条工具记录之间的协作消息' }]), 4)
     f.sessions.get(self.sessionId)!.push({ id: 5, kind: 'tool-result', content: { text: '结果' }, payload: { ok: true, output: { text: '结果' } }, at: 1 })
     const assembled = await f.assemble()
-    expect(assembled.map(m => m.role)).toEqual(['system', 'assistant', 'tool', 'user', 'user', 'assistant'])
+    expect(assembled.map(m => m.role)).toEqual(['system', 'assistant', 'tool', 'user', 'user'])
     expect(assembled[1]).toMatchObject({ toolCalls: [{ id: pairingKeyOf(3), name: 'exec', args: { cmd: 'local' } }] })
     expect(assembled[2]).toMatchObject({ callId: pairingKeyOf(3), output: '结果' })
     expect(JSON.stringify(assembled)).not.toContain('must-not-replay')
@@ -152,12 +152,12 @@ describe('协作上下文 · 压缩与准确带入', () => {
     const f = fixture()
     f.add(message(90, [{ kind: 'text', text: '已经带入并已压缩' }]), 1, 2)
     f.add(message(12, [{ kind: 'text', text: '已消费但仍未带入' }]), 2)
-    f.sessions.get(self.sessionId)!.push({ id: 3, kind: 'summary', content: { text: '旧记录摘要' }, at: 3 })
+    f.base.coverage.publish({ previousSummary: null, from: 1, through: 2, at: 3, notesSaved: true })
     f.add(message(50, [{ kind: 'text', text: '当前窗口消息' }]), 4, 5)
     f.add({ ...message(70, [{ kind: 'text', text: '已撤回正文' }]), withdrawn: true }, 5)
     // 同一消息出现重复引用，也只能展开一次。
     f.sessions.get(self.sessionId)!.push(reference(6, 50))
-    const assembled = await f.assemble(0)
+    const assembled = await f.assemble()
     const output = JSON.stringify(assembled)
     expect(output).toContain('已消费但仍未带入')
     expect(output).toContain('当前窗口消息')
@@ -168,7 +168,7 @@ describe('协作上下文 · 压缩与准确带入', () => {
     // 装配只报告投影，不偷偷把消费事实提升为真实请求。
     expect(f.receipts.find(i => i.messageId === 12)?.includedAt).toBeUndefined()
     f.receipts[1] = { ...f.receipts[1]!, includedAt: 10 }
-    expect(JSON.stringify(await f.assemble(0))).not.toContain('已消费但仍未带入')
+    expect(JSON.stringify(await f.assemble())).not.toContain('已消费但仍未带入')
     expect(f.included.at(-1)).toEqual([50])
   })
 
@@ -180,18 +180,18 @@ describe('协作上下文 · 压缩与准确带入', () => {
       { kind: 'image', at: 2, marker: 'Image#1', name: 'a.png', source: '/a.png', label: '图片来源', mime: 'image/png', blob },
     ] } }])
     f.add(message(3, [{ kind: 'entry', ref: { sessionId: 'source-session', entryId: 1 } }]), 1)
-    f.sessions.get(self.sessionId)!.push({ id: 2, kind: 'summary', content: { text: '摘要不含图片' }, at: 2 })
-    const assembled = await f.assemble(0)
+    f.base.coverage.publish({ previousSummary: null, from: 1, through: 1, at: 2, notesSaved: true })
+    const assembled = await f.assemble()
     const delivered = assembled.findLast(message => message.role === 'user')!
     if (delivered.role !== 'user' || typeof delivered.content === 'string') throw new Error('image was lost')
     expect(delivered.content.find(p => p.type === 'image')).toEqual({ type: 'image', mime: 'image/png', data: bytes })
     expect(f.included).toEqual([[3]])
   })
 
-  test('普通会话不访问协作目录，成功装配回传空 ID 列表', async () => {
+  test('普通会话无协作身份，成功装配回传空 ID 列表', async () => {
     const records = makeFauxRecords()
     const calls: number[][] = []
-    await assembleContext({ records: { ...records, get collaboration(): RecordsService['collaboration'] { throw new Error('not accessed') } }, session: 'plain', systemPrompt: 'system', onIncluded: ids => calls.push([...ids]) })
+    await assembleContext({ records, session: 'plain', systemPrompt: 'system', onIncluded: ids => calls.push([...ids]) })
     expect(calls).toEqual([[]])
   })
 })

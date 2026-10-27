@@ -64,8 +64,7 @@ export type { CollaborationBoundary } from './collaboration.ts'
 
 export { createMaterialReader, materialTextOf } from './material.ts'
 
-export { createMemoryAccess, projectMemoryPlan } from './memory.ts'
-export { createKnowledgeAccess, createKnowledgeOrganizer } from './knowledge.ts'
+export { createKnowledgeAccess } from './knowledge.ts'
 
 export { bindSessionReferences } from './refs.ts'
 export { substantiveEntries } from './organize.ts'

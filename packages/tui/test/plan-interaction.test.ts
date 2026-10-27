@@ -132,19 +132,19 @@ describe('计划投影', () => {
     expect(stage.shell.getView().plan.entry).toBe(null)
   })
 
-  test('重开读取实际工作记忆投影，不扫描旧工具结果', () => {
+  test('重开读取独立计划快照，不扫描旧工具结果', () => {
     const old = [planEntry(900, note(step('过时步骤')))]
-    const plan = { revision: 3, entry: 5, plan: note(step('当前步骤', 'in_progress')) }
+    const plan = { entry: 5, plan: note(step('当前步骤', 'in_progress')) }
     expect(rebuild(createView(), old, { plan }).plan).toEqual(plan)
     expect(hasPlan(rebuild(createView(), old))).toBe(false)
   })
 
-  test('步骤清空的更高记忆修订盖掉旧计划，来源号较低也生效', () => {
-    const previous = withPlan(createView(), 900, note(step('旧步骤')), 2)
-    const cleared = rebuild(previous, [planEntry(950, note(step('不能拾回')))], { plan: { entry: 5, revision: 3, plan: null } })
-    expect(cleared.plan).toEqual({ entry: 5, revision: 3, plan: null })
-    expect(withPlan(cleared, 1000, note(step('迟到旧数据')), 2)).toBe(cleared)
-    expect(withPlan(cleared, 2000, note(step('旧格式事件')))).toBe(cleared)
+  test('步骤清空以计划记录判断先后，迟到快照不拾回旧步骤', () => {
+    const previous = withPlan(createView(), 900, note(step('旧步骤')))
+    const cleared = rebuild(previous, [planEntry(950, note(step('不能拾回')))], { plan: { entry: 1000, plan: null } })
+    expect(cleared.plan).toEqual({ entry: 1000, plan: null })
+    expect(withPlan(cleared, 950, note(step('迟到旧数据')))).toBe(cleared)
+    expect(withPlan(cleared, 2000, note(step('新计划'))).plan.plan?.steps[0]?.text).toBe('新计划')
   })
 
   test('重建晚到（比实时事件旧）⇒ 不覆盖手上那一份', () => {
@@ -167,7 +167,7 @@ describe('计划投影', () => {
       event('session.history', {
         session: 'session-test',
         entries: [],
-        plan: { entry: 8, revision: 4, plan: note(step('还在这儿的第一步', 'completed'), step('没做完的第二步')) },
+        plan: { entry: 8, plan: note(step('还在这儿的第一步', 'completed'), step('没做完的第二步')) },
         done: true,
       }),
     ])

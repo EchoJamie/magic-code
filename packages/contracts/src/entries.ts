@@ -13,6 +13,7 @@ export type Content = { readonly text: string } | { readonly blob: BlobRef }
 
 /** 条目 kind。 */
 export type EntryKind =
+  | 'continuation' // 当前模型辅助调用的真实消息；与业务轮次分离
   | 'agent-message' // 协作消息引用；不冒充用户
   | 'user' // 用户输入
   | 'assistant' // 助手产出
@@ -248,6 +249,7 @@ export type InputRefEntry = InputRefPlace & {
 } &
   (
     | { readonly kind: 'session'; readonly source: SessionId; readonly through: RecordId; readonly label: string; readonly text: string }
+    | { readonly kind: 'note'; readonly source: string; readonly session: SessionId; readonly label: string; readonly text: string }
     | { readonly kind: 'memory'; readonly source: string; readonly scope: { readonly kind: 'session'; readonly session: SessionId } | import('./knowledge.ts').KnowledgeScope; readonly revision: number; readonly label: string; readonly text: string }
     | {
         readonly kind: 'skill'
@@ -388,6 +390,7 @@ export type ReasoningState = import('./model.ts').ModelSource & {
  * `assistant` 条目自 U41 起有：供应商要求回传的那份思考，见 `AssistantPayload`）。
  */
 export type EntryPayload =
+  | { readonly preparation: string; readonly message: import('./ports.ts').ModelMessage }
   | import('./memory.ts').SummaryPayload
   | AgentMessagePayload
   | ToolCallPayload
@@ -424,6 +427,8 @@ export type NewEntry = Omit<Entry, 'id'>
  * TODO(规划侧)：形态未定；占位为可选起止（含端点与否亦未定）。
  */
 export type EntryRange = {
+  /** 诊断读取可包含辅助调用；普通历史与恢复默认排除。 */
+  readonly auxiliary?: boolean
   readonly from?: RecordId
   readonly to?: RecordId
 }

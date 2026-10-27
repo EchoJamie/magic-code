@@ -729,7 +729,6 @@ export type EventDataOf = {
   /** 实际当前计划投影，来源记录号不充当工作记忆修订。 */
   'plan.changed': {
     readonly entry: RecordId
-    readonly revision?: number
     readonly plan: PlanNote | null
   }
   // 控制 · 模型——**读侧命令（`model.list`）的答复**（缺陷 D10 · 第 3 样）。
@@ -818,11 +817,10 @@ export type EventDataOf = {
     readonly error?: string
   }
   'memory.state': {
+    readonly notes?: import('./notes.ts').NoteState
     readonly requestId: string
     readonly session?: SessionId
     readonly workspace: readonly string[]
-    readonly memory?: import('./memory.ts').MemorySnapshot
-    readonly unprocessed?: boolean
     readonly references?: readonly { readonly inputRef: string; readonly title: string; readonly source: SessionId; readonly through: RecordId; readonly sources: readonly import('./memory.ts').MemorySource[] }[]
     readonly error?: string
   }

@@ -1,18 +1,6 @@
-/**
- * 上下文策略 —— **域内策略端口**（技术方案 · 依赖规则 3：域内策略端口留在域内，
- * 不占跨域契约位）。
- *
- * 两处口径，一写一读，成对：
- * - **写侧**（`./entries.ts`）——正文超 `blobThreshold` 即转 blob；
- * - **读侧**（`./context.ts`）——blob 引用解析回文本时按 `blobTextLimit` 截断。
- *
- * 缺省值＝实现级常量（技术方案 · 记录 · 规则 ②「大负载落 blob（阈值＝实现级常量）」；
- * 领域划分 · 端口内类型「按策略截断」）。**压缩（阶段 3 · U19）**在此长出后半截——
- * 触发判据（`compactAt*`）与「近段」边界（`nearEntries`）三项。换的是这个对象，
- * 循环与装配不动。
- */
+/** 上下文保存与压缩策略；业务历史按实际交付正文重建。 */
 
-import { DEFAULT_BLOB_TEXT_LIMIT, DEFAULT_NEAR_ENTRIES } from './context.ts'
+import { DEFAULT_NEAR_ENTRIES } from './context.ts'
 
 /**
  * 正文字数阈值——超者转 blob（**字符**，非字节：廉价且可预期，落数据库前的判断够用）。
@@ -40,8 +28,6 @@ export const DEFAULT_COMPACT_AT_TOKENS = 120_000
 export type ContextPolicy = {
   /** 正文超此长度即转 blob（字符数）——写侧。 */
   readonly blobThreshold: number
-  /** blob 正文解析回文本的上限（字符数）——读侧。 */
-  readonly blobTextLimit: number
   /** 用量占**窗长**的比例达此值即压缩（窗长已声明时走这条）——阶段 3。 */
   readonly compactAtFraction: number
   /** 窗长**未声明**时的绝对触发阈值（token）——阶段 3。 */
@@ -53,7 +39,6 @@ export type ContextPolicy = {
 /** 缺省上下文策略——阶段 1 两件 ＋ 阶段 3 压缩四件（只增不改）。 */
 export const DEFAULT_CONTEXT_POLICY: ContextPolicy = {
   blobThreshold: DEFAULT_BLOB_THRESHOLD,
-  blobTextLimit: DEFAULT_BLOB_TEXT_LIMIT,
   compactAtFraction: DEFAULT_COMPACT_AT_FRACTION,
   compactAtTokens: DEFAULT_COMPACT_AT_TOKENS,
   nearEntries: DEFAULT_NEAR_ENTRIES,
