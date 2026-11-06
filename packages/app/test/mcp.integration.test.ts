@@ -617,7 +617,7 @@ describe('恢复', () => {
       records.appendEntry({
         kind: 'tool-call',
         content: { text: '' },
-        payload: { name: 'mcp__fake__echo', args: { text: '没跑完的那次' } },
+        payload: { id: 'call-fixture-1', name: 'mcp__fake__echo', args: { text: '没跑完的那次' } },
         at: Date.now(),
       })
       stamp('turn.start', {})

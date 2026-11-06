@@ -158,7 +158,7 @@ describe('历史回查是有界的', () => {
     add({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { name: 'exec', args: { cmd: 'ls' } },
+      payload: { id: 'call-fixture-1', name: 'exec', args: { cmd: 'ls' } },
     })
     records.coverage.publish({ previousSummary: null, from: 1, through: 1, at: AT, notesSaved: true })
 

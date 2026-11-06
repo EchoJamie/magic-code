@@ -2,7 +2,7 @@ import type { CollaborationView, Entry } from '@magic/contracts'
 
 export const collaborationEntries: readonly Entry[] = [
   { id: 30, kind: 'user', at: 1, content: { text: '保持公共接口兼容，检查回调校验。' } },
-  { id: 32, kind: 'tool-call', at: 2, content: { text: '' }, payload: { name: 'exec', args: { command: 'bun test callback.test.ts' } } },
+  { id: 32, kind: 'tool-call', at: 2, content: { text: '' }, payload: { id: 'call-fixture-1', name: 'exec', args: { command: 'bun test callback.test.ts' } } },
   { id: 33, kind: 'tool-result', at: 3, content: { text: '3 pass · 回调兼容测试通过' }, payload: { ok: true, output: { text: '3 pass · 回调兼容测试通过' } } },
   { id: 31, kind: 'assistant', at: 2, content: { text: Array.from({ length: 24 }, (_, i) => `第 ${i + 1} 项检查：保留原接口与失败响应。`).join('\n') } },
 ]

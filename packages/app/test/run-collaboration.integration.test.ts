@@ -170,7 +170,7 @@ test('显式正常收尾：收下成员交付后仍能写最终正文，资源�
     const memberEntries = await Array.fromAsync(f.store.readEntries(member.sessionId))
     expect(originEntries.filter(one => one.kind === 'assistant').at(-1)?.content).toEqual({ text: finalText })
     expect(memberEntries.filter(one => one.kind === 'assistant').at(-1)?.content).toEqual({ text: memberFinal })
-    expect(originEntries.filter(one => one.kind === 'tool-call').map(one => one.payload)).toContainEqual({ name: 'agent_control', args: { action: 'close' } })
+    expect(originEntries.filter(one => one.kind === 'tool-call').map(one => one.payload)).toContainEqual({ id: expect.any(String), name: 'agent_control', args: { action: 'close' } })
     expect(memberEntries.filter(one => one.kind === 'tool-result').map(one => one.payload)).toMatchObject([{ ok: true }, { ok: true }])
 
     // 关闭后仍可进入这条子会话查看完整正文；只读不重建执行者。

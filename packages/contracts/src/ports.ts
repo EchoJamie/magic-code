@@ -23,7 +23,7 @@ import type { CollaborationRecords } from './collaboration.ts'
  * **沙箱原语**（`exec` / 读 / 写 / 列 / 匹配）与**工具规格**（`ToolSpec` / 危险归类 / 工具集 v1）。
  *
  * **三个 id 各有空间，不许混**（技术方案 · 领域划分 · 端口内类型）：
- * ① `ToolCall.id` ＝**供应商侧**调用 id（只用于回填配对）；
+ * ① `ToolCall.id` ＝模型原始调用 ID（落盘及协议往返原样保留）；
  * ② 事件的 `call`（`RecordId` 空间）＝贯穿调用链（请求 / 询问 / 裁决 / 结果）的那次调用；
  */
 
@@ -1380,7 +1380,7 @@ export type ModelUsage = {
 
 /**
  * 工具调用（模型请求的一次调用）。
- * `id` ＝**供应商侧**调用 id——只用于回填配对（三个 id 空间见文件头注）。
+ * `id` 是模型返回的原始调用 ID，记录与协议往返原样保留，不从内部记录号重新生成。
  */
 export type ToolCall = {
   readonly id: string

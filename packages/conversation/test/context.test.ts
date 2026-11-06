@@ -24,6 +24,7 @@ import type { Content, ModelMessage, UserMessageContent } from '@magic/contracts
 import { makeFauxRecords } from '@magic/faux'
 import type { FauxRecords } from '@magic/faux'
 import { assembleContext } from '../src/context.ts'
+import { readHistoryOf } from '../src/plan.ts'
 
 /** 会话 id——条目按会话读（本单元装配时必带）。 */
 const SESSION = 's1'
@@ -71,12 +72,12 @@ function appendToolResult(
   })
 }
 
-/** 一条工具调用条目——`{ name, args }` 载荷（重放真源）。 */
+/** 一条工具调用条目——`{ id, name, args }` 载荷（重放真源）。 */
 function appendToolCall(records: FauxRecords, command: string): number {
   return records.appendEntry({
     kind: 'tool-call',
     content: { text: '' },
-    payload: { name: 'exec', args: { cmd: command } },
+    payload: { id: `call_00_ET_${command}`, name: 'exec', args: { cmd: command } },
     at: AT,
   })
 }
@@ -113,6 +114,18 @@ describe('Context 装配 · 骨架', () => {
 })
 
 describe('Context 装配 · 工具往返', () => {
+  test('缺少原始调用 ID 时明确拒绝协议重建，原始调用仍可回查', async () => {
+    const records = makeFauxRecords()
+    records.appendEntry({ kind: 'assistant', content: { text: '' }, at: AT })
+    // 模拟从已有记录读出的不完整载荷，不经新调用写入入口。
+    const id = records.appendEntry({ kind: 'tool-call', content: { text: '' },
+      payload: JSON.parse('{"name":"exec","args":{"cmd":"ls"}}'), at: AT })
+    appendToolResult(records, { ok: true, text: 'a.txt' })
+    await expect(assembleContext({ records, session: SESSION, systemPrompt: SYSTEM_PROMPT }))
+      .rejects.toThrow(`工具调用记录 #${id} 缺少模型原始调用 ID`)
+    expect((await readHistoryOf(records, SESSION, { entry: id })).entries[0]?.text).toBe('exec {"cmd":"ls"}')
+  })
+
   test('助手消息带 `toolCalls`，工具结果即工具消息——配对键两处同一', async () => {
     const records = makeFauxRecords()
     records.appendEntry({ kind: 'assistant', content: { text: '我跑一下' }, at: AT })
@@ -139,7 +152,7 @@ describe('Context 装配 · 工具往返', () => {
 
     // 工具消息四件——`callId` 与助手侧的 `ToolCall.id` 必须**同一**（回填配对）
     const pairingKey = assistant?.role === 'assistant' ? assistant.toolCalls?.[0]?.id : undefined
-    expect(pairingKey).toBeDefined()
+    expect(pairingKey).toBe('call_00_ET_ls')
     expect(tool).toMatchObject({
       role: 'tool',
       callId: pairingKey,
@@ -148,7 +161,7 @@ describe('Context 装配 · 工具往返', () => {
       output: 'a.txt\n',
     })
 
-    // 目视锚——配对键由 `tool-call` 条目的 id 派生（条目不载供应商侧调用 id，见文件头注）
+    // 记录编号独立于模型调用 ID。
     expect(callEntry).toBe(2)
   })
 

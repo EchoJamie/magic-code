@@ -289,9 +289,9 @@ export function toolResultCarriesThreeParts(): void {
   void missing
 }
 
-/** 条目的工具载荷——结构对齐事件侧。 */
+/** 条目的工具载荷保留原始调用 ID、名称与参数。 */
 export function entryCarriesToolPayload(): void {
-  const call: ToolCallPayload = { name: 'exec', args: { cmd: 'ls' } }
+  const call: ToolCallPayload = { id: 'call-ls', name: 'exec', args: { cmd: 'ls' } }
   const result: ToolResultPayload = { ok: true, output: { text: 'done' } }
   const entry: NewEntry = { kind: 'tool-call', content: { text: '' }, payload: call, at: 0 }
   const full: Entry = { ...entry, id: 1 }

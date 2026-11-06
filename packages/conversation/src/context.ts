@@ -126,8 +126,11 @@ export async function assembleContext(
         const result = toolResultPayloadOf(resultEntry.payload)
         if (call === undefined || result === undefined) break
 
-        const pairKey = pairingKeyOf(callEntry.id)
-        toolCalls.push({ id: pairKey, name: call.name, args: call.args })
+        const payload = callEntry.payload
+        if (payload === undefined || !('id' in payload) || typeof payload.id !== 'string' || payload.id.length === 0) {
+          throw new Error(`工具调用记录 #${callEntry.id} 缺少模型原始调用 ID，无法重建工具往返`)
+        }
+        toolCalls.push({ id: payload.id, name: call.name, args: call.args })
         provided(entryKnowledgeReferences(callEntry))
 
         // 正文取**条目正文**（面向模型的文本，工具域按上限截断的那份）——
@@ -138,7 +141,7 @@ export async function assembleContext(
 
         toolMessages.push({
           role: 'tool',
-          callId: pairKey,
+          callId: payload.id,
           // 工具名**取自发起它的调用条目**，不从助手消息反查——压缩（阶段 3）来时反查会静默退化
           name: call.name,
           ok: result.ok,
@@ -259,16 +262,6 @@ export async function collaborationBodyOf(
     : parts
 }
 
-/**
- * 配对键——由 `tool-call` 条目的 id 派生（见文件头注 1）。
- *
- * 前缀是刻意的：供应商 id 形如 `call_1`，两串 id 在日志里**一眼分得开**，
- * 免得调试时把「记录里的配对键」误当「线上的调用 id」。
- */
-export function pairingKeyOf(entryId: RecordId): string {
-  return `entry_${entryId}`
-}
-
 /** 按实际记录解码全文；分页由具体读取工具限定。 */
 export async function rawTextOf(
   content: Content,
@@ -291,10 +284,9 @@ function isContent(value: unknown): value is Content {
 
 /**
  * 判据收在 `unknown` 入口——`EntryPayload` 是对象联合，直接收窄不会长出索引面。
- * **导出给压缩用**（`./compact.ts` 要把旧段渲染成文本，认的得是同一份载荷形态——
- * 两处各收窄一次，迟早收出两种口径）。
+ * 历史文字回查只需名称与参数；模型往返的原始调用 ID 在上下文装配时检查。
  */
-export function toolCallPayloadOf(payload: EntryPayload | undefined): ToolCallPayload | undefined {
+export function toolCallPayloadOf(payload: EntryPayload | undefined): Pick<ToolCallPayload, 'name' | 'args'> | undefined {
   const source: unknown = payload
   if (!isRecord(source)) return undefined
 

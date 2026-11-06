@@ -132,11 +132,11 @@ test('实际系统请求中的职责/委派范围/等待描述保留，身份与
   let app: ReturnType<typeof f.stage.assemble> | undefined
   let shell: ReturnType<typeof attachShell> | undefined
   try {
-    const entryId = f.service.appendEntry({ kind: 'tool-call', content: { text: '' }, payload: { name: 'agent_spawn', args: { responsibility: OLD, scope: OLD }, knowledge: [{ id: 'K', revision: 1 }] }, at: 10 })
+    const entryId = f.service.appendEntry({ kind: 'tool-call', content: { text: '' }, payload: { id: 'call-fixture-1', name: 'agent_spawn', args: { responsibility: OLD, scope: OLD }, knowledge: [{ id: 'K', revision: 1 }] }, at: 10 })
     const child = f.spawn('child', { sessionId: 'origin', entryId })
     expect(f.store.knowledge.write([{ ...f.change, id: 'local', topic: '下一步', conclusion: '独立当前认识' }]).ok).toBe(true)
     const own = f.store.serviceFor('child')
-    const waiting = own.appendEntry({ kind: 'tool-call', content: { text: '' }, payload: { name: 'agent_wait', args: { expectation: OLD }, knowledge: [{ id: 'K', revision: 1 }] }, at: 11 })
+    const waiting = own.appendEntry({ kind: 'tool-call', content: { text: '' }, payload: { id: 'call-fixture-2', name: 'agent_wait', args: { expectation: OLD }, knowledge: [{ id: 'K', revision: 1 }] }, at: 11 })
     f.records.registerWait(child.agent.agentId, { operationId: 'wait', forAgents: [f.coordinator.agentId], expectation: OLD, deadline: Date.now() + 100_000,
       delegationId: child.delegation.delegationId, generatedFrom: { sessionId: 'child', entryId: waiting }, at: 12 })
     f.records.publishConstraint(f.coordinator.agentId, { operationId: 'user-constraint', source: f.origin, body: [{ kind: 'entry', ref: f.origin }], at: 13 })
@@ -178,7 +178,7 @@ test('模型生成label的显式来源带修订，遗忘后label及entry正文�
   const f = fixture()
   try {
     const child = f.spawn('child')
-    const entryId = f.service.appendEntry({ kind: 'tool-call', content: { text: '' }, payload: { name: 'agent_message', args: { label: OLD }, knowledge: [{ id: 'K', revision: 1 }] }, at: 10 })
+    const entryId = f.service.appendEntry({ kind: 'tool-call', content: { text: '' }, payload: { id: 'call-fixture-3', name: 'agent_message', args: { label: OLD }, knowledge: [{ id: 'K', revision: 1 }] }, at: 10 })
     const message = f.records.send(f.coordinator.agentId, { operationId: 'label', recipients: [child.agent.agentId], purpose: 'inform',
       generatedFrom: { sessionId: 'origin', entryId }, body: [{ kind: 'entry', ref: f.origin, label: OLD }], at: 11 })
     f.records.consumeInbox(child.agent.agentId, 12)

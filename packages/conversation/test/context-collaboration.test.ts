@@ -3,7 +3,7 @@ import type {
   AgentIdentity, AgentMessage, Entry, InboxItem, MessagePart, RecordsService, UserMessageContent,
 } from '@magic/contracts'
 import { makeFauxRecords } from '@magic/faux'
-import { assembleContext, pairingKeyOf } from '../src/context.ts'
+import { assembleContext } from '../src/context.ts'
 
 const self: AgentIdentity = {
   agentId: 'receiver', sessionId: 'receiving-session', name: 'Receiver', role: '',
@@ -132,16 +132,16 @@ describe('协作上下文 · 权威材料投影', () => {
 
   test('工具条目被引用时仅是材料，不新增工具调用或破坏本会话配对', async () => {
     const f = fixture()
-    f.sessions.set('source-session', [{ id: 4, kind: 'tool-call', content: { text: '另一会话的调用说明' }, payload: { name: 'exec', args: { cmd: 'must-not-replay' } }, at: 1 }])
+    f.sessions.set('source-session', [{ id: 4, kind: 'tool-call', content: { text: '另一会话的调用说明' }, payload: { id: 'call-fixture-1', name: 'exec', args: { cmd: 'must-not-replay' } }, at: 1 }])
     f.sessions.get(self.sessionId)!.push({ id: 1, kind: 'assistant', content: { text: '执行一件事' }, at: 1 })
     f.add(message(41, [{ kind: 'entry', ref: { sessionId: 'source-session', entryId: 4 } }]), 2)
-    f.sessions.get(self.sessionId)!.push({ id: 3, kind: 'tool-call', content: { text: '' }, payload: { name: 'exec', args: { cmd: 'local' } }, at: 1 })
+    f.sessions.get(self.sessionId)!.push({ id: 3, kind: 'tool-call', content: { text: '' }, payload: { id: 'call-local', name: 'exec', args: { cmd: 'local' } }, at: 1 })
     f.add(message(42, [{ kind: 'text', text: '两条工具记录之间的协作消息' }]), 4)
     f.sessions.get(self.sessionId)!.push({ id: 5, kind: 'tool-result', content: { text: '结果' }, payload: { ok: true, output: { text: '结果' } }, at: 1 })
     const assembled = await f.assemble()
     expect(assembled.map(m => m.role)).toEqual(['system', 'assistant', 'tool', 'user', 'user'])
-    expect(assembled[1]).toMatchObject({ toolCalls: [{ id: pairingKeyOf(3), name: 'exec', args: { cmd: 'local' } }] })
-    expect(assembled[2]).toMatchObject({ callId: pairingKeyOf(3), output: '结果' })
+    expect(assembled[1]).toMatchObject({ toolCalls: [{ id: 'call-local', name: 'exec', args: { cmd: 'local' } }] })
+    expect(assembled[2]).toMatchObject({ callId: 'call-local', output: '结果' })
     expect(JSON.stringify(assembled)).not.toContain('must-not-replay')
     expect(f.included).toEqual([[41, 42]])
   })

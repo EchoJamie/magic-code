@@ -60,7 +60,7 @@ function startCall(
   const entry = records.appendEntry({
     kind: 'tool-call',
     content: { text: '' },
-    payload: { name: 'exec', args: { cmd: input.cmd } },
+    payload: { id: 'call-fixture-1', name: 'exec', args: { cmd: input.cmd } },
     at: T0,
   })
 
@@ -310,7 +310,7 @@ describe('判据 ③ · 两侧配对与半笔（纯函数）', () => {
       id,
       kind: 'tool-call',
       content: { text: '' },
-      payload: { name: 'exec', args },
+      payload: { id: 'call-fixture-2', name: 'exec', args },
       at: T0,
     }
   }

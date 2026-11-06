@@ -13,7 +13,7 @@ test('真实空正文工具调用按 payload 完整分页，保留操作名称�
   try {
     const records = store.serviceFor('source')
     const args = { cmd: '核对参数 😀\n'.repeat(6000), cwd: '/isolated/workspace' }
-    const entry = records.appendEntry({ kind: 'tool-call', content: { text: '' }, payload: { name: 'exec', args }, at: 1 })
+    const entry = records.appendEntry({ kind: 'tool-call', content: { text: '' }, payload: { id: 'call-fixture-1', name: 'exec', args }, at: 1 })
     const read = createMaterialReader({ records, session: 'source' })
     let restored = ''; let offset = 0; let pages = 0
     for (;;) {

@@ -619,7 +619,7 @@ describe('返修① · 辅助工具详情可查', () => {
         session: 'session-test',
         done: true,
         entries: [
-          entry(1, 'tool-call', { name: 'plan_update', args: {} }),
+          entry(1, 'tool-call', { id: 'call-plan', name: 'plan_update', args: {} }),
           entry(2, 'tool-result', { ok: true, output: { text: 'UPDATE_DETAIL_ABC' } }),
         ],
       }),
@@ -748,7 +748,7 @@ describe('返修⑤ · 看不见的进行中项不动（共享时钟也在）', 
 describe('复验 · 历史分组不重新印出辅助调用', () => {
   /** 一次成功的工具往返（`tool-call` ＋ 配对的 `tool-result`）。 */
   const pair = (id: number, name: string, ok = true): readonly Entry[] => [
-    entry(id, 'tool-call', { name, args: {} }),
+    entry(id, 'tool-call', { id: `call-${id}`, name, args: {} }),
     entry(id + 1, 'tool-result', { ok, output: { text: `${name} 回执` } }),
   ]
 

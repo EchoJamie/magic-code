@@ -141,8 +141,9 @@ function storedCalls(database: string): string[] {
   const db = readDatabase(database)
   try {
     return db.entries.filter(e => e.kind === 'tool-call').map(e => {
-      expect(JSON.parse(e.payload!)).toEqual({ name: 'exec', args: command })
-      return `entry_${e.id}`
+      const payload = JSON.parse(e.payload!)
+      expect(payload).toEqual({ id: expect.any(String), name: 'exec', args: command })
+      return payload.id
     })
   } finally { db.close() }
 }
@@ -176,8 +177,9 @@ for (const protocol of protocols) test(`真装配 ${protocol}：exec 执行、�
     expect(endpoint.requests).toHaveLength(2)
     const [first, second] = endpoint.requests as [WireRequest, WireRequest]
     expect(historyOf(first)).toEqual([{ role: 'user', text: prompt }])
-    // 应用按记录条目生成稳定配对键；供应商本次返回的 ID 不作为历史 ID。
+    // 落盘及下一次请求保留供应商原始调用 ID。
     const pair = storedCalls(assembly.paths.database)[0]!
+    expect(pair).toBe(callId(protocol))
     const completed = [{ role: 'user', text: prompt }, { call: pair, name: 'exec', args: command }, { result: pair, text: 'U126\n' }]
     expect(historyOf(second)).toEqual(completed)
     const firstHistory = conversationOf(first)

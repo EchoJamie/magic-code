@@ -17,15 +17,16 @@ export type EntryKind =
   | 'agent-message' // 协作消息引用；不冒充用户
   | 'user' // 用户输入
   | 'assistant' // 助手产出
-  | 'tool-call' // 名 + 参数
+  | 'tool-call' // 模型调用 ID + 名 + 参数
   | 'tool-result' // ok / error + 输出
   | 'summary' // 压缩摘要（阶段 3 留位）
 
 /**
- * `tool-call` 载荷——**结构对齐事件侧**（`EventDataOf['tool.call']`），为重放真源。
- * 不带 `call` 引用——条目自身即那次调用。
+ * `tool-call` 载荷——保存模型原始调用身份、名称与参数，供上下文重建。
+ * 条目编号只用于内部历史定位，不替代模型调用 ID。
  */
 export type ToolCallPayload = {
+  readonly id: string
   readonly name: string
   /** 与助手正文同源：生成本次参数的实际请求所提供的知识。 */
   readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[]
@@ -404,7 +405,7 @@ export type Entry = {
   readonly kind: EntryKind
   readonly content: Content
   /**
-   * 载荷——`tool-call` / `tool-result` 有（结构对齐事件侧、为重放真源）；
+   * 载荷——`tool-call` / `tool-result` 有（保存实际调用与结果、为重放真源）；
    * **`user` 条目自 U33 起可有**（随这次交代送出去的技能材料，见 `UserPayload`）；
    * **`assistant` 条目自 U41 起可有**（供应商要求回传的那份思考，见 `AssistantPayload`）
    * ——⚠️ **可有＝那一份核准形状**，不是「随便什么都能放」；其余 kind 一个都不带。

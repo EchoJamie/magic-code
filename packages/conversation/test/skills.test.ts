@@ -90,7 +90,7 @@ describe('装配：材料随它那一条交代进上下文', () => {
       { name: 'pdf', source: '/p', label: '', text: '正文' },
     ])
     // 不是 `user` 那一份形状的载荷——一律当没有（工具条目的载荷支也走这条）
-    expect(userPayloadOf({ name: 'exec', args: {} })).toEqual([])
+    expect(userPayloadOf({ id: 'call-exec', name: 'exec', args: {} })).toEqual([])
     expect(userPayloadOf(undefined)).toEqual([])
   })
 })

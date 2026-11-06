@@ -155,6 +155,7 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
 
         const toolCall = raw.entries.find((row) => row.kind === 'tool-call')
         expect(JSON.parse(toolCall?.payload ?? '{}')).toEqual({
+          id: 'call_1',
           name: 'exec',
           args: { cmd: 'chmod 755 . && echo hello-magic' },
         })

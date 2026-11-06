@@ -85,7 +85,7 @@ function fourEntries(blobRef: string): NewEntry[] {
     {
       kind: 'tool-call',
       content: { text: 'exec: ls -la playground' },
-      payload: {
+      payload: { id: 'call-fixture-1',
         name: 'exec',
         args: {
           cmd: 'ls -la playground',
@@ -286,7 +286,7 @@ describe('判据 1 · 落取回环', () => {
           kind: 'user',
           content: { text: '你好' },
           at,
-          payload: { name: 'exec', args: {} }, // 工具条目的载荷支，不是技能材料
+          payload: { id: 'call-exec', name: 'exec', args: {} }, // 工具条目的载荷支，不是技能材料
         }),
       ).toThrow(/user/)
 
@@ -402,7 +402,7 @@ describe('判据 1 · 落取回环', () => {
           kind: 'tool-result',
           content: { text: '' },
           at,
-          payload: { name: 'exec', args: {} }, // 载荷支错位
+          payload: { id: 'call-exec', name: 'exec', args: {} }, // 载荷支错位
         }),
       ).toThrow(/tool-result/)
 
@@ -564,7 +564,7 @@ describe('判据 1 · 落取回环', () => {
         records.appendEntry({
           kind: 'tool-call',
           content: { text: 'exec' },
-          payload: { name: 'exec', args: circular },
+          payload: { id: 'call-fixture-2', name: 'exec', args: circular },
           at: T0 + 2,
         }),
       ).toThrow(/cycl/i) // Bun 的措辞：cannot serialize cyclic structures

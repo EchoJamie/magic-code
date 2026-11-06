@@ -240,7 +240,7 @@ const REBUILT = []
   for (let round = 0; round < 6; round += 1) {
     REBUILT.push({ id: id++, kind: 'assistant', content: { text: 'round' + round }, at: 1_700_000_000_000 + id })
     for (const name of ['plan_update', 'plan_read']) {
-      REBUILT.push({ id: id++, kind: 'tool-call', payload: { name, args: {} }, content: { text: '' }, at: 1_700_000_000_000 + id })
+      REBUILT.push({ id: id++, kind: 'tool-call', payload: { id: `call-${round}-${name}`, name, args: {} }, content: { text: '' }, at: 1_700_000_000_000 + id })
       REBUILT.push({
         id: id++,
         kind: 'tool-result',

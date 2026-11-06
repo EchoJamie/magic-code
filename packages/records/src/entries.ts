@@ -57,7 +57,7 @@ export type ToolResultEntry = Entry & {
  *
  * | kind | 载荷 |
  * | --- | --- |
- * | `tool-call` | **必须有** `{ name, args }` |
+ * | `tool-call` | **必须有** `{ id, name, args }` |
  * | `tool-result` | **必须有** `{ ok, output }` |
  * | `user` | **可有**（U33 起：随这次交代送出去的技能材料；U36 起：带位置的引用；U70 起：说话人的标记 `notice`）；不带＝纯文本交代 |
  * | `assistant` | **可有**（U41 起：供应商要求回传的那份思考）——`{ reasoning, reasoningState? }` |
@@ -91,7 +91,7 @@ export function assertEntryShape(entry: NewEntry): void {
   }
   if (entry.kind === 'tool-call') {
     if (!isToolCallPayload(entry.payload)) {
-      throw new Error('tool-call 条目的载荷须为 { name, args }——它是重放真源，不可省')
+      throw new Error('tool-call 条目的载荷须为 { id, name, args }——它是重放真源，不可省')
     }
     return
   }
@@ -138,7 +138,7 @@ export function assertEntryShape(entry: NewEntry): void {
   if (entry.payload !== undefined) {
     throw new Error(
       `条目 kind=${entry.kind} 不带载荷——载荷只有工具条目、user 条目与 assistant 条目（思考）` +
-        `有（技术方案 · 记录 · 条目：tool-call＝名 + 参数 · tool-result＝ok / error + 输出 · ` +
+        `有（技术方案 · 记录 · 条目：tool-call＝模型调用 ID + 名 + 参数 · tool-result＝ok / error + 输出 · ` +
         `user＝随它送出去的技能材料 · assistant＝供应商要求回传的那份思考）`,
     )
   }
@@ -188,7 +188,7 @@ export function isToolResultEntry(entry: Entry): entry is ToolResultEntry {
 // —— 形态判据（无 `as`：靠 `unknown` 收窄，故外部数据进来也站得住）——
 
 export function isToolCallPayload(payload: unknown): payload is ToolCallPayload {
-  return isRecord(payload) && typeof payload['name'] === 'string' && isRecord(payload['args'])
+  return isRecord(payload) && typeof payload['id'] === 'string' && payload['id'].length > 0 && typeof payload['name'] === 'string' && isRecord(payload['args'])
 }
 
 export function isToolResultPayload(payload: unknown): payload is ToolResultPayload {
@@ -272,7 +272,7 @@ export function isContent(value: unknown): value is Content {
  *
  * 两条判据，缺一不可：
  * - **只许这两个键**（可以只来一个，也可以两个都在）——载荷凭空多出别的键（比如把工具条目的
- *   `{ name, args }` 错位到 `user` 头上）当场拒。这正是「kind 与载荷强对应」这道硬闸在
+ *   `{ id, name, args }` 错位到 `user` 头上）当场拒。这正是「kind 与载荷强对应」这道硬闸在
  *   `user` 这一格的形态：**放行两种形状，不是放行一切形状**。
  * - **每一项该有的都在**——缺了位置 / 标记 / 身份 / 正文，那份材料就复原不出来（或复原得
  *   不是地方），而它正是这条载荷存在的理由（重放依据）。故写死在这儿，与 `tool-result`

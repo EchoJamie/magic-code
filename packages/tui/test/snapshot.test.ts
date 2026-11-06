@@ -439,7 +439,7 @@ describe('场景 12 · 切换 / 恢复后——重建，且是收拢的', () => 
     const entries: readonly Entry[] = [
       { id: 1, kind: 'user', content: { text: '看看这个工作区里有什么' }, at: 0 },
       { id: 2, kind: 'assistant', content: { text: '我先列一下。' }, at: 1 },
-      { id: 3, kind: 'tool-call', content: { text: '' }, payload: { name: 'ls', args: { path: '.' } }, at: 2 },
+      { id: 3, kind: 'tool-call', content: { text: '' }, payload: { id: 'call-fixture-1', name: 'ls', args: { path: '.' } }, at: 2 },
       { id: 4, kind: 'tool-result', content: { text: LS_OUTPUT }, payload: { ok: true, output: { text: LS_OUTPUT } }, at: 3 },
       { id: 5, kind: 'assistant', content: { text: '是个 Bun 工作区，packages 下六个包。' }, at: 4 },
     ]
@@ -491,7 +491,7 @@ describe('规格细节（渲染层）', () => {
     app.feed([state(SESSION, [{ id: SESSION, title: '时区修正' }])])
 
     const tool = (id: number, name: string): readonly Entry[] => [
-      { id, kind: 'tool-call', content: { text: '' }, payload: { name, args: {} }, at: id },
+      { id, kind: 'tool-call', content: { text: '' }, payload: { id: 'call-fixture-2', name, args: {} }, at: id },
       { id: id + 1, kind: 'tool-result', content: { text: '成' }, payload: { ok: true, output: { text: '成' } }, at: id },
     ]
     const say = (id: number, text: string): Entry => ({ id, kind: 'assistant', content: { text }, at: id })
@@ -843,7 +843,7 @@ describe('D18 / D19 / D20（缺陷轮 VI）', () => {
     app.feed([state(SESSION, [{ id: SESSION, title: '甲' }])])
 
     const call = (id: number, name: string, args: Readonly<Record<string, unknown>>): readonly Entry[] => [
-      { id, kind: 'tool-call', content: { text: '' }, payload: { name, args }, at: id },
+      { id, kind: 'tool-call', content: { text: '' }, payload: { id: 'call-fixture-3', name, args }, at: id },
       { id: id + 1, kind: 'tool-result', content: { text: '成' }, payload: { ok: true, output: { text: '成' } }, at: id },
     ]
 

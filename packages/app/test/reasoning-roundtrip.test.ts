@@ -72,9 +72,10 @@ test('分离思考经真实记录库、工具回填和会话重建后逐字段�
     for (const request of requests.slice(1)) {
       const messages = request.messages as Record<string, unknown>[]
       const assistant = messages.find(m => m.role === 'assistant' && m.tool_calls !== undefined)
+      expect(assistant?.tool_calls).toEqual([{ id: 'call1', type: 'function', function: { name: 'read', arguments: '{}' } }])
       expect(assistant?.reasoning_content).toBe('先读文件')
       expect(assistant?.reasoning_details).toEqual([expected])
-      expect(messages.some(m => m.role === 'tool' && m.content === '文件内容')).toBe(true)
+      expect(messages.some(m => m.role === 'tool' && m.tool_call_id === 'call1' && m.content === '文件内容')).toBe(true)
       expect(request.reasoning_split).toBe(true)
     }
   } finally { store.close(); removeDir(dir) }

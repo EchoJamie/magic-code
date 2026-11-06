@@ -252,9 +252,9 @@ async function main(): Promise<void> {
         // 且要有 **>5 段**（末尾 `RECENT_GROUPS` 段不收）——故每轮两条、共 6 轮。
         ...Array.from({ length: 6 }, (_unused, at) => [
           { id: 100 + at * 5, kind: 'assistant' as const, content: { text: `看一眼第 ${at} 组。` }, at: 100 + at * 5 },
-          { id: 101 + at * 5, kind: 'tool-call' as const, content: { text: '' }, payload: { name: 'ls', args: { path: `.` } }, at: 101 + at * 5 },
+          { id: 101 + at * 5, kind: 'tool-call' as const, content: { text: '' }, payload: { id: 'call-fixture-1', name: 'ls', args: { path: `.` } }, at: 101 + at * 5 },
           { id: 102 + at * 5, kind: 'tool-result' as const, content: { text: 'a.txt' }, payload: { ok: true, output: 'a.txt', callRef: 101 + at * 5 }, at: 102 + at * 5 },
-          { id: 103 + at * 5, kind: 'tool-call' as const, content: { text: '' }, payload: { name: 'read', args: { path: 'a.txt' } }, at: 103 + at * 5 },
+          { id: 103 + at * 5, kind: 'tool-call' as const, content: { text: '' }, payload: { id: 'call-fixture-2', name: 'read', args: { path: 'a.txt' } }, at: 103 + at * 5 },
           { id: 104 + at * 5, kind: 'tool-result' as const, content: { text: '一行' }, payload: { ok: true, output: '一行', callRef: 103 + at * 5 }, at: 104 + at * 5 },
         ]).flat(),
       ] as unknown as Entry[],

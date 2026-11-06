@@ -8,7 +8,7 @@
  * | --- | --- | --- |
  * | `user` | **用户的话**（超阈值转 blob） | ——，或随这次交代送出去的技能材料（U33） |
  * | `assistant` | 正文（超阈值转 blob） | ——，或供应商要求回传的那份思考（U41：`{ reasoning, reasoningState? }`，没思考就整个键不写） |
- * | `tool-call` | 空 | `{ name, args }`——**重放真源** |
+ * | `tool-call` | 空 | `{ id, name, args }`——**重放真源** |
  * | `tool-result` | **面向模型的文本**（工具域截好的那份） | `{ ok, output }`——**记录侧形态**，与 `tool.result` 事件的 `output` 同物；读技能的那件另带交付身份（U33） |
  * | `summary` | 摘要全文（超阈值同样转 blob） | ——（阶段 3 压缩的产物，见 `./compact.ts`） |
  *
@@ -200,14 +200,14 @@ export async function appendUserEntry(
 }
 
 /**
- * 工具调用条目——`{ name, args }` 载荷。
+ * 工具调用条目——`{ id, name, args }` 载荷。
  * 与后续的结果条目**成对**：「有调用无结果」＝在途（阶段 2 恢复的判据）。
  */
 export function appendToolCallEntry(log: EntryLog, call: ToolCall, knowledge: readonly import('@magic/contracts').KnowledgeReference[] = []): RecordId {
   return log.records.appendEntry({
     kind: 'tool-call',
     content: { text: '' },
-    payload: { name: call.name, args: call.args, ...(knowledge.length === 0 ? {} : { knowledge }) },
+    payload: { id: call.id, name: call.name, args: call.args, ...(knowledge.length === 0 ? {} : { knowledge }) },
     at: log.now(),
   })
 }

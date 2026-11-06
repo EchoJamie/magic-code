@@ -107,7 +107,7 @@ function writeCrashSite(
   records.appendEntry({
     kind: 'tool-call',
     content: { text: '' },
-    payload: { name: call.name, args: call.args },
+    payload: { id: 'call-fixture-1', name: call.name, args: call.args },
     at: T0,
   })
   event('turn.start', {})

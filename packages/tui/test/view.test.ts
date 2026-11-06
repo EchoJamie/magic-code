@@ -356,7 +356,7 @@ describe('会话与重建', () => {
     const entries: readonly Entry[] = [
       { id: 1, kind: 'user', content: { text: '看看有什么' }, at: 0 },
       { id: 2, kind: 'assistant', content: { text: '我列一下。' }, at: 1 },
-      { id: 3, kind: 'tool-call', content: { text: '' }, payload: { name: 'ls', args: { path: '.' } }, at: 2 },
+      { id: 3, kind: 'tool-call', content: { text: '' }, payload: { id: 'call-fixture-1', name: 'ls', args: { path: '.' } }, at: 2 },
       { id: 4, kind: 'tool-result', content: { text: 'a.txt\nb.txt' }, payload: { ok: true, output: { text: 'a.txt\nb.txt' } }, at: 3 },
       { id: 5, kind: 'assistant', content: { text: '两个文件。' }, at: 4 },
     ]
@@ -373,7 +373,7 @@ describe('会话与重建', () => {
     // 故重建这一路读的就是产生处写下的那一位——两路同判不靠再对一遍文案
     const entries: readonly Entry[] = [
       { id: 1, kind: 'assistant', content: { text: '我先写。' }, at: 0 },
-      { id: 2, kind: 'tool-call', content: { text: '' }, payload: { name: 'write', args: { path: 'src/a' } }, at: 1 },
+      { id: 2, kind: 'tool-call', content: { text: '' }, payload: { id: 'call-fixture-2', name: 'write', args: { path: 'src/a' } }, at: 1 },
       {
         id: 3,
         kind: 'tool-result',
@@ -381,7 +381,7 @@ describe('会话与重建', () => {
         payload: { ok: false, notExecuted: true, output: { text: '扣住了 · 换个说法也行' } },
         at: 2,
       },
-      { id: 4, kind: 'tool-call', content: { text: '' }, payload: { name: 'exec', args: { cmd: 'run.sh' } }, at: 3 },
+      { id: 4, kind: 'tool-call', content: { text: '' }, payload: { id: 'call-fixture-3', name: 'exec', args: { cmd: 'run.sh' } }, at: 3 },
       {
         id: 5,
         kind: 'tool-result',

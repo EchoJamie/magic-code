@@ -34,7 +34,7 @@ describe('② 幂等的那笔——静默重放（首站不可达：没有声明
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { name: 'exec', args: { cmd: 'ls' } },
+      payload: { id: 'call-fixture-1', name: 'exec', args: { cmd: 'ls' } },
       at: T0,
     })
     stage.records.appendEvent({
@@ -76,7 +76,7 @@ describe('② 幂等的那笔——静默重放（首站不可达：没有声明
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { name: 'exec', args: { cmd: 'ls' } },
+      payload: { id: 'call-fixture-2', name: 'exec', args: { cmd: 'ls' } },
       at: T0,
     })
 
@@ -97,7 +97,7 @@ describe('② 非幂等的那笔——拒绝自动恢复（本单元最硬的一
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { name: 'exec', args: { cmd: 'mkdir -p src/new' } },
+      payload: { id: 'call-fixture-3', name: 'exec', args: { cmd: 'mkdir -p src/new' } },
       at: T0,
     })
 
@@ -129,7 +129,7 @@ describe('② 非幂等的那笔——拒绝自动恢复（本单元最硬的一
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { name: 'exec', args: { cmd: 'ls' } },
+      payload: { id: 'call-fixture-4', name: 'exec', args: { cmd: 'ls' } },
       at: T0,
     })
 
@@ -149,7 +149,7 @@ describe('④ 未答复裁决＝按「拒绝」落账（保守）', () => {
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { name: 'exec', args: { cmd: 'rm -rf build' } },
+      payload: { id: 'call-fixture-5', name: 'exec', args: { cmd: 'rm -rf build' } },
       at: T0,
     })
 
@@ -166,7 +166,7 @@ describe('④ 未答复裁决＝按「拒绝」落账（保守）', () => {
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { name: 'exec', args: { cmd: 'ls' } },
+      payload: { id: 'call-fixture-6', name: 'exec', args: { cmd: 'ls' } },
       at: T0,
     })
 
@@ -224,7 +224,7 @@ describe('判据之外的钉子', () => {
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { name: 'exec', args: { cmd: 'ls' } },
+      payload: { id: 'call-fixture-7', name: 'exec', args: { cmd: 'ls' } },
       at: T0,
     })
 
@@ -246,13 +246,13 @@ describe('判据之外的钉子', () => {
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { name: 'exec', args: { cmd: 'ls' } },
+      payload: { id: 'call-fixture-8', name: 'exec', args: { cmd: 'ls' } },
       at: T0,
     })
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { name: 'exec', args: { cmd: 'pwd' } },
+      payload: { id: 'call-fixture-9', name: 'exec', args: { cmd: 'pwd' } },
       at: T0,
     })
 
@@ -302,7 +302,7 @@ describe('用例入口（`createActions`）——⑤ 的递手', () => {
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { name: 'exec', args: { cmd: 'ls' } },
+      payload: { id: 'call-fixture-10', name: 'exec', args: { cmd: 'ls' } },
       at: T0,
     })
 
