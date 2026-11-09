@@ -62,6 +62,27 @@ function text(content: UserMessageContent): string {
 }
 
 describe('协作上下文 · 权威材料投影', () => {
+  test('成员历史保持原位，后续工具往返和新交代不会使旧材料重新移到末尾', async () => {
+    const f = fixture()
+    const entries = f.sessions.get(self.sessionId)!
+    entries.push({ id: 1, kind: 'user', content: { text: '原始要求' }, at: 1 })
+    f.add(message(10, [{ kind: 'text', text: '只到达一次的成员报告' }]), 2, 2)
+    entries.push({ id: 3, kind: 'assistant', content: { text: '已处理成员报告' }, at: 3 })
+    const first = await f.assemble()
+    expect(first.map(m => m.role)).toEqual(['system', 'user', 'user', 'assistant'])
+    expect(first[2]?.role === 'user' && text(first[2].content)).toContain('只到达一次的成员报告')
+    entries.push(
+      { id: 4, kind: 'user', content: { text: '后续明确交代' }, at: 4 },
+      { id: 5, kind: 'assistant', content: { text: '' }, at: 5 },
+      { id: 6, kind: 'tool-call', content: { text: '' }, payload: { id: 'call-next', name: 'read', args: { path: 'note.md' } }, at: 6 },
+      { id: 7, kind: 'tool-result', content: { text: '真实读取结果' }, payload: { ok: true, output: { text: '真实读取结果' } }, at: 7 },
+    )
+    const next = await f.assemble()
+    expect(next.slice(0, first.length)).toEqual([...first])
+    expect(next.at(-1)).toMatchObject({ role: 'tool', callId: 'call-next', output: '真实读取结果' })
+    expect(JSON.stringify(next).match(/只到达一次的成员报告/g)).toHaveLength(1)
+  })
+
   test('授权后按有序正文读取 entry/blob，用户 refs、技能、图片和来源都保留', async () => {
     const f = fixture()
     const bytes = new Uint8Array([137, 80, 78, 71, 5, 6])
@@ -138,11 +159,13 @@ describe('协作上下文 · 权威材料投影', () => {
     f.sessions.get(self.sessionId)!.push({ id: 3, kind: 'tool-call', content: { text: '' }, payload: { id: 'call-local', name: 'exec', args: { cmd: 'local' } }, at: 1 })
     f.add(message(42, [{ kind: 'text', text: '两条工具记录之间的协作消息' }]), 4)
     f.sessions.get(self.sessionId)!.push({ id: 5, kind: 'tool-result', content: { text: '结果' }, payload: { ok: true, output: { text: '结果' } }, at: 1 })
+    f.sessions.get(self.sessionId)!.push({ id: 6, kind: 'user', content: { text: '之后的新交代' }, at: 2 })
     const assembled = await f.assemble()
-    expect(assembled.map(m => m.role)).toEqual(['system', 'assistant', 'tool', 'user', 'user'])
+    expect(assembled.map(m => m.role)).toEqual(['system', 'assistant', 'tool', 'user', 'user', 'user'])
     expect(assembled[1]).toMatchObject({ toolCalls: [{ id: 'call-local', name: 'exec', args: { cmd: 'local' } }] })
     expect(assembled[2]).toMatchObject({ callId: 'call-local', output: '结果' })
     expect(JSON.stringify(assembled)).not.toContain('must-not-replay')
+    expect(assembled.at(-1)).toEqual({ role: 'user', content: '之后的新交代' })
     expect(f.included).toEqual([[41, 42]])
   })
 })

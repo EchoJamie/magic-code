@@ -7,6 +7,45 @@ import { createCompactController } from '../src/run/compact.ts'
 
 const textOf = (request: { messages: unknown }) => JSON.stringify(request.messages)
 
+test('空正文不要求额外读取，有正文的来源仍完整读取后才提交覆盖', async () => {
+  const f = notesFixture({ material: ['保留实际用户要求', '', '后续交代'], turn(request) {
+    const turn = continuationTurn(request)
+    return { ...turn, toolCalls: turn.toolCalls?.filter(call => call.name !== 'history_read' || call.args?.entry !== 2) }
+  } })
+  try {
+    expect(await f.compact()).toMatchObject({ state: 'completed', notesSaved: true })
+    expect(f.records.coverage.read().coveredThrough).toBe(2)
+    expect(await readFile(join(f.notes.directory, 'MEMORY.md'), 'utf8')).toContain('保留实际用户要求')
+  } finally { await f.close() }
+})
+
+test('部分来源保存后的回执指出未读范围，模型可读完再保存而不丢已存笔记', async () => {
+  const original = '原始交代：全部要求都要保留，不能只读开头'
+  const f = notesFixture({ material: [original, '已检查范围仍需区分', '继续工作'], turn(request) {
+    const results = request.messages.filter(message => message.role === 'tool')
+    const saved = results.filter(message => message.name === 'write' && message.ok)
+    if (saved.length > 1) return { text: '接续材料已完整保存' }
+    if (saved.length === 1) {
+      if (!saved[0]!.output.includes('尚未读取')) return { text: '保存后结束' }
+      const system = request.messages[0]!
+      const directory = /只维护自身笔记 (.+)，通常/.exec(String(system.role === 'system' ? system.content : ''))![1]!
+      const rest = results.some(message => message.name === 'history_read' && JSON.parse(message.output).source.offset === 3)
+      return rest ? { toolCalls: [{ name: 'write', args: { path: join(directory, 'MEMORY.md'), content: original + '\n已检查范围仍需区分' } }] }
+        : { toolCalls: [{ name: 'history_read', args: { entry: 1, offset: 3 } }, { name: 'read', args: { path: join(directory, 'MEMORY.md') } }] }
+    }
+    const turn = continuationTurn(request)
+    return { ...turn, toolCalls: turn.toolCalls?.map(call => call.name === 'history_read' && call.args?.entry === 1
+      ? { ...call, args: { ...call.args, limit: 3 } } : call) }
+  } })
+  try {
+    expect(await f.compact()).toMatchObject({ state: 'completed', notesSaved: true })
+    expect(f.records.coverage.read().coveredThrough).toBe(2)
+    expect(await readFile(join(f.notes.directory, 'MEMORY.md'), 'utf8')).toContain(original)
+    const feedback = f.requests.flatMap(request => request.messages).filter(message => message.role === 'tool' && message.name === 'write')
+    expect(feedback.some(message => message.role === 'tool' && message.ok && message.output.includes('offset=3'))).toBe(true)
+  } finally { await f.close() }
+})
+
 test('最终笔记 I/O 返回前的新输入使旧候选作废，原请求处理输入后再提交', async () => {
   const f = notesFixture()
   const snapshot = f.notes.snapshot.bind(f.notes)

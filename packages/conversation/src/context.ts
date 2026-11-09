@@ -78,11 +78,39 @@ export async function assembleContext(
 
   const users: RecordId[] = []
 
+  // 按记录位置展开成员材料；工具往返作为整体处理，穿插材料在该整体之后进入。
+  const projected: MessageId[] = []
+  const collaboration = input.records.collaboration
+  const agent = collaboration.agentForSession(input.session)
+  if (agent === undefined && all.some(entry => entry.kind === 'agent-message')) throw new Error(`协作条目没有所属 Agent：${input.session}`)
+  const positions = new Map<MessageId, number>()
+  if (agent !== undefined) {
+    for (const entry of all) if (entry.kind === 'agent-message' && !positions.has(messageIdOf(entry))) positions.set(messageIdOf(entry), entry.id)
+    for (const item of collaboration.inbox(agent.agentId)) {
+      if (item.state === 'consumed' && item.includedAt === undefined && !positions.has(item.messageId)) positions.set(item.messageId, item.entryId ?? Infinity)
+    }
+  }
+  const materials = [...positions].sort((a, b) => a[1] - b[1])
+  let nextMaterial = 0
+  const appendMaterialsThrough = async (through: number) => {
+    if (agent === undefined) return
+    while (nextMaterial < materials.length && materials[nextMaterial]![1] <= through) {
+      const [id] = materials[nextMaterial++]!
+      const message = collaboration.readMessage(agent.agentId, id)
+      if (message === undefined) throw new Error(`协作消息 ${id} 不存在或无权读取`)
+      if (message.withdrawn) continue
+      const content = await collaborationBodyOf(message, agent.agentId, input.records, new Set(), { knowledge: input.knowledge, provided })
+      messages.push({ role: 'user', content })
+      projected.push(id)
+    }
+  }
+
   const entries = all.filter(entry => entry.kind !== 'agent-message')
   let index = 0
   while (index < entries.length) {
     const entry = entries[index]
     if (entry === undefined) break
+    await appendMaterialsThrough(entry.id - 1)
 
     if (entry.kind === 'user') {
       // **材料随用户消息一起摆，且**在原位**（U36）——每一处引用在它被说出来的那个位置
@@ -169,27 +197,7 @@ export async function assembleContext(
     index += 1
   }
 
-  // 协作材料放在已完成的工具配对之后；压缩只能裁掉已经带入过的收件材料。
-  const projected: MessageId[] = []
-  const collaboration = input.records.collaboration
-  const agent = collaboration.agentForSession(input.session)
-  if (agent === undefined && all.some(entry => entry.kind === 'agent-message')) throw new Error(`协作条目没有所属 Agent：${input.session}`)
-  if (agent !== undefined) {
-    const pending = collaboration.inbox(agent.agentId)
-      .filter(item => item.state === 'consumed' && item.includedAt === undefined)
-    // 覆盖外仍未带入的收件与近段按真实记录位置合并，不以消息身份代替入队顺序。
-    const positions = new Map<MessageId, number>()
-    for (const entry of all) if (entry.kind === 'agent-message' && !positions.has(messageIdOf(entry))) positions.set(messageIdOf(entry), entry.id)
-    for (const item of pending) if (!positions.has(item.messageId)) positions.set(item.messageId, item.entryId ?? Infinity)
-    for (const [id] of [...positions].sort((a, b) => a[1] - b[1])) {
-      const message = collaboration.readMessage(agent.agentId, id)
-      if (message === undefined) throw new Error(`协作消息 ${id} 不存在或无权读取`)
-      if (message.withdrawn) continue
-      const content = await collaborationBodyOf(message, agent.agentId, input.records, new Set(), { knowledge: input.knowledge, provided })
-      messages.push({ role: 'user', content })
-      projected.push(id)
-    }
-  }
+  await appendMaterialsThrough(Infinity)
   input.onIncluded?.(projected)
   input.onUserEntries?.(users)
   input.onKnowledge?.([...supplied.values()])

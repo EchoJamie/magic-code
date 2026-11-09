@@ -34,7 +34,7 @@ export async function prepareContinuation(deps: PreparationDeps, entries: readon
   const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length
   type Source = { entry: Entry; material: Awaited<ReturnType<typeof materialTextOf>>; offset: number; end: number; provided: number; read: boolean }
   const page = (source: Source, start = source.offset, end = source.end) => ({
-    source: { session: deps.session, entry: source.entry.id, offset: start }, speaker: source.material.speaker, kind: source.entry.kind,
+    source: { session: deps.session, entry: source.entry.id, offset: start }, speaker: source.material.speaker, kind: source.entry.kind, recordedAt: new Date(source.entry.at).toISOString(),
     text: source.material.text.slice(start, end), total: source.material.text.length, complete: end === source.material.text.length,
     ...(end < source.end ? { next: end } : {}), segmentEnd: source.end,
   })
@@ -47,13 +47,15 @@ export async function prepareContinuation(deps: PreparationDeps, entries: readon
     const tools = deps.tools(notes)
     const specs: ToolSpec[] = [
       ...tools.definitions().filter(tool => NOTE_TOOLS.has(tool.name)),
-      { name: 'plan_read', summary: '读取本会话独立计划；本次辅助调用不可修改计划', parameters: { type: 'object', properties: {}, additionalProperties: false }, danger: { level: 'light' } },
-      { name: 'history_read', summary: '按 entry/offset/limit 读取本次冻结材料的指定范围；只返回真实原文', parameters: { type: 'object', properties: { entry: { type: 'integer' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1 } }, required: ['entry'], additionalProperties: false }, danger: { level: 'light' } },
+      { name: 'plan_read', summary: '读取本会话独立计划；计划由普通工作轮次独立维护', parameters: { type: 'object', properties: {}, additionalProperties: false }, danger: { level: 'light' } },
+      { name: 'history_read', summary: '读取本批来源原文；只传 entry 即读取该记录的本批完整范围。返回 next 时须从该位置继续，不能以内容重复为由省略未读部分', parameters: { type: 'object', properties: { entry: { type: 'integer' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1 } }, required: ['entry'], additionalProperties: false }, danger: { level: 'light' } },
     ]
-    const instruction = `这是当前模型的独立接续准备，不是业务轮次。只维护自身笔记 ${notes.directory}，通常从 MEMORY.md 读取，有主题时沿链接读取。使用 read/ls 实际取回已有笔记，并用 plan_read 取得独立计划；不得修改计划或执行业务。\n` +
+    const instruction = `这是当前模型的独立接续准备，不是业务轮次。只维护自身笔记 ${notes.directory}，通常从 MEMORY.md 读取，有主题时沿链接读取。使用 read/ls 实际取回已有笔记，并用 plan_read 了解当前计划。\n` +
       '用 history_read 按下列位置读取本批全部真实来源；本批之外不可读取，后续材料由宿主继续提供。可在一次响应中调用多个读取工具。\n' +
-      '根据本批及当前笔记，保留仍有效要求、最新纠正、事实/假设、决定、全部未决点、已做与未验范围和继续入口；保留成员说话人及证据，不提升为用户授权。后批先读取已经更新的笔记，保留前批认识。全部来源读完后用 write/edit 保存本批接续材料；保存失败不得声称完成。准备完本批后直接结束，不填写修订号或整理位置。\n' +
-      '工具正文有界，节选按实际 next 继续；来源链接可用 [说明](会话#记录)。' + (focus ? `\n本次重点：${focus}；不能因此丢失其他有效要求或改变授权。` : '')
+      '笔记供后续继续工作：保留当前目标、有效要求、决定与必要理由、全部未决点、已做及未验范围、继续入口和必要来源。沿用已有准确内容，只补充遗漏、修正有依据的变化；后批保留前批认识，已有内容无需改变时可原样保存。只写任务结论与必要依据，不写本次整理报告、读写沿革、工具调用流水或旧笔记快照；重复事实合并。计划通过 plan_read 单独取得，笔记只留计划背后的理由和条件，不复制整份计划。\n' +
+      '用户要求以原始交代和明确纠正为准。仅在来源明确反驳旧笔记时纠正；本批没有重述某条旧认识不构成反证。助手或成员提出的做法、推测与旧计划保留其来源和性质，未经用户确认不得变成用户要求、授权或额外确认条件。只记录材料中实际未解决的问题，不为补齐栏目发明待办。按原文保留事实的对象、时间用途、条件及确定程度；日期或数字相同不表示同一件事，仅在明确纠正同一对象时替换旧值，证据不足保留原义，不补造解释。\n' +
+      '本次准备的工具范围、只读计划、分批步骤和整理重点只约束这次辅助调用，不写入工作笔记，也不成为后续工作的限制。业务仍按用户原有目标、授权和最新交代继续，计划在普通工作中独立更新。\n' +
+      `全部来源读完后用 write/edit 保存接续材料；保存失败不得声称完成。准备完本批后直接结束。工具正文有界，节选按实际 next 继续；必要来源写成 Markdown 链接，地址由 history_read 返回的 source.session 与 source.entry 组成，例如 [原始交代](${deps.session}#${entries[0]!.id})，不要把“会话”或“记录”写进地址。` + (focus ? `\n本次整理关注：${focus}；保留其他有效要求与原有授权，不把关注指令本身存成长期要求。` : '')
     const location = (source: Source) => `会话 ${deps.session}，记录 ${source.entry.id}（${source.material.speaker}/${source.entry.kind}），字符 [${source.offset},${source.end})，该记录共 ${source.material.text.length} 字符。`
     // 正文至少经历读取结果及保存参数两次，另留一次笔记接续的空间；实际往返仍逐次核容量。
     const available = Math.max(0, (budget - reserve - bytes({ messages: instruction, tools: specs }) * inputRatio) / 3)
@@ -64,7 +66,7 @@ export async function prepareContinuation(deps: PreparationDeps, entries: readon
       const entry = entries[nextIndex]!
       let material = materials.get(entry.id)
       if (!material) { material = await materialTextOf(entry, deps.records, deps.session); materials.set(entry.id, material) }
-      const source: Source = { entry, material, offset: nextOffset, end: material.text.length, provided: nextOffset, read: false }
+      const source: Source = { entry, material, offset: nextOffset, end: material.text.length, provided: nextOffset, read: material.text.length === 0 }
       const estimate = (end: number) => { source.end = end; return bytes([location(source), page(source)]) * inputRatio }
       let end = material.text.length
       if (cost + estimate(end) > allowance) {
@@ -91,6 +93,11 @@ export async function prepareContinuation(deps: PreparationDeps, entries: readon
     const record = (message: ModelMessage) => deps.records.appendEntry({ kind: 'continuation', content: { text: '' }, payload: { preparation, message }, at: deps.now() })
     const complete = () => sources.every(source => source.read && source.provided >= source.end)
     let readNotes = false, readPlan = false, savedAfterRead = false, started = false
+    const pending = () => [
+      ...sources.filter(source => !source.read || source.provided < source.end).map(source => `记录 ${source.entry.id} 字符 [${source.provided},${source.end}) 尚未读取，用 history_read(entry=${source.entry.id}, offset=${source.provided}) 继续`),
+      ...(!readNotes ? ['尚未读取已有笔记（空目录可用 ls 确认）'] : []),
+      ...(!readPlan ? ['尚未用 plan_read 读取独立计划'] : []),
+    ]
     try {
       for (;;) {
         await unchanged()
@@ -105,7 +112,7 @@ export async function prepareContinuation(deps: PreparationDeps, entries: readon
         if (failure || !result.complete || (result.finishReason !== 'stop' && result.finishReason !== 'tool-calls')) throw new PreparationFailure(failure?.tier === 'context-limit' || result.finishReason === 'length' ? 'capacity' : 'incomplete', failure?.message ?? '接续准备没有完整结束')
         if (result.usage?.inputTokens !== undefined) inputRatio = Math.max(inputRatio, result.usage.inputTokens / requestBytes)
         if (!calls.length) {
-          if (!complete() || !readNotes || !readPlan || !savedAfterRead) throw new PreparationFailure('incomplete', '本批来源尚未完整读取或笔记尚未保存，原覆盖保留')
+          if (!complete() || !readNotes || !readPlan || !savedAfterRead) throw new PreparationFailure('incomplete', [...pending(), ...(!savedAfterRead ? ['尚未在本批读取完成后保存笔记'] : []), '原覆盖保留'].join('；'))
           break
         }
         let interrupted: unknown
@@ -134,6 +141,8 @@ export async function prepareContinuation(deps: PreparationDeps, entries: readon
               if (notes.saved() > before) {
                 deps.saved(); expected = { ...expected, ...notes.writes() }
                 savedAfterRead ||= ok && complete() && readNotes && readPlan
+                const remaining = pending()
+                if (remaining.length) output += `\n笔记已保存，本批接续准备尚未完成：${remaining.join('；')}。读取完成后再次保存接续材料。`
               }
               if (ok && (call.name === 'read' || (call.name === 'ls' && Object.keys(expected).length === 0))) readNotes = true
             } else throw new Error(`接续准备不允许工具 ${call.name}`)
