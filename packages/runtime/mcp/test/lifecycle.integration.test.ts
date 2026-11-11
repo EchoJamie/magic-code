@@ -15,6 +15,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createBunProcessPort } from '@magic/execution'
 import { createHttpConnection, createStdioConnection } from '../src/index.ts'
 
 const HTTP_SERVER = join(import.meta.dir, 'support', 'fake-http-server.ts')
@@ -117,6 +118,7 @@ describe('连续两次重连', () => {
     const dir = tempDir()
     const log = join(dir, 'calls.jsonl')
     const connection = createStdioConnection({
+    process: createBunProcessPort(),
       server: 'x',
       config: {
         command: process.execPath,

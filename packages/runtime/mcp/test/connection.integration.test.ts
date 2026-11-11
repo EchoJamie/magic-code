@@ -13,6 +13,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { McpConnection, McpServerConfig } from '@magic/contracts'
+import { createBunProcessPort } from '@magic/execution'
 import { createStdioConnection } from '../src/stdio.ts'
 
 const SERVER = join(import.meta.dir, 'support', 'fake-server.ts')
@@ -48,6 +49,7 @@ async function connect(
   const log = join(dir, 'calls.jsonl')
 
   const connection = createStdioConnection({
+    process: createBunProcessPort(),
     server: options.server ?? 'fake',
     config: {
       command: process.execPath, // 就是 bun 自己——夹具不必依赖 PATH 上有什么
@@ -203,6 +205,7 @@ describe('失败的三例（各有确定结果）', () => {
 describe('起手与释放', () => {
   test('起不来＝不可用 ＋ 缘由（不抛、不拖垮别的）', async () => {
     const connection = createStdioConnection({
+    process: createBunProcessPort(),
       server: 'missing',
       config: { command: join(tempDir(), '没有这个可执行文件') },
       connectTimeoutMs: 3_000,
@@ -418,6 +421,7 @@ describe('失败路径的哨兵', () => {
   test('对端答的内容不合规——读数与缘由**不带对端原文**，只留一句人话', async () => {
     const sentinel = 'U39_DIAGNOSTIC_FAKE_SECRET'
     const connection = createStdioConnection({
+    process: createBunProcessPort(),
       server: 'raw',
       config: {
         command: process.execPath,
@@ -485,6 +489,7 @@ describe('显式重连', () => {
 
   test('没连上过的那条也能重连（那一趟就是一次起手）', async () => {
     const connection = createStdioConnection({
+    process: createBunProcessPort(),
       server: 'missing',
       config: { command: join(tempDir(), '没有这个可执行文件') },
       connectTimeoutMs: 3_000,

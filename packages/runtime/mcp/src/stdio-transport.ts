@@ -1,4 +1,4 @@
-import { spawnOwned } from '@magic/execution'
+import type { ProcessHandle, ProcessPort } from '@magic/contracts'
 /**
  * 自有 stdio 传输 —— **归属在启动那一刻就定死**（U38 返工 A 补正）。
  *
@@ -57,6 +57,8 @@ export type OwnedStdioOptions = {
   readonly cwd?: string
   readonly signal?: AbortSignal
 
+  /** 起了进程的端口——由装配注入（MCP 适配器不认识具体运行时）。 */
+  readonly process: ProcessPort
   readonly command: string
   readonly args?: readonly string[]
   /** 追加给子进程的环境（密钥从这儿进）——在官方默认环境之上。 */
@@ -86,7 +88,7 @@ export interface OwnedStdioTransport extends OwnedTransport {
 
 /** 造一条自有 stdio 传输——**造了不等于起了**（`start()` 才拉进程）。 */
 export function createOwnedStdioTransport(options: OwnedStdioOptions): OwnedStdioTransport {
-  let child: Bun.Subprocess<'pipe', 'pipe', 'ignore'> | undefined
+  let child: ProcessHandle | undefined
   let pgid: number | undefined
   let closing: Promise<string | undefined> | undefined
   let closed = false
@@ -112,7 +114,7 @@ export function createOwnedStdioTransport(options: OwnedStdioOptions): OwnedStdi
     },
     async send(message: JSONRPCMessage): Promise<void> {
       const sink = child?.stdin
-      if (sink === undefined) throw new Error('这条连接已经关了——没有可写的 stdin')
+      if (sink === undefined || sink === null) throw new Error('这条连接已经关了——没有可写的 stdin')
 
       sink.write(serializeMessage(message))
       await sink.flush()
@@ -134,9 +136,9 @@ export function createOwnedStdioTransport(options: OwnedStdioOptions): OwnedStdi
       const value = environment[key]
       return value === undefined || value.startsWith('()') ? [] : [[key, value]]
     }))
-    const { process: spawned } = await spawnOwned([options.command, ...(options.args ?? [])], {
+    const spawned = await options.process.spawn([options.command, ...(options.args ?? [])], {
       cwd: options.cwd, env: { ...inherited, ...options.env }, signal, ledger: options.ledger,
-      stdout: 'pipe', stderr: 'ignore', keepStdin: true, kind: 'mcp', what: `mcp:${options.command}`,
+      keepStdin: true, kind: 'mcp', what: `mcp:${options.command}`,
     })
     child = spawned
     pgid = spawned.pid
@@ -144,8 +146,10 @@ export function createOwnedStdioTransport(options: OwnedStdioOptions): OwnedStdi
     void watchExit(spawned)
   }
 
-  async function pump(spawned: Bun.Subprocess<'pipe', 'pipe', 'ignore'>): Promise<void> {
-    const reader = spawned.stdout.getReader()
+  async function pump(spawned: ProcessHandle): Promise<void> {
+    const output = spawned.stdout
+    if (output === null) throw new Error('stdio 传输没有 stdout')
+    const reader = output.getReader()
 
     try {
       for (;;) {
@@ -170,7 +174,7 @@ export function createOwnedStdioTransport(options: OwnedStdioOptions): OwnedStdi
    * 这正是补上的那一格：服务器**在调用中途**起了个普通后代、随即自己崩掉时，
    * 组员仍在组里（`-pgid` 照样达得到），不需要任何「之前数过什么」。
    */
-  async function watchExit(spawned: Bun.Subprocess<'pipe', 'pipe', 'ignore'>): Promise<void> {
+  async function watchExit(spawned: ProcessHandle): Promise<void> {
     await spawned.exited
 
     // 组长那一支已经没了：这里给孩子那一侧留个明白账（`send` 之后会按「已关」拒）

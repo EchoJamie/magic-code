@@ -29,6 +29,8 @@ export type StdioConnectionOptions = {
   readonly environment?: Readonly<Record<string, string>>
   readonly cwd?: string
   readonly signal?: AbortSignal
+  /** 起进程的端口——由装配注入（见 `@magic/contracts` 的 `ProcessPort`）。 */
+  readonly process: import('@magic/contracts').ProcessPort
 
   readonly server: string
   readonly config: McpStdioConfig
@@ -56,6 +58,7 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
       // 自己 spawn、自成进程组：归属在启动那一刻定死，收尾按组收（见 `stdio-transport.ts`）
       open: (): OwnedTransport =>
         createOwnedStdioTransport({
+          process: options.process,
           command: config.command,
           environment: options.environment, cwd: options.cwd, signal: options.signal,
           ...(config.args === undefined ? {} : { args: [...config.args] }),

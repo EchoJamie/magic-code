@@ -69,6 +69,8 @@ export type McpServersOptions = {
   readonly environment?: Readonly<Record<string, string>>
   readonly cwd?: string
   readonly signal?: AbortSignal
+  /** 起进程的端口——stdio 传输用它；不传则 stdio 服务器起不来（HTTP 不受影响）。 */
+  readonly process?: import('@magic/contracts').ProcessPort
 
   /** 配置里的那一段（`mcp.servers`）——**一个条目一条连接**；空＝一条都没有。 */
   readonly servers: Readonly<Record<string, McpServerConfig>>
@@ -108,6 +110,7 @@ export function createMcpServers(options: McpServersOptions): McpServers {
       : createStdioConnection({
           ...shared,
           config,
+          process: options.process ?? (() => { throw new Error('stdio MCP 服务器需要 ProcessPort') })(),
           environment: options.environment, cwd: options.cwd, signal: options.signal,
           ...(options.ledger === undefined ? {} : { ledger: options.ledger }),
         })

@@ -109,8 +109,10 @@
       "version": "0.0.0",
       "dependencies": {
         "@magic/contracts": "workspace:*",
-        "@magic/execution": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.30.0",
+      },
+      "devDependencies": {
+        "@magic/execution": "workspace:*",
       },
     },
     "packages/runtime/model": {

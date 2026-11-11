@@ -44,6 +44,7 @@ import type { ContextPolicy, SessionInstance } from '@magic/conversation'
 import { createConversationService, createPlanReader } from '@magic/conversation'
 import {
   createBackgroundRuns,
+  createBunProcessPort,
   createMaterials,
   createProcessLedger,
   createProjectRules,
@@ -255,6 +256,7 @@ export function assemble(options: AssembleOptions): Assembly {
 
   const mcp: McpServers = createMcpServers({
     environment, cwd: workspace.defaultRoot(), signal, fetch: network.fetch,
+    process: createBunProcessPort(),
     servers: savedAgent?.purpose === 'consultation' ? {} : loaded.config.mcp?.servers ?? {},
     ledger,
     ...(options.mcpTimeouts?.connectTimeoutMs === undefined

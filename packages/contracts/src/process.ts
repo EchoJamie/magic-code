@@ -82,6 +82,36 @@ export type OwnedProcess = {
  * ⚠️ **`list` 是活的**（顺手把已经没了的摘掉）：账随进程生死走，不是一本越记越长的册子
  * ——一场会话里跑几百条命令是常事，账却只该有「此刻还站着的那几个」。
  */
+/**
+ * 起一个自有进程的端口——MCP stdio、沙箱命令都经它，不直接碰运行时专有的 `Bun.spawn`。
+ *
+ * 只收「起手 ＋ 两根管子 ＋ 退出」四件；收尾的进程组语义由实现保住（见 `ProcessLedger`）。
+ */
+export type ProcessHandle = {
+  readonly pid: number
+  readonly stdin: {
+    write(data: string | Uint8Array): unknown
+    flush(): number | Promise<number>
+    end(): void
+  } | null
+  readonly stdout: ReadableStream<Uint8Array> | null
+  readonly exited: Promise<number>
+}
+
+export type ProcessSpawnOptions = {
+  readonly cwd?: string
+  readonly env?: Readonly<Record<string, string>>
+  readonly signal?: AbortSignal
+  readonly ledger?: ProcessLedger
+  readonly keepStdin?: boolean
+  readonly kind: 'exec' | 'background' | 'mcp'
+  readonly what: string
+}
+
+export type ProcessPort = {
+  spawn(argv: readonly string[], options: ProcessSpawnOptions): Promise<ProcessHandle>
+}
+
 export interface ProcessLedger {
   /** 启动前占位；关闭准入后拒绝新启动，完成登记或回收后释放占位。 */
   beginSpawn?(): () => void

@@ -22,6 +22,7 @@
 
 export { createSandbox } from './sandbox.ts'
 export type { SandboxOptions } from './sandbox.ts'
+export { createBunProcessPort } from './process-port.ts'
 
 /**
  * **后台运行登记**（U70）——`exec` 的后台那一形的实现（起 · 说一声 · 按 id 停）。
