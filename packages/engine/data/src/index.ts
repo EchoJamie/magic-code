@@ -29,6 +29,8 @@ export type { RecordsStore, RecordsStoreOptions } from './store.ts'
 export type { AttentionStore } from './attention.ts'
 export { createRunRecords } from './runs.ts'
 export type { RunRecord, RunRecords, RunJournalEntry, RunState } from './runs.ts'
+export { createLedgerRecords } from './ledger.ts'
+export type { Ledger, LedgerEntry, LedgerId, LedgerMember, LedgerRecords } from './ledger.ts'
 
 export { isToolCallEntry, isToolResultEntry } from './entries.ts'
 export type { ToolCallEntry, ToolResultEntry } from './entries.ts'

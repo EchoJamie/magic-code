@@ -67,6 +67,7 @@ import { scanForRecovery, type RecoveryScan } from './recovery.ts'
 import { createIdSpace } from './ids.ts'
 import { acquireDataLock, prepareDataDir } from './bootstrap.ts'
 import { createRunRecords } from './runs.ts'
+import { createLedgerRecords } from './ledger.ts'
 import {
   ENTRIES_TABLE,
   EVENTS_TABLE,
@@ -181,6 +182,8 @@ export type RecordsStore = {
   /** 注意事项与记录共库；读取不标读，确认只作用于具体事项 id。 */
   readonly attention: AttentionStore
   readonly collaboration: CollaborationRecords
+  /** 协作账本——独立记录流，成员记录引用它（见 `ledger.ts`）。 */
+  readonly ledger: import('./ledger.ts').LedgerRecords
   /** 执行状态与恢复索引——不是会话事实（见 `runs.ts` 头注）。 */
   readonly runs: import('./runs.ts').RunRecords
   serviceFor(session: SessionId): RecordsService
@@ -325,6 +328,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   const blobs = createBlobStore(blobsDir)
   const attention = createAttentionStore(db)
   const runs = createRunRecords(db)
+  const ledger = createLedgerRecords(db)
 
   return view(options.workspace, true)
 
@@ -646,6 +650,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     knowledge: createKnowledgeRecords(db, workspace),
     attention,
     collaboration,
+    ledger,
     runs,
 
     serviceFor(session: SessionId): RecordsService {
