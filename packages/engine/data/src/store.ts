@@ -65,6 +65,7 @@ import { assertEntryShape, entryOfRow, entryParamsOf, type EntryRow } from './en
 import { eventOfRow, eventParamsOf, isTransientEvent, type EventRow } from './events.ts'
 import { scanForRecovery, type RecoveryScan } from './recovery.ts'
 import { createIdSpace } from './ids.ts'
+import { acquireDataLock, prepareDataDir } from './bootstrap.ts'
 import {
   ENTRIES_TABLE,
   EVENTS_TABLE,
@@ -294,6 +295,15 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   const dataDir = assertPlainDataDir(options.dataDir)
   mkdirSync(dataDir, { recursive: true })
 
+  // 先独占，再引导旧库：同一实例不允许两个进程同时开库；旧库备份移走后才开新库。
+  const releaseLock = acquireDataLock(dataDir)
+  try {
+    prepareDataDir(dataDir)
+  } catch (error) {
+    releaseLock()
+    throw error
+  }
+
   const blobsDir = join(dataDir, BLOBS_DIR)
 
   const databasePath = join(dataDir, DATABASE_FILE)
@@ -306,7 +316,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     initInputSchema(db)
     initCollaborationSchema(db)
     initKnowledgeSchema(db)
-  } catch (error) { db.close(); throw error }
+  } catch (error) { db.close(); releaseLock(); throw error }
   mkdirSync(blobsDir, { recursive: true })
   const ids = createIdSpace(db)
   const blobs = createBlobStore(blobsDir)
@@ -676,7 +686,10 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
 
     forWorkspace: workspace => view(workspace),
     close(): void {
-      if (owner) db.close()
+      if (owner) {
+        db.close()
+        releaseLock()
+      }
     },
   }
   }
