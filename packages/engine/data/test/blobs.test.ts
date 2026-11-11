@@ -12,7 +12,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { join, sep } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
 import ts from 'typescript'
 import type { Entry } from '@magic/contracts'
 import { createRecordsStore } from '../src/index.ts'
@@ -21,8 +21,18 @@ import { removeDataDir, tempDataDir } from './tmp.ts'
 /** 工作区根（U26 起 `createRecordsStore` 必给）——本文件与归属无关，取一件固定的即可。 */
 const ROOTS = ['/work/alpha']
 
-const REPO_ROOT = join(import.meta.dir, '..', '..', '..')
+/** 从本测试目录向上找仓库根（含 packages/ 与根 package.json），不随包层级写死。 */
+const REPO_ROOT = (() => {
+  let dir = import.meta.dir
+  while (!existsSync(join(dir, 'packages')) || !existsSync(join(dir, 'package.json'))) {
+    const parent = dirname(dir)
+    if (parent === dir) throw new Error('找不到仓库根')
+    dir = parent
+  }
+  return dir
+})()
 const PACKAGES_DIR = join(REPO_ROOT, 'packages')
+const OWN_PACKAGE_DIR = relative(PACKAGES_DIR, join(import.meta.dir, '..'))
 
 /** blob 目录名——判据里独立写出（不引自实现，防实现改名后测试跟着漂）。 */
 const BLOBS_DIR = 'blobs'
@@ -152,17 +162,25 @@ describe('判据 2 · 写权唯一（全仓 `blobs/` 落点扫描）', () => {
     }
 
     expect(scanned).toBeGreaterThan(0) // 扫描面不得为空——目录改名时宁可失败，也不要静默空转
-    expect(hits.filter((hit) => !hit.startsWith(`records${sep}src${sep}`))).toEqual([])
+    expect(hits.filter((hit) => !hit.startsWith(join(OWN_PACKAGE_DIR, 'src') + sep))).toEqual([])
     expect(hits.length).toBeGreaterThan(0) // 本包必须命中——否则扫的是空气
   })
 })
 
-/** 存在的包目录名（`packages/<dir>/package.json`）。 */
+/** 存在的包目录名（packages 下任意层级、含 package.json 的相对目录）。 */
 function packageDirs(): string[] {
-  return readdirSync(PACKAGES_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && existsSync(join(PACKAGES_DIR, entry.name, 'package.json')))
-    .map((entry) => entry.name)
-    .sort()
+  const found: string[] = []
+  const walk = (relativeDir: string): void => {
+    const absolute = join(PACKAGES_DIR, relativeDir)
+    for (const entry of readdirSync(absolute, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === 'node_modules' || entry.name.startsWith('.')) continue
+      const child = relativeDir === '' ? entry.name : join(relativeDir, entry.name)
+      if (existsSync(join(PACKAGES_DIR, child, 'package.json'))) found.push(child)
+      else walk(child)
+    }
+  }
+  walk('')
+  return found.sort()
 }
 
 /**

@@ -703,7 +703,11 @@ describe('公开面', () => {
 })
 
 describe('越界判定（反向用例）', () => {
-  const probe = (specifier: string, name = '@magic/conversation', dir = 'conversation'): boolean =>
+  const probe = (
+    specifier: string,
+    name = '@magic/conversation',
+    dir = join('runtime', 'conversation'),
+  ): boolean =>
     isCrossing(
       specifier,
       join(PACKAGES_DIR, dir, 'src', 'index.ts'),
@@ -758,8 +762,8 @@ describe('越界判定（反向用例）', () => {
   })
 
   test('相对路径跨包＝越界（旧教训一：只认裸名会漏）', () => {
-    expect(probe('../../model/src/index.ts')).toBe(true)
-    expect(probe('../../app/src/index.ts')).toBe(true)
+    expect(probe('../../../runtime/model/src/index.ts')).toBe(true)
+    expect(probe('../../../app/src/index.ts')).toBe(true)
   })
 
   test('裸包名跨包＝越界——解析不到也算（未声明依赖同样是越界）', () => {

@@ -48,13 +48,6 @@
         "@xterm/headless": "^6.0.0",
       },
     },
-    "packages/config": {
-      "name": "@magic/config",
-      "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-      },
-    },
     "packages/contracts": {
       "name": "@magic/contracts",
       "version": "0.0.0",
@@ -66,14 +59,18 @@
         "@magic/contracts": "workspace:*",
       },
     },
-    "packages/conversation": {
-      "name": "@magic/conversation",
+    "packages/engine/data": {
+      "name": "@magic/records",
       "version": "0.0.0",
       "dependencies": {
         "@magic/contracts": "workspace:*",
       },
-      "devDependencies": {
-        "@magic/faux": "workspace:*",
+    },
+    "packages/engine/state": {
+      "name": "@magic/config",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
       },
     },
     "packages/execution": {
@@ -99,7 +96,24 @@
         "@modelcontextprotocol/sdk": "^1.30.0",
       },
     },
-    "packages/model": {
+    "packages/permission": {
+      "name": "@magic/permission",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+    },
+    "packages/runtime/conversation": {
+      "name": "@magic/conversation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@magic/faux": "workspace:*",
+      },
+    },
+    "packages/runtime/model": {
       "name": "@magic/model",
       "version": "0.0.0",
       "dependencies": {
@@ -113,21 +127,7 @@
         "@magic/faux": "workspace:*",
       },
     },
-    "packages/permission": {
-      "name": "@magic/permission",
-      "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-      },
-    },
-    "packages/records": {
-      "name": "@magic/records",
-      "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-      },
-    },
-    "packages/tools": {
+    "packages/runtime/tools": {
       "name": "@magic/tools",
       "version": "0.0.0",
       "dependencies": {
@@ -183,13 +183,13 @@
 
     "@magic/app": ["@magic/app@workspace:packages/app"],
 
-    "@magic/config": ["@magic/config@workspace:packages/config"],
+    "@magic/config": ["@magic/config@workspace:packages/engine/state"],
 
     "@magic/contracts": ["@magic/contracts@workspace:packages/contracts"],
 
     "@magic/control": ["@magic/control@workspace:packages/control"],
 
-    "@magic/conversation": ["@magic/conversation@workspace:packages/conversation"],
+    "@magic/conversation": ["@magic/conversation@workspace:packages/runtime/conversation"],
 
     "@magic/execution": ["@magic/execution@workspace:packages/execution"],
 
@@ -197,13 +197,13 @@
 
     "@magic/mcp": ["@magic/mcp@workspace:packages/mcp"],
 
-    "@magic/model": ["@magic/model@workspace:packages/model"],
+    "@magic/model": ["@magic/model@workspace:packages/runtime/model"],
 
     "@magic/permission": ["@magic/permission@workspace:packages/permission"],
 
-    "@magic/records": ["@magic/records@workspace:packages/records"],
+    "@magic/records": ["@magic/records@workspace:packages/engine/data"],
 
-    "@magic/tools": ["@magic/tools@workspace:packages/tools"],
+    "@magic/tools": ["@magic/tools@workspace:packages/runtime/tools"],
 
     "@magic/tui": ["@magic/tui@workspace:packages/tui"],
 
