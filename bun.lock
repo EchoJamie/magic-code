@@ -20,6 +20,7 @@
       },
       "dependencies": {
         "@magic/actions": "workspace:*",
+        "@magic/client": "workspace:*",
         "@magic/config": "workspace:*",
         "@magic/contracts": "workspace:*",
         "@magic/control": "workspace:*",
@@ -27,7 +28,6 @@
         "@magic/execution": "workspace:*",
         "@magic/mcp": "workspace:*",
         "@magic/model": "workspace:*",
-        "@magic/permission": "workspace:*",
         "@magic/records": "workspace:*",
         "@magic/tools": "workspace:*",
         "@magic/tui": "workspace:*",
@@ -36,6 +36,16 @@
       "devDependencies": {
         "@magic/faux": "workspace:*",
         "@xterm/headless": "^6.0.0",
+      },
+    },
+    "packages/client/local-capabilities": {
+      "name": "@magic/client",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@magic/execution": "workspace:*",
       },
     },
     "packages/client/shell": {
@@ -129,13 +139,6 @@
         "@magic/faux": "workspace:*",
       },
     },
-    "packages/runtime/permission": {
-      "name": "@magic/permission",
-      "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-      },
-    },
     "packages/runtime/resources": {
       "name": "@magic/execution",
       "version": "0.0.0",
@@ -185,6 +188,8 @@
 
     "@magic/app": ["@magic/app@workspace:packages/app"],
 
+    "@magic/client": ["@magic/client@workspace:packages/client/local-capabilities"],
+
     "@magic/config": ["@magic/config@workspace:packages/engine/state"],
 
     "@magic/contracts": ["@magic/contracts@workspace:packages/contracts"],
@@ -200,8 +205,6 @@
     "@magic/mcp": ["@magic/mcp@workspace:packages/runtime/mcp"],
 
     "@magic/model": ["@magic/model@workspace:packages/runtime/model"],
-
-    "@magic/permission": ["@magic/permission@workspace:packages/runtime/permission"],
 
     "@magic/records": ["@magic/records@workspace:packages/engine/data"],
 

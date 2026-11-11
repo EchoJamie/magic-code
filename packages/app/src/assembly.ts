@@ -52,9 +52,9 @@ import {
   createSkills,
   createWorkspaceService,
   imageBytesOf,
-  readClipboardImage,
   reapOwned,
 } from '@magic/execution'
+import { readClipboardImage } from '@magic/client'
 import type { McpServers } from '@magic/mcp'
 import { createMcpServers } from '@magic/mcp'
 import type { FetchLike, ModelInfoService, ModelRegistry, ModelSwitchResult } from '@magic/model'

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { EventSink, EventStamper, KernelEvent, PermissionContext, ToolCall } from '@magic/contracts'
-import { analyze, createPermissionGate } from '../src/index.ts'
+import { analyze, createPermissionGate } from '../../src/gate/index.ts'
 
 const ctx: PermissionContext = {
   roots: ['/work/proj'],

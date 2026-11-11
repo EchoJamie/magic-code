@@ -30,7 +30,7 @@ import { createConversationSession, createPlanReader } from '@magic/conversation
 import { createProjectRules, createWorkingNotes } from '@magic/execution'
 import type { ModelRegistry } from '@magic/model'
 import { createPageDistiller } from '@magic/model'
-import { createPermissionGate } from '@magic/permission'
+import { createPermissionGate } from '@magic/tools'
 import type { RecordsStore } from '@magic/records'
 import type { ToolDefinition } from '@magic/tools'
 import {

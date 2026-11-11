@@ -193,7 +193,7 @@ async function offlineSettings(): Promise<number> {
   const { loadConfig } = await import('@magic/config')
   const { terminalSettings } = await import('./run/terminal-settings.ts')
   const { runTui } = await import('@magic/tui')
-  const { writeClipboardText } = await import('@magic/execution')
+  const { writeClipboardText } = await import('@magic/client')
   const magic = localMagicHome(), loaded = loadConfig({ magic }), workspace = workspaceOf(loaded, process.cwd())
   const tui = await runTui({
     settingsOnly: true,

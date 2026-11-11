@@ -42,8 +42,8 @@ const PACKAGE_TABLE: Record<string, readonly string[]> = {
   '@magic/tools': ['@magic/contracts'],
   // MCP stdio 与 Shell 共用 execution 的登记后放行边界，协议仍由 MCP 独立实现。
   '@magic/mcp': ['@magic/contracts', '@magic/execution'],
-  '@magic/permission': ['@magic/contracts'],
   '@magic/execution': ['@magic/contracts'],
+  '@magic/client': ['@magic/contracts'],
   '@magic/control': ['@magic/contracts'],
   '@magic/tui': ['@magic/contracts'],
   '@magic/faux': ['@magic/contracts'],
@@ -57,8 +57,8 @@ const PACKAGE_TABLE: Record<string, readonly string[]> = {
     '@magic/tools',
     // MCP 适配器（U38）——装配据配置造连接、把工具交给工具域（客户端封在它后面）
     '@magic/mcp',
-    '@magic/permission',
     '@magic/execution',
+    '@magic/client',
     '@magic/control',
     '@magic/tui',
     '@magic/faux',
@@ -71,7 +71,6 @@ const DOMAIN_PACKAGES = [
   '@magic/records',
   '@magic/model',
   '@magic/tools',
-  '@magic/permission',
   '@magic/execution',
   '@magic/control',
 ]
@@ -113,6 +112,12 @@ const ALLOWED_EXTERNAL: Record<string, readonly string[]> = {
  */
 const TEST_ONLY_DEP = '@magic/faux'
 
+/** 各包测试面额外许可的**特定**依赖（仍不进生产面）。 */
+const TEST_ONLY_DEPS: Record<string, readonly string[]> = {
+  // 剪贴板测试复用执行域的认图判据（`imageBytesOf`）——只是测试取材，不是客户端依赖。
+  '@magic/client': ['@magic/execution'],
+}
+
 /** blobs 落点的唯一主人（U02 判据 2 · 仓库级不变量）——其余包不得出现 `blobs/` 字面量。 */
 const BLOB_OWNER_PACKAGE = '@magic/records'
 const BLOB_PATH = /(^|\/)blobs(\/|$)/
@@ -128,7 +133,7 @@ function faceOf(relativeToPackage: string): 'src' | 'test' | 'other' {
 /** 某包某面许可的 `@magic/*` 依赖——测试面额外许可测试替身包。 */
 function allowedMagicDepsFor(name: string, face: 'src' | 'test' | 'other'): readonly string[] {
   const base = allowedMagicDeps(name)
-  return face === 'test' ? [...base, TEST_ONLY_DEP] : base
+  return face === 'test' ? [...base, TEST_ONLY_DEP, ...(TEST_ONLY_DEPS[name] ?? [])] : base
 }
 
 /**
@@ -150,7 +155,7 @@ const FS_ALLOWED_PACKAGES = ['@magic/records', '@magic/execution']
  * `技术方案.md`·代码治理·边界纪律（扫描面＝域包）。**白名单断言不动**——它钉的是
  * 「域包里谁可以碰 fs」，与扫描面是两件事。
  */
-const NON_KERNEL_PACKAGES = [...SHELL_PACKAGES, '@magic/config', '@magic/faux']
+const NON_KERNEL_PACKAGES = [...SHELL_PACKAGES, '@magic/config', '@magic/faux', '@magic/client']
 
 /** fs 模块族——import 即触达文件系统。 */
 const FS_MODULES = [
@@ -855,7 +860,7 @@ describe('fs 触达提取（反向用例）', () => {
   })
 
   test('非内核包清单——外壳 · 装配根 · 测试层（扫描面收窄的锚）', () => {
-    expect(NON_KERNEL_PACKAGES).toEqual(['@magic/tui', '@magic/app', '@magic/config', '@magic/faux'])
+    expect(NON_KERNEL_PACKAGES).toEqual(['@magic/tui', '@magic/app', '@magic/config', '@magic/faux', '@magic/client'])
   })
 })
 

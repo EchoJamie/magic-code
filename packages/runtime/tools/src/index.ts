@@ -90,3 +90,9 @@ export { defineBackgroundTools } from './background-tools.ts'
 
 export { defineSourceTool } from './memory-tools.ts'
 export { defineKnowledgeTools, KNOWLEDGE_TOOL_NAMES } from './knowledge-tools.ts'
+
+/**
+ * **exec-gate**（0.2.0 · 原 `@magic/permission`）——invoke 外层的机械分析与默认放行。
+ * 默认放行 ＋ 禁止清单；不在 0.2.0 启用敏感命令确认。
+ */
+export * from './gate/index.ts'
