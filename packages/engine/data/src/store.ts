@@ -301,13 +301,13 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   const dataDir = assertPlainDataDir(options.dataDir)
   mkdirSync(dataDir, { recursive: true })
 
-  // 先独占，再引导旧库：同一实例不允许两个进程同时开库；旧库备份移走后才开新库。
+  // 引导旧库时独占（避免两个进程同时备份/移走），开库后立即释放：
+  // 正常运行时引擎与多个执行者可以同开一个库（SQLite WAL 允许多进程）。
   const releaseLock = acquireDataLock(dataDir)
   try {
     prepareDataDir(dataDir)
-  } catch (error) {
+  } finally {
     releaseLock()
-    throw error
   }
 
   const blobsDir = join(dataDir, BLOBS_DIR)
@@ -322,7 +322,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     initInputSchema(db)
     initCollaborationSchema(db)
     initKnowledgeSchema(db)
-  } catch (error) { db.close(); releaseLock(); throw error }
+  } catch (error) { db.close(); throw error }
   mkdirSync(blobsDir, { recursive: true })
   const ids = createIdSpace(db)
   const blobs = createBlobStore(blobsDir)
@@ -696,10 +696,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
 
     forWorkspace: workspace => view(workspace),
     close(): void {
-      if (owner) {
-        db.close()
-        releaseLock()
-      }
+      if (owner) db.close()
     },
   }
   }
