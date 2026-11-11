@@ -199,18 +199,26 @@ interface Manifest {
 let packageDirsCache: string[] | undefined
 
 /**
- * 实际存在的包目录名（`packages/<dir>/package.json` 存在者）。
+ * 实际存在的包目录名（相对 `packages/`，含 `runtime/conversation` 这类二级包）。
  *
- * ⚠️ 用 `readdirSync` 而**非** `Bun.Glob('*')`——实测 **Glob 的 `*` 不匹配目录**（返回空），
- * 拿它做包发现会静默扫出零个包（M05 落地时的第一版即栽在此）。
+ * 递归发现，但**遇到 package.json 即停止下行**：包内的 `src/` 不会被当成新包。
+ * 用 `readdirSync` 而非 `Bun.Glob('*')`——Glob 的 `*` 不匹配目录，曾静默扫出零个包。
  */
 function packageDirsOf(): string[] {
-  packageDirsCache ??= readdirSync(PACKAGES_DIR, { withFileTypes: true })
-    .filter(
-      (entry) => entry.isDirectory() && existsSync(join(PACKAGES_DIR, entry.name, 'package.json')),
-    )
-    .map((entry) => entry.name)
-    .sort()
+  packageDirsCache ??= (() => {
+    const found: string[] = []
+    const walk = (relative: string): void => {
+      const absolute = relative === '' ? PACKAGES_DIR : join(PACKAGES_DIR, relative)
+      for (const entry of readdirSync(absolute, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name === 'node_modules' || entry.name.startsWith('.')) continue
+        const child = relative === '' ? entry.name : join(relative, entry.name)
+        if (existsSync(join(PACKAGES_DIR, child, 'package.json'))) found.push(child)
+        else walk(child)
+      }
+    }
+    walk('')
+    return found.sort()
+  })()
 
   return packageDirsCache
 }
@@ -234,6 +242,36 @@ function packagesOf(): { dir: string; name: string }[] {
 /** 某包许可的 `@magic/*` 依赖。 */
 function allowedMagicDeps(name: string): readonly string[] {
   return PACKAGE_TABLE[name] ?? []
+}
+
+// —— 0.2.0 目标分层（目录前缀即层；搬迁期旧平铺包记为 legacy） ——
+
+type Layer = 'contracts' | 'runtime' | 'engine' | 'client' | 'transport' | 'apps' | 'legacy'
+
+function layerOf(dir: string): Layer {
+  const head = dir.split(sep)[0]
+  if (head === 'contracts') return 'contracts'
+  if (head === 'runtime') return 'runtime'
+  if (head === 'engine') return 'engine'
+  if (head === 'client') return 'client'
+  if (head === 'transport') return 'transport'
+  if (head === 'apps') return 'apps'
+  return 'legacy'
+}
+
+/** 层可依赖的层——严格按方向，不含同层之外的旁路。 */
+const LAYER_RULES: Record<Exclude<Layer, 'legacy'>, readonly Layer[]> = {
+  contracts: [],
+  runtime: ['contracts', 'runtime'],
+  engine: ['contracts', 'runtime', 'engine'],
+  client: ['contracts', 'client'],
+  transport: ['contracts', 'transport'],
+  apps: ['contracts', 'runtime', 'engine', 'client', 'transport', 'apps'],
+}
+
+function layerOfPackage(name: string): Layer | undefined {
+  const found = packagesOf().find((entry) => entry.name === name)
+  return found === undefined ? undefined : layerOf(found.dir)
 }
 
 // —— 越界判定（双轨）——
@@ -814,6 +852,46 @@ describe('fs 触达提取（反向用例）', () => {
 
   test('非内核包清单——外壳 · 装配根 · 测试层（扫描面收窄的锚）', () => {
     expect(NON_KERNEL_PACKAGES).toEqual(['@magic/tui', '@magic/app', '@magic/config', '@magic/faux'])
+  })
+})
+
+describe('0.2.0 目标分层', () => {
+  test('包依赖只走允许的层方向（contracts ← runtime ← engine；client 只依赖 contracts 与自身）', () => {
+    const violations: string[] = []
+
+    for (const { dir, name } of packagesOf()) {
+      const layer = layerOf(dir)
+      if (layer === 'legacy' || layer === 'apps') continue
+      const allowed = LAYER_RULES[layer]
+
+      for (const dep of Object.keys(manifestOfDir(dir).dependencies ?? {})) {
+        if (!dep.startsWith('@magic/')) continue
+        const target = layerOfPackage(dep)
+        if (target === undefined || !allowed.includes(target)) {
+          violations.push(`${name}（${layer}）→ ${dep}（${target ?? '未知'}）`)
+        }
+      }
+    }
+
+    expect(violations).toEqual([])
+  })
+
+  test('bun:sqlite 只出现在 data-service（engine/data 或迁移期 @magic/records）', async () => {
+    const offenders: string[] = []
+    const srcPrefix = `src${sep}`
+
+    for (const { dir, name } of packagesOf()) {
+      for (const file of await sourceFilesOf(dir)) {
+        if (!file.startsWith(srcPrefix)) continue
+        const absolute = join(PACKAGES_DIR, dir, file)
+        if (fsTouchesOf(absolute, readFileSync(absolute, 'utf8')).includes('bun:sqlite')) {
+          const isData = dir.startsWith(`engine${sep}data`) || name === '@magic/records'
+          if (!isData) offenders.push(`${name}/${file}`)
+        }
+      }
+    }
+
+    expect(offenders).toEqual([])
   })
 })
 
