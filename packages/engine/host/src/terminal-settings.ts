@@ -1,8 +1,8 @@
 import type { Command, ControlTransport, EventDataOf, EventKind, KernelEvent, MagicHome, ModelSelectionRef, ModelSwitchRequest, SettingsAction, WorkspaceService } from '@magic/contracts'
 import { createSettings } from './settings.ts'
 import { createWorkEnvironment } from './work-environment.ts'
-import { configStamp } from '@magic/config'
-import { loadConfig } from '@magic/config'
+import { configStamp } from '@magic/state'
+import { loadConfig } from '@magic/state'
 import { modelCatalog, providerCatalog } from './observation.ts'
 
 /** 文件动作在 TUI 执行；运行命令继续使用原连接。 */

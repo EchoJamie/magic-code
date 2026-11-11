@@ -3,7 +3,7 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ModelRequest } from '@magic/contracts'
 import { createFauxGateway, type FauxTurn } from '@magic/faux'
-import { createRecordsStore } from '@magic/records'
+import { createRecordsStore } from '@magic/data'
 import { attachShell, type Assembly } from '../src/index.ts'
 import { eventsOfKind, makeStage } from './support.ts'
 

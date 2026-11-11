@@ -1,7 +1,7 @@
 /**
  * 运行登记文件——`<run-dir>/manager.json`（自报身份）与 `runs.json`（持久工具归属）。
  *
- * 0.2.0 的 `runs` / `run_journal` 表在数据服务里（`@magic/records`，见 `runs.ts`）；
+ * 0.2.0 的 `runs` / `run_journal` 表在数据服务里（`@magic/data`，见 `runs.ts`）；
  * 本文件是现有 manager 仍在用的文件形。接线迁移时只替换本文件的读写实现，
  * manager 的调用面不变。
  */

@@ -5,8 +5,8 @@
  * 1. **包表完备** —— 存在的包必在包表内（防漏登记）；
  * 2. **分包可用** —— 各包经 Bun workspaces 链接、可被消费者解析加载；
  * 3. **域 → 契约** —— 非装配包只 import `@magic/contracts`（＋许可外部库白名单）；
- * 4. **域不认知外壳与装配** —— 域包不得 import `@magic/tui` / `@magic/app`；
- * 5. **内核 fs 边界** —— fs 触达只许 `@magic/records` · `@magic/execution`（扫描面＝**域包** `src/`）；
+ * 4. **域不认知外壳与装配** —— 域包不得 import `@magic/shell` / `@magic/app`；
+ * 5. **内核 fs 边界** —— fs 触达只许 `@magic/data` · `@magic/resources`（扫描面＝**域包** `src/`）；
  * 6. **契约包零运行时依赖**；
  * 7. **公开面** —— 各包 `exports` 只出 `.`（不出子路径、不暴露内部目录）。
  *
@@ -32,35 +32,35 @@ const PACKAGES_DIR = join(ROOT, 'packages')
  */
 const PACKAGE_TABLE: Record<string, readonly string[]> = {
   '@magic/contracts': [],
-  '@magic/config': ['@magic/contracts'],
+  '@magic/state': ['@magic/contracts'],
   // **应用层**（U25）——「域之上」那一层：编排跨域的几步。与各域同一条纪律：
   // **只依赖契约**（它拿到的是一组端口，由装配根注入）。
   '@magic/conversation': ['@magic/contracts'],
-  '@magic/records': ['@magic/contracts'],
+  '@magic/data': ['@magic/contracts'],
   '@magic/model': ['@magic/contracts'],
   '@magic/tools': ['@magic/contracts'],
   // MCP stdio 与 Shell 共用 execution 的登记后放行边界，协议仍由 MCP 独立实现。
-  '@magic/mcp': ['@magic/contracts', '@magic/execution'],
-  '@magic/execution': ['@magic/contracts'],
+  '@magic/mcp': ['@magic/contracts', '@magic/resources'],
+  '@magic/resources': ['@magic/contracts'],
   '@magic/client': ['@magic/contracts'],
-  '@magic/host': ['@magic/contracts', '@magic/conversation', '@magic/execution', '@magic/records', '@magic/model', '@magic/config'],
-  '@magic/control': ['@magic/contracts'],
-  '@magic/tui': ['@magic/contracts'],
+  '@magic/host': ['@magic/contracts', '@magic/conversation', '@magic/resources', '@magic/data', '@magic/model', '@magic/state'],
+  '@magic/transport': ['@magic/contracts'],
+  '@magic/shell': ['@magic/contracts'],
   '@magic/faux': ['@magic/contracts'],
   '@magic/app': [
-    '@magic/config',
+    '@magic/state',
     '@magic/contracts',
     '@magic/conversation',
-    '@magic/records',
+    '@magic/data',
     '@magic/model',
     '@magic/tools',
     // MCP 适配器（U38）——装配据配置造连接、把工具交给工具域（客户端封在它后面）
     '@magic/mcp',
-    '@magic/execution',
+    '@magic/resources',
     '@magic/client',
     '@magic/host',
-    '@magic/control',
-    '@magic/tui',
+    '@magic/transport',
+    '@magic/shell',
     '@magic/faux',
   ],
 }
@@ -68,15 +68,15 @@ const PACKAGE_TABLE: Record<string, readonly string[]> = {
 /** 域包——受「域 → 契约」与「域不认知外壳与装配」两条纪律。 */
 const DOMAIN_PACKAGES = [
   '@magic/conversation',
-  '@magic/records',
+  '@magic/data',
   '@magic/model',
   '@magic/tools',
-  '@magic/execution',
-  '@magic/control',
+  '@magic/resources',
+  '@magic/transport',
 ]
 
 /** 外壳与装配——域包不得 import。 */
-const SHELL_PACKAGES = ['@magic/tui', '@magic/app']
+const SHELL_PACKAGES = ['@magic/shell', '@magic/app']
 
 /** 装配根——**唯一可跨多域**者（技术方案 · 边界纪律：装配根唯一）。 */
 const ASSEMBLY_PACKAGE = '@magic/app'
@@ -89,7 +89,7 @@ const ALLOWED_EXTERNAL: Record<string, readonly string[]> = {
   // `@magic/mcp`——**官方 MCP SDK**（不手写协议栈：设计把「按规范核对官方实现」写成明文）。
   // 选它、以及它与设计所引规范修订版的版本关系，见 `packages/mcp/src/index.ts` 头注。
   '@magic/mcp': ['@modelcontextprotocol/sdk'],
-  // `@magic/tui`——Ink 上游本身把 react 声明为 peer：外壳自持显示组件，react 是**正当依赖**。
+  // `@magic/shell`——Ink 上游本身把 react 声明为 peer：外壳自持显示组件，react 是**正当依赖**。
   //
   // `wrap-ansi`（U31）——**Ink 自己折行用的就是它**：输入行的插入点要算出「折到第几行、
   // 第几列」才摆得准真终端光标，而**自己按宽度硬切会错**（Ink 是词界折行——实测反例：
@@ -103,7 +103,7 @@ const ALLOWED_EXTERNAL: Record<string, readonly string[]> = {
   // `mermaid-glyph`（Mermaid Glyph 0.1.0）——把已闭合的 ```mermaid 块按真实列宽画成字符图
   // （见 `packages/tui/src/components/log.ts` 的 Mermaid 那一节）。它**零运行时依赖**、
   // 不知道 Ink / 终端 / 产品配色，产品侧只在记录区把语义 token 映射到既有 `PALETTE`。
-  '@magic/tui': ['ink', 'react', 'wrap-ansi', 'string-width', 'mermaid-glyph'],
+  '@magic/shell': ['ink', 'react', 'wrap-ansi', 'string-width', 'mermaid-glyph'],
 }
 
 /**
@@ -123,11 +123,11 @@ const CONTRACT_SUBPATHS = [
 /** 各包测试面额外许可的**特定**依赖（仍不进生产面）。 */
 const TEST_ONLY_DEPS: Record<string, readonly string[]> = {
   // 剪贴板测试复用执行域的认图判据（`imageBytesOf`）——只是测试取材，不是客户端依赖。
-  '@magic/client': ['@magic/execution'],
+  '@magic/client': ['@magic/resources'],
 }
 
 /** blobs 落点的唯一主人（U02 判据 2 · 仓库级不变量）——其余包不得出现 `blobs/` 字面量。 */
-const BLOB_OWNER_PACKAGE = '@magic/records'
+const BLOB_OWNER_PACKAGE = '@magic/data'
 const BLOB_PATH = /(^|\/)blobs(\/|$)/
 
 /** 文件相对包根的**面**——依赖纪律按面分（与 fs 纪律只扫 `src/` 同一条分面原则）。 */
@@ -148,7 +148,7 @@ function allowedMagicDepsFor(name: string, face: 'src' | 'test' | 'other'): read
  * fs 直触许可（技术方案 · 边界纪律）——内核仅 `records` · `execution` 两域
  * （记录库 / blob 与沙箱工作区）。
  */
-const FS_ALLOWED_PACKAGES = ['@magic/records', '@magic/execution']
+const FS_ALLOWED_PACKAGES = ['@magic/data', '@magic/resources']
 
 /**
  * **非内核包**——外壳 · 装配根 · 测试层。fs 纪律**不约束它们**。
@@ -163,7 +163,7 @@ const FS_ALLOWED_PACKAGES = ['@magic/records', '@magic/execution']
  * `技术方案.md`·代码治理·边界纪律（扫描面＝域包）。**白名单断言不动**——它钉的是
  * 「域包里谁可以碰 fs」，与扫描面是两件事。
  */
-const NON_KERNEL_PACKAGES = [...SHELL_PACKAGES, '@magic/config', '@magic/faux', '@magic/client', '@magic/host']
+const NON_KERNEL_PACKAGES = [...SHELL_PACKAGES, '@magic/state', '@magic/faux', '@magic/client', '@magic/host']
 
 /** fs 模块族——import 即触达文件系统。 */
 const FS_MODULES = [
@@ -633,7 +633,7 @@ describe('依赖单向（声明）', () => {
 
   /**
    * **对等依赖同受两条纪律**——此前守护**漏扫 `peerDependencies`**：任何包都能把未许可的
-   * 依赖藏进 peerDeps 绕过白名单。U09 的 `@magic/tui` 用 `react` 时暴露了这个洞
+   * 依赖藏进 peerDeps 绕过白名单。U09 的 `@magic/shell` 用 `react` 时暴露了这个洞
    * ——`react` 是**正当依赖**（Ink 上游即声明为 peer），但守护**当时没拦**本身就是洞。
    */
   test('对等依赖（peerDependencies）——`@magic/*` 按生产面 · 外部须在白名单', () => {
@@ -766,7 +766,7 @@ describe('越界判定（反向用例）', () => {
     // test 面：只是多放 faux——域间仍越界
     expect(
       isCrossing(
-        '@magic/records',
+        '@magic/data',
         join(PACKAGES_DIR, 'model', 'test', 'model.test.ts'),
         '@magic/model',
         'model',
@@ -786,7 +786,7 @@ describe('越界判定（反向用例）', () => {
 
   test('裸包名跨包＝越界——解析不到也算（未声明依赖同样是越界）', () => {
     expect(probe('@magic/model')).toBe(true)
-    expect(probe('@magic/tui')).toBe(true)
+    expect(probe('@magic/shell')).toBe(true)
     expect(probe('@magic/app')).toBe(true)
   })
 
@@ -802,7 +802,7 @@ describe('越界判定（反向用例）', () => {
 
   test('装配根可跨域——app 引域不越界，域引 app 越界', () => {
     expect(probe('@magic/model', '@magic/app', 'app')).toBe(false)
-    expect(probe('@magic/tui', '@magic/app', 'app')).toBe(false)
+    expect(probe('@magic/shell', '@magic/app', 'app')).toBe(false)
     expect(probe('@magic/app', '@magic/model', 'model')).toBe(true)
   })
 
@@ -815,7 +815,7 @@ describe('越界判定（反向用例）', () => {
 
   test('装配根唯一——「非装配包跨域」分类正确', () => {
     expect(classifyCrossing('@magic/conversation', '@magic/model')).toBe('非装配包跨域')
-    expect(classifyCrossing('@magic/model', '@magic/tui')).toBe('域认知外壳/装配')
+    expect(classifyCrossing('@magic/model', '@magic/shell')).toBe('域认知外壳/装配')
     expect(classifyCrossing('@magic/app', '@magic/model')).toBe('包边界越界')
   })
 
@@ -823,7 +823,7 @@ describe('越界判定（反向用例）', () => {
     const source = [
       `// 用法示例：import { run } from '@magic/model'`,
       `/* export * from '../../app/src/index.ts' */`,
-      `const doc = "import x from '@magic/tui'"`,
+      `const doc = "import x from '@magic/shell'"`,
     ].join('\n')
 
     expect(importSpecifiersOf(join(PACKAGES_DIR, 'model', 'src', 'index.ts'), source)).toEqual([])
@@ -869,11 +869,11 @@ describe('fs 触达提取（反向用例）', () => {
   })
 
   test('fs 许可清单——只放 records / execution', () => {
-    expect(FS_ALLOWED_PACKAGES).toEqual(['@magic/records', '@magic/execution'])
+    expect(FS_ALLOWED_PACKAGES).toEqual(['@magic/data', '@magic/resources'])
   })
 
   test('非内核包清单——外壳 · 装配根 · 测试层（扫描面收窄的锚）', () => {
-    expect(NON_KERNEL_PACKAGES).toEqual(['@magic/tui', '@magic/app', '@magic/config', '@magic/faux', '@magic/client', '@magic/host'])
+    expect(NON_KERNEL_PACKAGES).toEqual(['@magic/shell', '@magic/app', '@magic/state', '@magic/faux', '@magic/client', '@magic/host'])
   })
 })
 
@@ -898,7 +898,7 @@ describe('0.2.0 目标分层', () => {
     expect(violations).toEqual([])
   })
 
-  test('bun:sqlite 只出现在 data-service（engine/data 或迁移期 @magic/records）', async () => {
+  test('bun:sqlite 只出现在 data-service（engine/data 或迁移期 @magic/data）', async () => {
     const offenders: string[] = []
     const srcPrefix = `src${sep}`
 
@@ -907,7 +907,7 @@ describe('0.2.0 目标分层', () => {
         if (!file.startsWith(srcPrefix)) continue
         const absolute = join(PACKAGES_DIR, dir, file)
         if (fsTouchesOf(absolute, readFileSync(absolute, 'utf8')).includes('bun:sqlite')) {
-          const isData = dir.startsWith(`engine${sep}data`) || name === '@magic/records'
+          const isData = dir.startsWith(`engine${sep}data`) || name === '@magic/data'
           if (!isData) offenders.push(`${name}/${file}`)
         }
       }

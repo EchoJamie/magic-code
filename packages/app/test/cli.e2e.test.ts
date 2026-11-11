@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { createRecordsStore } from '@magic/records'
+import { createRecordsStore } from '@magic/data'
 import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 import { cliGround } from './resident-cli-fixture.ts'

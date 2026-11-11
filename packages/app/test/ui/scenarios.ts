@@ -12,7 +12,7 @@
  * 2. **等条件，不睡够**——每一步都等一个**屏上的**条件（固定 sleep 只用在「让流式
  *    多吐两块」这种**制造中间态**的地方）；
  * 3. **文案判据尽量取产品自己的常量**——`HINT_IDLE` 与 `placeholderOf` 是**出包**的
- *    （`@magic/tui` 的公开面），直接 import；`HINT_PICKER` / `HINT_DECIDE_LIGHT` **没出包**，
+ *    （`@magic/shell` 的公开面），直接 import；`HINT_PICKER` / `HINT_DECIDE_LIGHT` **没出包**，
  *    本单按**字面量**锚，并在判据的 `detail` 里写明原锚是什么（真要改这三处文案，
  *    判据会红——那正是 UI 验收工具该有的反应；届时连同本注释一起改）。
  *
@@ -26,7 +26,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { HINT_EXIT_ARMED, HINT_IDLE, placeholderOf } from '@magic/tui'
+import { HINT_EXIT_ARMED, HINT_IDLE, placeholderOf } from '@magic/shell'
 import { statusLineOf } from './anchors.ts'
 import { REPO_ROOT, UiWaitTimeout, createUiSession } from './driver.ts'
 import type { Capture, UiSession, UiSessionOptions } from './driver.ts'
@@ -188,7 +188,7 @@ const bootInputExit: Scenario = {
     ui.check(
       boot.lines.some((line) => line.includes(HINT_IDLE)),
       '起手放开输入（右位回到常态提示）',
-      `锚＝@magic/tui 的 HINT_IDLE：${HINT_IDLE}`,
+      `锚＝@magic/shell 的 HINT_IDLE：${HINT_IDLE}`,
     )
 
     // —— 输入 ——
@@ -347,7 +347,7 @@ const modelStreamApproval: Scenario = {
     ui.check(
       done.lines.some((line) => line.includes(HINT_IDLE)),
       '取「答复结束」那一帧时它已经空闲（末字到了不等于结束）',
-      `锚＝@magic/tui 的 HINT_IDLE：${HINT_IDLE}`,
+      `锚＝@magic/shell 的 HINT_IDLE：${HINT_IDLE}`,
     )
 
     // —— 请求侧：两趟、都带着工具表 ——

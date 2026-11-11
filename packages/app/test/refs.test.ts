@@ -15,7 +15,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InputRef, KernelEvent } from '@magic/contracts'
-import { createShell } from '@magic/tui'
+import { createShell } from '@magic/shell'
 import { attachShell } from '../src/index.ts'
 import type { ShellHandle } from '@magic/app'
 import { lastModel, makeStage, readDatabase, type Stage } from './support.ts'

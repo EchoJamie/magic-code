@@ -14,8 +14,8 @@
 import { describe, expect, test } from 'bun:test'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { createView, reduce } from '@magic/tui'
-import type { ShellView } from '@magic/tui'
+import { createView, reduce } from '@magic/shell'
+import type { ShellView } from '@magic/shell'
 
 import { attachShell } from '../src/index.ts'
 import { makeStage } from './support.ts'

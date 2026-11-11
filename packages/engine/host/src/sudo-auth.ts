@@ -11,7 +11,7 @@
  */
 
 import type { ExecutorToManager, ManagerToExecutor, SudoAuth, SudoAuthResult } from '@magic/contracts'
-import { validateSudoPassword } from '@magic/execution'
+import { validateSudoPassword } from '@magic/resources'
 
 export type SudoAuthLink = {
   send(message: ExecutorToManager): boolean

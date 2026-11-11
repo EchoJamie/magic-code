@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { createConversationSession } from '@magic/conversation'
 import type { ConversationSession } from '@magic/conversation'
-import { createRecordsStore } from '@magic/records'
+import { createRecordsStore } from '@magic/data'
 import { createFauxGateway, makeFauxSink, makeFauxToolRuntime, makeTestStamper } from '@magic/faux'
 import type { FauxTurn, FauxToolHandler, FauxSink } from '@magic/faux'
 import { tempDir, removeDir } from './tmp.ts'

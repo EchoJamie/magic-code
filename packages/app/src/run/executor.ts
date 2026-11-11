@@ -1,7 +1,7 @@
 import type { WorkEnvironment } from '@magic/host'
 import { diagnosticsOf, validDiagnosticsChange } from '@magic/contracts'
 import { DiagnosticLog } from '@magic/host'
-import type { RecordsStore } from '@magic/records'
+import type { RecordsStore } from '@magic/data'
 import type { ProcessLedger } from '@magic/contracts'
 
 import type {
@@ -14,7 +14,7 @@ import type {
 import { createSudoAuth } from '@magic/host'
 import { assemble } from '../assembly.ts'
 import type { Assembly } from '../assembly.ts'
-import { loadConfig } from '@magic/config'
+import { loadConfig } from '@magic/state'
 import { isProgress, progressOf, tailOf } from '@magic/host'
 import type { ExecutorToManager, Link, ManagerToExecutor } from '@magic/host'
 

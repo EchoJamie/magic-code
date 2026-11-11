@@ -1,5 +1,5 @@
 /**
- * `@magic/records` —— **记录域**（记录库）。
+ * `@magic/data` —— **记录域**（记录库）。
  *
  * 职责（技术方案 · 领域划分）：内容与过程的持久化——会话条目 · 事件存储 · blob · schema。
  * 对外端口 **`RecordsService`**（在 `@magic/contracts`）；本包＝它的实现域。

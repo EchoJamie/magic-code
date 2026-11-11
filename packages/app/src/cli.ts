@@ -8,7 +8,7 @@ import type { KernelEvent, RulesLoad, ModelChoice, ModelSwitchRequest } from '@m
 import { resolve } from 'node:path'
 import { resolveMagicHome, SOFTWARE_VERSION, NATIVE_PROTOCOL } from '@magic/contracts'
 import { resolveModelChoice } from '@magic/host'
-import { ConfigError, describeConfig } from '@magic/config'
+import { ConfigError, describeConfig } from '@magic/state'
 import { workspaceOf } from '@magic/host'
 import type { AppConnection, AppConnectionOptions } from './run/spawn-manager.ts'
 import { attachShell } from './shell.ts'
@@ -190,9 +190,9 @@ function localMagicHome() {
 
 async function offlineSettings(): Promise<number> {
   if (process.stdin.isTTY !== true) throw new Error('本地设置需要一个终端，请在终端里运行 magic --settings')
-  const { loadConfig } = await import('@magic/config')
+  const { loadConfig } = await import('@magic/state')
   const { terminalSettings } = await import('@magic/host')
-  const { runTui } = await import('@magic/tui')
+  const { runTui } = await import('@magic/shell')
   const { writeClipboardText } = await import('@magic/client')
   const magic = localMagicHome(), loaded = loadConfig({ magic }), workspace = workspaceOf(loaded, process.cwd())
   const tui = await runTui({
@@ -207,9 +207,9 @@ async function offlineSettings(): Promise<number> {
 }
 
 async function offlineCheck(args: Args): Promise<number> {
-  const { loadConfig } = await import('@magic/config')
+  const { loadConfig } = await import('@magic/state')
   const { resolveApiKey } = await import('@magic/model')
-  const { createSkills, createProjectRules } = await import('@magic/execution')
+  const { createSkills, createProjectRules } = await import('@magic/resources')
   const { skillsCatalog } = await import('@magic/host')
   const magic = localMagicHome()
   const loaded = loadConfig({ magic })
@@ -233,7 +233,7 @@ async function offlineCheck(args: Args): Promise<number> {
   if (chosen?.ok) console.log(`—— 本次走 ${current}`)
   console.log(`  供应商表　${providers.length} 条——${providers.join(' · ')} · 当前走 ${current}`)
   if (args.session !== undefined) {
-    const { readSessionSummary } = await import('@magic/records')
+    const { readSessionSummary } = await import('@magic/data')
     const session = readSessionSummary(magic.base, args.session)
     console.log(`  会话请求　${args.session}（${session === undefined ? '未找到保存记录' : session.archived ? '已归档；需明确恢复后才能接回' : '普通；只读检查未接回'}）`)
   }
@@ -400,7 +400,7 @@ async function runTerminal(args: Args): Promise<number> {
       }
     }
     const modelInfo = await readModelInfo(loaded, magic)
-    const { runTui } = await import('@magic/tui')
+    const { runTui } = await import('@magic/shell')
     const { connectApp } = await import('./run/spawn-manager.ts')
     const connection = terminalConnection(client, async (session) => {
       const reopened = await connectApp({ intent: 'observe', expectedInstance: { base: magic.base }, connect: {

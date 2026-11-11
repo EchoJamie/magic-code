@@ -13,6 +13,6 @@
     "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "devDependencies": {
-    "@magic/execution": "workspace:*"
+    "@magic/resources": "workspace:*"
   }
 }

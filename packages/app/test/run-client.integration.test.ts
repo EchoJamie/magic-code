@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { KernelEvent, ManagerToClient, RunNotice, RunSnapshot } from '@magic/contracts'
-import { createShell } from '@magic/tui'
+import { createShell } from '@magic/shell'
 import { connectManager, executionEnvironment } from '../src/run/client.ts'
 import { connectApp } from '../src/run/spawn-manager.ts'
 import { clientTransport, terminalOptions, terminalConnection } from '../src/run/terminal.ts'

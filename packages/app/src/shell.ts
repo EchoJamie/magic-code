@@ -2,7 +2,7 @@ import type { ModelSwitchRequest } from '@magic/contracts'
 /**
  * **外壳位** —— 装配视图第 5 步「接外壳」的落点（技术方案 · 领域划分 · 装配视图 5）。
  *
- * ⚠️ **真外壳（TUI）已到站**（U09 · `@magic/tui`）——`magic` **无参**即起它，那是默认路径。
+ * ⚠️ **真外壳（TUI）已到站**（U09 · `@magic/shell`）——`magic` **无参**即起它，那是默认路径。
  * 本文件**不是替身、也不与它争**：它是 **`--script` 的实现**——无人值守的驱动，把控制面
  * 两端（`shell.subscribe` / `shell.send`）接上，好让全链在**没有界面**的情况下跑起来
  * （验收装置 / 冒烟 / 回归都用它）。
@@ -68,7 +68,7 @@ export type AttachShellOptions = {
   /**
    * **启动流转**（应用层的恢复用例）——**订阅之后、放开输入之前**那一条。
    *
-   * 与真外壳（`@magic/tui` 的 `RunTuiOptions.boot`）**同一条纪律**：恢复要发事件，
+   * 与真外壳（`@magic/shell` 的 `RunTuiOptions.boot`）**同一条纪律**：恢复要发事件，
    * 反了就是「事件发了没人收」；而「放开输入」以它完成为界（技术方案 · 装配视图第 5 步）。
    * `runShellScript` 在接上订阅之后、按脚本放开输入之前调它——本驱动不自己拼这条次序。
    */

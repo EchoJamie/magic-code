@@ -15,7 +15,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createBunProcessPort } from '@magic/execution'
+import { createBunProcessPort } from '@magic/resources'
 import { createHttpConnection, createStdioConnection } from '../src/index.ts'
 
 const HTTP_SERVER = join(import.meta.dir, 'support', 'fake-http-server.ts')

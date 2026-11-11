@@ -42,7 +42,7 @@ export type FauxRecordsOptions = {
    * **在途扫描的答案**（`scanInFlight`，恢复 ①）——缺省「干净会话」（无在途、无中断的轮）。
    *
    * 桩**不自己算**这个答案：判据（有 `tool.call` 无 `tool.result`）归记录域
-   * （`@magic/records` 的 `scanForRecovery`）。要验处置的用例把答案**给定**——
+   * （`@magic/data` 的 `scanForRecovery`）。要验处置的用例把答案**给定**——
    * 与「桩只满足签名、不发明行为」的底线一致（同 `sessions` 那一项）。
    */
   readonly scan?: RecoveryScan | ((session: SessionId) => RecoveryScan)

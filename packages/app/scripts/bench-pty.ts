@@ -36,7 +36,7 @@
  */
 
 /**
- * 剥 ANSI（**照 `@magic/tui` 的 `screen.ts` 的写法**：CSI 与 OSC 两族都用 `\u001b` 转义写，
+ * 剥 ANSI（**照 `@magic/shell` 的 `screen.ts` 的写法**：CSI 与 OSC 两族都用 `\u001b` 转义写，
  * 不往源码里塞裸的 ESC 字节——那样读不出、diff 不了，编辑器还会当成乱码）。
  */
 function plain(text: string): string {

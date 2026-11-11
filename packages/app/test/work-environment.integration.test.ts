@@ -92,7 +92,7 @@ test('工作使用各自代理快照；小写优先，缺项与 NO_PROXY 不落�
     expect(Object.isFrozen(first.env)).toBe(true)
     // Bun 会缓存原生 fetch 的全局代理；异常 Engine 环境放进独立进程，避免污染其它测试。
     const child = Bun.spawn([process.execPath, '-e', `
-      import {createWorkEnvironment} from ${JSON.stringify(join(import.meta.dir, '../src/work-environment.ts'))};
+      import {createWorkEnvironment} from ${JSON.stringify(join(import.meta.dir, '../../engine/host/src/work-environment.ts'))};
       const work = createWorkEnvironment({});
       try { if (await (await work.fetch(Bun.argv[1])).text() !== 'ok') process.exitCode = 1 }
       finally { await work.close() }

@@ -1,5 +1,5 @@
 /** 计划翻页脚本专用的受控终端夹具。 */
-import {runTui} from '@magic/tui'
+import {runTui} from '@magic/shell'
 import {createSpyTransport} from '../../test/fakes.ts'
 import {event} from '../../test/events.ts'
 const spy=createSpyTransport()

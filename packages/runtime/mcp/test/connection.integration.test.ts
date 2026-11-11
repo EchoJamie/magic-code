@@ -13,7 +13,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { McpConnection, McpServerConfig } from '@magic/contracts'
-import { createBunProcessPort } from '@magic/execution'
+import { createBunProcessPort } from '@magic/resources'
 import { createStdioConnection } from '../src/stdio.ts'
 
 const SERVER = join(import.meta.dir, 'support', 'fake-server.ts')

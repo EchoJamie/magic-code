@@ -20,7 +20,7 @@ import {
   sameProcess,
   signalGroup,
   startTimeOf,
-} from '@magic/execution'
+} from '@magic/resources'
 
 /** 起一组真进程（自成一组，组长 ＝ 返回的那个 pid）——用例自己收尾，不留残骸。 */
 function spawnGroup(script: string): { readonly pid: number; kill(): void } {

@@ -2,7 +2,7 @@ import { memoryWorkspace, readMemory, readMemorySource } from '@magic/host'
 import { readSessionDisplayHistory } from '@magic/conversation'
 import { normalizeDataDir } from '@magic/host'
 import type { NativeProjection, NativeRequest, NativeResponse, NativeWork, NativeSession, SessionManagement, SessionManagementResult, Entry, KernelEvent, ServiceIdentity, StopPhase, Wire } from '@magic/contracts'
-import type { RecordsStore } from '@magic/records'
+import type { RecordsStore } from '@magic/data'
 import type { Link } from '@magic/host'
 
 export type NativeServerOptions = {

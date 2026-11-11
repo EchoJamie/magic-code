@@ -1,7 +1,7 @@
 import type { EventDataOf, MemorySourceRead, SessionReferenceList } from '@magic/contracts'
 import { createMaterialReader, readSessionCatalog } from '@magic/conversation'
-import type { RecordsStore } from '@magic/records'
-import { createWorkingNotes } from '@magic/execution'
+import type { RecordsStore } from '@magic/data'
+import { createWorkingNotes } from '@magic/resources'
 import { dirname } from 'node:path'
 
 export async function memoryWorkspace(store: RecordsStore, session: string | undefined, fallback: readonly string[]): Promise<readonly string[]> {

@@ -1,5 +1,5 @@
 import type { CompactCommand, CompactState, KernelEvent } from '@magic/contracts'
-import type { RecordsStore } from '@magic/records'
+import type { RecordsStore } from '@magic/data'
 
 type Request = Extract<CompactCommand, { type: 'compact.request' }>
 const active = (state: CompactState['state']) => state === 'pending' || state === 'running'

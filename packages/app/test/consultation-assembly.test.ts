@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { existsSync, realpathSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { createRecordsStore } from '@magic/records'
+import { createRecordsStore } from '@magic/data'
 import { createFauxGateway, type FauxTurn } from '@magic/faux'
 import { attachShell } from '../src/index.ts'
 import { makeStage } from './support.ts'

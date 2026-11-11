@@ -23,7 +23,7 @@ import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { expandHome, resolveMagicHome, TRANSIENT_EVENT_KINDS } from '@magic/contracts'
 import { homedir } from 'node:os'
-import { DATABASE_FILE } from '@magic/records'
+import { DATABASE_FILE } from '@magic/data'
 
 // —— 入参 ——
 

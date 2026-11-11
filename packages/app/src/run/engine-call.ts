@@ -1,5 +1,5 @@
 import { NATIVE_PROTOCOL, SOFTWARE_VERSION, resolveMagicHome, type HostDiscovery, type NativeResponse, type ServiceIdentity } from '@magic/contracts'
-import { createRecordsStore } from '@magic/records'
+import { createRecordsStore } from '@magic/data'
 import { isAbsolute } from 'node:path'
 import { tmpdir } from 'node:os'
 import { readFileSync } from 'node:fs'

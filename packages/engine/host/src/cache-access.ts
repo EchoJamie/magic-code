@@ -27,7 +27,7 @@
  * 「缺可信身份不读共享盘」处理，不得声称隔离已完成。
  */
 
-import { configFingerprintOf, type ConfigFingerprint } from '@magic/config'
+import { configFingerprintOf, type ConfigFingerprint } from '@magic/state'
 import type { ModelCacheAccess, ProviderConfig } from '@magic/contracts'
 
 /**

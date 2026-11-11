@@ -30,18 +30,18 @@ import type {
   ModelInfoSnapshot,
   ModelSwitchRequest,
 } from '@magic/contracts'
-import { createProjectRules } from '@magic/execution'
+import { createProjectRules } from '@magic/resources'
 import { writeClipboardText } from '@magic/client'
 import { createModelRegistry } from '@magic/model'
 import type { ModelRegistry } from '@magic/model'
-import type { RunTuiOptions } from '@magic/tui'
+import type { RunTuiOptions } from '@magic/shell'
 import type { ManagerClient } from './client.ts'
-import { unreadSummaryOf } from '@magic/tui'
+import { unreadSummaryOf } from '@magic/shell'
 import { mcpNoticesOf, noModelAdvice, workspaceOf } from '@magic/host'
 import { cacheAccessFor } from '@magic/host'
 import { createFileModelInfoCache } from '@magic/host'
 import { resolveModelChoice } from '@magic/host'
-import type { LoadedConfig } from '@magic/config'
+import type { LoadedConfig } from '@magic/state'
 
 /** 这一层要的那几件——**都是「从外面拿的值」**，判断一件都不在这儿。 */
 export type TerminalInputs = {

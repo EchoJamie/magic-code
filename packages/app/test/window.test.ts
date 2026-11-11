@@ -6,13 +6,13 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { EventStamper, KernelEvent, ModelGateway } from '@magic/contracts'
 import { createFauxGateway } from '@magic/faux'
-import { createShell, usageLabel } from '@magic/tui'
+import { createShell, usageLabel } from '@magic/shell'
 import { assemble, attachShell, loadConfig } from '../src/index.ts'
 import type { Assembly } from '../src/index.ts'
 // 接线取件（照 `readouts.test.ts` 的先例）——不是写着同样内容的字面量
 import { assemblyTuiOptions } from './support.ts'
 import { readDatabase } from './support.ts'
-import { configureModel } from '@magic/config'
+import { configureModel } from '@magic/state'
 import { magicAt, removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -551,7 +551,7 @@ describe('真 `runTui` 那条路（接线在不在）', () => {
       const tty = new CaptureTty()
       const stdin = new FakeStdin()
       // 动态 import：与 `cli.ts` 同一条（启动路径不把 Ink 那棵树拖进模块图）
-      const { runTui } = await import('@magic/tui')
+      const { runTui } = await import('@magic/shell')
 
       const handle = await runTui({
         ...(await assemblyTuiOptions(assembly)),

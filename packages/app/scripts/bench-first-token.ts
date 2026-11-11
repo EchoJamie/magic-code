@@ -7,7 +7,7 @@
  *
  * - **②** 不在本单元射程内：它是端点与网络的账，改多少外壳都不动它。这一段由**本探针**
  *   量（真配置 · 真注册表 · 真取件层 · 真端点）。
- * - **①** 归外壳：由 `@magic/tui` 的 `bench-stream.ts` 量（「投一条增量 → 上屏」）。
+ * - **①** 归外壳：由 `@magic/shell` 的 `bench-stream.ts` 量（「投一条增量 → 上屏」）。
  *   两段相加才是用户按完回车之后等的那一下。
  *
  * ## 安全（**硬规矩**）
@@ -122,7 +122,7 @@ if (import.meta.main) {
           `  回车 → 第一个字  ${median(runs.map((run) => run.firstTokenMs)).toFixed(1)}ms`,
           '',
           '  ⚠️ 第二行几乎全是**端点与网络**的账——外壳那一跳另由',
-          '     `@magic/tui` 的 bench-stream.ts 量（同一套读数里那份才是本单元的账）。',
+          '     `@magic/shell` 的 bench-stream.ts 量（同一套读数里那份才是本单元的账）。',
           '',
         ].join('\n'),
   )

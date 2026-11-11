@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { createRecordsStore } from '@magic/records'
+import { createRecordsStore } from '@magic/data'
 
 import { createSettings, type SettingsContext } from '@magic/host'
 

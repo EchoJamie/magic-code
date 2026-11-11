@@ -39,7 +39,7 @@ import type {
   WebSource,
 } from '@magic/contracts'
 import { TRANSIENT_EVENT_KINDS } from '@magic/contracts'
-import { createControlHub, createInProcessTransportPair } from '@magic/control'
+import { createControlHub, createInProcessTransportPair } from '@magic/transport'
 import type { ContextPolicy, SessionInstance } from '@magic/conversation'
 import { createConversationService, createPlanReader } from '@magic/conversation'
 import {
@@ -53,20 +53,20 @@ import {
   createWorkspaceService,
   imageBytesOf,
   reapOwned,
-} from '@magic/execution'
+} from '@magic/resources'
 import { readClipboardImage } from '@magic/client'
 import type { McpServers } from '@magic/mcp'
 import { createMcpServers } from '@magic/mcp'
 import type { FetchLike, ModelInfoService, ModelRegistry, ModelSwitchResult } from '@magic/model'
 import { selectModel } from '@magic/model'
-import type { RecordsStore } from '@magic/records'
-import { createRecordsStore } from '@magic/records'
+import type { RecordsStore } from '@magic/data'
+import { createRecordsStore } from '@magic/data'
 import type { ToolDefinition } from '@magic/tools'
 import { defineMcpTools } from '@magic/tools'
 import { tmpdir } from 'node:os'
 import { resolveModelChoice, validateSelection } from '@magic/host'
-import type { LoadedConfig } from '@magic/config'
-import { loadConfig } from '@magic/config'
+import type { LoadedConfig } from '@magic/state'
+import { loadConfig } from '@magic/state'
 import { saveImageFile } from './image-file.ts'
 import type { ModelCatalogReader } from '@magic/host'
 import {

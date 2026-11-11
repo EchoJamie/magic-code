@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRecordsStore } from '@magic/records'
+import { createRecordsStore } from '@magic/data'
 import { projectWorks } from '@magic/host'
 
 test('异步目录读取途中换代，旧运行状态不能被新停止代次重新命名', async () => {

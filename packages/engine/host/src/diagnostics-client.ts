@@ -1,6 +1,6 @@
 import { homedir } from 'node:os'
 import type { DiagnosticsChange } from '@magic/contracts'
-import { configStamp } from '@magic/config'
+import { configStamp } from '@magic/state'
 import { saveDiagnostics } from '@magic/host'
 
 /** 入口已确定配置实例；诊断保存与 Engine 是否在线无关。 */

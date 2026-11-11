@@ -90,7 +90,7 @@ async function shoot(
 ): Promise<void> {
   const tty = new CaptureTty()
   const stdin = new FakeStdin()
-  const { runTui } = await import('@magic/tui')
+  const { runTui } = await import('@magic/shell')
 
   const handle = await runTui({
     ...(await assemblyTuiOptions(assembly)),

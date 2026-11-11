@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AttentionItem, NativeWork, RunRow } from '@magic/contracts'
-import { createRecordsStore } from '@magic/records'
+import { createRecordsStore } from '@magic/data'
 import { captureCollaborationNative, mergeCollaborationNative } from '@magic/host'
 import { projectWorks } from '@magic/host'
 import { removeDir, tempDir } from './tmp.ts'

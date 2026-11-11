@@ -11,10 +11,10 @@
   "dependencies": {
     "@magic/contracts": "workspace:*",
     "@magic/conversation": "workspace:*",
-    "@magic/execution": "workspace:*",
-    "@magic/records": "workspace:*",
+    "@magic/resources": "workspace:*",
+    "@magic/data": "workspace:*",
     "@magic/model": "workspace:*",
-    "@magic/config": "workspace:*",
+    "@magic/state": "workspace:*",
     "undici": "7.29.1"
   },
   "devDependencies": {

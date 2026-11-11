@@ -1,5 +1,5 @@
 import type { MagicHome, ModelSwitchRequest, ProcessLedger } from '@magic/contracts'
-import type { RecordsStore } from '@magic/records'
+import type { RecordsStore } from '@magic/data'
 import type { WorkEnvironment } from '@magic/host'
 import type { Link, ManagerToExecutor } from '@magic/host'
 import { runExecutor } from './executor.ts'

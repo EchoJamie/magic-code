@@ -26,7 +26,7 @@ import { assemble, attachShell, loadConfig } from '../src/index.ts'
 import { assemblyTuiOptions } from './support.ts'
 import type { Assembly } from '../src/index.ts'
 import { readDatabase } from './support.ts'
-import { configureModel } from '@magic/config'
+import { configureModel } from '@magic/state'
 import { magicAt, removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 // ═══════════════════════════════════════════════════════════════════════

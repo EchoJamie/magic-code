@@ -18,7 +18,7 @@
  * 不显式传锚（那个文件这一轮归别的单），靠这一条拿到 Magic 这份——于是**行为和以前一字不差**。
  */
 
-import { EXIT_ARM_MS, HINT_EXIT_ARMED, HINT_IDLE } from '@magic/tui'
+import { EXIT_ARM_MS, HINT_EXIT_ARMED, HINT_IDLE } from '@magic/shell'
 import type { UiAnchors } from './driver.ts'
 
 /**

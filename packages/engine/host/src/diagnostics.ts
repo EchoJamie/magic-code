@@ -1,6 +1,6 @@
 import { diagnosticsOf, isLogLevel, type Diagnostics, type DiagnosticsChange, type MagicHome } from '@magic/contracts'
-import { editConfigFile } from '@magic/config'
-import { loadConfig, parseConfig } from '@magic/config'
+import { editConfigFile } from '@magic/state'
+import { loadConfig, parseConfig } from '@magic/state'
 
 /** Parse the complete invocation before saving anything. Absence leaves persisted values untouched. */
 export function parseDiagnosticsArgs(argv: readonly string[]): DiagnosticsChange | undefined {

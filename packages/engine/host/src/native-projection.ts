@@ -1,6 +1,6 @@
 import type { NativeWork, RunRow } from '@magic/contracts'
 import { readSessionCatalog } from '@magic/conversation'
-import type { RecordsStore } from '@magic/records'
+import type { RecordsStore } from '@magic/data'
 
 export type ProjectionOptions = {
   readonly candidates: readonly string[]

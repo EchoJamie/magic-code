@@ -231,7 +231,7 @@ export function appendToolCallEntry(log: EntryLog, call: ToolCall, knowledge: re
  *
  * **计划更新也在这儿落地**（U34）——「工具只核对参数、由对话域一次落账」这句话的落点：
  * 更新工具交回载荷（`ToolOutcome.plan`），结果与计划字段**同一次**进这条条目；
- * 写入侧的硬闸（`@magic/records`）照旧把关，形状不对连条目都落不下去。
+ * 写入侧的硬闸（`@magic/data`）照旧把关，形状不对连条目都落不下去。
  * ⚠️ **清空要写出 `plan: null` 这个键**（不是省略）——省略就是「这次跟计划无关」。
  */
 export function appendToolResultEntry(log: EntryLog, outcome: ToolOutcome, knowledge: readonly import('@magic/contracts').KnowledgeReference[] = []): RecordId {

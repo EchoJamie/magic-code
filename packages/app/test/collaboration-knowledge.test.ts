@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { realpathSync } from 'node:fs'
-import { createRecordsStore } from '@magic/records'
+import { createRecordsStore } from '@magic/data'
 import { createMaterialReader, createPlanReader } from '@magic/conversation'
 import { createFauxGateway } from '@magic/faux'
 import { createCollaborationActions } from '@magic/host'

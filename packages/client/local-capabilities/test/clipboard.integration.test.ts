@@ -29,7 +29,7 @@ import { describe, expect, test } from 'bun:test'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { imageBytesOf } from '@magic/execution'
+import { imageBytesOf } from '@magic/resources'
 import { readClipboardImage } from '../src/clipboard.ts'
 
 /** 1×1 透明 PNG（67 字节，真文件——同 `images.test.ts` 那一份）。 */

@@ -45,7 +45,7 @@ const T0 = Bun.nanoseconds()
 
 const ms = (from: number, to: number): number => (to - from) / 1e6
 
-/** 假 stdout——Ink 只用得上这几个成员（同 `@magic/tui` 的 `terminal.ts`），**多记一个首帧时刻**。 */
+/** 假 stdout——Ink 只用得上这几个成员（同 `@magic/shell` 的 `terminal.ts`），**多记一个首帧时刻**。 */
 class FakeTty extends EventEmitter {
   readonly isTTY = true
   readonly destroyed = false
@@ -108,7 +108,7 @@ export async function bootOnce(): Promise<BootStages> {
   const beforeImport = Bun.nanoseconds()
   // 动态 import——静态 import 会被提升到模块顶部，那一段就量不到了
   const { assemble, loadConfig } = await import('../src/index.ts')
-  const { runTui } = await import('@magic/tui')
+  const { runTui } = await import('@magic/shell')
   const loaded = Bun.nanoseconds()
 
   try {

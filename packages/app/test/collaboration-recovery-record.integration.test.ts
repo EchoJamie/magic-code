@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { tmpdir } from 'node:os'
-import { createRecordsStore } from '@magic/records'
+import { createRecordsStore } from '@magic/data'
 import { connectManager, type ManagerClient } from '../src/run/client.ts'
 import { readRuns, startManager, type ExecutorRequest } from '../src/run/manager.ts'
 import { reconcile, STORED_RUNS_LIMIT } from '@magic/host'

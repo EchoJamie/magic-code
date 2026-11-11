@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { MODELS_DEV_TTL_MS, MODELS_DEV_URL } from '@magic/model'
 import { createModelsDevResource, MODELS_DEV_CACHE_FILE } from '@magic/host'
 import { createSettings } from '@magic/host'
-import { configStamp } from '@magic/config'
+import { configStamp } from '@magic/state'
 import { managedModelChoices, resolveManagedModel } from '@magic/host'
 import type { ModelCatalogRow } from '@magic/contracts'
 

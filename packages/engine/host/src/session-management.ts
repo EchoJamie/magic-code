@@ -1,6 +1,6 @@
 import type { EventDataOf, SessionManagement, SessionManagementResult } from '@magic/contracts'
 import { summarize } from '@magic/conversation'
-import type { RecordsStore } from '@magic/records'
+import type { RecordsStore } from '@magic/data'
 import { captureCollaborationNative } from '@magic/host'
 import { canArchiveRun, type RunRecord } from '@magic/host'
 

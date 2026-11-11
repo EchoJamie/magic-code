@@ -1,5 +1,5 @@
-import { createShell } from '@magic/tui'
-import { createWorkspaceService } from '@magic/execution'
+import { createShell } from '@magic/shell'
+import { createWorkspaceService } from '@magic/resources'
 import type { Command, KernelEvent } from '@magic/contracts'
 import { terminalSettings } from '@magic/host'
 import { waitFor } from './resident-cli-fixture.ts'

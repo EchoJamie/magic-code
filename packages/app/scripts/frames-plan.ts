@@ -34,7 +34,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { PlanNote } from '@magic/contracts'
-import { PALETTE } from '@magic/tui'
+import { PALETTE } from '@magic/shell'
 import { createSandbox, createUiSession, startFixture } from '../test/ui/index.ts'
 import type { Capture, FixtureRequest, FixtureTurn, Sandbox, UiSession, WaitCondition } from '../test/ui/index.ts'
 import { readDatabase } from '../test/support.ts'

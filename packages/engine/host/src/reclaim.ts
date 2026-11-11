@@ -1,5 +1,5 @@
 import type { OwnedProcess } from '@magic/contracts'
-import { reapOwned } from '@magic/execution'
+import { reapOwned } from '@magic/resources'
 
 /** 收尾的时限——与执行者自己那一跳（`groups.ts` 的缺省）同一量级，收尾不能被挂住。 */
 export type ReclaimTimes = {

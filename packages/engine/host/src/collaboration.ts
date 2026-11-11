@@ -3,7 +3,7 @@ import type {
   CollaborationView, CollaborationUsage, MagicHome, ModelUsage, RunRow, StopResult, UserInput,
 } from '@magic/contracts'
 import { createCollaborationActions } from '@magic/host'
-import type { RecordsStore } from '@magic/records'
+import type { RecordsStore } from '@magic/data'
 import { managedModelChoices, resolveManagedModel } from '@magic/host'
 
 export type CollaborationHost = {

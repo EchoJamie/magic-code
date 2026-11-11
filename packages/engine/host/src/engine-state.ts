@@ -2,7 +2,7 @@ import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, 
 import { dirname } from 'node:path'
 import type { HostDiscovery } from '@magic/contracts'
 import { decodeHostDiscovery } from '@magic/contracts'
-import { startTimeOf } from '@magic/execution'
+import { startTimeOf } from '@magic/resources'
 
 export function readEngineState(path: string): HostDiscovery | undefined {
   let raw: string

@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { createRecordsStore } from '@magic/records'
+import { createRecordsStore } from '@magic/data'
 import { createManagedCollaboration } from '@magic/host'
 import { captureCollaborationNative, mergeCollaborationNative } from '@magic/host'
 import { projectWorks } from '@magic/host'

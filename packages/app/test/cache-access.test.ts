@@ -9,7 +9,7 @@
 import { describe, expect, test } from 'bun:test'
 import { utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { configFingerprintOf } from '@magic/config'
+import { configFingerprintOf } from '@magic/state'
 import { modelCacheAccessOf } from '@magic/host'
 import { removeDir, tempDir } from './tmp.ts'
 

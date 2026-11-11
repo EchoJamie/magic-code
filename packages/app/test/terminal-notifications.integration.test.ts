@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolveMagicHome, type NativeResponse, type NativeWork, type RunNotice } from '@magic/contracts'
-import { createRecordsStore } from '@magic/records'
+import { createRecordsStore } from '@magic/data'
 import { runPathsOf } from '@magic/host'
 import { startManager } from '../src/run/manager.ts'
 import { connectManager, type ManagerClient } from '../src/run/client.ts'
@@ -124,7 +124,7 @@ test('通知按具体会话绑定：切换、clear、多窗口、结束后仍查
 })
 
 test('终端接回显示原结果后标读，不追加完成回执，仅影响当前会话，断开后退出状态栏候选', async () => {
-  const { runTui } = await import('@magic/tui')
+  const { runTui } = await import('@magic/shell')
   const { clientTransport } = await import('../src/run/terminal.ts')
   const { PassThrough } = await import('node:stream')
   const root = mkdtempSync(join(tmpdir(), 'resume-notice-read-'))

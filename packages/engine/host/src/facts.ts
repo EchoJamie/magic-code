@@ -78,7 +78,7 @@ export type RunRecord = {
    * **这一代手上握着的自有进程组**（U50）——由执行者报来（`wire.ts` 的 `owned`）。
    *
    * 「执行者崩溃或被杀 ⇒ 管理者收回独占权与**已登记**自有进程组」那句里的登记就是它：
-   * 执行者被杀时它自己收不了尾，管理者照这一份收（判据与限度见 `@magic/execution` 的
+   * 执行者被杀时它自己收不了尾，管理者照这一份收（判据与限度见 `@magic/resources` 的
    * `reapOwned`——**证明不了归属的一个都不碰**）。
    */
   owned: readonly OwnedProcess[]

@@ -17,7 +17,7 @@ import type {
   WorkspaceService,
 } from '@magic/contracts'
 import { apiKeyEnvVarOf } from '@magic/contracts'
-import { DEFAULT_CANDIDATES, createMaterials, createSkills, createWorkspaceService } from '@magic/execution'
+import { DEFAULT_CANDIDATES, createMaterials, createSkills, createWorkspaceService } from '@magic/resources'
 import type { ModelInfoService } from '@magic/model'
 import {
   createModelInfoService,
@@ -26,10 +26,10 @@ import {
   resolveConnection,
   vendorCatalog,
 } from '@magic/model'
-import type { RecordsStore } from '@magic/records'
+import type { RecordsStore } from '@magic/data'
 import { resolveModelChoice } from './agent-models.ts'
 import { cacheAccessFor } from './cache-access.ts'
-import { ConfigError, loadConfig, type LoadedConfig } from '@magic/config'
+import { ConfigError, loadConfig, type LoadedConfig } from '@magic/state'
 import { createFileModelInfoCache } from './model-cache.ts'
 import { createModelsDevResource } from './models-dev-resource.ts'
 

@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { createCollaborationActions } from '@magic/host'
 import type { CollaborationRequest } from '@magic/contracts'
-import { createRecordsStore } from '@magic/records'
+import { createRecordsStore } from '@magic/data'
 import { removeDir, tempDir } from './tmp.ts'
 
 test('首次派生模型预检失败不展开协作；修正后重试只登记和启动同一成员', async () => {

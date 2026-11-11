@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RunRow } from '@magic/contracts'
-import type { RecordsStore } from '@magic/records'
+import type { RecordsStore } from '@magic/data'
 import { createAgentLauncher, type ExecutorLauncher } from '../src/run/launch.ts'
 import { collaborationRuntime, latch, requestText, spawnMember } from './run-collaboration-fixture.ts'
 
