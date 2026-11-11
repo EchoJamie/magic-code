@@ -27,6 +27,8 @@
 export { createRecordsStore, readSessionSummary, DATABASE_FILE } from './store.ts'
 export type { RecordsStore, RecordsStoreOptions } from './store.ts'
 export type { AttentionStore } from './attention.ts'
+export { createRunRecords } from './runs.ts'
+export type { RunRecord, RunRecords, RunJournalEntry, RunState } from './runs.ts'
 
 export { isToolCallEntry, isToolResultEntry } from './entries.ts'
 export type { ToolCallEntry, ToolResultEntry } from './entries.ts'

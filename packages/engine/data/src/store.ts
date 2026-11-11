@@ -66,6 +66,7 @@ import { eventOfRow, eventParamsOf, isTransientEvent, type EventRow } from './ev
 import { scanForRecovery, type RecoveryScan } from './recovery.ts'
 import { createIdSpace } from './ids.ts'
 import { acquireDataLock, prepareDataDir } from './bootstrap.ts'
+import { createRunRecords } from './runs.ts'
 import {
   ENTRIES_TABLE,
   EVENTS_TABLE,
@@ -180,6 +181,8 @@ export type RecordsStore = {
   /** 注意事项与记录共库；读取不标读，确认只作用于具体事项 id。 */
   readonly attention: AttentionStore
   readonly collaboration: CollaborationRecords
+  /** 执行状态与恢复索引——不是会话事实（见 `runs.ts` 头注）。 */
+  readonly runs: import('./runs.ts').RunRecords
   serviceFor(session: SessionId): RecordsService
   /**
    * **按会话读条目**——**不经会话实例**（第 19 轮补）。
@@ -321,6 +324,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   const ids = createIdSpace(db)
   const blobs = createBlobStore(blobsDir)
   const attention = createAttentionStore(db)
+  const runs = createRunRecords(db)
 
   return view(options.workspace, true)
 
@@ -642,6 +646,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     knowledge: createKnowledgeRecords(db, workspace),
     attention,
     collaboration,
+    runs,
 
     serviceFor(session: SessionId): RecordsService {
       assertSessionId(session)
