@@ -5,8 +5,8 @@ import { join } from 'node:path'
 import { createSandbox, startFixture } from './ui/index.ts'
 import { startResidentHost } from './resident-host-fixture.ts'
 import { readDatabase } from './support.ts'
-import { controlService } from '../src/run/engine-service.ts'
-import { hostDiscoveryPath } from '../src/run/host-discovery.ts'
+import { controlService } from '@magic/host'
+import { hostDiscoveryPath } from '@magic/host'
 import { readEngineState } from '@magic/host'
 
 const CLI = join(import.meta.dir, '../src/cli.ts')

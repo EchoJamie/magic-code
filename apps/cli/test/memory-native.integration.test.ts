@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path'
 import type { NativeResponse } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
 import { createWorkingNotes } from '@magic/resources'
-import { startManager, type Manager } from '../src/run/manager.ts'
+import { startManager, type Manager } from '@magic/host'
 import { runPathsOf } from '@magic/host'
 
 test('真实 Swift→Engine→笔记文件及历史→Swift 分页读取，无 Agent，退出关闭 socket', async () => {

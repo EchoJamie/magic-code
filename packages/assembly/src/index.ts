@@ -916,3 +916,7 @@ export function assemble(options: AssembleOptions): Assembly {
     },
   }
 }
+
+export * from './background-session.ts'
+export * from './collaboration-boundary.ts'
+export * from './image-file.ts'

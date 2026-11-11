@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { locateHost, readHostDiscovery, selectedHostConfig } from '../src/run/host-discovery.ts'
-import { connectApp } from '../src/run/spawn-manager.ts'
+import { locateHost, readHostDiscovery, selectedHostConfig } from '@magic/host'
+import { connectApp } from '@magic/host'
 import { cliGround } from './resident-cli-fixture.ts'
 
 describe('Engine 发现与显式打开', () => {

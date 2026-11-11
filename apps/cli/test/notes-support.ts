@@ -4,7 +4,7 @@ import { createRecordsStore } from '@magic/data'
 import { createWorkingNotes, createWorkspaceService, createSandbox } from '@magic/resources'
 import { createToolRuntime } from '@magic/tools'
 import { createConversationSession } from '@magic/conversation'
-import { createStamper } from '../src/agent-assembly/events.ts'
+import { createStamper } from '@magic/assembly'
 import { tempDir, removeDir } from './tmp.ts'
 import { join } from 'node:path'
 

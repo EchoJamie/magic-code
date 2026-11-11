@@ -15,6 +15,7 @@
     "records": "bun run scripts/inspect-records.ts"
   },
   "dependencies": {
+    "@magic/assembly": "workspace:*",
     "@magic/host": "workspace:*",
     "@magic/client": "workspace:*",
     "@magic/contracts": "workspace:*",

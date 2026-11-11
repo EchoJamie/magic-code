@@ -19,6 +19,7 @@
         "magic": "./src/cli.ts",
       },
       "dependencies": {
+        "@magic/assembly": "workspace:*",
         "@magic/client": "workspace:*",
         "@magic/contracts": "workspace:*",
         "@magic/conversation": "workspace:*",
@@ -36,6 +37,24 @@
       "devDependencies": {
         "@magic/faux": "workspace:*",
         "@xterm/headless": "^6.0.0",
+      },
+    },
+    "packages/assembly": {
+      "name": "@magic/assembly",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/client": "workspace:*",
+        "@magic/contracts": "workspace:*",
+        "@magic/conversation": "workspace:*",
+        "@magic/data": "workspace:*",
+        "@magic/host": "workspace:*",
+        "@magic/mcp": "workspace:*",
+        "@magic/model": "workspace:*",
+        "@magic/resources": "workspace:*",
+        "@magic/state": "workspace:*",
+        "@magic/tools": "workspace:*",
+        "@magic/transport": "workspace:*",
+        "undici": "7.29.1",
       },
     },
     "packages/client/local-capabilities": {
@@ -91,6 +110,7 @@
       "name": "@magic/host",
       "version": "0.0.0",
       "dependencies": {
+        "@magic/assembly": "workspace:*",
         "@magic/contracts": "workspace:*",
         "@magic/conversation": "workspace:*",
         "@magic/data": "workspace:*",
@@ -189,6 +209,8 @@
     "@alcalzone/ansi-tokenize": ["@alcalzone/ansi-tokenize@0.3.1", "https://registry.npmmirror.com/@alcalzone/ansi-tokenize/-/ansi-tokenize-0.3.1.tgz", { "dependencies": { "ansi-styles": "^6.2.1", "is-fullwidth-code-point": "^5.0.0" } }, "sha512-cUD0PT0YX+rImRhfn7BfMRduP/tX/Zqt/N0dHlAyn2RlcJssCb5KsCJkhln61eh9vuJDkH8wKn3L8zJzzWXPFg=="],
 
     "@hono/node-server": ["@hono/node-server@2.1.1", "https://registry.npmmirror.com/@hono/node-server/-/node-server-2.1.1.tgz", { "peerDependencies": { "hono": "^4" } }, "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg=="],
+
+    "@magic/assembly": ["@magic/assembly@workspace:packages/assembly"],
 
     "@magic/cli": ["@magic/cli@workspace:apps/cli"],
 

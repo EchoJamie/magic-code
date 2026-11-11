@@ -1,8 +1,8 @@
 import { expect, test } from 'bun:test'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { controlService, serviceLabel, type PlatformCommand } from '../src/run/engine-service.ts'
-import { connectManager } from '../src/run/client.ts'
+import { controlService, serviceLabel, type PlatformCommand } from '@magic/host'
+import { connectManager } from '@magic/host'
 import { startFixture } from './ui/fixture.ts'
 import { waitFor } from './resident-cli-fixture.ts'
 

@@ -10,7 +10,7 @@ import { resolveMagicHome, SOFTWARE_VERSION, NATIVE_PROTOCOL } from '@magic/cont
 import { resolveModelChoice } from '@magic/host'
 import { ConfigError, describeConfig } from '@magic/state'
 import { workspaceOf } from '@magic/host'
-import type { AppConnection, AppConnectionOptions } from './run/spawn-manager.ts'
+import type { AppConnection, AppConnectionOptions } from '@magic/host'
 import { attachShell } from './shell.ts'
 import { selectedParent } from '@magic/host'
 import type { ShellScript } from './shell.ts'
@@ -368,7 +368,7 @@ export async function runAppScript(args: Args & { readonly script: string }, opt
 
 /** 主动终端接入；测试可显式注入沙地发现与 Engine 路径，产品不增加第二种后台模式。 */
 export async function connectTerminal(args: Args, options: AppConnectionOptions = {}): Promise<AppConnection> {
-  const { connectApp } = await import('./run/spawn-manager.ts')
+  const { connectApp } = await import('@magic/host')
   return connectApp({
     ...options,
     intent: 'open',
@@ -401,7 +401,7 @@ async function runTerminal(args: Args): Promise<number> {
     }
     const modelInfo = await readModelInfo(loaded, magic)
     const { runTui } = await import('@magic/shell')
-    const { connectApp } = await import('./run/spawn-manager.ts')
+    const { connectApp } = await import('@magic/host')
     const connection = terminalConnection(client, async (session) => {
       const reopened = await connectApp({ intent: 'observe', expectedInstance: { base: magic.base }, connect: {
         cwd: process.cwd(), label: 'terminal', reattach: true,
@@ -429,7 +429,7 @@ async function main(): Promise<number> {
     const action = process.argv[3]
     if (!['status', 'start', 'stop'].includes(action ?? '') || process.argv.length !== 4) { console.error('用法：magic engine status|start|stop'); return 1 }
     try {
-      const { controlEngine } = await import('./run/spawn-manager.ts')
+      const { controlEngine } = await import('@magic/host')
       const result = await controlEngine(action as 'status' | 'start' | 'stop', { home: homedir() })
       console.log(`Magic Engine：${result.state}${result.error ? `（${result.error}）` : ''}\n数据实例：${result.base}`)
       return result.state === 'failed' || result.state === 'unreachable' ? 1 : 0

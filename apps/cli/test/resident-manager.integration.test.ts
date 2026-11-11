@@ -6,9 +6,9 @@ import type { KernelEvent, NativeResponse, RunSnapshot, Wire } from '@magic/cont
 import { resolveMagicHome } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
 import { spawnOwned, reapOwned } from '@magic/resources'
-import { startManager, type ManagerOptions, type ExecutorRequest } from '../src/run/manager.ts'
+import { startManager, type ManagerOptions, type ExecutorRequest } from '@magic/host'
 import { runPathsOf } from '@magic/host'
-import { connectManager } from '../src/run/client.ts'
+import { connectManager } from '@magic/host'
 import { terminalConnection } from '../src/run/terminal.ts'
 import { linkOf, socketHandlers } from '@magic/host'
 

@@ -1,10 +1,10 @@
 /** 隔离 Engine；测试入口关闭不拥有其寿命，夹具结束时显式停止。 */
 import { mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { hostDiscoveryPath } from '../src/run/host-discovery.ts'
-import { engineCall, type EngineCall } from '../src/run/engine-call.ts'
+import { hostDiscoveryPath } from '@magic/host'
+import { engineCall, type EngineCall } from '@magic/host'
 import { readEngineState } from '@magic/host'
-import { softwareSource } from '../src/run/runtime-launch.ts'
+import { softwareSource } from '@magic/host'
 import type { Sandbox } from './ui/sandbox.ts'
 
 export async function startResidentHost(sandbox: Sandbox, evidence = join(sandbox.root, `engine-check-${crypto.randomUUID()}`), cli = join(import.meta.dir, '../src/engine.ts')) {

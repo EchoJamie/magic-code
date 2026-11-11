@@ -8,7 +8,7 @@ import { assertHostIdentity } from './host-discovery.ts'
 import { runPathsOf } from '@magic/host'
 import { softwareSource } from './runtime-launch.ts'
 import { linkOf, socketHandlers } from '@magic/host'
-import { readRuns, writeRuns } from './manager.ts'
+import { readRuns, writeRuns } from './run-store.ts'
 import { reclaim } from '@magic/host'
 
 export type EngineCall = {

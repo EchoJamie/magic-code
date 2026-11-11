@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import type { BackgroundChange, BackgroundFinish, BackgroundRunning, BackgroundRuns, BackgroundStartOptions, BackgroundView } from '@magic/contracts'
-import { createBackgroundSession } from '../src/background-session.ts'
+import { createBackgroundSession } from '@magic/assembly'
 
 function fixture() {
   const live = new Map<string, BackgroundRunning>()

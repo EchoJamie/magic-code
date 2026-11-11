@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { notesFixture } from './notes-support.ts'
 import type { KernelEvent, ModelGateway } from '@magic/contracts'
-import { createCompactController } from '../src/run/compact.ts'
+import { createCompactController } from '@magic/host'
 
 function held(base: ModelGateway) {
   let release!: () => void

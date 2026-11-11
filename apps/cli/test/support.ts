@@ -190,7 +190,7 @@ export function readDatabase(databasePath: string): RawDatabase {
 }
 
 /** 进程内装配用例的界面适配；正式 CLI 的接线由 terminalOptions 集成用例验证。 */
-export async function assemblyTuiOptions(assembly: import('../src/assembly.ts').Assembly): Promise<import('@magic/shell').RunTuiOptions> {
+export async function assemblyTuiOptions(assembly: import('@magic/assembly').Assembly): Promise<import('@magic/shell').RunTuiOptions> {
   return {
     transport: assembly.shell, boot: () => assembly.boot(), contextWindow: assembly.contextWindow,
     workspaceRoots: assembly.workspaceRoots, dataDir: assembly.magic.base, magicBase: assembly.magic.base,

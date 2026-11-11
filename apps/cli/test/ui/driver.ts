@@ -48,7 +48,7 @@ import { createVt } from './vt.ts'
 import type { Vt, VtCell, VtCursor, VtScreen } from './vt.ts'
 import { writeViewer } from './viewer.ts'
 import { startResidentHost } from '../resident-host-fixture.ts'
-import { hostDiscoveryPath } from '../../src/run/host-discovery.ts'
+import { hostDiscoveryPath } from '@magic/host'
 
 /** 本仓根——被测 checkout 的缺省值（从本文件往上四层：ui → test → app → packages → 根）。 */
 export const REPO_ROOT = resolve(import.meta.dir, '../../../..')

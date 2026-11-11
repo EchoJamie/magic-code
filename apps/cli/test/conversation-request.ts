@@ -2,7 +2,7 @@
 import type { KnowledgeRecords, ModelRequest, RecordsService } from '@magic/contracts'
 import { createConversationSession } from '@magic/conversation'
 import { createFauxGateway, makeFauxSink, makeFauxToolRuntime } from '@magic/faux'
-import { createStamper } from '../src/agent-assembly/events.ts'
+import { createStamper } from '@magic/assembly'
 
 export async function requestFromStoredSession(input: {
   records: RecordsService

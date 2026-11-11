@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync, renameSync, symlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { connectApp, reopenApp } from '../src/run/spawn-manager.ts'
+import { connectApp, reopenApp } from '@magic/host'
 import { cliGround, fakeApp } from './resident-cli-fixture.ts'
-import { locateHost, hostDiscoveryPath } from '../src/run/host-discovery.ts'
+import { locateHost, hostDiscoveryPath } from '@magic/host'
 
 
 
@@ -64,7 +64,7 @@ Path(${JSON.stringify(marker)}).write_text(str(os.getpid()))
 while not Path(${JSON.stringify(release)}).exists(): time.sleep(.01)
 Path(${JSON.stringify(done)}).write_text('finished')
 `, { mode: 0o700 })
-  const source = new URL('../src/run/spawn-manager.ts', import.meta.url).pathname
+  const source = new URL('../../../packages/engine/host/src/spawn-manager.ts', import.meta.url).pathname
   const parent = Bun.spawn([process.execPath, '-e', `import {controlEngine} from ${JSON.stringify(source)}; await controlEngine('stop', ${JSON.stringify({ home: g.home, enginePath: native, env: {} })})`], { detached: true, stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' })
   let controller: number | undefined
   const until = async (check: () => boolean) => { const end = Date.now() + 5000; while (!check()) { if (Date.now() > end) throw new Error('短控制状态未到'); await Bun.sleep(10) } }

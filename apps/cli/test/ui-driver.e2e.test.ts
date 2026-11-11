@@ -4,7 +4,7 @@ import { join } from 'node:path'
 
 import { UiWaitTimeout, createUiSession, rawBytesOf, type UiSession } from './ui/driver.ts'
 import { startResidentHost } from './resident-host-fixture.ts'
-import { hostDiscoveryPath } from '../src/run/host-discovery.ts'
+import { hostDiscoveryPath } from '@magic/host'
 import type { HostDiscovery } from '@magic/contracts'
 import { createSandbox } from './ui/sandbox.ts'
 import { startFixture } from './ui/fixture.ts'

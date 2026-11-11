@@ -5,8 +5,8 @@ import { join } from 'node:path'
 import { resolveMagicHome, type NativeResponse, type NativeWork, type RunNotice } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
 import { runPathsOf } from '@magic/host'
-import { startManager } from '../src/run/manager.ts'
-import { connectManager, type ManagerClient } from '../src/run/client.ts'
+import { startManager } from '@magic/host'
+import { connectManager, type ManagerClient } from '@magic/host'
 import { linkOf, socketHandlers } from '@magic/host'
 
 async function until(check: () => boolean) {

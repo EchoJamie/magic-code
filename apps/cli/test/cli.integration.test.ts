@@ -6,7 +6,7 @@ import { join } from 'node:path'
 
 import { parseArgs, connectTerminal } from '../src/cli.ts'
 import { cliGround, fakeApp } from './resident-cli-fixture.ts'
-import { reopenApp } from '../src/run/spawn-manager.ts'
+import { reopenApp } from '@magic/host'
 
 describe('resident-cli 短路径与终端接回参数', () => {
 

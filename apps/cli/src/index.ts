@@ -21,8 +21,8 @@
 
 // —— 全链装配 ——
 
-export { assemble, createStamper } from './assembly.ts'
-export type { AssembleOptions, Assembly, EnvironmentVars } from './assembly.ts'
+export { assemble, createStamper } from '@magic/assembly'
+export type { AssembleOptions, Assembly, EnvironmentVars } from '@magic/assembly'
 
 // —— 配置加载 ——
 

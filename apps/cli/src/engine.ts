@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { homedir } from 'node:os'
 import { NATIVE_PROTOCOL, SOFTWARE_VERSION, type ServiceIdentity } from '@magic/contracts'
-import { controlService, type ServiceAction } from './run/engine-service.ts'
+import { controlService, type ServiceAction } from '@magic/host'
 
 /** Engine 是独立产物；CLI 和 App 仅调用此管理入口。 */
 export async function engineMain(argv: readonly string[]): Promise<number> {
@@ -38,7 +38,7 @@ export async function engineMain(argv: readonly string[]): Promise<number> {
     console.log(JSON.stringify({ removed: component, dataPreserved: true })); return 0
   }
   if (argv[0] === 'serve') {
-    const { runEngine } = await import('./run/host-runtime.ts')
+    const { runEngine } = await import('@magic/host')
     try { return await runEngine(argv.slice(1)) }
     catch (error) { console.error(`Engine 启动失败：${String(error)}`); return 0 }
   }

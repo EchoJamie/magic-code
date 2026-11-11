@@ -15,7 +15,8 @@
     "@magic/data": "workspace:*",
     "@magic/model": "workspace:*",
     "@magic/state": "workspace:*",
-    "undici": "7.29.1"
+    "undici": "7.29.1",
+    "@magic/assembly": "workspace:*"
   },
   "devDependencies": {
     "@magic/faux": "workspace:*"

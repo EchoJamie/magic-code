@@ -5,7 +5,7 @@ import { createRecordsStore } from '@magic/data'
 import { createFauxGateway, makeFauxSink, makeFauxToolRuntime, makeTestStamper } from '@magic/faux'
 import type { FauxTurn, FauxToolHandler, FauxSink } from '@magic/faux'
 import { tempDir, removeDir } from './tmp.ts'
-import { createCollaborationBoundary } from '../src/collaboration-boundary.ts'
+import { createCollaborationBoundary } from '@magic/assembly'
 import { createManagedCollaboration } from '@magic/host'
 
 function fixture() {

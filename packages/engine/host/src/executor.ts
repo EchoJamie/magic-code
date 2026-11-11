@@ -12,8 +12,8 @@ import type {
   RunSnapshot,
 } from '@magic/contracts'
 import { createSudoAuth } from '@magic/host'
-import { assemble } from '../assembly.ts'
-import type { Assembly } from '../assembly.ts'
+import { assemble } from '@magic/assembly'
+import type { Assembly } from '@magic/assembly'
 import { loadConfig } from '@magic/state'
 import { isProgress, progressOf, tailOf } from '@magic/host'
 import type { ExecutorToManager, Link, ManagerToExecutor } from '@magic/host'

@@ -5,8 +5,8 @@ import { join } from 'node:path'
 import { resolveMagicHome } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
 import { spawnOwned } from '@magic/resources'
-import { startManager, type ExecutorRequest } from '../src/run/manager.ts'
-import { connectManager } from '../src/run/client.ts'
+import { startManager, type ExecutorRequest } from '@magic/host'
+import { connectManager } from '@magic/host'
 import { runPathsOf } from '@magic/host'
 
 const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }

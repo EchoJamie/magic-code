@@ -5,9 +5,9 @@ import type { Command, KernelEvent } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
 import { createConversationSession } from '@magic/conversation'
 import { createFauxGateway, makeFauxToolRuntime } from '@magic/faux'
-import { createStamper } from '../src/agent-assembly/events.ts'
-import { connectManager } from '../src/run/client.ts'
-import { startManager, type Manager } from '../src/run/manager.ts'
+import { createStamper } from '@magic/assembly'
+import { connectManager } from '@magic/host'
+import { startManager, type Manager } from '@magic/host'
 import { runPathsOf } from '@magic/host'
 
 test('真实Engine查询/证据/遗忘/重连回查不启动Agent，停止发现且保留原历史', async () => {

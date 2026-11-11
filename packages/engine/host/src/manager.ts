@@ -64,9 +64,7 @@ import {
   storedRunOf,
   tailOf,
 } from '@magic/host'
-import { RECORD_VERSION, clearRecord, clearStale, readRecord, readRuns, writeRecord, writeRuns, type ManagerRecord } from '@magic/host'
-export { readRecord, readRuns, writeRuns } from '@magic/host'
-export type { ManagerRecord } from '@magic/host'
+import { RECORD_VERSION, clearRecord, clearStale, readRecord, readRuns, writeRecord, writeRuns, type ManagerRecord } from './run-store.ts'
 import { createAgentLauncher, type ExecutorLauncher, type SpawnedExecutor } from './launch.ts'
 export type { ExecutorLauncher, ExecutorRequest, SpawnedExecutor } from './launch.ts'
 import { projectWorks } from '@magic/host'

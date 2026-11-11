@@ -3,9 +3,9 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { NATIVE_PROTOCOL, SOFTWARE_VERSION, type HostDiscovery } from '@magic/contracts'
 import { acquireFileLock } from '@magic/state'
 import { componentDirectory, componentSource, privateDirectory, readComponents, readJSON, writePrivateJSON, type Components } from '@magic/host'
-import { acquireServiceLock, controlService } from './run/engine-service.ts'
+import { acquireServiceLock, controlService } from '@magic/host'
 import { normalizeDataDir } from '@magic/host'
-import { softwareSource } from './run/runtime-launch.ts'
+import { softwareSource } from '@magic/host'
 
 export type ComponentKind = 'engine' | 'cli'
 export type ComponentIdentity = { component: ComponentKind; version: string; protocol: number; team: string }

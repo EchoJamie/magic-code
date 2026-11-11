@@ -5,7 +5,8 @@ export function runtimeLaunch(entry?: string): readonly string[] {
   if (entry !== undefined) return [process.execPath, entry]
   return Bun.isStandaloneExecutable
     ? [realpathSync(process.execPath)]
-    : [process.execPath, new URL('../engine.ts', import.meta.url).pathname]
+    // 源码形态的引擎入口仍在 apps/cli（apps/engine 尚未拆出）。
+    : [process.execPath, new URL('../../../../apps/cli/src/engine.ts', import.meta.url).pathname]
 }
 
 export function softwareSource(): string {

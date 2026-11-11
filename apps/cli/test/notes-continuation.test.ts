@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { notesFixture, continuationTurn, continuationCounts } from './notes-support.ts'
 import { requestFromStoredSession } from './conversation-request.ts'
-import { createCompactController } from '../src/run/compact.ts'
+import { createCompactController } from '@magic/host'
 
 const textOf = (request: { messages: unknown }) => JSON.stringify(request.messages)
 

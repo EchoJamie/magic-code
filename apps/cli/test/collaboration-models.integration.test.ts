@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { join } from 'node:path'
 import type { AgentModelConfig, AgentRoleConfig, CollaborationReply, ModelInfoSnapshot } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
-import { assemble } from '../src/assembly.ts'
+import { assemble } from '@magic/assembly'
 import { resolveManagedModel } from '@magic/host'
 import { loadConfig } from '@magic/state'
 import { cacheAccessFor } from '@magic/host'
