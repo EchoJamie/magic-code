@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { createRecordsStore } from '@magic/records'
-import { createManagedCollaboration } from '../src/run/collaboration.ts'
+import { createManagedCollaboration } from '@magic/host'
 import { captureCollaborationNative, mergeCollaborationNative } from '@magic/host'
 import { projectWorks } from '@magic/host'
 import { tempDir, removeDir } from './tmp.ts'

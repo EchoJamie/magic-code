@@ -618,7 +618,7 @@ describe('收缩与异常', () => {
 })
 
 test('在途执行者动态调整诊断等级，代次与审批保持；错误等级不继续记 trace', async () => {
-  const { applyHostDiagnostics } = await import('../src/run/diagnostics-client.ts')
+  const { applyHostDiagnostics } = await import('@magic/host')
   const { readdirSync } = await import('node:fs')
   const { configStamp } = await import('@magic/config')
   const g = ground('live-diagnostics'), manager = await standUp(g), client = await open(g, manager, 'diagnostics')

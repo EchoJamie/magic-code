@@ -6,7 +6,7 @@ import { createFauxGateway, makeFauxSink, makeFauxToolRuntime, makeTestStamper }
 import type { FauxTurn, FauxToolHandler, FauxSink } from '@magic/faux'
 import { tempDir, removeDir } from './tmp.ts'
 import { createCollaborationBoundary } from '../src/collaboration-boundary.ts'
-import { createManagedCollaboration } from '../src/run/collaboration.ts'
+import { createManagedCollaboration } from '@magic/host'
 
 function fixture() {
   const dir = tempDir('magic-collaboration-runtime-')

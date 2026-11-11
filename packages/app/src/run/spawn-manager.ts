@@ -1,7 +1,7 @@
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { NATIVE_PROTOCOL, SOFTWARE_VERSION, resolveMagicHome, type DiagnosticsChange, type HostDiscovery, type MagicHome } from '@magic/contracts'
-import { applyHostDiagnostics } from './diagnostics-client.ts'
+import { applyHostDiagnostics } from '@magic/host'
 import type { LoadedConfig } from '@magic/config'
 import { connectManager, executionEnvironment, type ConnectOptions, type ManagerClient } from './client.ts'
 import { locateHost, readHostDiscovery, selectedHostConfig, type HostLocationOptions } from './host-discovery.ts'
