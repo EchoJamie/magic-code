@@ -8,10 +8,10 @@ import { createRecordsStore } from '@magic/records'
 import { startTimeOf } from '@magic/execution'
 import { resolveMagicHome } from '@magic/contracts'
 import { readRuns, writeRuns } from '../src/run/manager.ts'
-import { runPathsOf } from '../src/run/paths.ts'
+import { runPathsOf } from '@magic/host'
 import { connectManager } from '../src/run/client.ts'
 import { startFixture } from './ui/fixture.ts'
-import { readEngineState } from '../src/run/engine-state.ts'
+import { readEngineState } from '@magic/host'
 
 async function fixture(config = '{}', prepare?: (home: string) => Promise<void>) {
   const home = mkdtempSync(join(tmpdir(), 'magic-engine-')), source = softwareSource(), discovery = join(home, 'runtime/host.json')

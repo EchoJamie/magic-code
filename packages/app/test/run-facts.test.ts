@@ -27,8 +27,8 @@ import {
   runStateOf,
   stopReasonOf,
   tailOf,
-} from '../src/run/facts.ts'
-import type { RunRecord } from '../src/run/facts.ts'
+} from '@magic/host'
+import type { RunRecord } from '@magic/host'
 
 /** 一条记录——各支只动它关心的那几格（其余照「刚发车」的样子）。 */
 function record(over: Partial<RunRecord> = {}): RunRecord {

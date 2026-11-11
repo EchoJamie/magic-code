@@ -3,7 +3,7 @@ import { isAbsolute, join } from 'node:path'
 import { type HostDiscovery, type ServiceIdentity } from '@magic/contracts'
 import { componentDirectory, privateDirectory, selectedParent, writePrivateJSON } from '../components.ts'
 import { engineCall, type EngineResult } from './engine-call.ts'
-import { fingerprintOf, normalizeDataDir } from './paths.ts'
+import { fingerprintOf, normalizeDataDir } from '@magic/host'
 import { runtimeLaunch, softwareSource } from './runtime-launch.ts'
 
 export type ServiceAction = 'status' | 'start' | 'stop' | 'switch' | 'remove'

@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { alive } from '../src/run/facts.ts'
+import { alive } from '@magic/host'
 import { connectManager, type ManagerClient } from '../src/run/client.ts'
 import { startResidentHost } from './resident-host-fixture.ts'
 import { createSandbox, startFixture } from './ui/index.ts'

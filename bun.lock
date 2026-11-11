@@ -26,6 +26,7 @@
         "@magic/control": "workspace:*",
         "@magic/conversation": "workspace:*",
         "@magic/execution": "workspace:*",
+        "@magic/host": "workspace:*",
         "@magic/mcp": "workspace:*",
         "@magic/model": "workspace:*",
         "@magic/records": "workspace:*",
@@ -95,6 +96,16 @@
       "version": "0.0.0",
       "dependencies": {
         "@magic/contracts": "workspace:*",
+      },
+    },
+    "packages/engine/host": {
+      "name": "@magic/host",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+        "@magic/conversation": "workspace:*",
+        "@magic/execution": "workspace:*",
+        "@magic/records": "workspace:*",
       },
     },
     "packages/engine/state": {
@@ -201,6 +212,8 @@
     "@magic/execution": ["@magic/execution@workspace:packages/runtime/resources"],
 
     "@magic/faux": ["@magic/faux@workspace:test/faux"],
+
+    "@magic/host": ["@magic/host@workspace:packages/engine/host"],
 
     "@magic/mcp": ["@magic/mcp@workspace:packages/runtime/mcp"],
 

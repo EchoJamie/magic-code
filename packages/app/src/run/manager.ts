@@ -9,14 +9,14 @@ import {
   captureCollaborationNative,
   mergeCollaborationNative,
   type CollaborationNativeGroup,
-} from './collaboration-native.ts'
+} from '@magic/host'
 import { createManagedCollaboration } from './collaboration.ts'
 import { createClientConnections, type ClientConn } from './connections.ts'
 import { createExecutorControl, sendToExecutor as send, type Executor } from './executor-control.ts'
 import { ARCHIVED_NOTE, createSessionManagement } from './session-management.ts'
 import { createRunStops } from './stopping.ts'
 import { createCompactController } from './compact.ts'
-import { memoryWorkspace, readMemory, readMemorySource, readReferenceSessions } from './memory.ts'
+import { memoryWorkspace, readMemory, readMemorySource, readReferenceSessions } from '@magic/host'
 /** App 所属的本机管理者：独占服务、只读观察、按需执行与有责收尾。
  * 记录事实通过 records 端口读取；控制连接本身不创建会话或执行者。
  * 执行者退出与其自有资源核销分开确认，宿主生命管道负责最终收尾。
@@ -50,7 +50,7 @@ import { createProcessLedger } from '@magic/execution'
 import { createRecordsStore } from '@magic/records'
 import type { Socket } from 'bun'
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import type { RunRecord, StoredRun, StoredRuns } from './facts.ts'
+import type { RunRecord, StoredRun, StoredRuns } from '@magic/host'
 import {
   RUNS_VERSION,
   STORED_RUNS_LIMIT,
@@ -65,18 +65,18 @@ import {
   runRowOf,
   storedRunOf,
   tailOf,
-} from './facts.ts'
+} from '@magic/host'
 import { createAgentLauncher, type ExecutorLauncher, type SpawnedExecutor } from './launch.ts'
 export type { ExecutorLauncher, ExecutorRequest, SpawnedExecutor } from './launch.ts'
-import { projectWorks } from './native-projection.ts'
+import { projectWorks } from '@magic/host'
 import { createNativeServer } from './native-server.ts'
-import { noticeKey } from './notices.ts'
+import { noticeKey } from '@magic/host'
 import { query as observe, workspaceOf } from './observation.ts'
-import type { RunPaths } from './paths.ts'
-import { ensureRunDir, normalizeDataDir, tightenSocket } from './paths.ts'
+import type { RunPaths } from '@magic/host'
+import { ensureRunDir, normalizeDataDir, tightenSocket } from '@magic/host'
 import { softwareSource } from './runtime-launch.ts'
-import type { ClientToManager, ExecutorToManager, Link, ManagerToExecutor, McpProbeRow } from './wire.ts'
-import { linkOf, localLinks, socketHandlers } from './wire.ts'
+import type { ClientToManager, ExecutorToManager, Link, ManagerToExecutor, McpProbeRow } from '@magic/host'
+import { linkOf, localLinks, socketHandlers } from '@magic/host'
 
 /** 管理者自报身份的落盘形（`manager.json`）——诊断与重启核对用，**不是**权威状态。 */
 export type ManagerRecord = {

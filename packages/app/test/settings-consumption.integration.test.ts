@@ -2,7 +2,7 @@ import { runNativeSettings } from './native-settings-fixture.ts'
 import { expect, test } from 'bun:test'
 import { writeFileSync } from 'node:fs'
 import type { NativeResponse, SettingsAction } from '@magic/contracts'
-import { linkOf, socketHandlers } from '../src/run/wire.ts'
+import { linkOf, socketHandlers } from '@magic/host'
 import { collaborationRuntime, latch, spawnMember } from './run-collaboration-fixture.ts'
 
 // 保存走真实原生入口；消费走真实 manager / executor / 成员创建和本地 HTTP。

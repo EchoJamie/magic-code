@@ -3,7 +3,7 @@ import { isAbsolute, join, resolve } from 'node:path'
 import { NATIVE_PROTOCOL, SOFTWARE_VERSION, resolveMagicHome } from '@magic/contracts'
 import type { HostDiscovery, MagicHome, ServiceIdentity } from '@magic/contracts'
 import { loadConfig, type LoadedConfig } from '@magic/config'
-import { normalizeDataDir } from './paths.ts'
+import { normalizeDataDir } from '@magic/host'
 import { softwareSource } from './runtime-launch.ts'
 import { componentSource, readComponents } from '../components.ts'
 

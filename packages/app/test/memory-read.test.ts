@@ -5,9 +5,9 @@ import { createWorkingNotes } from '@magic/execution'
 import { createMaterialReader } from '@magic/conversation'
 import type { Wire } from '@magic/contracts'
 import { createNativeServer } from '../src/run/native-server.ts'
-import { readMemory, readMemorySource } from '../src/run/memory.ts'
+import { readMemory, readMemorySource } from '@magic/host'
 import { tempDir, removeDir } from './tmp.ts'
-import type { Link } from '../src/run/wire.ts'
+import type { Link } from '@magic/host'
 
 test('原生真实记忆读面与来源分页不创建会话或触发执行，归档仍可读，来源权限不扩大', async () => {
   const dir = tempDir('magic-memory-native-')

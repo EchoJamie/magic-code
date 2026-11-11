@@ -18,7 +18,7 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { normalizeDataDir, runPathsOf } from '../src/run/paths.ts'
+import { normalizeDataDir, runPathsOf } from '@magic/host'
 import { removeDir } from './tmp.ts'
 
 /** 一块沙地：家目录 / 基础目录 / 数据目录 / 临时目录四面各一处。 */

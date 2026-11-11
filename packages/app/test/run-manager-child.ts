@@ -18,7 +18,7 @@
 
 import { existsSync, writeFileSync } from 'node:fs'
 import { createAgentLauncher } from '../src/run/launch.ts'
-import { runPathsOf } from '../src/run/paths.ts'
+import { runPathsOf } from '@magic/host'
 import { startManager } from '../src/run/manager.ts'
 
 const [home, base, tmpdir, readyFile, goFile, resultFile] = process.argv.slice(2)

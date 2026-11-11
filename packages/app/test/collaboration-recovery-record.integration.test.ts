@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { createRecordsStore } from '@magic/records'
 import { connectManager, type ManagerClient } from '../src/run/client.ts'
 import { readRuns, startManager, type ExecutorRequest } from '../src/run/manager.ts'
-import { reconcile, STORED_RUNS_LIMIT } from '../src/run/facts.ts'
-import { runPathsOf } from '../src/run/paths.ts'
+import { reconcile, STORED_RUNS_LIMIT } from '@magic/host'
+import { runPathsOf } from '@magic/host'
 import { magicAt, tempDir, removeDir } from './tmp.ts'
 
 test('持久执行身份：未核销代次不受最近历史条数截断，重启核对仍保留原 token', async () => {

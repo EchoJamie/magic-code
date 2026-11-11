@@ -11,7 +11,7 @@ import { createSandbox } from '../../test/ui/sandbox.ts'
 import { startFixture } from '../../test/ui/fixture.ts'
 import { startResidentHost } from '../../test/resident-host-fixture.ts'
 import { connectManager, type ManagerClient } from '../../src/run/client.ts'
-import { readEngineState } from '../../src/run/engine-state.ts'
+import { readEngineState } from '@magic/host'
 import { hostDiscoveryPath } from '../../src/run/host-discovery.ts'
 
 for (const columns of [100, 200]) {

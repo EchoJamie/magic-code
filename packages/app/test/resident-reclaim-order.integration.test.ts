@@ -7,7 +7,7 @@ import { createRecordsStore } from '@magic/records'
 import { spawnOwned } from '@magic/execution'
 import { startManager, type ExecutorRequest } from '../src/run/manager.ts'
 import { connectManager } from '../src/run/client.ts'
-import { runPathsOf } from '../src/run/paths.ts'
+import { runPathsOf } from '@magic/host'
 
 const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
 async function until(check: () => boolean) {

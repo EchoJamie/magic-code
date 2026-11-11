@@ -8,7 +8,7 @@ import type { Command, KernelEvent } from '@magic/contracts'
 import { startManager } from '../src/run/manager.ts'
 import { connectManager } from '../src/run/client.ts'
 import { clientTransport } from '../src/run/terminal.ts'
-import { runPathsOf } from '../src/run/paths.ts'
+import { runPathsOf } from '@magic/host'
 import { tempDir, removeDir } from './tmp.ts'
 
 async function until(check: () => boolean) {

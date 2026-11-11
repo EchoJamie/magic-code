@@ -5,7 +5,7 @@ import type { NativeResponse } from '@magic/contracts'
 import { createRecordsStore } from '@magic/records'
 import { createWorkingNotes } from '@magic/execution'
 import { startManager, type Manager } from '../src/run/manager.ts'
-import { runPathsOf } from '../src/run/paths.ts'
+import { runPathsOf } from '@magic/host'
 
 test('真实 Swift→Engine→笔记文件及历史→Swift 分页读取，无 Agent，退出关闭 socket', async () => {
   const root = mkdtempSync('/tmp/magic-mn-'), repository = resolve(import.meta.dir, '../../..')

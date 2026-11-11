@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { Command, KernelEvent } from '@magic/contracts'
 import { attachShell } from '../src/shell.ts'
-import { runPathsOf } from '../src/run/paths.ts'
+import { runPathsOf } from '@magic/host'
 import { makeStage } from './support.ts'
 import { removeDir } from './tmp.ts'
 

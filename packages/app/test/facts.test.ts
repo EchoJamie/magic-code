@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { blocksNewRun, newRunRecord, reconcile, refresh, storedRunOf } from '../src/run/facts.ts'
+import { blocksNewRun, newRunRecord, reconcile, refresh, storedRunOf } from '@magic/host'
 
 function idle() {
   const run = newRunRecord({ gen: 1, session: 'origin', startedAt: 1_000, explicit: true })

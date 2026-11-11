@@ -7,7 +7,7 @@ import { startResidentHost } from './resident-host-fixture.ts'
 import { readDatabase } from './support.ts'
 import { controlService } from '../src/run/engine-service.ts'
 import { hostDiscoveryPath } from '../src/run/host-discovery.ts'
-import { readEngineState } from '../src/run/engine-state.ts'
+import { readEngineState } from '@magic/host'
 
 const CLI = join(import.meta.dir, '../src/cli.ts')
 

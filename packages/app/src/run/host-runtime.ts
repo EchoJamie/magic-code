@@ -3,11 +3,11 @@ import { startTimeOf } from '@magic/execution'
 import { tmpdir } from 'node:os'
 import { isAbsolute } from 'node:path'
 import { loadConfig } from '@magic/config'
-import { runPathsOf } from './paths.ts'
+import { runPathsOf } from '@magic/host'
 import { createAgentLauncher } from './launch.ts'
 import { startManager } from './manager.ts'
 import { softwareSource } from './runtime-launch.ts'
-import { writeEngineState } from './engine-state.ts'
+import { writeEngineState } from '@magic/host'
 
 /** launchd 直接托管；stdin/图形客户端关闭不参与 Engine 寿命。 */
 export async function runEngine(argv: readonly string[]): Promise<number> {

@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { linkOf } from '../src/run/wire.ts'
+import { linkOf } from '@magic/host'
 
 test('慢原生观察者合并中间完整投影，控制回执和已开始帧完整保留', () => {
   let writable = false

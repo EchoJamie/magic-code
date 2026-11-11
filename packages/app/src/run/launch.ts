@@ -1,7 +1,7 @@
 import type { MagicHome, ModelSwitchRequest, ProcessLedger } from '@magic/contracts'
 import type { RecordsStore } from '@magic/records'
 import type { WorkEnvironment } from '../work-environment.ts'
-import type { Link, ManagerToExecutor } from './wire.ts'
+import type { Link, ManagerToExecutor } from '@magic/host'
 import { runExecutor } from './executor.ts'
 
 export type ExecutorLauncher = {

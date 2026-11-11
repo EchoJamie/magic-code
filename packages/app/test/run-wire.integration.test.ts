@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'bun:test'
 import { join } from 'node:path'
 import type { Socket } from 'bun'
-import { linkOf, socketHandlers } from '../src/run/wire.ts'
+import { linkOf, socketHandlers } from '@magic/host'
 import type { Wire } from '@magic/contracts'
 import { removeDir, tempDir } from './tmp.ts'
 

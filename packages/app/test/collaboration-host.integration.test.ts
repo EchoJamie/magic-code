@@ -6,7 +6,7 @@ import type { KernelEvent } from '@magic/contracts'
 import { startManager, type Manager } from '../src/run/manager.ts'
 import { createAgentLauncher } from '../src/run/launch.ts'
 import { connectManager } from '../src/run/client.ts'
-import { runPathsOf } from '../src/run/paths.ts'
+import { runPathsOf } from '@magic/host'
 import { terminalConnection } from '../src/run/terminal.ts'
 import { collaborationRuntime, latch, requestText, spawnMember } from './run-collaboration-fixture.ts'
 

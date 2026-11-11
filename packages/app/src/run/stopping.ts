@@ -1,7 +1,7 @@
 import type { Command, StopPhase, StopScope } from '@magic/contracts'
 import { sendToExecutor as send, type Executor } from './executor-control.ts'
-import { refresh, stopReasonOf, type RunRecord } from './facts.ts'
-import { reclaim, reclaimNoteOf } from './reclaim.ts'
+import { refresh, stopReasonOf, type RunRecord } from '@magic/host'
+import { reclaim, reclaimNoteOf } from '@magic/host'
 
 /** 独占停止等待与回收任务；直接更新管理者持有的 RunRecord，不复制运行事实。
  * 等待与回收均绑定原对象，不以会话 id 兑现后继代的停止。

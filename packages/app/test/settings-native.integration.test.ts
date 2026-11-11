@@ -8,7 +8,7 @@ import { writeFileSync, readFileSync, mkdirSync, mkdtempSync, rmSync, statSync, 
 import { join } from 'node:path'
 import type { KernelEvent, SettingsAction, SettingsSnapshot, ModelCatalogRow } from '@magic/contracts'
 import { startManager } from '../src/run/manager.ts'
-import { runPathsOf } from '../src/run/paths.ts'
+import { runPathsOf } from '@magic/host'
 import { connectManager } from '../src/run/client.ts'
 import { clientTransport } from '../src/run/terminal.ts'
 import { terminalSettings } from '../src/run/terminal-settings.ts'

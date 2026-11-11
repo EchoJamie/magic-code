@@ -5,7 +5,7 @@ import { applyHostDiagnostics } from './diagnostics-client.ts'
 import type { LoadedConfig } from '@magic/config'
 import { connectManager, executionEnvironment, type ConnectOptions, type ManagerClient } from './client.ts'
 import { locateHost, readHostDiscovery, selectedHostConfig, type HostLocationOptions } from './host-discovery.ts'
-import { normalizeDataDir } from './paths.ts'
+import { normalizeDataDir } from '@magic/host'
 import type { EngineResult } from './engine-call.ts'
 
 export type AppConnectionOptions = Omit<HostLocationOptions, 'home'> & { readonly home?: string } & {

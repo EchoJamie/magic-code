@@ -44,6 +44,7 @@ const PACKAGE_TABLE: Record<string, readonly string[]> = {
   '@magic/mcp': ['@magic/contracts', '@magic/execution'],
   '@magic/execution': ['@magic/contracts'],
   '@magic/client': ['@magic/contracts'],
+  '@magic/host': ['@magic/contracts', '@magic/conversation', '@magic/execution', '@magic/records'],
   '@magic/control': ['@magic/contracts'],
   '@magic/tui': ['@magic/contracts'],
   '@magic/faux': ['@magic/contracts'],
@@ -59,6 +60,7 @@ const PACKAGE_TABLE: Record<string, readonly string[]> = {
     '@magic/mcp',
     '@magic/execution',
     '@magic/client',
+    '@magic/host',
     '@magic/control',
     '@magic/tui',
     '@magic/faux',
@@ -162,7 +164,7 @@ const FS_ALLOWED_PACKAGES = ['@magic/records', '@magic/execution']
  * `技术方案.md`·代码治理·边界纪律（扫描面＝域包）。**白名单断言不动**——它钉的是
  * 「域包里谁可以碰 fs」，与扫描面是两件事。
  */
-const NON_KERNEL_PACKAGES = [...SHELL_PACKAGES, '@magic/config', '@magic/faux', '@magic/client']
+const NON_KERNEL_PACKAGES = [...SHELL_PACKAGES, '@magic/config', '@magic/faux', '@magic/client', '@magic/host']
 
 /** fs 模块族——import 即触达文件系统。 */
 const FS_MODULES = [
@@ -872,7 +874,7 @@ describe('fs 触达提取（反向用例）', () => {
   })
 
   test('非内核包清单——外壳 · 装配根 · 测试层（扫描面收窄的锚）', () => {
-    expect(NON_KERNEL_PACKAGES).toEqual(['@magic/tui', '@magic/app', '@magic/config', '@magic/faux', '@magic/client'])
+    expect(NON_KERNEL_PACKAGES).toEqual(['@magic/tui', '@magic/app', '@magic/config', '@magic/faux', '@magic/client', '@magic/host'])
   })
 })
 

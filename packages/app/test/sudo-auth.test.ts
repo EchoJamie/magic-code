@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { ExecutorToManager } from '@magic/contracts'
-import { createSudoAuth } from '../src/run/sudo-auth.ts'
+import { createSudoAuth } from '@magic/host'
 
 function harness(validate?: Parameters<typeof createSudoAuth>[0]['validate']) {
   const sent: ExecutorToManager[] = []

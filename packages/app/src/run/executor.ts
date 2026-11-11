@@ -11,12 +11,12 @@ import type {
   ModelSwitchRequest,
   RunSnapshot,
 } from '@magic/contracts'
-import { createSudoAuth } from './sudo-auth.ts'
+import { createSudoAuth } from '@magic/host'
 import { assemble } from '../assembly.ts'
 import type { Assembly } from '../assembly.ts'
 import { loadConfig } from '@magic/config'
-import { isProgress, progressOf, tailOf } from './facts.ts'
-import type { ExecutorToManager, Link, ManagerToExecutor } from './wire.ts'
+import { isProgress, progressOf, tailOf } from '@magic/host'
+import type { ExecutorToManager, Link, ManagerToExecutor } from '@magic/host'
 
 /**
  * 收缩前那一段余量（毫秒）——见 `considerShrink` 的注。

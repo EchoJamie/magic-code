@@ -7,10 +7,10 @@ import { resolveMagicHome } from '@magic/contracts'
 import { createRecordsStore } from '@magic/records'
 import { spawnOwned, reapOwned } from '@magic/execution'
 import { startManager, type ManagerOptions, type ExecutorRequest } from '../src/run/manager.ts'
-import { runPathsOf } from '../src/run/paths.ts'
+import { runPathsOf } from '@magic/host'
 import { connectManager } from '../src/run/client.ts'
 import { terminalConnection } from '../src/run/terminal.ts'
-import { linkOf, socketHandlers } from '../src/run/wire.ts'
+import { linkOf, socketHandlers } from '@magic/host'
 
 async function waitFor(check: () => boolean) {
   const deadline = Date.now() + 3000

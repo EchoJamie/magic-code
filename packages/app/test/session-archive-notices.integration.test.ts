@@ -6,9 +6,9 @@ import { resolveMagicHome, type EventDataOf, type EventKind, type KernelEvent, t
 import { createRecordsStore } from '@magic/records'
 import { startManager, type ExecutorRequest } from '../src/run/manager.ts'
 import { connectManager, type ManagerClient } from '../src/run/client.ts'
-import { runPathsOf } from '../src/run/paths.ts'
-import { linkOf, socketHandlers } from '../src/run/wire.ts'
-import { canArchiveRun, newRunRecord, refresh } from '../src/run/facts.ts'
+import { runPathsOf } from '@magic/host'
+import { linkOf, socketHandlers } from '@magic/host'
+import { canArchiveRun, newRunRecord, refresh } from '@magic/host'
 
 async function until(predicate: () => boolean) {
   const deadline = Date.now() + 3000

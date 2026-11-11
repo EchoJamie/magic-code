@@ -1,4 +1,4 @@
-import { normalizeDataDir } from './paths.ts'
+import { normalizeDataDir } from '@magic/host'
 /** 终端连接：核对 App 身份、缓存接入快照，转交真实消息；不创建会话或自动重开 App。 */
 import type { Socket } from 'bun'
 import type {
@@ -8,8 +8,8 @@ import type {
 import { NATIVE_PROTOCOL, SOFTWARE_VERSION } from '@magic/contracts'
 import { softwareSource } from './runtime-launch.ts'
 import { assertHostIdentity } from './host-discovery.ts'
-import { linkOf, socketHandlers } from './wire.ts'
-import type { Link, ManagerToClient, McpProbeRow } from './wire.ts'
+import { linkOf, socketHandlers } from '@magic/host'
+import type { Link, ManagerToClient, McpProbeRow } from '@magic/host'
 
 export class ManagerRefused extends Error {
   constructor(readonly reason: string) {

@@ -8,7 +8,7 @@ import { createFauxGateway, makeFauxToolRuntime } from '@magic/faux'
 import { createStamper } from '../src/agent-assembly/events.ts'
 import { connectManager } from '../src/run/client.ts'
 import { startManager, type Manager } from '../src/run/manager.ts'
-import { runPathsOf } from '../src/run/paths.ts'
+import { runPathsOf } from '@magic/host'
 
 test('真实Engine查询/证据/遗忘/重连回查不启动Agent，停止发现且保留原历史', async () => {
   const root = mkdtempSync('/tmp/magic-k-')

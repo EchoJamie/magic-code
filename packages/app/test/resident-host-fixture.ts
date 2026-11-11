@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { hostDiscoveryPath } from '../src/run/host-discovery.ts'
 import { engineCall, type EngineCall } from '../src/run/engine-call.ts'
-import { readEngineState } from '../src/run/engine-state.ts'
+import { readEngineState } from '@magic/host'
 import { softwareSource } from '../src/run/runtime-launch.ts'
 import type { Sandbox } from './ui/sandbox.ts'
 

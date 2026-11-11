@@ -77,7 +77,7 @@ import {
   skillsCatalog,
   workspaceOf,
 } from './run/observation.ts'
-import { backgroundOutputDirOf, runPathsOf } from './run/paths.ts'
+import { backgroundOutputDirOf, runPathsOf } from '@magic/host'
 
 /** 瞬时类不落库（契约 `TRANSIENT_EVENT_KINDS`——记录 schema v0 规则 ①）。 */
 const TRANSIENT: ReadonlySet<EventKind> = new Set(TRANSIENT_EVENT_KINDS)

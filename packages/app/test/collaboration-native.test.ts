@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { AttentionItem, NativeWork, RunRow } from '@magic/contracts'
 import { createRecordsStore } from '@magic/records'
-import { captureCollaborationNative, mergeCollaborationNative } from '../src/run/collaboration-native.ts'
-import { projectWorks } from '../src/run/native-projection.ts'
+import { captureCollaborationNative, mergeCollaborationNative } from '@magic/host'
+import { projectWorks } from '@magic/host'
 import { removeDir, tempDir } from './tmp.ts'
 
 function fixture() {

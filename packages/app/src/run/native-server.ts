@@ -1,9 +1,9 @@
-import { memoryWorkspace, readMemory, readMemorySource } from './memory.ts'
+import { memoryWorkspace, readMemory, readMemorySource } from '@magic/host'
 import { readSessionDisplayHistory } from '@magic/conversation'
-import { normalizeDataDir } from './paths.ts'
+import { normalizeDataDir } from '@magic/host'
 import type { NativeProjection, NativeRequest, NativeResponse, NativeWork, NativeSession, SessionManagement, SessionManagementResult, Entry, KernelEvent, ServiceIdentity, StopPhase, Wire } from '@magic/contracts'
 import type { RecordsStore } from '@magic/records'
-import type { Link } from './wire.ts'
+import type { Link } from '@magic/host'
 
 export type NativeServerOptions = {
   readonly record?: (level: 'debug' | 'warn', event: string, request: string) => void

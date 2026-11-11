@@ -1,8 +1,8 @@
 import { expect, test } from 'bun:test'
 import { createRecordsStore } from '@magic/records'
 import { createManagedCollaboration } from '../src/run/collaboration.ts'
-import { captureCollaborationNative, mergeCollaborationNative } from '../src/run/collaboration-native.ts'
-import { projectWorks } from '../src/run/native-projection.ts'
+import { captureCollaborationNative, mergeCollaborationNative } from '@magic/host'
+import { projectWorks } from '@magic/host'
 import { tempDir, removeDir } from './tmp.ts'
 
 for (const completed of [false, true]) test(`宿主恢复 ${completed ? '已落账尚未投递' : '中断未完成'}，补存回报不重发模型`, async () => {

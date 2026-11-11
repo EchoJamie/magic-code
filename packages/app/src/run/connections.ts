@@ -1,6 +1,6 @@
 import type { KernelEvent, ModelSwitchRequest, RunSnapshot } from '@magic/contracts'
 import { sendToExecutor as send, type Executor } from './executor-control.ts'
-import type { ClientToManager, Link } from './wire.ts'
+import type { ClientToManager, Link } from '@magic/host'
 
 /** 管理者只读连接事实；目标、订阅、历史读取水位由连接目录独占。 */
 export type ClientConn = Readonly<{

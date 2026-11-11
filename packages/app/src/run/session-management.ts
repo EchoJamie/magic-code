@@ -1,8 +1,8 @@
 import type { EventDataOf, SessionManagement, SessionManagementResult } from '@magic/contracts'
 import { summarize } from '@magic/conversation'
 import type { RecordsStore } from '@magic/records'
-import { captureCollaborationNative } from './collaboration-native.ts'
-import { canArchiveRun, type RunRecord } from './facts.ts'
+import { captureCollaborationNative } from '@magic/host'
+import { canArchiveRun, type RunRecord } from '@magic/host'
 
 export const ARCHIVED_NOTE = '会话已归档，请在会话管理或 /resume 的已归档列表中恢复'
 

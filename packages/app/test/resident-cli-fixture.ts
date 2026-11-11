@@ -6,7 +6,7 @@ import { NATIVE_PROTOCOL, SOFTWARE_VERSION } from '@magic/contracts'
 import type { ClientToManager, HostDiscovery, ManagerToClient, ServiceIdentity } from '@magic/contracts'
 import { hostDiscoveryPath } from '../src/run/host-discovery.ts'
 import { softwareSource } from '../src/run/runtime-launch.ts'
-import { linkOf, socketHandlers, type Link } from '../src/run/wire.ts'
+import { linkOf, socketHandlers, type Link } from '@magic/host'
 
 /** 供假服务与专用 stdin 真宿主共用；value 允许非法夹具以覆盖拒绝路径。 */
 export function publishHostDiscovery(path: string, value: unknown): void {

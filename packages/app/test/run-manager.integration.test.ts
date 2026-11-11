@@ -22,7 +22,7 @@ import { join } from 'node:path'
 import { connectManager } from '../src/run/client.ts'
 import { readRecord, startManager } from '../src/run/manager.ts'
 import type { ExecutorLauncher, Manager } from '../src/run/manager.ts'
-import { runPathsOf } from '../src/run/paths.ts'
+import { runPathsOf } from '@magic/host'
 import { removeDir } from './tmp.ts'
 
 /** 这一段用不到执行者——真起执行者的是第二段那几条用例。 */

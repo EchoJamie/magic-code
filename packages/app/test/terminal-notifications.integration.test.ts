@@ -4,10 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolveMagicHome, type NativeResponse, type NativeWork, type RunNotice } from '@magic/contracts'
 import { createRecordsStore } from '@magic/records'
-import { runPathsOf } from '../src/run/paths.ts'
+import { runPathsOf } from '@magic/host'
 import { startManager } from '../src/run/manager.ts'
 import { connectManager, type ManagerClient } from '../src/run/client.ts'
-import { linkOf, socketHandlers } from '../src/run/wire.ts'
+import { linkOf, socketHandlers } from '@magic/host'
 
 async function until(check: () => boolean) {
   const deadline = Date.now() + 3000

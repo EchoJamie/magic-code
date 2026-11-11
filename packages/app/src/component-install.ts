@@ -4,7 +4,7 @@ import { NATIVE_PROTOCOL, SOFTWARE_VERSION, type HostDiscovery } from '@magic/co
 import { acquireFileLock } from '@magic/config'
 import { componentDirectory, componentSource, privateDirectory, readComponents, readJSON, writePrivateJSON, type Components } from './components.ts'
 import { acquireServiceLock, controlService } from './run/engine-service.ts'
-import { normalizeDataDir } from './run/paths.ts'
+import { normalizeDataDir } from '@magic/host'
 import { softwareSource } from './run/runtime-launch.ts'
 
 export type ComponentKind = 'engine' | 'cli'
