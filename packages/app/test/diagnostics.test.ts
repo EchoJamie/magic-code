@@ -22,7 +22,7 @@ test('诊断默认值只读；显式两项原子保存，独立关闭模式保�
   expect(diagnosticsOf(loadConfig({ magic: g.magic }).config)).toEqual({ debugMode: false, logLevel: 'trace' })
   expect(JSON.parse(readFileSync(g.path, 'utf8'))).toMatchObject({ untouched: 'keep', dataDir: g.dataDir, providers: { ds: { apiKey: 'PRIVATE_SENTINEL' } } })
   expect(statSync(g.path).mode & 0o777).toBe(0o600)
-  expect(readdirSync(g.dataDir)).toEqual(['config.json'])
+  expect(readdirSync(g.dataDir).sort()).toEqual(['config.json', 'state-revision.json'])
 })
 test('坏参数、冲突和外部修改均不半保存；help 不执行设置，check 拒绝设置', () => {
   const g = setup(), original = readFileSync(g.path, 'utf8')

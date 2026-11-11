@@ -20,6 +20,8 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { dirname } from 'node:path'
 import { configStamp } from './fingerprint.ts'
 import { acquireFileLock } from './file-lock.ts'
+import { contentHashOf, readStateRevision, stateRevisionPathOf, writeStateRevision, type StateRevision } from './state-revision.ts'
+import { notifyState } from './subscribe.ts'
 import type {
   ModelConfigureRequest,
   PrefsSetRequest,
@@ -87,6 +89,14 @@ function editLocked(input: EditConfigInput): SaveOutcome {
   const read = readRaw(input.path)
   if (!read.ok) return { ok: false, reason: read.reason }
 
+  // 修订文件坏了不静默重置：先拒绝这次写入，让人看到那份坏文件。
+  let previous: StateRevision | undefined
+  try {
+    previous = readStateRevision(stateRevisionPathOf(input.path))
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : 'state 修订不可读' }
+  }
+
   const edited = input.update(read.raw)
   if (!edited.ok) return { ok: false, reason: edited.reason }
   try { input.validate?.(edited.raw) } catch (error) { return { ok: false, reason: error instanceof Error ? error.message : '配置字段无效' } }
@@ -107,6 +117,19 @@ function editLocked(input: EditConfigInput): SaveOutcome {
     return { ok: false, reason: `写不进配置文件（${reason}）` }
   }
 
+  // 配置写成功后才提升修订；修订写不成不谎报成功（配置已落盘，提示用户核对）。
+  const revision = (previous?.revision ?? 0) + 1
+  try {
+    writeStateRevision(stateRevisionPathOf(input.path), {
+      revision,
+      lastKnownGood: contentHashOf(input.path),
+      updatedAt: Date.now(),
+    })
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    return { ok: false, reason: `配置已写入，但 state 修订未更新（${reason}）；请核对 state-revision.json` }
+  }
+  notifyState(input.path, revision)
   return { ok: true }
 }
 
