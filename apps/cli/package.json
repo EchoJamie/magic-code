@@ -31,6 +31,7 @@
     "@magic/state": "workspace:*"
   },
   "devDependencies": {
+    "@magic/engine": "workspace:*",
     "@magic/faux": "workspace:*",
     "@xterm/headless": "^6.0.0"
   }

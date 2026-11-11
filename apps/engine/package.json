@@ -1,0 +1,19 @@
+{
+  "name": "@magic/engine",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "module": "./src/engine.ts",
+  "types": "./src/engine.ts",
+  "exports": {
+    ".": "./src/engine.ts"
+  },
+  "bin": {
+    "magic-engine": "./src/engine.ts"
+  },
+  "dependencies": {
+    "@magic/contracts": "workspace:*",
+    "@magic/host": "workspace:*",
+    "@magic/state": "workspace:*"
+  }
+}

@@ -35,8 +35,21 @@
         "undici": "7.29.1",
       },
       "devDependencies": {
+        "@magic/engine": "workspace:*",
         "@magic/faux": "workspace:*",
         "@xterm/headless": "^6.0.0",
+      },
+    },
+    "apps/engine": {
+      "name": "@magic/engine",
+      "version": "0.0.0",
+      "bin": {
+        "magic-engine": "./src/engine.ts",
+      },
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+        "@magic/host": "workspace:*",
+        "@magic/state": "workspace:*",
       },
     },
     "packages/assembly": {
@@ -221,6 +234,8 @@
     "@magic/conversation": ["@magic/conversation@workspace:packages/runtime/conversation"],
 
     "@magic/data": ["@magic/data@workspace:packages/engine/data"],
+
+    "@magic/engine": ["@magic/engine@workspace:apps/engine"],
 
     "@magic/faux": ["@magic/faux@workspace:test/faux"],
 

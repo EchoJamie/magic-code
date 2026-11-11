@@ -7,7 +7,7 @@ import { readEngineState } from '@magic/host'
 import { softwareSource } from '@magic/host'
 import type { Sandbox } from './ui/sandbox.ts'
 
-export async function startResidentHost(sandbox: Sandbox, evidence = join(sandbox.root, `engine-check-${crypto.randomUUID()}`), cli = join(import.meta.dir, '../src/engine.ts')) {
+export async function startResidentHost(sandbox: Sandbox, evidence = join(sandbox.root, `engine-check-${crypto.randomUUID()}`), cli = join(import.meta.dir, '../../engine/src/engine.ts')) {
   const discoveryPath = hostDiscoveryPath(sandbox.home)
   mkdirSync(evidence, { recursive: true })
   const input: EngineCall = { action: 'status', home: sandbox.home, parent: sandbox.env.MAGIC_HOME ?? sandbox.home,

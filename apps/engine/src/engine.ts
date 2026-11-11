@@ -64,3 +64,5 @@ if (import.meta.main) {
   try { process.exit(await engineMain(process.argv.slice(2))) }
   catch (error) { console.log(JSON.stringify({ state: 'failed', error: error instanceof Error ? error.message : String(error) })); process.exit(1) }
 }
+
+export * from './component-install.ts'

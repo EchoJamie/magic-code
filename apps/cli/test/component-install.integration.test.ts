@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { NATIVE_PROTOCOL, SOFTWARE_VERSION } from '@magic/contracts'
-import { installComponents, uninstallComponent, type ComponentInspector } from '../src/component-install.ts'
+import { installComponents, uninstallComponent, type ComponentInspector } from '@magic/engine'
 import { componentDirectory, readComponents } from '@magic/host'
 
 function ground() {
