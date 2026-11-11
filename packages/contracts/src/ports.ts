@@ -52,7 +52,7 @@ import type {
 // MCP 那一支的身份源（`mcp.ts` 与本节互为类型引用——两边都是 `import type`，编译期擦除）
 import type { ExternalToolRef } from './mcp.ts'
 import type { Decider, Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './events.ts'
-import type { BlobRef, RecordId, SessionId, TurnId } from './ids.ts'
+import type { BlobRef, RecordId, SessionId, StepId, Timestamp, TurnId } from './ids.ts'
 import type { ReasoningSetting } from './model.ts'
 
 // ══ 端口 ══════════════════════════════════════════════════════════════
@@ -223,11 +223,34 @@ export interface PermissionGate {
   sudoPlan?(call: ToolCall, ctx: PermissionContext): SudoPlan | undefined
 }
 
+/** 一次交代的状态（`turns.status`）。 */
+export type TurnStatus = 'running' | 'completed' | 'aborted' | 'failed'
+
+/** 轮内一次模型调用的状态（`steps.status`）。 */
+export type StepStatus = 'running' | 'completed' | 'aborted' | 'failed'
+
+/** 一次模型调用的落库身份——实际使用的提供方与型号，不是配置版本。 */
+export type StepIdentity = {
+  readonly provider: string
+  readonly model: string
+}
+
 /** 对话域 → 记录域。 */
 export interface RecordsService {
   readonly coverage: import('./notes.ts').CoverageRecords
   readonly inputs: InputRecords
   readonly collaboration: CollaborationRecords
+  /**
+   * 开一次交代——记录域分配 `turns.id` 并落 `status='running'`。
+   * `seq` 按会话单调递增；返回的 id 就是轮内事件与条目的 `turn`。
+   */
+  allocateTurn(at: Timestamp, after?: TurnId): TurnId
+  /** 收束一次交代（幂等；已结束的轮不再改）。 */
+  endTurn(turn: TurnId, status: TurnStatus, at: Timestamp): void
+  /** 开始轮内一次模型调用步；`seq` 按轮递增。 */
+  beginStep(turn: TurnId, at: Timestamp, identity?: StepIdentity): StepId
+  /** 收束一步；`provider` / `model` 可在开始时缺省、结束时补记。 */
+  endStep(turn: TurnId, step: StepId, status: StepStatus, at: Timestamp, identity?: StepIdentity): void
   /**
    * 取下一个记录 id——**id 空间归记录域**（条目 / 事件共用）。
    * 装配据以构造 `EventStamper`（技术方案 · 领域划分 · 信封的归属）。
@@ -1900,6 +1923,10 @@ export type EventStamper = {
   stamp<K extends EventKind>(kind: K, data: EventDataOf[K]): KernelEvent
   /** 对话域在轮起止时调。 */
   beginTurn(turn: TurnId | undefined): void
+  /** 轮内一次模型调用步起止时调；步外事件不落 `step`。 */
+  beginStep?(step: StepId | undefined): void
+  /** 设置本次承接的代次（落 `generation`）；不调则记 0。 */
+  setGeneration?(generation: number): void
 }
 
 // ══ 工具规格（端口内类型）════════════════════════════════════════════

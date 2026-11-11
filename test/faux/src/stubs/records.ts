@@ -59,6 +59,8 @@ export type FauxRecords = RecordsService & {
 /** 造一个记录域桩。 */
 export function makeFauxRecords(options: FauxRecordsOptions = {}): FauxRecords {
   let next: RecordId = options.from ?? 1
+  let turnSeq = 0
+  let stepSeq = 0
   let blobSeq = 0
 
   const entries: Entry[] = []
@@ -133,6 +135,17 @@ export function makeFauxRecords(options: FauxRecordsOptions = {}): FauxRecords {
       next += 1
       return id
     },
+
+    allocateTurn: (_at, after) => {
+      turnSeq = Math.max(turnSeq, after ?? 0) + 1
+      return turnSeq
+    },
+    endTurn: () => {},
+    beginStep: () => {
+      stepSeq += 1
+      return stepSeq
+    },
+    endStep: () => {},
 
     appendEntry(entry: NewEntry): RecordId {
       const id = next

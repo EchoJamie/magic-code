@@ -183,7 +183,7 @@ export function readDatabase(databasePath: string): RawDatabase {
       )
       .all(),
     events: db
-      .query<RawEvent, []>('SELECT id, session, turn, at, kind, data FROM events ORDER BY id')
+      .query<RawEvent, []>('SELECT id, session, turn_id AS turn, at, kind, data FROM events ORDER BY id')
       .all(),
     close: () => db.close(),
   }

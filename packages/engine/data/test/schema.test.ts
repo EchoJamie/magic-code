@@ -188,7 +188,23 @@ describe('判据 3 · 不落库清单', () => {
 })
 
 describe('判据 4 · schema（结构 · 重开续写）', () => {
-  test('已有记录缺归档和提醒来源字段时补齐，原记录保留并可续写', async () => {
+  test('旧结构库拒开：不 ALTER、不补列、原文件不动', async () => {
+    const dir = tempDataDir()
+    try {
+      const first = createRecordsStore({ dataDir: dir, workspace: ROOTS })
+      first.serviceFor(SESSION).appendEntry({ kind: 'user', content: { text: '保留原记录' }, at: T0 })
+      first.close()
+      const old = new Database(databasePathOf(dir))
+      old.exec('ALTER TABLE sessions DROP COLUMN archived; ALTER TABLE attention_items DROP COLUMN source')
+      old.close()
+      const before = readFileSync(databasePathOf(dir))
+
+      expect(() => createRecordsStore({ dataDir: dir, workspace: ROOTS })).toThrow('结构不符')
+      expect(readFileSync(databasePathOf(dir))).toEqual(before)
+    } finally { removeDataDir(dir) }
+  })
+
+  test('新库可重开续写，schema_version 保持 2', async () => {
     const dir = tempDataDir()
     try {
       const first = createRecordsStore({ dataDir: dir, workspace: ROOTS })
@@ -196,25 +212,18 @@ describe('判据 4 · schema（结构 · 重开续写）', () => {
       first.setSessionTitle(SESSION, '原会话', T0)
       first.attention.put({ id: 'notice', session: SESSION, kind: 'done', fact: '原提醒', at: T0, unread: true, delivered: false })
       first.close()
-      const old = new Database(databasePathOf(dir))
-      old.exec('ALTER TABLE sessions DROP COLUMN archived; ALTER TABLE attention_items DROP COLUMN source; PRAGMA user_version=1')
-      const entries = old.query('SELECT * FROM entries').all()
-      const attention = old.query('SELECT * FROM attention_items').all()
-      old.close()
 
       const reopened = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       try {
         expect(await reopened.listSessions()).toEqual([{ id: SESSION, at: T0, title: '原会话', workspace: ROOTS, archived: false }])
         expect(reopened.attention.list()).toEqual([{ id: 'notice', session: SESSION, kind: 'done', fact: '原提醒', at: T0, unread: true, delivered: false }])
-        const snapshot = new Database(databasePathOf(dir), { readonly: true })
-        try {
-          expect(snapshot.query('SELECT * FROM entries').all()).toEqual(entries)
-          expect(snapshot.query('SELECT id, session, kind, fact, at, detail, unread, delivered FROM attention_items').all()).toEqual(attention)
-          expect(snapshot.query('PRAGMA user_version').get()).toEqual({ user_version: 1 })
-        } finally { snapshot.close() }
         expect(reopened.serviceFor(SESSION).appendEntry({ kind: 'assistant', content: { text: '继续写入' }, at: T0 + 1 })).toBeGreaterThan(id)
       } finally { reopened.close() }
-      expect(readSessionSummary(dir, SESSION)?.title).toBe('原会话')
+
+      const snapshot = new Database(databasePathOf(dir), { readonly: true })
+      try {
+        expect(snapshot.query("SELECT value FROM records_meta WHERE key='schema_version'").get()).toEqual({ value: '2' })
+      } finally { snapshot.close() }
       const again = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       try {
         const texts = []
@@ -223,7 +232,7 @@ describe('判据 4 · schema（结构 · 重开续写）', () => {
       } finally { again.close() }
     } finally { removeDataDir(dir) }
   })
-  test('新库包含记录、知识与协作表，不写入 schema 版本号', () => {
+  test('新库包含 schema v2 的记录、执行与账本表，并写入 schema_version=2', () => {
     const dir = tempDataDir()
     try {
       const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
@@ -247,8 +256,13 @@ describe('判据 4 · schema（结构 · 重开续写）', () => {
           'collaboration_operations', 'collaboration_waits', 'collaborations',
           'entries', 'events', 'inputs', 'knowledge', 'knowledge_forgetting',
           'knowledge_search', 'knowledge_search_config', 'knowledge_search_content', 'knowledge_search_data',
-          'knowledge_search_docsize', 'knowledge_search_idx', 'records_meta', 'sessions',
+          'knowledge_search_docsize', 'knowledge_search_idx',
+          'ledger_entries', 'ledger_members', 'ledger_refs', 'ledgers',
+          'records_meta', 'run_journal', 'runs', 'sessions', 'steps', 'turns',
         ])
+        expect(db.query<{ value: string }, []>("SELECT value FROM records_meta WHERE key='schema_version'").get()).toEqual({
+          value: '2',
+        })
         expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()).toEqual({
           user_version: 0,
         })

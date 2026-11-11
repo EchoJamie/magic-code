@@ -1,8 +1,8 @@
-import { vendorCatalog, vendorOf, PROTOCOLS } from '../../packages/model/src/vendors.ts'
-import { reasoningParams } from '../../packages/model/src/vendors.ts'
-import { MODELS_DEV_URL, MODELS_DEV_TTL_MS, MODELS_DEV_ALIASES } from '../../packages/model/src/models-dev.ts'
-import { MODEL_INFO_TTL_MS } from '../../packages/model/src/model-info.ts'
-import { statusLinePreview } from '../../packages/tui/src/components/status.ts'
+import { vendorCatalog, vendorOf, PROTOCOLS } from '../../packages/runtime/model/src/vendors.ts'
+import { reasoningParams } from '../../packages/runtime/model/src/vendors.ts'
+import { MODELS_DEV_URL, MODELS_DEV_TTL_MS, MODELS_DEV_ALIASES } from '../../packages/runtime/model/src/models-dev.ts'
+import { MODEL_INFO_TTL_MS } from '../../packages/runtime/model/src/model-info.ts'
+import { statusLinePreview } from '../../packages/client/shell/src/components/status.ts'
 import type { StatusLineCell } from '@magic/contracts'
 
 // App 编辑所需的静态资料随同版构建生成；不复制供应商执行适配。

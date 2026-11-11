@@ -34,6 +34,7 @@ import type {
   Timestamp,
   ToolCall,
   ToolResult,
+  TurnId,
   UsedSkill,
   UsedSkillEntry,
 } from '@magic/contracts'
@@ -45,6 +46,13 @@ export type EntryLog = {
   readonly now: () => Timestamp
   /** 正文字数阈值——超者转 blob（见 `./policy.ts`）。 */
   readonly blobThreshold: number
+  /** 当前交代——条目落 `entries.turn_id`；轮外（如恢复辅助记录）缺席。 */
+  readonly turn?: TurnId
+}
+
+/** 轮外条目不带 `turn` 键（缺席可辨，空值不可辨）。 */
+function turnField(log: EntryLog): { turn?: TurnId } {
+  return log.turn === undefined ? {} : { turn: log.turn }
 }
 
 /**
@@ -139,6 +147,7 @@ export async function appendTextEntry(
     kind,
     content: await contentOf(text, log),
     ...(supplied === undefined ? {} : { payload: supplied }),
+    ...turnField(log),
     at: log.now(),
   })
 }
@@ -193,6 +202,7 @@ export async function appendUserEntry(
     kind: 'user' as const,
     content: await contentOf(text, log),
     ...(payload === undefined ? {} : { payload }),
+    ...turnField(log),
     at: log.now(),
   }
   if(input.admit?.()!==undefined)return undefined
@@ -208,6 +218,7 @@ export function appendToolCallEntry(log: EntryLog, call: ToolCall, knowledge: re
     kind: 'tool-call',
     content: { text: '' },
     payload: { id: call.id, name: call.name, args: call.args, ...(knowledge.length === 0 ? {} : { knowledge }) },
+    ...turnField(log),
     at: log.now(),
   })
 }
@@ -236,6 +247,7 @@ export function appendToolResultEntry(log: EntryLog, outcome: ToolOutcome, knowl
       ...(outcome.background === undefined ? {} : { background: outcome.background }),
       ...(outcome.notExecuted === undefined ? {} : { notExecuted: outcome.notExecuted }),
     },
+    ...turnField(log),
     at: log.now(),
   })
 }
@@ -251,6 +263,7 @@ export async function appendSummaryEntry(log: EntryLog, text: string): Promise<R
   return log.records.appendEntry({
     kind: 'summary',
     content: await contentOf(text, log),
+    ...turnField(log),
     at: log.now(),
   })
 }

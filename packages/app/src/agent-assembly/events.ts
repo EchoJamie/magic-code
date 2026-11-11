@@ -4,6 +4,7 @@ import type {
   EventStamper,
   KernelEvent,
   SessionId,
+  StepId,
   Timestamp,
   TurnId,
 } from '@magic/contracts'
@@ -14,6 +15,8 @@ export function createStamper(input: {
   readonly now: () => Timestamp
 }): EventStamper {
   let turn: TurnId | null = null
+  let step: StepId | null = null
+  let generation = 0
 
   return {
     stamp: <K extends EventKind>(kind: K, data: EventDataOf[K]): KernelEvent =>
@@ -21,6 +24,8 @@ export function createStamper(input: {
         id: input.records.nextId(),
         session: input.session,
         turn,
+        step,
+        ...(generation === 0 ? {} : { generation }),
         at: input.now(),
         kind,
         data,
@@ -28,6 +33,13 @@ export function createStamper(input: {
 
     beginTurn: (value: TurnId | undefined): void => {
       turn = value ?? null
+      step = null
+    },
+    beginStep: (value: StepId | undefined): void => {
+      step = value ?? null
+    },
+    setGeneration: (value: number): void => {
+      generation = value
     },
   }
 }

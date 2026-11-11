@@ -20,8 +20,8 @@ import type { Assembly } from '../src/index.ts'
 import { eventsOfKind, lastModel, makeStage } from './support.ts'
 
 /** 假服务器（都用真进程）：stdio 那一台与 U39 的 HTTP 那一台。 */
-const STDIO_SERVER = join(import.meta.dir, '..', '..', 'mcp', 'test', 'support', 'fake-server.ts')
-const HTTP_SERVER = join(import.meta.dir, '..', '..', 'mcp', 'test', 'support', 'fake-http-server.ts')
+const STDIO_SERVER = join(import.meta.dir, '..', '..', 'runtime', 'mcp', 'test', 'support', 'fake-server.ts')
+const HTTP_SERVER = join(import.meta.dir, '..', '..', 'runtime', 'mcp', 'test', 'support', 'fake-http-server.ts')
 
 const scraps: string[] = []
 const running: Bun.Subprocess[] = []

@@ -40,7 +40,7 @@ import type { Capture, FixtureRequest, FixtureTurn, Sandbox, UiSession, WaitCond
 import { readDatabase } from '../test/support.ts'
 
 const REPO = resolve(import.meta.dir, '../../..')
-const TUI_RUN = join(REPO, 'packages/tui/src/run.ts')
+const TUI_RUN = join(REPO, 'packages/client/shell/src/run.ts')
 
 /** `Ctrl T` 那一个字节（`0x14`）——写的是**真字节**：与手按同一个键、进同一个 stdin。 */
 const CTRL_T = String.fromCharCode(0x14)

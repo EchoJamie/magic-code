@@ -24,7 +24,7 @@ import { eventsOfKind, lastModel, makeStage, readDatabase } from './support.ts'
 import type { Stage } from './support.ts'
 
 /** 假服务器（真进程 · 官方 SDK 的服务器面）——与适配器用例同一个夹具。 */
-const FAKE_SERVER = join(import.meta.dir, '..', '..', 'mcp', 'test', 'support', 'fake-server.ts')
+const FAKE_SERVER = join(import.meta.dir, '..', '..', 'runtime', 'mcp', 'test', 'support', 'fake-server.ts')
 
 /** 一块只用一次就删的目录（放日志、放「用户自己的进程」的脚本）。 */
 const scraps: string[] = []

@@ -6,8 +6,8 @@ import { attachShell } from '../src/shell.ts'
 import { makeStage } from './support.ts'
 import { magicAt } from './tmp.ts'
 
-const stdioFile = join(import.meta.dir, '../../mcp/test/support/fake-server.ts')
-const httpFile = join(import.meta.dir, '../../mcp/test/support/fake-http-server.ts')
+const stdioFile = join(import.meta.dir, '../../runtime/mcp/test/support/fake-server.ts')
+const httpFile = join(import.meta.dir, '../../runtime/mcp/test/support/fake-http-server.ts')
 test('原生设置动作保存 stdio/HTTP，下次真装配采用，旧工作不热换；浏览零MCP请求', async () => {
   const stage = makeStage(), httpLog = join(stage.root, 'http.jsonl'), stdioLog = join(stage.root, 'stdio.jsonl')
   const child = Bun.spawn([process.execPath,httpFile],{env:{...process.env,FAKE_MCP_HTTP_PORT:'0',FAKE_MCP_HTTP_LOG:httpLog},stdin:'ignore',stdout:'pipe',stderr:'ignore'})

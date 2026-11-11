@@ -48,9 +48,9 @@ const NEAR = valueOf('--near', 2)
  */
 const INPUTS = [
   '用一句话说你此刻在哪个目录下干活，别调用工具。',
-  '跑 `cat packages/conversation/src/context.ts`，用三句话概括这个文件干什么。',
-  '跑 `cat packages/conversation/src/agent-loop.ts`，也用三句话概括。',
-  '跑 `cat packages/conversation/src/entries.ts`，一句话概括。',
+  '跑 `cat packages/runtime/conversation/src/context.ts`，用三句话概括这个文件干什么。',
+  '跑 `cat packages/runtime/conversation/src/agent-loop.ts`，也用三句话概括。',
+  '跑 `cat packages/runtime/conversation/src/entries.ts`，一句话概括。',
   '接着刚才的：这三个文件里，哪个负责「装配」、哪个负责「压缩」？',
   '最后：把这一路聊过的事压成一句话给我。',
 ]

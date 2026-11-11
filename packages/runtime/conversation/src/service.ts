@@ -215,7 +215,11 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   const { sink, stamper } = deps
   const policy: ContextPolicy = { ...DEFAULT_CONTEXT_POLICY, ...deps.context }
 
-  let turnSeq = 0
+  /**
+   * 轮号下限——恢复时由记录里的最大轮号抬起；记录域分配时取 `max(库内 seq, 下限) + 1`。
+   * 库内水位与恢复水位同源，这里只负责把「崩溃点之后接着走」的语义传下去。
+   */
+  let turnFloor = 0
   let started = false
   let running = false
   let closed = false
@@ -333,9 +337,8 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     records: deps.records,
     sink,
     stamper,
-    // 单调自增；**续跑接着记录里那串轮号**——`rebuild()` 把记录里的水位抬到这里
-    // （U04 留的那道缝，U15 填上：同一会话重启后不从 1 重来）
-    nextTurnId: (): TurnId => (turnSeq += 1),
+    // 轮号归记录域：`turns.seq` 由库按会话取 max+1，重启后自然接着走。
+    nextTurnId: (): TurnId => deps.records.allocateTurn((deps.now ?? Date.now)(), turnFloor),
     now: deps.now ?? Date.now,
     blobThreshold: policy.blobThreshold,
     compact: compactor,
@@ -545,7 +548,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         )
       }
 
-      if (handoff.lastTurn !== null) turnSeq = Math.max(turnSeq, handoff.lastTurn)
+      if (handoff.lastTurn !== null) turnFloor = Math.max(turnFloor, handoff.lastTurn)
       if (handoff.announced) started = true
 
       return { session: deps.session, lastTurn: handoff.lastTurn }

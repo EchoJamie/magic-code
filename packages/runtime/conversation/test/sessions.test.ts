@@ -67,6 +67,10 @@ function makeLedger(rows: readonly LedgerRow[]): Ledger {
     get inputs() { return makeFauxRecords().inputs },
     get collaboration(): RecordsService['collaboration'] { throw new Error('collaboration not scripted') },
     nextId: () => 1,
+    allocateTurn: () => 1,
+    endTurn: () => {},
+    beginStep: () => 1,
+    endStep: () => {},
     appendEntry: () => 1,
     appendEvent: () => undefined,
     readEntries: (sessionId: SessionId): AsyncIterable<Entry> =>

@@ -371,7 +371,7 @@ const modelStreamApproval: Scenario = {
  * 它也是**判据的出处**：每收到一次调用就往 `FAKE_MCP_LOG` 追一行。故「拒绝时零调用」
  * 与「批准真调用」这两条读的是**服务器自己数的数**，不是客户端说了什么。
  */
-const FAKE_MCP_SERVER = join(REPO_ROOT, 'packages', 'mcp', 'test', 'support', 'fake-server.ts')
+const FAKE_MCP_SERVER = join(REPO_ROOT, 'packages', 'runtime', 'mcp', 'test', 'support', 'fake-server.ts')
 
 /** 已经记进流水的后代个数——调用点据它「再数一层新的」（见 `waitForDescendant`）。 */
 /**

@@ -19,7 +19,9 @@ import type { NamedParams } from './schema.ts'
 export type EventRow = {
   readonly id: number
   readonly session: string
-  readonly turn: number | null
+  readonly turn_id: number | null
+  readonly step_id: number | null
+  readonly generation: number
   readonly at: number
   readonly kind: string
   readonly data: string
@@ -35,6 +37,8 @@ export function eventParamsOf(event: KernelEvent): NamedParams {
     $id: event.id,
     $session: event.session,
     $turn: event.turn,
+    $step: event.step ?? null,
+    $generation: event.generation ?? 0,
     $at: event.at,
     $kind: event.kind,
     $data: JSON.stringify(event.data),
@@ -48,7 +52,9 @@ export function eventOfRow(row: EventRow): KernelEvent {
   return {
     id: row.id,
     session: row.session,
-    turn: row.turn,
+    turn: row.turn_id,
+    ...(row.step_id === null ? {} : { step: row.step_id }),
+    ...(row.generation === 0 ? {} : { generation: row.generation }),
     at: row.at,
     kind: row.kind as EventKind,
     data: JSON.parse(row.data),

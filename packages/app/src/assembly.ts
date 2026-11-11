@@ -310,6 +310,8 @@ export function assemble(options: AssembleOptions): Assembly {
   const forwardStamper: EventStamper = {
     stamp: (kind, data) => requireActiveStamper().stamp(kind, data),
     beginTurn: (turn) => requireActiveStamper().beginTurn(turn),
+    beginStep: (step) => requireActiveStamper().beginStep?.(step),
+    setGeneration: (generation) => requireActiveStamper().setGeneration?.(generation),
   }
 
   const requireActiveStamper = (): EventStamper => {

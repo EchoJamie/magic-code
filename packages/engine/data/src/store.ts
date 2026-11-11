@@ -52,7 +52,12 @@ import type {
   SessionId,
   SessionSummary,
   SessionQuery,
+  StepId,
+  StepIdentity,
+  StepStatus,
   Timestamp,
+  TurnId,
+  TurnStatus,
 } from '@magic/contracts'
 import { BLOBS_DIR, createBlobStore } from './blobs.ts'
 import { createAttentionStore, type AttentionStore } from './attention.ts'
@@ -65,6 +70,8 @@ import {
   EVENTS_TABLE,
   SESSIONS_TABLE,
   SESSION_WORKSPACE_COLUMN,
+  STEPS_TABLE,
+  TURNS_TABLE,
   initSchema,
   assertCurrentSchema,
   type NamedParams,
@@ -320,15 +327,15 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   )
   const insertEntry = db.query<never, [NamedParams]>(
     `INSERT INTO ${ENTRIES_TABLE}
-       (id, session, kind, content_kind, content_text, content_blob, payload, at, source)
-     VALUES ($id, $session, $kind, $contentKind, $contentText, $contentBlob, $payload, $at, $source)`,
+       (id, session, turn_id, kind, content_kind, content_text, content_blob, payload, at, source)
+     VALUES ($id, $session, $turn, $kind, $contentKind, $contentText, $contentBlob, $payload, $at, $source)`,
   )
   const insertEvent = db.query<never, [NamedParams]>(
-    `INSERT INTO ${EVENTS_TABLE} (id, session, turn, at, kind, data)
-     VALUES ($id, $session, $turn, $at, $kind, $data)`,
+    `INSERT INTO ${EVENTS_TABLE} (id, session, turn_id, step_id, generation, at, kind, data)
+     VALUES ($id, $session, $turn, $step, $generation, $at, $kind, $data)`,
   )
   const selectEntries = db.query<EntryRow, [string, number, number, number, number]>(
-    `SELECT id, session, kind, content_kind, content_text, content_blob, payload, at, source
+    `SELECT id, session, turn_id, kind, content_kind, content_text, content_blob, payload, at, source
        FROM ${ENTRIES_TABLE}
       WHERE session = ? AND id > ? AND id <= ? AND (? = 1 OR kind != 'continuation')
       ORDER BY id
@@ -337,18 +344,43 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   // 倒序取一页（U34）——同一张表、同一个 `(session, id)` 索引，只是换个方向走：
   // 「从后往前、找最近的 N 条」是当前计划与回查历史那两个读面的共同形状（见端口注）。
   const selectEntriesBack = db.query<EntryRow, [string, number, number]>(
-    `SELECT id, session, kind, content_kind, content_text, content_blob, payload, at, source
+    `SELECT id, session, turn_id, kind, content_kind, content_text, content_blob, payload, at, source
        FROM ${ENTRIES_TABLE}
       WHERE session = ? AND id < ? AND kind != 'continuation'
       ORDER BY id DESC
       LIMIT ?`,
   )
   const selectEvents = db.query<EventRow, [string, number, number]>(
-    `SELECT id, session, turn, at, kind, data
+    `SELECT id, session, turn_id, step_id, generation, at, kind, data
        FROM ${EVENTS_TABLE}
       WHERE session = ? AND id > ?
       ORDER BY id
       LIMIT ?`,
+  )
+  // —— 交代与步 ——
+  // `turns.seq` 按会话递增，`turns.id` 是全局主键；事件与条目引用 `id`。
+  const maxTurnSeq = db.query<{ seq: number }, [string]>(
+    `SELECT COALESCE(MAX(seq), 0) AS seq FROM ${TURNS_TABLE} WHERE session = ?`,
+  )
+  const insertTurn = db.query<never, [string, number, number, number]>(
+    `INSERT INTO ${TURNS_TABLE} (session, id, seq, status, started_at)
+     VALUES (?, ?, ?, 'running', ?)`,
+  )
+  const finishTurn = db.query<never, [string, number, string, number]>(
+    `UPDATE ${TURNS_TABLE} SET status = ?, ended_at = ?
+      WHERE session = ? AND id = ? AND ended_at IS NULL`,
+  )
+  const maxStepSeq = db.query<{ seq: number }, [number]>(
+    `SELECT COALESCE(MAX(seq), 0) AS seq FROM ${STEPS_TABLE} WHERE turn = ?`,
+  )
+  const insertStep = db.query<never, [number, number, number, number, string | null, string | null]>(
+    `INSERT INTO ${STEPS_TABLE} (turn, id, seq, status, started_at, provider, model)
+     VALUES (?, ?, ?, 'running', ?, ?, ?)`,
+  )
+  const finishStep = db.query<never, [string, number, string | null, string | null, number, number]>(
+    `UPDATE ${STEPS_TABLE}
+        SET status = ?, ended_at = ?, provider = COALESCE(?, provider), model = COALESCE(?, model)
+      WHERE turn = ? AND id = ? AND ended_at IS NULL`,
   )
   // 历史累计（U28）：两条判据都在这一句里——**是裁决**（`kind`）× **是本工作区的会话**
   // （`sessions.workspace` 那一列，归属缺席的不进子查询）。全表扫一遍：`events` 上没有
@@ -415,6 +447,27 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     writeEvent(event)
   }
 
+  function allocateTurn(session: SessionId, at: Timestamp, after?: TurnId): TurnId {
+    ensureSession.run(session, at, workspaceColumn)
+    const seq = Math.max(maxTurnSeq.get(session)?.seq ?? 0, after ?? 0) + 1
+    insertTurn.run(session, seq, seq, at)
+    return seq
+  }
+
+  function endTurn(session: SessionId, turn: TurnId, status: TurnStatus, at: Timestamp): void {
+    finishTurn.run(status, at, session, turn)
+  }
+
+  function beginStep(turn: TurnId, at: Timestamp, identity?: StepIdentity): StepId {
+    const id = (maxStepSeq.get(turn)?.seq ?? 0) + 1
+    insertStep.run(turn, id, id, at, identity?.provider ?? null, identity?.model ?? null)
+    return id
+  }
+
+  function endStep(turn: TurnId, step: StepId, status: StepStatus, at: Timestamp, identity?: StepIdentity): void {
+    finishStep.run(status, at, identity?.provider ?? null, identity?.model ?? null, turn, step)
+  }
+
   /** keyset 分页——每块一条语句，取完即散（无活游标）。 */
   async function* paginate<Row extends { readonly id: number }, T>(
     fetch: (after: number) => readonly Row[],
@@ -477,7 +530,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
 
   function readEvent(session: SessionId, id: RecordId): KernelEvent | undefined {
     const row = db.query<EventRow, [string, number]>(
-      `SELECT id, session, turn, at, kind, data FROM ${EVENTS_TABLE} WHERE session=? AND id=?`,
+      `SELECT id, session, turn_id, step_id, generation, at, kind, data FROM ${EVENTS_TABLE} WHERE session=? AND id=?`,
     ).get(session, id)
     return row === null ? undefined : eventOfRow(row)
   }
@@ -491,7 +544,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
       return name
     })
     const row = db.query<EventRow, [NamedParams]>(
-      `SELECT id, session, turn, at, kind, data FROM ${EVENTS_TABLE}
+      `SELECT id, session, turn_id, step_id, generation, at, kind, data FROM ${EVENTS_TABLE}
        WHERE session=$session AND kind IN (${names.join(',')}) ORDER BY id DESC LIMIT 1`,
     ).get(params)
     return row === null ? undefined : eventOfRow(row)
@@ -587,6 +640,10 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
         inputs:createInputRecords(db,session,entry=>appendEntry(session,entry),at=>ensureSession.run(session,at,workspaceColumn)),
         collaboration,
         nextId: () => ids.next(),
+        allocateTurn: (at, after) => allocateTurn(session, at, after),
+        endTurn: (turn, status, at) => endTurn(session, turn, status, at),
+        beginStep,
+        endStep,
         appendEntry: (entry) => appendEntry(session, entry),
         appendEvent: (event) => appendEvent(session, event),
         readEntries: (sessionId, range) => readEntries(sessionId, range),

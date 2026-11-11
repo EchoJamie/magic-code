@@ -61,6 +61,7 @@ import type {
   RecordId,
   RecordsService,
   SessionId,
+  StepId,
   Timestamp,
   ToolCall,
   ToolRuntime,
@@ -124,6 +125,8 @@ export type LoopRuntime = {
   readonly session: SessionId
   /** 系统提示词全文——已由提示词部件装配好（本文件不认知段结构）。 */
   readonly systemPrompt: string
+  /** 当前交代——轮起时设、轮止时清；条目落账据此带 `turn_id`。 */
+  turn?: TurnId
   readonly gateway: ModelGateway
   readonly tools: ToolRuntime
   readonly records: RecordsService
@@ -728,8 +731,19 @@ async function runTurn(
 ): Promise<TurnOutcome> {
   const { gateway, tools, sink, stamper } = runtime
 
-  // 轮起——铸造器的 `turn` 自此生效（轮内所有事件共用它）
-  stamper.beginTurn(runtime.nextTurnId())
+  // 轮起——记录域分配 `turns.id`；铸造器的 `turn` 自此生效（轮内所有事件共用它）
+  const turn = runtime.nextTurnId()
+  runtime.turn = turn
+  stamper.beginTurn(turn)
+  let step: StepId | undefined
+  let failed = false
+
+  const endActiveStep = (status: 'completed' | 'aborted' | 'failed'): void => {
+    if (step === undefined) return
+    runtime.records.endStep(turn, step, status, runtime.now())
+    stamper.beginStep?.(undefined)
+    step = undefined
+  }
 
   try {
     sink.emit(stamper.stamp('turn.start', {}))
@@ -777,6 +791,10 @@ async function runTurn(
       })
 
       if (signal.aborted || runtime.collaboration?.admit() !== undefined) return close(runtime, 'aborted', false)
+      // 一步＝轮内一次模型调用及它带出的工具执行；重发（超限）另起一步。
+      endActiveStep('completed')
+      step = runtime.records.beginStep(turn, runtime.now())
+      stamper.beginStep?.(step)
       const stream = gateway.stream(
         { messages, tools: tools.definitions() },
         { signal },
@@ -848,6 +866,7 @@ async function runTurn(
         sink.emit(stamper.stamp('error', { message: '原上下文已超限，压缩未完成，本轮暂不能继续；原始记录已保留，请核对当前模型的输入预算后再试' }))
       }
 
+      failed = true
       return close(runtime, 'error', false)
     }
 
@@ -941,8 +960,13 @@ async function runTurn(
     return close(runtime, signal.aborted ? 'aborted' : 'settled', !signal.aborted && !stopped && runtime.collaboration?.admit() === undefined)
   } catch (error) {
     // 兜底——内核自身异常（非模型 / 工具域）：产生方就近发 `error`，本轮以「错误」收束
+    failed = true
     return close(runtime, 'error', false, error)
   } finally {
+    const status = signal.aborted ? 'aborted' : failed ? 'failed' : 'completed'
+    endActiveStep(status)
+    runtime.records.endTurn(turn, status, runtime.now())
+    runtime.turn = undefined
     // 轮止——`undefined` ＝轮外（信封的 `turn` 落 `null`）
     stamper.beginTurn(undefined)
   }
@@ -1103,5 +1127,6 @@ function entryLogOf(runtime: LoopRuntime): EntryLog {
     records: runtime.records,
     now: runtime.now,
     blobThreshold: runtime.blobThreshold,
+    ...(runtime.turn === undefined ? {} : { turn: runtime.turn }),
   }
 }

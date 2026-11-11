@@ -9,6 +9,7 @@ type InputRow = {
   revision: number
   state: StoredInput['state']
   entry: number | null
+  turn: number | null
   reason: string | null
 }
 
@@ -16,7 +17,7 @@ export function initInputSchema(db: Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS inputs (
     session TEXT NOT NULL, ref TEXT NOT NULL, body TEXT NOT NULL, purpose TEXT NOT NULL,
     at INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
-    state TEXT NOT NULL DEFAULT 'pending', entry INTEGER, reason TEXT,
+    state TEXT NOT NULL DEFAULT 'pending', entry INTEGER, turn INTEGER, reason TEXT,
     PRIMARY KEY(session,ref)
   )`)
 }
@@ -38,6 +39,7 @@ export function createInputRecords(
       revision: row.revision,
       state: row.state,
       ...(row.entry === null ? {} : { entry: row.entry }),
+      ...(row.turn === null ? {} : { turn: row.turn }),
       ...(row.reason === null ? {} : { reason: row.reason }),
     }
   }
@@ -69,8 +71,8 @@ export function createInputRecords(
         const row = get(ref)
         if (row?.state !== 'pending' || row.revision !== revision) return undefined
         const id = append(entry)
-        db.query("UPDATE inputs SET state='consumed',entry=?,revision=revision+1 WHERE session=? AND ref=? AND state='pending'")
-          .run(id, session, ref)
+        db.query("UPDATE inputs SET state='consumed',entry=?,turn=?,revision=revision+1 WHERE session=? AND ref=? AND state='pending'")
+          .run(id, entry.turn ?? null, session, ref)
         return id
       }).immediate()
     },

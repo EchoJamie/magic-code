@@ -24,7 +24,7 @@ test('两个真实终端共享 Engine；网络、工具与 MCP 环境隔离，�
   const sockets = new Set<Duplex>()
   const traffic: Record<string, string> = { A: '', B: '', C: '' }
   const fixtures = new Map<string, ReturnType<typeof startFixture>>()
-  const httpMcp = Bun.spawn([process.execPath, join(import.meta.dir, '../../mcp/test/support/fake-http-server.ts')], {
+  const httpMcp = Bun.spawn([process.execPath, join(import.meta.dir, '../../runtime/mcp/test/support/fake-http-server.ts')], {
     env: { HOME: sandbox.home, PATH: '/usr/bin:/bin', FAKE_MCP_HTTP_MODE: 'json' }, stdout: 'pipe', stderr: 'ignore', stdin: 'ignore',
   })
   const ready = httpMcp.stdout.getReader(); const port = JSON.parse(new TextDecoder().decode((await ready.read()).value)).port; ready.releaseLock()
@@ -66,7 +66,7 @@ test('两个真实终端共享 Engine；网络、工具与 MCP 环境隔离，�
     const bin = join(sandbox.root, `bin-${label}`); mkdirSync(bin)
     const probe = (kind: string) => `#!${process.execPath}\nimport {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(join(sandbox.root, `${kind}-${label}.json`))}, JSON.stringify({cwd:process.cwd(),env:process.env}));\n`
     writeFileSync(join(bin, 'env-probe'), probe('tool'), { mode: 0o755 })
-    writeFileSync(join(bin, 'mcp-probe'), probe('mcp') + `await import(${JSON.stringify(join(import.meta.dir, '../../mcp/test/support/fake-server.ts'))});\n`, { mode: 0o755 })
+    writeFileSync(join(bin, 'mcp-probe'), probe('mcp') + `await import(${JSON.stringify(join(import.meta.dir, '../../runtime/mcp/test/support/fake-server.ts'))});\n`, { mode: 0o755 })
     const url = `http://127.0.0.1:${(proxy.address() as { port: number }).port}`
     envs[label] = { PATH: bin + ':/usr/bin:/bin', MAGIC_LOCAL_API_KEY: label, MAGIC_WEB_API_KEY: label, WORK_MARK: label, NODE_EXTRA_CA_CERTS: cert,
       http_proxy: url, https_proxy: url, all_proxy: '', no_proxy: '', HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', NO_PROXY: '' }

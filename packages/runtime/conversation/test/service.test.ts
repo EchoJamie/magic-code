@@ -260,6 +260,10 @@ function brokenRecords(base: FauxRecords): RecordsService {
       return base.blobs
     },
     nextId: (): number => base.nextId(),
+    allocateTurn: (at) => base.allocateTurn(at),
+    endTurn: (...args) => base.endTurn(...args),
+    beginStep: (...args) => base.beginStep(...args),
+    endStep: (...args) => base.endStep(...args),
     appendEntry: () => {
       throw new Error('库写坏了')
     },

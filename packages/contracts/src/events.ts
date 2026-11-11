@@ -17,7 +17,7 @@ import type { ModelChoice } from './model.ts'
 
 import type { StatusLineConfig } from './config.ts'
 import type { Content, Entry, PlanNote, SessionSummary, UsedSkill } from './entries.ts'
-import type { BlobRef, DelegationId, RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
+import type { BlobRef, DelegationId, RecordId, SessionId, StepId, Timestamp, TurnId } from './ids.ts'
 // 模型面的两格（U41）——连线与缓存读数自 `model.ts`（两边都是 `import type`，编译期擦除）
 import type { ModelInfoRead, ReasoningSetting, VendorInfo } from './model.ts'
 import type { CollaborationView } from './collaboration-control.ts'
@@ -1024,7 +1024,12 @@ export type EventDataOf = {
 export type EventEnvelope<K extends EventKind = EventKind> = {
   readonly id: RecordId
   readonly session: SessionId
+  /** 所属交代；轮外事件（会话级）为 `null`。 */
   readonly turn: TurnId | null
+  /** 所属模型调用步；轮内但不是某一步的事件可缺席。 */
+  readonly step?: StepId | null
+  /** 执行代次——记录实际使用的承接代次；不是配置版本。 */
+  readonly generation?: number
   readonly at: Timestamp
   readonly kind: K
   readonly data: EventDataOf[K]

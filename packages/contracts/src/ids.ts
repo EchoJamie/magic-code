@@ -11,8 +11,17 @@ export type RecordId = number
 /** 会话标识（事件分束预留——技术方案 · 多智能体协作预留）。 */
 export type SessionId = string
 
-/** 轮标识——一个 Turn ＝ 一次模型调用 + 它请求的工具执行（可为 0 个）。 */
+/**
+ * 轮标识——一次用户交代（或 agent 激活）的边界；轮内可以有多次模型调用。
+ * 0.2.0 起由记录域分配并落 `turns` 表。
+ */
 export type TurnId = number
+
+/** 步标识——轮内的一次模型调用及其工具执行；落 `steps` 表。 */
+export type StepId = number
+
+/** 执行标识——一次执行者承接；落 `runs` 表，不是会话事实。 */
+export type RunId = string
 
 /** 时间戳——**epoch 毫秒**（`at` 与事件时间；技术方案 · 记录 · 标量口径 v0）。 */
 export type Timestamp = number

@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessagePayload } from './collaboration.ts'
-import type { BlobRef, RecordId, SessionId, Timestamp } from './ids.ts'
+import type { BlobRef, RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
 
 /** 内容承载——正文内联，或大负载转 blob 引用。 */
 export type Content = { readonly text: string } | { readonly blob: BlobRef }
@@ -415,6 +415,11 @@ export type Entry = {
    */
   readonly payload?: EntryPayload
   readonly at: Timestamp
+  /**
+   * 这条记录属于哪一次交代（`turns.id`）——0.2.0 起写入侧带上，读侧原样返回。
+   * 缺席＝写入方没有所属轮（例如后台事实或旧测试构造的裸条目）。
+   */
+  readonly turn?: TurnId
   /** 来源引用（协作立条前的占位——委派关系可表达为引用链）。 */
   readonly source?: SessionId
 }

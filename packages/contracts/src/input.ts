@@ -1,6 +1,6 @@
 import type { UserInput } from './control.ts'
 import type { NewEntry } from './entries.ts'
-import type { RecordId } from './ids.ts'
+import type { RecordId, TurnId } from './ids.ts'
 export type InputPurpose = 'current' | 'next'
 export type StoredInput = {
   readonly ref: string
@@ -10,6 +10,8 @@ export type StoredInput = {
   readonly revision: number
   readonly state: 'pending' | 'consumed' | 'included' | 'withdrawn' | 'failed'
   readonly entry?: RecordId
+  /** 这份输入被哪次交代消费（`turns.id`）。未消费时缺席。 */
+  readonly turn?: TurnId
   readonly reason?: string
 }
 /** 记录域保存提交事实；运行只持本次明确启动的身份，不自动消费遗留输入。 */

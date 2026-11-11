@@ -51,6 +51,7 @@ function withIds(entries: readonly NewEntry[], ids: readonly RecordId[]): Entry[
 type RawEntryRow = {
   id: number
   session: string
+  turn_id: number | null
   kind: string
   content_kind: string
   content_text: string | null
@@ -63,7 +64,9 @@ type RawEntryRow = {
 type RawEventRow = {
   id: number
   session: string
-  turn: number | null
+  turn_id: number | null
+  step_id: number | null
+  generation: number
   at: number
   kind: string
   data: string
@@ -653,11 +656,13 @@ describe('判据 5 · 独立验证（直读库表）', () => {
       })
 
       const eventRows = db
-        .query<RawEventRow, []>('SELECT id, session, turn, at, kind, data FROM events ORDER BY id')
+        .query<RawEventRow, []>('SELECT id, session, turn_id, step_id, generation, at, kind, data FROM events ORDER BY id')
         .all()
 
       expect(eventRows.map((row) => row.kind)).toEqual(['agent.start', 'turn.end'])
-      expect(eventRows.map((row) => row.turn)).toEqual([null, 1])
+      expect(eventRows.map((row) => row.turn_id)).toEqual([null, 1])
+      expect(eventRows.map((row) => row.step_id)).toEqual([null, null])
+      expect(eventRows.map((row) => row.generation)).toEqual([0, 0])
       expect(eventRows.map((row) => row.session)).toEqual([SESSION, SESSION])
       expect(eventRows.map((row) => row.at)).toEqual([T0 + 9, T0 + 10])
       expect(eventRows.map((row) => JSON.parse(row.data))).toEqual([{}, { reason: 'settled' }])

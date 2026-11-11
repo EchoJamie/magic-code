@@ -62,7 +62,7 @@ describe('自有进程的账与收尾', () => {
     try {
       const parent = (await startTimeOf(group.pid))
       expect(parent).toBeDefined()
-      const source = new URL('../../execution/src/groups.ts', import.meta.url).pathname
+      const source = new URL('../../runtime/resources/src/groups.ts', import.meta.url).pathname
       const child = Bun.spawn([process.execPath, '-e',
         `import { startTimeOf } from ${JSON.stringify(source)}; console.log(await startTimeOf(${group.pid}))`,
       ], { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })

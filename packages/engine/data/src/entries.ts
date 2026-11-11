@@ -33,6 +33,7 @@ import type { NamedParams } from './schema.ts'
 export type EntryRow = {
   readonly id: number
   readonly session: string
+  readonly turn_id: number | null
   readonly kind: string
   readonly content_kind: string
   readonly content_text: string | null
@@ -149,6 +150,7 @@ export function entryParamsOf(id: RecordId, session: SessionId, entry: NewEntry)
   return {
     $id: id,
     $session: session,
+    $turn: entry.turn ?? null,
     $kind: entry.kind,
     $contentKind: 'blob' in entry.content ? 'blob' : 'text',
     $contentText: 'text' in entry.content ? entry.content.text : null,
@@ -171,6 +173,7 @@ export function entryOfRow(row: EntryRow): Entry {
         : { text: required(row.content_text, 'content_text') },
     ...(row.payload === null ? {} : { payload: JSON.parse(row.payload) as EntryPayload }),
     at: row.at,
+    ...(row.turn_id === null ? {} : { turn: row.turn_id }),
     ...(row.source === null ? {} : { source: row.source }),
   }
 }

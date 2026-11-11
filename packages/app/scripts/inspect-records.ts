@@ -285,7 +285,7 @@ function main(): number {
       .all(target)
     const events = db
       .query<EventRow, [string]>(
-        `SELECT id, turn, at, kind, data FROM events WHERE session = ? ORDER BY id`,
+        `SELECT id, turn_id AS turn, at, kind, data FROM events WHERE session = ? ORDER BY id`,
       )
       .all(target)
 

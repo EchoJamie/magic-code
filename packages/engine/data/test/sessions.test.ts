@@ -102,7 +102,7 @@ describe('schema 边界', () => {
     } finally { removeDataDir(dir) }
   })
 
-  test('早期会话补齐可空字段，不猜测标题或工作区，重复打开保留记录', async () => {
+  test('早期会话库（无 schema_version）拒开，不猜测标题或工作区，原文件不动', () => {
     const dir = tempDataDir()
     try {
       const db = new Database(databasePathOf(dir), { create: true })
@@ -111,13 +111,8 @@ describe('schema 边界', () => {
       db.close()
       const before = readFileSync(databasePathOf(dir))
       expect(() => readSessionSummary(dir, A)).toThrow('结构不符')
+      expect(() => createRecordsStore({ dataDir: dir, workspace: ROOTS })).toThrow('结构不符')
       expect(readFileSync(databasePathOf(dir))).toEqual(before)
-      for (let i = 0; i < 2; i++) {
-        const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
-        try {
-          expect(await store.listSessions()).toEqual([{ id: A, at: T0, archived: false }])
-        } finally { store.close() }
-      }
     } finally { removeDataDir(dir) }
   })
 
