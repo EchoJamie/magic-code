@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { createSettings } from '../src/settings.ts'
+import { createSettings } from '@magic/host'
 import { attachShell } from '../src/shell.ts'
 import { makeStage } from './support.ts'
 import { magicAt } from './tmp.ts'

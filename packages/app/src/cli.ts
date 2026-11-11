@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { parseDiagnosticsArgs } from './diagnostics.ts'
+import { parseDiagnosticsArgs } from '@magic/host'
 import type { DiagnosticsChange } from '@magic/contracts'
 /** CLI：help/version/离线 check 是只读短路径；交互与脚本均连接选定 Engine。 */
 
@@ -7,12 +7,12 @@ import { homedir } from 'node:os'
 import type { KernelEvent, RulesLoad, ModelChoice, ModelSwitchRequest } from '@magic/contracts'
 import { resolve } from 'node:path'
 import { resolveMagicHome, SOFTWARE_VERSION, NATIVE_PROTOCOL } from '@magic/contracts'
-import { resolveModelChoice } from './agent-models.ts'
+import { resolveModelChoice } from '@magic/host'
 import { ConfigError, describeConfig } from '@magic/config'
-import { workspaceOf } from './run/observation.ts'
+import { workspaceOf } from '@magic/host'
 import type { AppConnection, AppConnectionOptions } from './run/spawn-manager.ts'
 import { attachShell } from './shell.ts'
-import { selectedParent } from './components.ts'
+import { selectedParent } from '@magic/host'
 import type { ShellScript } from './shell.ts'
 
 const USAGE = `magic —— 软件工程智能体
@@ -191,7 +191,7 @@ function localMagicHome() {
 async function offlineSettings(): Promise<number> {
   if (process.stdin.isTTY !== true) throw new Error('本地设置需要一个终端，请在终端里运行 magic --settings')
   const { loadConfig } = await import('@magic/config')
-  const { terminalSettings } = await import('./run/terminal-settings.ts')
+  const { terminalSettings } = await import('@magic/host')
   const { runTui } = await import('@magic/tui')
   const { writeClipboardText } = await import('@magic/client')
   const magic = localMagicHome(), loaded = loadConfig({ magic }), workspace = workspaceOf(loaded, process.cwd())
@@ -210,7 +210,7 @@ async function offlineCheck(args: Args): Promise<number> {
   const { loadConfig } = await import('@magic/config')
   const { resolveApiKey } = await import('@magic/model')
   const { createSkills, createProjectRules } = await import('@magic/execution')
-  const { skillsCatalog } = await import('./run/observation.ts')
+  const { skillsCatalog } = await import('@magic/host')
   const magic = localMagicHome()
   const loaded = loadConfig({ magic })
   const workspace = workspaceOf(loaded, process.cwd())

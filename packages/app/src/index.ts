@@ -33,13 +33,13 @@ export type { LoadConfigOptions, LoadedConfig } from '@magic/config'
 //
 // 身份的**算**在装配根（它才看得见配置文件的可观察事实）；形状在 `@magic/contracts`。
 // 缓存实现的 scoped 读写与发布前核对归缓存线。
-export { modelCacheAccessOf } from './cache-access.ts'
+export { modelCacheAccessOf } from '@magic/host'
 export { configFingerprintOf } from '@magic/config'
 export type { ConfigFingerprint } from '@magic/config'
 
 // —— 模型信息缓存与配置保存（U41）——
 
-export { MODEL_CACHE_DIR, createFileModelInfoCache } from './model-cache.ts'
+export { MODEL_CACHE_DIR, createFileModelInfoCache } from '@magic/host'
 export { editConfigFile, removeProvider, saveProvider, configureModel } from '@magic/config'
 export type { EditConfigInput, SaveOutcome } from '@magic/config'
 

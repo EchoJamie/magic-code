@@ -45,12 +45,12 @@ import {
 import type { WebServiceRef } from '@magic/tools'
 import { accessSync, constants } from 'node:fs'
 import { join } from 'node:path'
-import type { bindModelChoice } from '../agent-models.ts'
+import type { bindModelChoice } from '@magic/host'
 import { createBackgroundSession } from '../background-session.ts'
 import { createCollaborationBoundary } from '../collaboration-boundary.ts'
 import type { LoadedConfig } from '@magic/config'
-import { noModelRefusal } from '../run/observation.ts'
-import type { WorkEnvironment } from '../work-environment.ts'
+import { noModelRefusal } from '@magic/host'
+import type { WorkEnvironment } from '@magic/host'
 import { createStamper } from './events.ts'
 
 /** 提示词注入项的环境来源——只放**环境**；`cwd` 是工作区默认根，两处必须同一个值。 */

@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRecordsStore } from '@magic/records'
 
-import { createSettings, type SettingsContext } from '../src/settings.ts'
+import { createSettings, type SettingsContext } from '@magic/host'
 
 import { cliGround } from './resident-cli-fixture.ts'
 import { nativeModelsDevCatalog } from './native-settings-fixture.ts'

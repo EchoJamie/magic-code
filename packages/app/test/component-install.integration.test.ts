@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { join } from 'node:path'
 import { NATIVE_PROTOCOL, SOFTWARE_VERSION } from '@magic/contracts'
 import { installComponents, uninstallComponent, type ComponentInspector } from '../src/component-install.ts'
-import { componentDirectory, readComponents } from '../src/components.ts'
+import { componentDirectory, readComponents } from '@magic/host'
 
 function ground() {
   const root = realpathSync(mkdtempSync('/tmp/magic-install-')), home = join(root, 'home'), payload = join(root, 'payload')

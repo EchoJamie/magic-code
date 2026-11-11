@@ -1,6 +1,6 @@
-import type { WorkEnvironment } from '../work-environment.ts'
+import type { WorkEnvironment } from '@magic/host'
 import { diagnosticsOf, validDiagnosticsChange } from '@magic/contracts'
-import { DiagnosticLog } from '../diagnostic-log.ts'
+import { DiagnosticLog } from '@magic/host'
 import type { RecordsStore } from '@magic/records'
 import type { ProcessLedger } from '@magic/contracts'
 

@@ -1,7 +1,7 @@
 import { homedir } from 'node:os'
 import type { DiagnosticsChange } from '@magic/contracts'
 import { configStamp } from '@magic/config'
-import { saveDiagnostics } from '../diagnostics.ts'
+import { saveDiagnostics } from '@magic/host'
 
 /** 入口已确定配置实例；诊断保存与 Engine 是否在线无关。 */
 export async function applyHostDiagnostics(target: { readonly base: string }, change: DiagnosticsChange, home = homedir()): Promise<string> {

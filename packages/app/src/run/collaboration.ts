@@ -4,7 +4,7 @@ import type {
 } from '@magic/contracts'
 import { createCollaborationActions } from '@magic/host'
 import type { RecordsStore } from '@magic/records'
-import { managedModelChoices, resolveManagedModel } from '../agent-models.ts'
+import { managedModelChoices, resolveManagedModel } from '@magic/host'
 
 export type CollaborationHost = {
   readonly store: RecordsStore

@@ -14,7 +14,7 @@ import { createFileModelInfoCache } from './model-cache.ts'
 import { createModelsDevResource } from './models-dev-resource.ts'
 import { configStamp } from '@magic/config'
 import { cacheAccessFor, connectionScopeChanged } from './cache-access.ts'
-import { providerCatalog, readModelCatalog } from './run/observation.ts'
+import { providerCatalog, readModelCatalog } from './observation.ts'
 export type SettingsContext = {
   readonly magic: MagicHome
   readonly configPath?: string

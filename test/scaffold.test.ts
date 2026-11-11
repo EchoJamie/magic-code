@@ -43,7 +43,7 @@ const PACKAGE_TABLE: Record<string, readonly string[]> = {
   '@magic/mcp': ['@magic/contracts', '@magic/execution'],
   '@magic/execution': ['@magic/contracts'],
   '@magic/client': ['@magic/contracts'],
-  '@magic/host': ['@magic/contracts', '@magic/conversation', '@magic/execution', '@magic/records'],
+  '@magic/host': ['@magic/contracts', '@magic/conversation', '@magic/execution', '@magic/records', '@magic/model', '@magic/config'],
   '@magic/control': ['@magic/contracts'],
   '@magic/tui': ['@magic/contracts'],
   '@magic/faux': ['@magic/contracts'],
@@ -84,6 +84,7 @@ const ASSEMBLY_PACKAGE = '@magic/app'
 /** 许可外部库（技术方案 · 工程结构 · 包表的「依赖」列）——非 `@magic` 的运行时依赖。 */
 const ALLOWED_EXTERNAL: Record<string, readonly string[]> = {
   '@magic/app': ['undici'],
+  '@magic/host': ['undici'],
   '@magic/model': ['ai', '@ai-sdk/openai-compatible', '@ai-sdk/openai', '@ai-sdk/anthropic'],
   // `@magic/mcp`——**官方 MCP SDK**（不手写协议栈：设计把「按规范核对官方实现」写成明文）。
   // 选它、以及它与设计所引规范修订版的版本关系，见 `packages/mcp/src/index.ts` 头注。

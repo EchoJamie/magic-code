@@ -6,7 +6,7 @@ import type { Fixture, FixtureRequest } from './ui/fixture.ts'
 import type { ProviderConfig } from '@magic/contracts'
 import { makeTestStamper } from '@magic/faux'
 import { createPageDistiller } from '@magic/model'
-import { bindModelChoice } from '../src/agent-models.ts'
+import { bindModelChoice } from '@magic/host'
 const chatsOf = (fixture: Fixture): readonly FixtureRequest[] => fixture.requests().filter(request => request.path.endsWith('/chat/completions'))
 
 describe('D56 · 内务绑定与提炼出站', () => {

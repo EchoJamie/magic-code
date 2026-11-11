@@ -4,11 +4,11 @@
  */
 import { createModelConfiguration } from './agent-assembly/model-configuration.ts'
 import { createAgentSession, type AgentSession, type EnvironmentVars } from './agent-assembly/session.ts'
-import { noticesOf, providerRemovedNote } from './run/observation.ts'
-import { createWorkEnvironment, type WorkEnvironment } from './work-environment.ts'
+import { noticesOf, providerRemovedNote } from '@magic/host'
+import { createWorkEnvironment, type WorkEnvironment } from '@magic/host'
 export type { EnvironmentVars } from './agent-assembly/session.ts'
 export { createStamper } from './agent-assembly/events.ts'
-export { workspaceOf } from './run/observation.ts'
+export { workspaceOf } from '@magic/host'
 
 import type { SessionPorts } from '@magic/host'
 import { createActions } from '@magic/host'
@@ -64,11 +64,11 @@ import { createRecordsStore } from '@magic/records'
 import type { ToolDefinition } from '@magic/tools'
 import { defineMcpTools } from '@magic/tools'
 import { tmpdir } from 'node:os'
-import { resolveModelChoice, validateSelection } from './agent-models.ts'
+import { resolveModelChoice, validateSelection } from '@magic/host'
 import type { LoadedConfig } from '@magic/config'
 import { loadConfig } from '@magic/config'
 import { saveImageFile } from './image-file.ts'
-import type { ModelCatalogReader } from './run/observation.ts'
+import type { ModelCatalogReader } from '@magic/host'
 import {
   mcpCatalog,
   modelCatalog,
@@ -76,7 +76,7 @@ import {
   providerCatalog,
   skillsCatalog,
   workspaceOf,
-} from './run/observation.ts'
+} from '@magic/host'
 import { backgroundOutputDirOf, runPathsOf } from '@magic/host'
 
 /** 瞬时类不落库（契约 `TRANSIENT_EVENT_KINDS`——记录 schema v0 规则 ①）。 */

@@ -12,7 +12,10 @@
     "@magic/contracts": "workspace:*",
     "@magic/conversation": "workspace:*",
     "@magic/execution": "workspace:*",
-    "@magic/records": "workspace:*"
+    "@magic/records": "workspace:*",
+    "@magic/model": "workspace:*",
+    "@magic/config": "workspace:*",
+    "undici": "7.29.1"
   },
   "devDependencies": {
     "@magic/faux": "workspace:*"

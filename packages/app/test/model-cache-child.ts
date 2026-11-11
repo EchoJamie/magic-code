@@ -10,7 +10,7 @@
  */
 
 import { createModelInfoService } from '@magic/model'
-import { createFileModelInfoCache } from '../src/model-cache.ts'
+import { createFileModelInfoCache } from '@magic/host'
 
 const dir = process.env['MC_DIR']
 if (dir === undefined || dir.length === 0) {

@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { componentDirectory } from '../src/components.ts'
+import { componentDirectory } from '@magic/host'
 import { createSandbox, createUiSession, startFixture } from './ui/index.ts'
 import { tempDir, removeDir } from './tmp.ts'
 

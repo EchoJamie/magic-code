@@ -27,11 +27,11 @@ import {
   vendorCatalog,
 } from '@magic/model'
 import type { RecordsStore } from '@magic/records'
-import { resolveModelChoice } from '../agent-models.ts'
-import { cacheAccessFor } from '../cache-access.ts'
+import { resolveModelChoice } from './agent-models.ts'
+import { cacheAccessFor } from './cache-access.ts'
 import { ConfigError, loadConfig, type LoadedConfig } from '@magic/config'
-import { createFileModelInfoCache } from '../model-cache.ts'
-import { createModelsDevResource } from '../models-dev-resource.ts'
+import { createFileModelInfoCache } from './model-cache.ts'
+import { createModelsDevResource } from './models-dev-resource.ts'
 
 export function workspaceOf(loaded: LoadedConfig, cwd: string): WorkspaceService {
   try {

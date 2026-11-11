@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ModelCacheAccess, ModelInfoSnapshot } from '@magic/contracts'
 
-import { MODEL_CACHE_DIR, createFileModelInfoCache } from '../src/model-cache.ts'
+import { MODEL_CACHE_DIR, createFileModelInfoCache } from '@magic/host'
 
 /** 一个接入身份——测试里的假值（真身份由装配按认证来源算，见回报）。 */
 const access = (id: string, persistent = true): ModelCacheAccess => ({ id, persistent })

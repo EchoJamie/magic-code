@@ -2,7 +2,7 @@ import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readlinkSync
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { NATIVE_PROTOCOL, SOFTWARE_VERSION, type HostDiscovery } from '@magic/contracts'
 import { acquireFileLock } from '@magic/config'
-import { componentDirectory, componentSource, privateDirectory, readComponents, readJSON, writePrivateJSON, type Components } from './components.ts'
+import { componentDirectory, componentSource, privateDirectory, readComponents, readJSON, writePrivateJSON, type Components } from '@magic/host'
 import { acquireServiceLock, controlService } from './run/engine-service.ts'
 import { normalizeDataDir } from '@magic/host'
 import { softwareSource } from './run/runtime-launch.ts'

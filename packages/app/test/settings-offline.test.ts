@@ -1,7 +1,7 @@
 import { createShell } from '@magic/tui'
 import { createWorkspaceService } from '@magic/execution'
 import type { Command, KernelEvent } from '@magic/contracts'
-import { terminalSettings } from '../src/run/terminal-settings.ts'
+import { terminalSettings } from '@magic/host'
 import { waitFor } from './resident-cli-fixture.ts'
 import { expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'

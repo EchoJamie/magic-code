@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { writeFileSync } from 'node:fs'
 import type { AgentRoleConfig, ProviderConfig, ModelSwitchRequest } from '@magic/contracts'
 import { drainStream, makeTestStamper } from '@magic/faux'
-import { createAgentModels, validateSelection } from '../src/agent-models.ts'
+import { createAgentModels, validateSelection } from '@magic/host'
 
 type Seen = { route: string; body: Record<string, unknown> }
 function endpoint() {

@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'bun:test'
 import { existsSync, readFileSync } from 'node:fs'
 import { loadConfig } from '../src/index.ts'
-import { noModelAdvice, noModelRefusal, providerRemovedNote } from '../src/run/observation.ts'
+import { noModelAdvice, noModelRefusal, providerRemovedNote } from '@magic/host'
 import { createSandbox } from './ui/sandbox.ts'
 import { magicAt } from './tmp.ts'
 

@@ -1,6 +1,6 @@
 import type { Command, ControlTransport, EventDataOf, EventKind, KernelEvent, MagicHome, ModelSelectionRef, ModelSwitchRequest, SettingsAction, WorkspaceService } from '@magic/contracts'
-import { createSettings } from '../settings.ts'
-import { createWorkEnvironment } from '../work-environment.ts'
+import { createSettings } from './settings.ts'
+import { createWorkEnvironment } from './work-environment.ts'
 import { configStamp } from '@magic/config'
 import { loadConfig } from '@magic/config'
 import { modelCatalog, providerCatalog } from './observation.ts'

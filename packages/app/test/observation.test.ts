@@ -4,9 +4,9 @@ import { join } from 'node:path'
 import type { Command, EventDataOf, EventKind, ProviderConfig } from '@magic/contracts'
 import { createRecordsStore } from '@magic/records'
 import { modelSpecOf } from '@magic/model'
-import { cacheAccessFor } from '../src/cache-access.ts'
-import { createFileModelInfoCache } from '../src/model-cache.ts'
-import { query, type ObservationContext } from '../src/run/observation.ts'
+import { cacheAccessFor } from '@magic/host'
+import { createFileModelInfoCache } from '@magic/host'
+import { query, type ObservationContext } from '@magic/host'
 import { cliGround } from './resident-cli-fixture.ts'
 
 const cleanups: (() => void)[] = []

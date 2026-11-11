@@ -10,7 +10,7 @@ import { describe, expect, test } from 'bun:test'
 import { utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { configFingerprintOf } from '@magic/config'
-import { modelCacheAccessOf } from '../src/cache-access.ts'
+import { modelCacheAccessOf } from '@magic/host'
 import { removeDir, tempDir } from './tmp.ts'
 
 const TOKEN = 'proc-token-1'

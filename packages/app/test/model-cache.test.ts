@@ -18,8 +18,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ModelCacheAccess, ModelInfoSnapshot } from '@magic/contracts'
 import { assemble, attachShell, loadConfig } from '../src/index.ts'
-import { MODEL_CACHE_DIR, createFileModelInfoCache } from '../src/model-cache.ts'
-import { createSettings } from '../src/settings.ts'
+import { MODEL_CACHE_DIR, createFileModelInfoCache } from '@magic/host'
+import { createSettings } from '@magic/host'
 import { magicAt } from './tmp.ts'
 
 /** 一个接入身份——测试里的假值（真身份由装配按认证来源算，见回报）。 */

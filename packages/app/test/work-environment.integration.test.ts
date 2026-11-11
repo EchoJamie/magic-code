@@ -3,7 +3,7 @@ import { createServer, type ServerResponse } from 'node:http'
 import { connect } from 'node:net'
 import { join } from 'node:path'
 import type { Duplex } from 'node:stream'
-import { createWorkEnvironment } from '../src/work-environment.ts'
+import { createWorkEnvironment } from '@magic/host'
 
 test('响应头到达后取消或远端断流，挂起的读取必须结束', async () => {
   let upstream: ServerResponse | undefined

@@ -1,4 +1,4 @@
-import { terminalSettings } from './terminal-settings.ts'
+import { terminalSettings } from '@magic/host'
 /**
  * **终端这一端**（U48）——把一条到管理者的连接，接成外壳要的那几件。
  *
@@ -37,10 +37,10 @@ import type { ModelRegistry } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
 import type { ManagerClient } from './client.ts'
 import { unreadSummaryOf } from '@magic/tui'
-import { mcpNoticesOf, noModelAdvice, workspaceOf } from './observation.ts'
-import { cacheAccessFor } from '../cache-access.ts'
-import { createFileModelInfoCache } from '../model-cache.ts'
-import { resolveModelChoice } from '../agent-models.ts'
+import { mcpNoticesOf, noModelAdvice, workspaceOf } from '@magic/host'
+import { cacheAccessFor } from '@magic/host'
+import { createFileModelInfoCache } from '@magic/host'
+import { resolveModelChoice } from '@magic/host'
 import type { LoadedConfig } from '@magic/config'
 
 /** 这一层要的那几件——**都是「从外面拿的值」**，判断一件都不在这儿。 */

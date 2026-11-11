@@ -1,5 +1,5 @@
 import type { AgentModelConfig, Diagnostics, McpCatalogRow, ProcessLedger } from '@magic/contracts'
-import type { WorkEnvironment } from '../work-environment.ts'
+import type { WorkEnvironment } from '@magic/host'
 import type { RunRecord } from '@magic/host'
 import type { SpawnedExecutor } from './launch.ts'
 import type { ExecutorToManager, Link, ManagerToExecutor } from '@magic/host'

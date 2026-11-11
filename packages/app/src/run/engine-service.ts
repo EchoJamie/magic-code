@@ -1,7 +1,7 @@
 import { closeSync, constants, openSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { type HostDiscovery, type ServiceIdentity } from '@magic/contracts'
-import { componentDirectory, privateDirectory, selectedParent, writePrivateJSON } from '../components.ts'
+import { componentDirectory, privateDirectory, selectedParent, writePrivateJSON } from '@magic/host'
 import { engineCall, type EngineResult } from './engine-call.ts'
 import { fingerprintOf, normalizeDataDir } from '@magic/host'
 import { runtimeLaunch, softwareSource } from './runtime-launch.ts'

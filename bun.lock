@@ -91,10 +91,13 @@
       "name": "@magic/host",
       "version": "0.0.0",
       "dependencies": {
+        "@magic/config": "workspace:*",
         "@magic/contracts": "workspace:*",
         "@magic/conversation": "workspace:*",
         "@magic/execution": "workspace:*",
+        "@magic/model": "workspace:*",
         "@magic/records": "workspace:*",
+        "undici": "7.29.1",
       },
       "devDependencies": {
         "@magic/faux": "workspace:*",

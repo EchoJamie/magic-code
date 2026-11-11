@@ -3,8 +3,8 @@ import { diagnosticsOf, isTurnTimingEvent, type TurnTimingEvent } from '@magic/c
 import { setPrefs } from '@magic/config'
 import { watchConfig } from '@magic/config'
 import { loadConfig } from '@magic/config'
-import { DiagnosticLog } from '../diagnostic-log.ts'
-import { createWorkEnvironment, type WorkEnvironment } from '../work-environment.ts'
+import { DiagnosticLog } from '@magic/host'
+import { createWorkEnvironment, type WorkEnvironment } from '@magic/host'
 import {
   captureCollaborationNative,
   mergeCollaborationNative,
@@ -72,7 +72,7 @@ export type { ExecutorLauncher, ExecutorRequest, SpawnedExecutor } from './launc
 import { projectWorks } from '@magic/host'
 import { createNativeServer } from './native-server.ts'
 import { noticeKey } from '@magic/host'
-import { query as observe, workspaceOf } from './observation.ts'
+import { query as observe, workspaceOf } from '@magic/host'
 import type { RunPaths } from '@magic/host'
 import { ensureRunDir, normalizeDataDir, tightenSocket } from '@magic/host'
 import { softwareSource } from './runtime-launch.ts'

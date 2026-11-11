@@ -5,7 +5,7 @@ import type { HostDiscovery, MagicHome, ServiceIdentity } from '@magic/contracts
 import { loadConfig, type LoadedConfig } from '@magic/config'
 import { normalizeDataDir } from '@magic/host'
 import { softwareSource } from './runtime-launch.ts'
-import { componentSource, readComponents } from '../components.ts'
+import { componentSource, readComponents } from '@magic/host'
 
 export type HostLocationOptions = {
   readonly home: string
