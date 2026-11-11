@@ -12,7 +12,7 @@
  *   退格整体删、选区算整个照旧。
  *
  * 走的是**真按键 → 外壳**那条路（与真终端同形）；「那个身份真到了模型那一头」在
- * `packages/app/test/image-name.test.ts`（那边才有真装配与真出站请求体）。
+ * `apps/cli/test/image-name.test.ts`（那边才有真装配与真出站请求体）。
  */
 
 import { describe, expect, test } from 'bun:test'

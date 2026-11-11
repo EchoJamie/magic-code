@@ -1,0 +1,36 @@
+{
+  "name": "@magic/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "magic": "./src/cli.ts"
+  },
+  "scripts": {
+    "records": "bun run scripts/inspect-records.ts"
+  },
+  "dependencies": {
+    "@magic/host": "workspace:*",
+    "@magic/client": "workspace:*",
+    "@magic/contracts": "workspace:*",
+    "@magic/transport": "workspace:*",
+    "@magic/conversation": "workspace:*",
+    "@magic/resources": "workspace:*",
+    "@magic/mcp": "workspace:*",
+    "@magic/model": "workspace:*",
+    "@magic/data": "workspace:*",
+    "@magic/tools": "workspace:*",
+    "@magic/shell": "workspace:*",
+    "undici": "7.29.1",
+    "@magic/state": "workspace:*"
+  },
+  "devDependencies": {
+    "@magic/faux": "workspace:*",
+    "@xterm/headless": "^6.0.0"
+  }
+}

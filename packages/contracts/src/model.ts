@@ -253,7 +253,7 @@ export type ModelInfoRead = {
  * - `persistent`——要不要**落盘**。`false` ＝这份身份的缓存**不跨进程复用**
  *   （环境变量来源即此例）；**缺可信身份时读面不读共享盘**。
  *
- * 身份的**算**由装配负责（`@magic/app` 的 `modelCacheAccessOf`）——它才看得见配置文件的
+ * 身份的**算**由装配负责（`@magic/cli` 的 `modelCacheAccessOf`）——它才看得见配置文件的
  * 那份可观察事实；这里只定**形状**。
  */
 export type ModelCacheAccess = {

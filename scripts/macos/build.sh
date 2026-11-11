@@ -31,7 +31,7 @@ trap cleanup EXIT
 # 输入清单仅用于本次同版检查，构建后清理。
 python3 - "$TEMP/inputs.json" <<'PY'
 import hashlib, json, pathlib, sys
-patterns = ['packages/*/src/**/*', 'packages/*/package.json', 'packages/*/*/src/**/*', 'packages/*/*/package.json', 'apps/macos/MagicCode/**/*',
+patterns = ['packages/*/src/**/*', 'packages/*/package.json', 'packages/*/*/src/**/*', 'packages/*/*/package.json', 'apps/*/src/**/*', 'apps/*/package.json', 'apps/macos/MagicCode/**/*',
             'apps/macos/MagicCode.xcodeproj/**/*', 'scripts/macos/build*', 'patches/*.patch',
             'bun.lock', 'package.json', 'tsconfig.json', 'bunfig.toml']
 inputs = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for pattern in patterns for p in pathlib.Path('.').glob(pattern) if p.is_file()}

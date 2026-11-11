@@ -11,7 +11,7 @@
  * - **分寸与文本粘贴同一套**：抽屉开着不收。
  *
  * 走的是**真按键 → 外壳**那条路（与真终端同形）；「那一张真到了模型那一头」在
- * `packages/app/scripts/verify/clipboard-images.ts`（那边才有真装配、真出站请求体与真屏）。
+ * `apps/cli/scripts/verify/clipboard-images.ts`（那边才有真装配、真出站请求体与真屏）。
  *
  * ⚠️ 这里**不碰真剪贴板**：剪贴板那一跳归内核（`input.paste` 那一头），
  * 外壳这一半收的只是答复——用例按拍子喂进去就是。

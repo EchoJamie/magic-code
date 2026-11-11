@@ -5,15 +5,15 @@
     "": {
       "name": "magic-code",
       "dependencies": {
-        "@magic/app": "workspace:*",
+        "@magic/cli": "workspace:*",
       },
       "devDependencies": {
         "@types/bun": "^1.2.0",
         "typescript": "^5.7.0",
       },
     },
-    "packages/app": {
-      "name": "@magic/app",
+    "apps/cli": {
+      "name": "@magic/cli",
       "version": "0.0.0",
       "bin": {
         "magic": "./src/cli.ts",
@@ -190,7 +190,7 @@
 
     "@hono/node-server": ["@hono/node-server@2.1.1", "https://registry.npmmirror.com/@hono/node-server/-/node-server-2.1.1.tgz", { "peerDependencies": { "hono": "^4" } }, "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg=="],
 
-    "@magic/app": ["@magic/app@workspace:packages/app"],
+    "@magic/cli": ["@magic/cli@workspace:apps/cli"],
 
     "@magic/client": ["@magic/client@workspace:packages/client/local-capabilities"],
 

@@ -12,7 +12,7 @@
  *
  * **本文件在边界上测**：「在途长什么样」由记录域的查询面负责（那边的用例在
  * `packages/records/test/recovery.test.ts`），这里把扫描结果**当输入给定**（`scanOf`），
- * 只验**处置**。两侧合起来的那一次，在装配面（`packages/app/test/recovery.test.ts`）
+ * 只验**处置**。两侧合起来的那一次，在装配面（`apps/cli/test/recovery.test.ts`）
  * 与**真跑**里验（杀进程 → 重起 → 续跑）。
  */
 

@@ -1,0 +1,440 @@
+/**
+ * 界面验收 · 控制通道（U40）——**助手那条入口**：逐行 JSON 请求 / 逐行 JSON 答复。
+ *
+ * ## 是什么、不是什么
+ *
+ * 是：一个**保持运行的命令行进程**（`scripts/ui.ts serve`），从**它自己的标准输入**读一行
+ * JSON 命令，往标准输出写一行 JSON 答复。命令带 `id`，答复带着**同一个** `id` 回来——
+ * 助手同时开几个实例比对时，靠它认哪句答的是哪句。
+ *
+ * 不是：系统 daemon、socket 服务、跨设备控制，**也不是别的水道**。首轮验收退回之后实测：
+ * 助手那条 `exec_command`（`tty:true`）起一个会话、往里 `write_stdin` 逐行写 JSON，
+ * 跨多次调用保持同一个 PID——**stdin 本身就是那根常开的水道**，FIFO、序号文件、答复轮询
+ * 那一套全是多余的机制，已删。
+ *
+ * ## 五条线画清楚
+ *
+ * 1. **应用自己的字节绝不混进控制协议**——它们进 PTY、进 VT、进现场目录；
+ *    控制通道上只有我们的 JSON（诊断走 stderr）；
+ * 2. **命令一条一条来**——正在等的那条没答复之前，后面的排队（答复次序即请求次序）；
+ * 3. **`capture` 只观察**——不发送、不重启、不清屏，应用一直在跑；
+ * 4. **单条失败不掀桌子**：等超时＝`{ok:false, error:{kind:'timeout', …}}` ＋ **现场留着**，
+ *    助手检查完可以接着下一条命令（会话不退场）；
+ * 5. **EOF / `close` / 进程退出都要清场**——自己起的应用与端点一个不留。
+ *
+ * ## stdin 的条件（**实测**，别想当然）
+ *
+ * - **`tty:false` 起的进程，stdin 当场就是关的**（接到 `/dev/null`）——「EOF 即收摊」立刻
+ *    成立，这个入口当不了持续入口。要么 `tty:true` 直接用 TTY 行输入（实测可用：终端按
+ *    行交给进程，它自己那份回显也在输出里——解析时只认 JSON 行），要么拿 `cat |` 包一层：
+ *
+ *    `cat | bun apps/cli/scripts/ui.ts serve --out <产物根>`
+ *
+ *    `cat` 活着，管道那头就不 EOF，写进去的每一行照常到达。
+ * - 会话活在这个进程活着的时候；进程一走，现场（产物目录）还在，接着用新的进程看。
+ */
+
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { createUiSession, UiWaitTimeout, UI_KEYS } from './driver.ts'
+import type { CloseReport, UiKey, UiSession, UiSessionOptions, WaitCondition } from './driver.ts'
+import type { FixtureTurn } from './fixture.ts'
+
+/** 一条命令的形态——`cmd` 是闭集，其余字段随命令。 */
+export type ControlRequest = {
+  readonly id: number | string
+  readonly cmd: string
+  readonly session?: string
+  readonly text?: string
+  readonly key?: string
+  /**
+   * `send` / `key` 用：**写完之后等这个条件**（「这一下生效了」）。
+   *
+   * ⚠️ **写一次，不重放**——`until` 是「等它」，不是「没出现就再写一遍」。
+   * 由头（U49 真跑里栽过）：`key('tab')` 写完不等，取帧会抢在这一键被受理之前；
+   * 而重放更糟——碰上不幂等的动作（批准 `y`、回车把下一条也送出去）就是**误批**。
+   */
+  readonly wait?: WaitCondition
+  /** 上面那个 `wait` 的上限（毫秒）——也是 `wait` 这一条自己的上限。 */
+  readonly timeoutMs?: number
+  readonly columns?: number
+  readonly rows?: number
+  readonly condition?: WaitCondition
+  readonly label?: string
+  /** `start` 用：模型剧本 / 尺寸 / 产物根 / 额外的 CLI 参数。 */
+  readonly turns?: readonly FixtureTurn[]
+  readonly cols?: number
+  readonly artifacts?: string
+  readonly argv?: readonly string[]
+  readonly checkout?: string
+  /**
+   * `start` 用：**起手先摆几份文件**（相对路径 → 内容，中间目录自动建）。
+   *
+   * 由头（U57）：技能、规约这类**按目录发现**的东西，屏上要验的那几屏（候选栏、选择器）
+   * 全得先有材料。没这个口子，验技能就只能绕开本入口另搭一套装置——而那正是 U51 要删掉的
+   * 重复。摆的落点**只在这块沙地里**，不碰真仓库、不碰真家目录。
+   *
+   * 两条前缀（U58 加的 `~`）：
+   * - 没前缀 ⇒ **沙地的工作区**（`session.facts().workspace`）；
+   * - `~/…` ⇒ **沙地的家目录**（`session.facts().home`）——用户那一类技能来源
+   *   （`<家>/.magic/skills`、`<家>/.agents/skills`）就在那儿。加这一条是因为
+   *   「同名只留一条」的跨档取舍（项目 ＞ 用户）**只有真摆出用户那份才验得出来**。
+   *
+   * ⚠️ **摆在起手之后**（会话已经起来、首帧已到）：发现面本来就是**每次现扫**的
+   * （「材料动态读取」），故摆下去就认——不必重开一次窗。这一点与技能帧脚本
+   * 里 `putCatalog` 的处置同源。
+   */
+  readonly files?: Readonly<Record<string, string>>
+}
+
+/** 一条答复——`ok` 为假时 `error.kind` 说清是哪一类（助手据此决定下一步）。 */
+export type ControlReply =
+  | { readonly id: number | string; readonly ok: true; readonly [key: string]: unknown }
+  | {
+      readonly id: number | string
+      readonly ok: false
+      readonly error: {
+        readonly kind: 'timeout' | 'bad-request' | 'no-session' | 'failed'
+        readonly message: string
+        readonly [key: string]: unknown
+      }
+    }
+
+export type ControlOptions = {
+  /** 产物根——`start` 没另给的话用它。 */
+  readonly artifacts?: string
+  readonly checkout?: string
+  /** 诊断（不上控制通道，走 stderr）。 */
+  readonly log?: (line: string) => void
+}
+
+export type Control = {
+  /** 处理一行 JSON，交回一行 JSON（**永不抛**——错误也走 `{ok:false}`）。 */
+  handle(line: string): Promise<string>
+  /** 还开着的会话（`s1` 这种号 → 它的底细）。 */
+  sessions(): readonly { readonly session: string; readonly pid: number; readonly runDir: string }[]
+  /** 全部收摊（EOF / 进程退出时调）。 */
+  closeAll(): Promise<void>
+}
+
+/**
+ * 起一个控制面——会话按 `s1` / `s2` 编号，`session` 不写就用**当前那一个**。
+ *
+ * 「当前那一个」＝最后 `start` 的、还没 `close` 的那个：助手开两个实例比对时**显式写号**，
+ * 平常只开一个时省掉这行字。⚠️ 写了号，答复里回的就是**那一个号**（连同它的 pid）——
+ * 「这回的是谁」只能有一个答案，首轮验收实测它曾经回成当前那个。
+ */
+export function createControl(options: ControlOptions = {}): Control {
+  const log = options.log ?? (() => {})
+  const sessions = new Map<string, UiSession>()
+  let counter = 0
+  let current: string | undefined
+
+  /** 这条请求冲谁去——**解析出来的那一个**（号与实例一起交回，免得两处各解析一次）。 */
+  const resolve = (request: ControlRequest): { name: string; session: UiSession } | undefined => {
+    const name = request.session ?? current
+    if (name === undefined) return undefined
+    const session = sessions.get(name)
+
+    return session === undefined ? undefined : { name, session }
+  }
+
+  const fail = (
+    id: ControlRequest['id'],
+    kind: 'bad-request' | 'no-session' | 'failed' | 'timeout',
+    message: string,
+    extra = {},
+  ): string =>
+    JSON.stringify({ id, ok: false, error: { kind, message, ...extra } })
+
+  const done = (id: ControlRequest['id'], payload: Record<string, unknown>): string =>
+    JSON.stringify({ id, ok: true, ...payload })
+
+  /**
+   * 每条与会话有关的答复都带上的那几格——**`pid` 与尺寸**。
+   *
+   * 为什么每条都带：助手是**跨多次调用**在操作同一现场，它每次都得能一眼确认
+   * 「还是那一个进程、窗口现在是多大」——不然还得额外发一条 `sessions` 去问。
+   */
+  const stateOf = async (
+    session: UiSession,
+  ): Promise<{ pid: number; columns: number; rows: number; screen: readonly string[]; cursor: unknown; scrollback: number }> => {
+    const shot = await session.screen()
+
+    return {
+      pid: session.pid,
+      columns: shot.columns,
+      rows: shot.rows,
+      screen: shot.lines.map((line) => line.text),
+      cursor: shot.cursor,
+      scrollback: shot.scrollback,
+    }
+  }
+
+  return {
+    async handle(line) {
+      const trimmed = line.trim()
+      if (trimmed === '') return JSON.stringify({ id: 0, ok: false, error: { kind: 'bad-request', message: '空行' } })
+
+      let request: ControlRequest
+      try {
+        request = JSON.parse(trimmed) as ControlRequest
+      } catch (error) {
+        return JSON.stringify({
+          id: 0,
+          ok: false,
+          error: { kind: 'bad-request', message: `不是合法 JSON：${String(error)}` },
+        })
+      }
+
+      const id = request.id ?? 0
+      if (typeof request.cmd !== 'string') return fail(id, 'bad-request', '缺 cmd')
+
+      try {
+        switch (request.cmd) {
+          case 'start': {
+            counter += 1
+            // 号可以自己起（给步骤文件用：`{"cmd":"start","as":"甲"}` 之后就按名字指它）；
+            // 不起就照旧 s1 / s2 …… 重名当场拦下——两个窗口叫同一个名字，"指谁"就没有答案了
+            const sessionId = request.session ?? `s${counter}`
+            if (sessions.has(sessionId)) {
+              return fail(id, 'bad-request', `已经有叫「${sessionId}」的窗口了——换一个号`)
+            }
+            const startOptions: UiSessionOptions = {
+              label: request.label ?? `控制-${sessionId}`,
+              ...(request.cols === undefined ? {} : { columns: request.cols }),
+              ...(request.rows === undefined ? {} : { rows: request.rows }),
+              ...(request.turns === undefined ? {} : { turns: request.turns }),
+              ...(request.argv === undefined ? {} : { argv: request.argv }),
+              ...(request.artifacts === undefined && options.artifacts === undefined
+                ? {}
+                : { artifacts: request.artifacts ?? options.artifacts }),
+              ...(request.checkout === undefined && options.checkout === undefined
+                ? {}
+                : { checkout: request.checkout ?? options.checkout }),
+            }
+            // 起不来就**在这一跳里收拾干净**（`createUiSession` 自己清）——不登记一个半成品
+            const session = await createUiSession(startOptions)
+            // **先登记再摆夹具**：摆不动时这一跳照实报失败，而收尾仍收得掉这个窗口
+            // （`closeAll` 只认登记过的）——半个现场比没有现场更难查。
+            sessions.set(sessionId, session)
+            current = sessionId
+            if (request.files !== undefined) {
+              const facts = session.facts()
+              layFiles(facts.workspace, facts.home, request.files)
+            }
+            log(`起会话 ${sessionId}（pid ${session.pid}）· ${session.runDir}`)
+
+            return done(id, { session: sessionId, ...session.facts(), ...(await stateOf(session)) })
+          }
+
+          case 'send': {
+            const target = resolve(request)
+            if (target === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
+            if (typeof request.text !== 'string') return fail(id, 'bad-request', 'send 要给 text')
+            await target.session.send(request.text, untilOf(request))
+
+            return done(id, { session: target.name, sent: request.text, ...(await stateOf(target.session)) })
+          }
+
+          case 'key': {
+            const target = resolve(request)
+            if (target === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
+            if (typeof request.key !== 'string') return fail(id, 'bad-request', 'key 要给键名')
+            if (!(UI_KEYS as readonly string[]).includes(request.key)) {
+              // 未支持的键**明确报错**，不悄悄换成另一种按键（工单的话）
+              return fail(id, 'bad-request', `不认得的键「${request.key}」——有的是：${UI_KEYS.join(' / ')}`)
+            }
+            await target.session.key(request.key as UiKey, untilOf(request))
+
+            return done(id, { session: target.name, key: request.key, ...(await stateOf(target.session)) })
+          }
+
+          case 'resize': {
+            const target = resolve(request)
+            if (target === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
+            if (typeof request.columns !== 'number' || typeof request.rows !== 'number') {
+              return fail(id, 'bad-request', 'resize 要给 columns 与 rows（数字）')
+            }
+            await target.session.resize(request.columns, request.rows)
+
+            return done(id, { session: target.name, ...(await stateOf(target.session)) })
+          }
+
+          case 'wait': {
+            const target = resolve(request)
+            if (target === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
+            if (request.condition === undefined) return fail(id, 'bad-request', 'wait 要给 condition')
+
+            try {
+              const result = await target.session.wait(request.condition, {
+                ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
+              })
+
+              return done(id, {
+                session: target.name,
+                matched: result.matched,
+                elapsedMs: Math.round(result.elapsedMs),
+                ...(await stateOf(target.session)),
+              })
+            } catch (error) {
+              if (error instanceof UiWaitTimeout) {
+                // **结构化失败**：会话不退场，现场留着——助手检查完接着下一条
+                const awaited = JSON.stringify(error.condition)
+                return fail(id, 'timeout', `等「${awaited}」超时`, {
+                  condition: error.condition,
+                  elapsedMs: Math.round(error.elapsedMs),
+                  timeoutMs: error.timeoutMs,
+                  screen: error.screen,
+                  runDir: error.runDir,
+                  frameStep: error.frameStep,
+                })
+              }
+              throw error
+            }
+          }
+
+          case 'capture': {
+            const target = resolve(request)
+            if (target === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
+            const shot = await target.session.capture({
+              ...(request.label === undefined ? {} : { label: request.label }),
+            })
+            const facts = target.session.facts()
+
+            return done(id, {
+              session: target.name,
+              pid: facts.pid,
+              frame: {
+                n: shot.n,
+                step: shot.step,
+                label: shot.label,
+                columns: shot.columns,
+                rows: shot.rows,
+                cursor: shot.cursor,
+                scrollback: shot.scrollback,
+                lines: shot.lines,
+                files: shot.files,
+              },
+              runDir: facts.runDir,
+            })
+          }
+
+          case 'quit': {
+            // **照产品的方式退出**——「空闲连按两次 ctrl+c」那一路（U46）。写步骤文件的人
+            // 不必知道那条规矩，更不必自己数两下；要「应用自己走的」这条证据就用它。
+            // 它**不收摊**：进程退了，PTY / VT / 现场都还在，接着 `close` 收（那一步报 `exit.by`）。
+            const target = resolve(request)
+            if (target === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
+            await target.session.quit()
+
+            return done(id, { session: target.name, ...(await stateOf(target.session)) })
+          }
+
+          case 'close': {
+            const target = resolve(request)
+            if (target === undefined) return fail(id, 'no-session', '没有可关的实例')
+            const report = await target.session.close()
+            sessions.delete(target.name)
+            if (current === target.name) current = [...sessions.keys()].at(-1)
+            log(`关会话 ${target.name}（退出缘由 ${report.exit.by}）· 现场 ${report.runDir}`)
+
+            return done(id, { session: target.name, ...summarize(report) })
+          }
+
+          case 'sessions': {
+            return done(id, {
+              sessions: [...sessions.entries()].map(([name, session]) => ({
+                session: name,
+                current: name === current,
+                ...session.facts(),
+              })),
+            })
+          }
+
+          default:
+            return fail(
+              id,
+              'bad-request',
+              `不认得的 cmd「${request.cmd}」——有的是：start / send / key / resize / wait / capture / quit / close / sessions`,
+            )
+        }
+      } catch (error) {
+        // 兜底：**绝不把控制进程带下去**（一条命令炸了不该掀掉整张桌子）
+        log(`内部错：${String(error)}`)
+        return fail(id, 'failed', error instanceof Error ? error.message : String(error))
+      }
+    },
+
+    sessions: () =>
+      [...sessions.entries()].map(([name, session]) => {
+        const facts = session.facts()
+
+        return { session: name, pid: facts.pid, runDir: facts.runDir }
+      }),
+
+    closeAll: async () => {
+      for (const [name, session] of [...sessions.entries()].reverse()) {
+        try {
+          await session.close()
+          log(`收摊 ${name}（控制通道收尾）`)
+        } catch (error) {
+          log(`收摊 ${name} 出错：${String(error)}`)
+        }
+      }
+      sessions.clear()
+      current = undefined
+    },
+  }
+}
+
+/**
+ * 摆起手用的那几份文件（`start` 的 `files`）——相对路径落在 `root` 下，中间目录自动建。
+ *
+ * 路径**不许爬出去**（`../` 那种）：沙地是「另一个终端」，不是「另一位开发者的机器」
+ * ——摆到外面去就等于绕开了这块沙地，而绕开之后收尾也删不干净。
+ *
+ * `~` 开头 ⇒ 落到**沙地的家目录**（`home`）：用户那一类技能来源在那儿
+ * （见 `ControlRequest.files` 那条注）。
+ */
+function layFiles(root: string, home: string, files: Readonly<Record<string, string>>): void {
+  for (const [relative, text] of Object.entries(files)) {
+    const under = relative === '~' || relative.startsWith('~/') ? home : root
+    const path = join(under, under === home ? relative.replace(/^~\/?/, '') : relative)
+
+    // 越界只看**拼出来的那一条**（`../` 与绝对路径都在这儿现形）：两头都从同一个 `under`
+    // 出发，故不必去 `realpath` 比对——目录还没建，比对也取不到真身。
+    if (path !== under && !path.startsWith(under.endsWith('/') ? under : `${under}/`)) {
+      throw new Error(`起手文件只能摆在沙地里：「${relative}」落到 ${path} 去了`)
+    }
+
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, text, 'utf8')
+  }
+}
+
+/**
+ * `send` / `key` 那两处 `wait` ＋ `timeoutMs` ——**合起来才是「写一次、等它生效」**。
+ *
+ * 不给 `wait` 就是「写完即回」（与以前一字不差）；给了就是一个 `WriteUntil`。
+ */
+function untilOf(request: ControlRequest): { until: WaitCondition; timeoutMs?: number } | undefined {
+  if (request.wait === undefined) return undefined
+
+  return {
+    until: request.wait,
+    ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
+  }
+}
+
+/** `close` 的答复——把 `CloseReport` 摊平成 JSON 友好的形状。 */
+function summarize(report: CloseReport): Record<string, unknown> {
+  return {
+    runDir: report.runDir,
+    viewer: report.viewer,
+    exit: report.exit,
+    rawBytes: report.rawBytes,
+    truncated: report.truncated,
+    frames: report.frames,
+  }
+}

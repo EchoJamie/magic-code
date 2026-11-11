@@ -10,7 +10,7 @@
  * - `undefined`（不给探针）——**不知道** ⇒ 照常跑（未知**不冒充**「不支持」）。
  *
  * 「图到底进没进请求」在本文件只验到 `ModelRequest`（内核侧形态）；**出站请求体**那一层
- * 在 `@magic/model` 的用例里（那边才有真 HTTP 体的形状），端到端在 `packages/app/test/`。
+ * 在 `@magic/model` 的用例里（那边才有真 HTTP 体的形状），端到端在 `apps/cli/test/`。
  */
 
 import { describe, expect, test } from 'bun:test'

@@ -7,7 +7,7 @@
  *
  * 本文件只测**对话域这一半**：装载 ＋ 认下应用层算好的两件（`RebuildHandoff`）。
  * ①②③④（在途识别 / 处置 / 记中止 / 未答复按拒）的判据在 `@magic/actions`；
- * 五步连起来的那一次在装配面（`packages/app/test/recovery.test.ts`）与**真跑**里验
+ * 五步连起来的那一次在装配面（`apps/cli/test/recovery.test.ts`）与**真跑**里验
  * （杀进程 → 重起 → 续跑）。
  *
  * 上线是「上下文由条目重建」——它每轮由 `./context.ts` 装配，故本面**不必搬上下文**；

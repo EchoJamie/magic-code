@@ -10,7 +10,7 @@
  *
  * 本文件用**桩 `Skills` 端口**（工具域不碰文件系统，边界归执行域）——真盘上的那条路
  * 由 `packages/execution/test/skills.test.ts`（来源面）与
- * `packages/app/test/skills.test.ts`（真装配 · 真工具）各咬一半。
+ * `apps/cli/test/skills.test.ts`（真装配 · 真工具）各咬一半。
  */
 
 import { describe, expect, test } from 'bun:test'

@@ -144,7 +144,7 @@ describe('历史回查是有界的', () => {
   })
 
   test('别条会话的记录读不到（`entry` 也只认本会话）', async () => {
-    // 桩按单会话处理，但**真实现按会话分束**——这条在 app 集成用例里另有真库那条（见 `@magic/app`）
+    // 桩按单会话处理，但**真实现按会话分束**——这条在 app 集成用例里另有真库那条（见 `@magic/cli`）
     const { records, add } = ledger()
     add({ kind: 'user', content: { text: '这一条' } })
 

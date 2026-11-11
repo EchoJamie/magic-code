@@ -6,7 +6,7 @@
  *
  * ## 它为什么在契约里
  *
- * 这类事实的**产出方是管理者**（`@magic/app` 的运行那一层），**消费方是外壳**
+ * 这类事实的**产出方是管理者**（`@magic/cli` 的运行那一层），**消费方是外壳**
  * （`@magic/shell` 的会话列表与接回）。而外壳只许 import 本包（域 / 外壳 → 契约）——
  * 两边要说同一件事，话就得落在这儿。
  *
@@ -25,7 +25,7 @@ import type { TurnEndReason } from './events.ts'
 /**
  * **那六行状态**——设计那张表左栏的词，一个不多一个不少。
  *
- * 每一行的事实依据见 `@magic/app` 的 `run/facts.ts`（判定只有那一处）。
+ * 每一行的事实依据见 `@magic/cli` 的 `run/facts.ts`（判定只有那一处）。
  */
 export type RunState = 'running' | 'waiting' | 'stopping' | 'stopped' | 'idle' | 'unknown'
 

@@ -3,7 +3,7 @@
  *
  * 本文件咬**对话域这一半**：什么时候送、拦在哪儿、拦完怎么接上。上游（从盘上读得到什么）
  * 归执行域，判据在 `packages/execution/test/rules.test.ts`；真装配那一跳在
- * `packages/app/test/rules.test.ts`。
+ * `apps/cli/test/rules.test.ts`。
  *
  * 判定法：`ProjectRules` 用**桩**（本域只认端口，读盘不是它的事），看的是三样——
  * ① **模型真收到的那份请求**（`gateway.requests[i].messages` 的首条系统消息）；
@@ -734,7 +734,7 @@ describe('预查不妨碍既有的控制流', () => {
     const said = content !== undefined && 'text' in content ? content.text : ''
     // 判据是**规格那几件**（2026-09-20 四轮裁改了文案：不再说「装不下」——不可读 / 层级
     // 太深都不是「多」，那种失准的说法由三种触发共用一句）。**逐字那一行**锚在真装配
-    // 那两条上（屏上那一格照抄首行）：`packages/app/test/rules.test.ts`。
+    // 那两条上（屏上那一格照抄首行）：`apps/cli/test/rules.test.ts`。
     expect(said).toContain('未完整读取') // ① 没读完整这个事实
     expect(said).toContain('magic --check') // ② 原因在哪儿看（这句只把人指过去，不自己编）
     expect(said).toContain('不要重提')

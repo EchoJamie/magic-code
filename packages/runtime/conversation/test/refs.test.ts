@@ -8,7 +8,7 @@
  * - **旧记录**：`UserPayload.skills`（无位置那一形）照旧统一前置（不替它编插入点）。
  *
  * 域内件测试（相对路径取 `../src/…`）；真装配 · 真模型请求那条路由
- * `packages/app/test/refs.test.ts` 咬。
+ * `apps/cli/test/refs.test.ts` 咬。
  */
 
 import { describe, expect, test } from 'bun:test'

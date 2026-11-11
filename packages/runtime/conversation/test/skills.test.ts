@@ -7,7 +7,7 @@
  * - **送达**（`createSkillsDelivery`）：按身份取主文，取不到**整条失败**（不换同名项）。
  *
  * 域内件测试（相对路径取 `../src/…`）——真装配 · 真工具那条路由
- * `packages/app/test/skills.test.ts` 咬。
+ * `apps/cli/test/skills.test.ts` 咬。
  */
 
 import { describe, expect, test } from 'bun:test'

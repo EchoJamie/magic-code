@@ -385,7 +385,7 @@ describe('`/<技能名>` 直达', () => {
    * 带走的就是留下那一份的身份（**次序即优先级**：项目 ＞ 用户、`.magic` ＞ `.agents`）。
    *
    * 发现层那一半（谁赢、怎么保证确定）在 `packages/execution/test/skills.test.ts`
-   * 与 `packages/app/test/skills.test.ts`；这里钉的是**外壳这一跳**：
+   * 与 `apps/cli/test/skills.test.ts`；这里钉的是**外壳这一跳**：
    * 拿到唯一那一份 ⇒ 绑上它的身份，一步发出去。
    */
   test('`/名字 交代` 一次提交：绑的是**发现留下的那一份**（同名不再并存）', () => {

@@ -3,7 +3,7 @@ if (!['cli', 'engine'].includes(component) || !output) throw new Error('用法�
 // Ink imports node:process, so Bun's global process.env define does not fold its DEV guard.
 // Strip that optional debugger branch at build time; ship no DevTools or external JS dependencies.
 const result = await Bun.build({
-  entrypoints: [`packages/app/src/${component}.ts`],
+  entrypoints: [`apps/cli/src/${component}.ts`],
   metafile: true,
   compile: { target: 'bun-darwin-arm64', outfile: output, autoloadDotenv: false, autoloadBunfig: false },
   minify: { syntax: true },

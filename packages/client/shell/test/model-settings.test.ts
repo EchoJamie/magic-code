@@ -8,8 +8,8 @@
  * 判的是**按键 → 视图 ＋ 命令**（外壳那一半）：列表拿什么铺行、选定发的是哪两件、
  * 刷新动没动你的焦点与草稿、`esc` 到底动没动东西、窄窗与长列表下屏幕还成不成样子。
  * **不判**的事情同样写死在这儿——真终端上那几屏（列表长什么样、出站报文对不对、
- * 凭据有没有溜进记录）归**同名装置** `packages/app/scripts/frames-provider-models.ts`
- * （真 PTY ＋ 真 HTTP 夹具），夹具自己的行为归 `packages/app/test/frames-provider-models.test.ts`
+ * 凭据有没有溜进记录）归**同名装置** `apps/cli/scripts/frames-provider-models.ts`
+ * （真 PTY ＋ 真 HTTP 夹具），夹具自己的行为归 `apps/cli/test/frames-provider-models.test.ts`
  * （尺子先自证）。
  *
  * ## 换血之后（2026-09-23 · 接入内核公共契约 `bee68fa`）

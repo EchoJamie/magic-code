@@ -5,7 +5,7 @@
  * 1. **包表完备** —— 存在的包必在包表内（防漏登记）；
  * 2. **分包可用** —— 各包经 Bun workspaces 链接、可被消费者解析加载；
  * 3. **域 → 契约** —— 非装配包只 import `@magic/contracts`（＋许可外部库白名单）；
- * 4. **域不认知外壳与装配** —— 域包不得 import `@magic/shell` / `@magic/app`；
+ * 4. **域不认知外壳与装配** —— 域包不得 import `@magic/shell` / `@magic/cli`；
  * 5. **内核 fs 边界** —— fs 触达只许 `@magic/data` · `@magic/resources`（扫描面＝**域包** `src/`）；
  * 6. **契约包零运行时依赖**；
  * 7. **公开面** —— 各包 `exports` 只出 `.`（不出子路径、不暴露内部目录）。
@@ -47,7 +47,7 @@ const PACKAGE_TABLE: Record<string, readonly string[]> = {
   '@magic/transport': ['@magic/contracts'],
   '@magic/shell': ['@magic/contracts'],
   '@magic/faux': ['@magic/contracts'],
-  '@magic/app': [
+  '@magic/cli': [
     '@magic/state',
     '@magic/contracts',
     '@magic/conversation',
@@ -76,14 +76,14 @@ const DOMAIN_PACKAGES = [
 ]
 
 /** 外壳与装配——域包不得 import。 */
-const SHELL_PACKAGES = ['@magic/shell', '@magic/app']
+const SHELL_PACKAGES = ['@magic/shell', '@magic/cli']
 
 /** 装配根——**唯一可跨多域**者（技术方案 · 边界纪律：装配根唯一）。 */
-const ASSEMBLY_PACKAGE = '@magic/app'
+const ASSEMBLY_PACKAGE = '@magic/cli'
 
 /** 许可外部库（技术方案 · 工程结构 · 包表的「依赖」列）——非 `@magic` 的运行时依赖。 */
 const ALLOWED_EXTERNAL: Record<string, readonly string[]> = {
-  '@magic/app': ['undici'],
+  '@magic/cli': ['undici'],
   '@magic/host': ['undici'],
   '@magic/model': ['ai', '@ai-sdk/openai-compatible', '@ai-sdk/openai', '@ai-sdk/anthropic'],
   // `@magic/mcp`——**官方 MCP SDK**（不手写协议栈：设计把「按规范核对官方实现」写成明文）。
@@ -781,13 +781,13 @@ describe('越界判定（反向用例）', () => {
 
   test('相对路径跨包＝越界（旧教训一：只认裸名会漏）', () => {
     expect(probe('../../../runtime/model/src/index.ts')).toBe(true)
-    expect(probe('../../../app/src/index.ts')).toBe(true)
+    expect(probe('../../../engine/data/src/index.ts')).toBe(true)
   })
 
   test('裸包名跨包＝越界——解析不到也算（未声明依赖同样是越界）', () => {
     expect(probe('@magic/model')).toBe(true)
     expect(probe('@magic/shell')).toBe(true)
-    expect(probe('@magic/app')).toBe(true)
+    expect(probe('@magic/cli')).toBe(true)
   })
 
   test('深链他人内部＝越界', () => {
@@ -801,9 +801,9 @@ describe('越界判定（反向用例）', () => {
   })
 
   test('装配根可跨域——app 引域不越界，域引 app 越界', () => {
-    expect(probe('@magic/model', '@magic/app', 'app')).toBe(false)
-    expect(probe('@magic/shell', '@magic/app', 'app')).toBe(false)
-    expect(probe('@magic/app', '@magic/model', 'model')).toBe(true)
+    expect(probe('@magic/model', '@magic/cli', 'app')).toBe(false)
+    expect(probe('@magic/shell', '@magic/cli', 'app')).toBe(false)
+    expect(probe('@magic/cli', '@magic/model', 'model')).toBe(true)
   })
 
   test('外部依赖与内建＝不越界', () => {
@@ -816,7 +816,7 @@ describe('越界判定（反向用例）', () => {
   test('装配根唯一——「非装配包跨域」分类正确', () => {
     expect(classifyCrossing('@magic/conversation', '@magic/model')).toBe('非装配包跨域')
     expect(classifyCrossing('@magic/model', '@magic/shell')).toBe('域认知外壳/装配')
-    expect(classifyCrossing('@magic/app', '@magic/model')).toBe('包边界越界')
+    expect(classifyCrossing('@magic/cli', '@magic/model')).toBe('包边界越界')
   })
 
   test('注释与字符串里的示例文本不误判', () => {
@@ -873,7 +873,7 @@ describe('fs 触达提取（反向用例）', () => {
   })
 
   test('非内核包清单——外壳 · 装配根 · 测试层（扫描面收窄的锚）', () => {
-    expect(NON_KERNEL_PACKAGES).toEqual(['@magic/shell', '@magic/app', '@magic/state', '@magic/faux', '@magic/client', '@magic/host'])
+    expect(NON_KERNEL_PACKAGES).toEqual(['@magic/shell', '@magic/cli', '@magic/state', '@magic/faux', '@magic/client', '@magic/host'])
   })
 })
 
@@ -918,11 +918,11 @@ describe('0.2.0 目标分层', () => {
 })
 
 describe('可执行名', () => {
-  test('`magic` 已装配到根 .bin（根声明了 @magic/app）', async () => {
+  test('`magic` 已装配到根 .bin（根声明了 @magic/cli）', async () => {
     const root = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as Manifest
-    const { bin } = manifestOfDir('app')
+    const { bin } = JSON.parse(readFileSync(join(ROOT, 'apps/cli/package.json'), 'utf8')) as Manifest
 
-    expect(root.dependencies?.['@magic/app']).toBeDefined()
+    expect(root.dependencies?.['@magic/cli']).toBeDefined()
     expect(bin?.magic).toBeDefined()
     expect(existsSync(join(ROOT, 'node_modules/.bin/magic'))).toBe(true)
   })

@@ -3,7 +3,7 @@
  *
  * 本文件只咬**执行域这一半**（有什么、在哪儿、内容是什么）：发现四类入口 · 去重与优先 ·
  * 条件模式 · 诊断。「什么时候送进模型」归对话域与装配，判据在 `@magic/conversation` 与
- * `packages/app/test/rules.test.ts`。
+ * `apps/cli/test/rules.test.ts`。
  *
  * 判定法：临时目录当真工作区（**测试用 fs 不受守护拦**——守护面收窄至各包 `src/`），
  * 每例把目录摆好再断言产物：`documents`（进来了哪几条、都是什么来源）与
@@ -1056,7 +1056,7 @@ describe('扫描入口「没看成」——不静默、且不许声称完整（2
   /**
    * 本轮复现的那一处：`.magic/rules/locked` 建好之后把**目录**设成 000，`load()` 回来
    * `documents=[] / problems=[] / truncated=false`——**一句话没有**，而底下的 `required.md`
-   * 一次都没看过；消费方据此照常放行、真写成功（真装配那半见 `packages/app/test/rules.test.ts`）。
+   * 一次都没看过；消费方据此照常放行、真写成功（真装配那半见 `apps/cli/test/rules.test.ts`）。
    *
    * 根子在 `walk` 的 `tryRealpath(dir)`：Bun 的 `realpath` 对读不进去的目录直接 `EACCES`
    * （Node 不——本机实测 Node 给得出真路径），旧写法在那儿静默 `return`。同形的还有三处：

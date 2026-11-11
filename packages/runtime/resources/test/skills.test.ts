@@ -3,7 +3,7 @@
  *
  * 本文件只咬**执行域这一半**（有什么、在哪儿、是哪一版）：三类来源 · 去重与优先 ·
  * **同名只留一条** · 按身份读取 · 来源内的引用边界 · 诊断。「什么时候送进模型」归对话域与装配，
- * 判据在 `@magic/conversation` 与 `packages/app/test/skills.test.ts`。
+ * 判据在 `@magic/conversation` 与 `apps/cli/test/skills.test.ts`。
  *
  * 判定法同 `rules.test.ts`：临时目录当真工作区（**测试用 fs 不受守护拦**——守护面收窄至
  * 各包 `src/`），每例把目录摆好再断言产物。
