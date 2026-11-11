@@ -12,16 +12,6 @@
         "typescript": "^5.7.0",
       },
     },
-    "packages/actions": {
-      "name": "@magic/actions",
-      "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-      },
-      "devDependencies": {
-        "@magic/faux": "workspace:*",
-      },
-    },
     "packages/app": {
       "name": "@magic/app",
       "version": "0.0.0",
@@ -48,96 +38,7 @@
         "@xterm/headless": "^6.0.0",
       },
     },
-    "packages/contracts": {
-      "name": "@magic/contracts",
-      "version": "0.0.0",
-    },
-    "packages/control": {
-      "name": "@magic/control",
-      "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-      },
-    },
-    "packages/engine/data": {
-      "name": "@magic/records",
-      "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-      },
-    },
-    "packages/engine/state": {
-      "name": "@magic/config",
-      "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-      },
-    },
-    "packages/execution": {
-      "name": "@magic/execution",
-      "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-      },
-    },
-    "packages/faux": {
-      "name": "@magic/faux",
-      "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-      },
-    },
-    "packages/mcp": {
-      "name": "@magic/mcp",
-      "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-        "@magic/execution": "workspace:*",
-        "@modelcontextprotocol/sdk": "^1.30.0",
-      },
-    },
-    "packages/permission": {
-      "name": "@magic/permission",
-      "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-      },
-    },
-    "packages/runtime/conversation": {
-      "name": "@magic/conversation",
-      "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-      },
-      "devDependencies": {
-        "@magic/faux": "workspace:*",
-      },
-    },
-    "packages/runtime/model": {
-      "name": "@magic/model",
-      "version": "0.0.0",
-      "dependencies": {
-        "@ai-sdk/anthropic": "4.0.54",
-        "@ai-sdk/openai": "4.0.67",
-        "@ai-sdk/openai-compatible": "3.0.49",
-        "@magic/contracts": "workspace:*",
-        "ai": "7.0.102",
-      },
-      "devDependencies": {
-        "@magic/faux": "workspace:*",
-      },
-    },
-    "packages/runtime/tools": {
-      "name": "@magic/tools",
-      "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-      },
-      "devDependencies": {
-        "@magic/faux": "workspace:*",
-      },
-    },
-    "packages/tui": {
+    "packages/client/shell": {
       "name": "@magic/tui",
       "version": "0.0.0",
       "dependencies": {
@@ -156,6 +57,105 @@
       },
       "peerDependencies": {
         "react": "^19.0.0",
+      },
+    },
+    "packages/client/transport": {
+      "name": "@magic/control",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+    },
+    "packages/contracts": {
+      "name": "@magic/contracts",
+      "version": "0.0.0",
+    },
+    "packages/engine/actions": {
+      "name": "@magic/actions",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@magic/faux": "workspace:*",
+      },
+    },
+    "packages/engine/data": {
+      "name": "@magic/records",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+    },
+    "packages/engine/state": {
+      "name": "@magic/config",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+    },
+    "packages/runtime/conversation": {
+      "name": "@magic/conversation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@magic/faux": "workspace:*",
+      },
+    },
+    "packages/runtime/mcp": {
+      "name": "@magic/mcp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+        "@magic/execution": "workspace:*",
+        "@modelcontextprotocol/sdk": "^1.30.0",
+      },
+    },
+    "packages/runtime/model": {
+      "name": "@magic/model",
+      "version": "0.0.0",
+      "dependencies": {
+        "@ai-sdk/anthropic": "4.0.54",
+        "@ai-sdk/openai": "4.0.67",
+        "@ai-sdk/openai-compatible": "3.0.49",
+        "@magic/contracts": "workspace:*",
+        "ai": "7.0.102",
+      },
+      "devDependencies": {
+        "@magic/faux": "workspace:*",
+      },
+    },
+    "packages/runtime/permission": {
+      "name": "@magic/permission",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+    },
+    "packages/runtime/resources": {
+      "name": "@magic/execution",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+    },
+    "packages/runtime/tools": {
+      "name": "@magic/tools",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@magic/faux": "workspace:*",
+      },
+    },
+    "test/faux": {
+      "name": "@magic/faux",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
       },
     },
   },
@@ -179,7 +179,7 @@
 
     "@hono/node-server": ["@hono/node-server@2.1.1", "https://registry.npmmirror.com/@hono/node-server/-/node-server-2.1.1.tgz", { "peerDependencies": { "hono": "^4" } }, "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg=="],
 
-    "@magic/actions": ["@magic/actions@workspace:packages/actions"],
+    "@magic/actions": ["@magic/actions@workspace:packages/engine/actions"],
 
     "@magic/app": ["@magic/app@workspace:packages/app"],
 
@@ -187,25 +187,25 @@
 
     "@magic/contracts": ["@magic/contracts@workspace:packages/contracts"],
 
-    "@magic/control": ["@magic/control@workspace:packages/control"],
+    "@magic/control": ["@magic/control@workspace:packages/client/transport"],
 
     "@magic/conversation": ["@magic/conversation@workspace:packages/runtime/conversation"],
 
-    "@magic/execution": ["@magic/execution@workspace:packages/execution"],
+    "@magic/execution": ["@magic/execution@workspace:packages/runtime/resources"],
 
-    "@magic/faux": ["@magic/faux@workspace:packages/faux"],
+    "@magic/faux": ["@magic/faux@workspace:test/faux"],
 
-    "@magic/mcp": ["@magic/mcp@workspace:packages/mcp"],
+    "@magic/mcp": ["@magic/mcp@workspace:packages/runtime/mcp"],
 
     "@magic/model": ["@magic/model@workspace:packages/runtime/model"],
 
-    "@magic/permission": ["@magic/permission@workspace:packages/permission"],
+    "@magic/permission": ["@magic/permission@workspace:packages/runtime/permission"],
 
     "@magic/records": ["@magic/records@workspace:packages/engine/data"],
 
     "@magic/tools": ["@magic/tools@workspace:packages/runtime/tools"],
 
-    "@magic/tui": ["@magic/tui@workspace:packages/tui"],
+    "@magic/tui": ["@magic/tui@workspace:packages/client/shell"],
 
     "@modelcontextprotocol/sdk": ["@modelcontextprotocol/sdk@1.30.0", "https://registry.npmmirror.com/@modelcontextprotocol/sdk/-/sdk-1.30.0.tgz", { "dependencies": { "@hono/node-server": "^1.19.9 || ^2.0.5", "ajv": "^8.17.1", "ajv-formats": "^3.0.1", "content-type": "^1.0.5", "cors": "^2.8.5", "cross-spawn": "^7.0.5", "eventsource": "^3.0.2", "eventsource-parser": "^3.0.0", "express": "^5.2.1", "express-rate-limit": "^8.2.1", "hono": "^4.11.4", "jose": "^6.1.3", "json-schema-typed": "^8.0.2", "pkce-challenge": "^5.0.0", "raw-body": "^3.0.0", "zod": "^3.25 || ^4.0", "zod-to-json-schema": "^3.25.1" }, "peerDependencies": { "@cfworker/json-schema": "^4.1.1" }, "optionalPeers": ["@cfworker/json-schema"] }, "sha512-xKd8OIzlqNzcqcNumGAa6g+PW2kjD5vrpcKOnfldAUPP3j7lnqMPwlTXQm8gF+UwH72z0lqaRbjr9hqGz0eITA=="],
 
