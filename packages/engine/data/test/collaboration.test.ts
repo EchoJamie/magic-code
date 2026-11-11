@@ -27,7 +27,7 @@ describe('协作记录 · 工作区来源不改写', () => {
       expect(other.collaboration.registerAgent(input)).toEqual(agent)
       expect(other.collaboration.registerAgent({ ...input, operationId: 'title-identity-again' })).toEqual(agent)
       expect(session()?.workspace).toBeNull()
-      expect(db.query<{ count: number }, [string]>('SELECT count(*) AS count FROM collaboration_agents WHERE session=?').get('title-only')?.count).toBe(1)
+      expect(db.query<{ count: number }, [string]>('SELECT count(*) AS count FROM ledger_members WHERE session=?').get('title-only')?.count).toBe(1)
     } finally { other.close(); db.close(); f.close() }
   })
 
@@ -61,10 +61,10 @@ describe('协作记录 · 工作区来源不改写', () => {
         if (targetRoots === null) target.setSessionTitle('existing-target', '只有标题', 23)
         else target.serviceFor('existing-target').appendEntry({ kind: 'user', content: { text: '不能接管' }, at: 23 })
         const counts = () => [
-          db.query<{ count: number }, []>('SELECT count(*) AS count FROM collaboration_agents').get()?.count,
-          db.query<{ count: number }, []>('SELECT count(*) AS count FROM collaboration_delegations').get()?.count,
-          db.query<{ count: number }, []>('SELECT count(*) AS count FROM collaboration_operations').get()?.count,
-          db.query<{ count: number }, []>('SELECT count(*) AS count FROM collaboration_messages').get()?.count,
+          db.query<{ count: number }, []>('SELECT count(*) AS count FROM ledger_members').get()?.count,
+          db.query<{ count: number }, []>("SELECT count(*) AS count FROM ledger_entries WHERE kind='delegation'").get()?.count,
+          db.query<{ count: number }, []>('SELECT count(*) AS count FROM ledger_operations').get()?.count,
+          db.query<{ count: number }, []>("SELECT count(*) AS count FROM ledger_entries WHERE kind='message'").get()?.count,
         ]
         const before = counts()
         const input = { operationId: 'spawn-existing', sessionId: 'existing-target', name: '成员', role: '', model,
@@ -151,7 +151,7 @@ describe('协作记录 · 消息、讨论、共同约束', () => {
         const db = new Database(f.store.paths.database, { readonly: true })
         try {
           expect(db.query<{ count: number }, []>("SELECT count(*) AS count FROM entries WHERE content_text LIKE '%unique message text%' OR payload LIKE '%unique message text%'").get()?.count).toBe(0)
-          expect(db.query<{ count: number }, []>("SELECT count(*) AS count FROM collaboration_messages WHERE data LIKE '%unique message text%'").get()?.count).toBe(1)
+          expect(db.query<{ count: number }, []>("SELECT count(*) AS count FROM ledger_entries WHERE kind='message' AND data LIKE '%unique message text%'").get()?.count).toBe(1)
         } finally { db.close() }
       } finally { other.close() }
     } finally { f.close() }
@@ -165,7 +165,7 @@ describe('协作记录 · 消息、讨论、共同约束', () => {
       const m2 = f.records.send(f.coordinator.agentId, { operationId: 'm2', recipients: [a.agent.agentId], purpose: 'inform', body: body('second'), at: 12 })
       // 将两个合法引用按相反 id 入队，模拟不同发送方先取号后提交。
       const db = new Database(f.store.paths.database)
-      try { db.run('UPDATE collaboration_inbox SET message=CASE message WHEN ? THEN ? ELSE ? END WHERE recipient=? AND message IN (?,?)', [m1.messageId, -1, m1.messageId, a.agent.agentId, m1.messageId, m2.messageId]); db.run('UPDATE collaboration_inbox SET message=? WHERE message=-1', [m2.messageId]) } finally { db.close() }
+      try { db.run('UPDATE ledger_deliveries SET ledger_entry=CASE ledger_entry WHEN ? THEN ? ELSE ? END WHERE recipient=? AND ledger_entry IN (?,?)', [m1.messageId, -1, m1.messageId, a.agent.agentId, m1.messageId, m2.messageId]); db.run('UPDATE ledger_deliveries SET ledger_entry=? WHERE ledger_entry=-1', [m2.messageId]) } finally { db.close() }
       const first = f.records.consumeInbox(a.agent.agentId, 13, 1)[0]!
       expect(first.messageId).toBe(m2.messageId)
       expect(f.records.inbox(a.agent.agentId, first.position).map(i => i.messageId)).toEqual([m1.messageId])

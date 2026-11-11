@@ -3,7 +3,6 @@ import { createKnowledgeRecords } from './knowledge.ts'
 import { initKnowledgeSchema } from './knowledge-schema.ts'
 import {initInputSchema,createInputRecords} from './inputs.ts'
 import type { CollaborationRecords } from '@magic/contracts'
-import { initCollaborationSchema } from './collaboration-schema.ts'
 import { createCollaborationRecords } from './collaboration.ts'
 /**
  * 记录库——`RecordsService` 的实现（判据 1–6 的落点）。
@@ -108,8 +107,8 @@ function sessionSelect(where = ''): string {
   return `SELECT s.id, COALESCE((SELECT MAX(e.at) FROM ${ENTRIES_TABLE} e WHERE e.session=s.id), s.at) AS at,
     s.title, s.workspace, COALESCE(root.archived, s.archived) AS archived
     FROM ${SESSIONS_TABLE} s
-    LEFT JOIN collaboration_agents agent ON agent.session=s.id
-    LEFT JOIN collaborations collaboration ON collaboration.id=agent.collaboration
+    LEFT JOIN ledger_members agent ON agent.session=s.id
+    LEFT JOIN ledgers collaboration ON collaboration.id=agent.ledger
     LEFT JOIN ${SESSIONS_TABLE} root ON root.id=collaboration.origin_session
     ${where} ORDER BY at DESC, s.id ASC`
 }
@@ -320,7 +319,6 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     db.exec('PRAGMA journal_mode = WAL')
     db.exec('PRAGMA synchronous = NORMAL')
     initInputSchema(db)
-    initCollaborationSchema(db)
     initKnowledgeSchema(db)
   } catch (error) { db.close(); throw error }
   mkdirSync(blobsDir, { recursive: true })
@@ -415,8 +413,8 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   const selectArchiveRoot = db.query<{ id: string; archived: number }, [string]>(`
     SELECT COALESCE(root.id, s.id) AS id, COALESCE(root.archived, s.archived) AS archived
     FROM ${SESSIONS_TABLE} s
-    LEFT JOIN collaboration_agents agent ON agent.session=s.id
-    LEFT JOIN collaborations collaboration ON collaboration.id=agent.collaboration
+    LEFT JOIN ledger_members agent ON agent.session=s.id
+    LEFT JOIN ledgers collaboration ON collaboration.id=agent.ledger
     LEFT JOIN ${SESSIONS_TABLE} root ON root.id=collaboration.origin_session
     WHERE s.id=?`)
   const updateArchived = db.query<never, [number, string]>(`UPDATE ${SESSIONS_TABLE} SET archived=? WHERE id=?`)

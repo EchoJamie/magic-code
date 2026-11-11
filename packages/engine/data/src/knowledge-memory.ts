@@ -36,7 +36,7 @@ export function sourceKnowledgeReferences(db: Database, sources: readonly Memory
     const row = db.query<{ kind: string; payload: string | null }, [string, number]>('SELECT kind,payload FROM entries WHERE session=? AND id=?').get(source.session, source.entry)
     const payload = row?.payload == null ? undefined : JSON.parse(row.payload)
     if (row?.kind === 'agent-message') {
-      const message = db.query<{ data: string }, [number]>('SELECT data FROM collaboration_messages WHERE id=?').get(payload.messageId)
+      const message = db.query<{ data: string }, [number]>("SELECT data FROM ledger_entries WHERE kind='message' AND id=?").get(payload.messageId)
       if (message !== null) {
         const material = JSON.parse(message.data) as AgentMessage
         for (const part of material.body) {

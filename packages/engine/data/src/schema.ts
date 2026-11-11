@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS ledgers (
   id            TEXT PRIMARY KEY,
   origin_session TEXT NOT NULL UNIQUE,
   title         TEXT,
+  data          TEXT    NOT NULL,
   created_at    INTEGER NOT NULL,
   archived      INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1))
 );
@@ -166,10 +167,14 @@ CREATE TABLE IF NOT EXISTS ledgers (
 CREATE TABLE IF NOT EXISTS ledger_members (
   ledger     TEXT    NOT NULL,
   session    TEXT    NOT NULL,
+  id         TEXT,
   role       TEXT,
+  data       TEXT    NOT NULL,
   joined_at  INTEGER NOT NULL,
   PRIMARY KEY (ledger, session)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS ledger_members_by_id ON ledger_members(id);
+CREATE INDEX IF NOT EXISTS ledger_members_by_session ON ledger_members(session);
 
 CREATE TABLE IF NOT EXISTS ledger_entries (
   id       INTEGER PRIMARY KEY,
@@ -183,6 +188,33 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
   UNIQUE (ledger, seq)
 );
 CREATE INDEX IF NOT EXISTS ledger_entries_by_ledger ON ledger_entries (ledger, id);
+CREATE INDEX IF NOT EXISTS ledger_entries_by_kind ON ledger_entries (ledger, kind, id);
+
+-- 收件（原 inbox）：账本条目发给某成员后的送达/消费状态。
+CREATE TABLE IF NOT EXISTS ledger_deliveries (
+  position     INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipient    TEXT    NOT NULL,
+  ledger_entry INTEGER NOT NULL,
+  state        TEXT    NOT NULL DEFAULT 'pending',
+  entry        INTEGER,
+  consumed_at  INTEGER,
+  included_at  INTEGER,
+  UNIQUE(recipient, ledger_entry)
+);
+CREATE INDEX IF NOT EXISTS ledger_deliveries_by_recipient ON ledger_deliveries(recipient, position);
+
+-- 幂等操作结果（原 operations）。
+CREATE TABLE IF NOT EXISTS ledger_operations (
+  id     TEXT PRIMARY KEY,
+  actor  TEXT NOT NULL,
+  kind   TEXT NOT NULL,
+  result TEXT NOT NULL
+);
+
+-- 一个成员只许一条已接受的委派。
+CREATE UNIQUE INDEX IF NOT EXISTS ledger_one_accepted_delegation
+  ON ledger_entries(json_extract(data, '$.assigneeId'))
+  WHERE kind='delegation' AND json_extract(data, '$.state')='accepted';
 
 CREATE TABLE IF NOT EXISTS ledger_refs (
   entry         INTEGER NOT NULL,

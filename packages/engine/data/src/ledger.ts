@@ -80,13 +80,13 @@ function entryOf(row: EntryRow): LedgerEntry {
 }
 
 export function createLedgerRecords(db: Database): LedgerRecords {
-  const insertLedger = db.query<never, [string, string, string | null, number]>(
-    'INSERT INTO ledgers (id, origin_session, title, created_at) VALUES (?, ?, ?, ?)',
+  const insertLedger = db.query<never, [string, string, string | null, string, number]>(
+    'INSERT INTO ledgers (id, origin_session, title, data, created_at) VALUES (?, ?, ?, ?, ?)',
   )
   const selectLedger = db.query<LedgerRow, [string]>('SELECT * FROM ledgers WHERE id=?')
-  const insertMember = db.query<never, [string, string, string | null, number]>(
-    `INSERT INTO ledger_members (ledger, session, role, joined_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT(ledger, session) DO UPDATE SET role=excluded.role`,
+  const insertMember = db.query<never, [string, string, string | null, string | null, string, number]>(
+    `INSERT INTO ledger_members (ledger, session, id, role, data, joined_at) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(ledger, session) DO UPDATE SET role=excluded.role, data=excluded.data`,
   )
   const selectMembers = db.query<MemberRow, [string]>('SELECT * FROM ledger_members WHERE ledger=? ORDER BY joined_at, session')
   const maxSeq = db.query<{ seq: number }, [string]>('SELECT COALESCE(MAX(seq),0) AS seq FROM ledger_entries WHERE ledger=?')
@@ -105,7 +105,7 @@ export function createLedgerRecords(db: Database): LedgerRecords {
   return {
     create(input) {
       const id = randomUUID()
-      insertLedger.run(id, input.originSession, input.title ?? null, input.at)
+      insertLedger.run(id, input.originSession, input.title ?? null, JSON.stringify({ id, originSession: input.originSession, ...(input.title === undefined ? {} : { title: input.title }), createdAt: input.at, archived: false }), input.at)
       return { id, originSession: input.originSession, ...(input.title === undefined ? {} : { title: input.title }), createdAt: input.at, archived: false }
     },
     get(id) {
@@ -113,7 +113,7 @@ export function createLedgerRecords(db: Database): LedgerRecords {
       return row === null ? undefined : ledgerOf(row)
     },
     addMember(input) {
-      insertMember.run(input.ledger, input.session, input.role ?? null, input.joinedAt)
+      insertMember.run(input.ledger, input.session, null, input.role ?? null, JSON.stringify(input), input.joinedAt)
     },
     members(ledger) {
       return selectMembers.all(ledger).map(row => ({

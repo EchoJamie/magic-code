@@ -14,7 +14,7 @@ export function createCoverageRecords(db: Database, session: SessionId, append: 
     const current = read()
     if (current.summary !== input.previousSummary) throw new Error('接续覆盖依据已改变，未提交')
     const row = db.query<{ archived: number }, [string]>(`SELECT COALESCE(root.archived,s.archived) AS archived FROM sessions s
-      LEFT JOIN collaboration_agents a ON a.session=s.id LEFT JOIN collaborations c ON c.id=a.collaboration
+      LEFT JOIN ledger_members a ON a.session=s.id LEFT JOIN ledgers c ON c.id=a.ledger
       LEFT JOIN sessions root ON root.id=c.origin_session WHERE s.id=?`).get(session)
     if (!row || row.archived) throw new Error('会话不存在或已归档，未提交覆盖')
     if (!Number.isSafeInteger(input.through) || input.through <= (current.coveredThrough ?? 0) || input.from > input.through

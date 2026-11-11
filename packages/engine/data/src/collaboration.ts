@@ -15,12 +15,72 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
   const get = <T>(sql: string, ...args: Binding[]): T | undefined => db.query<T, Binding[]>(sql).get(...args) ?? undefined
   const all = <T>(sql: string, ...args: Binding[]): T[] => db.query<T, Binding[]>(sql).all(...args)
   const run = (sql: string, ...args: Binding[]) => db.query(sql).run(...args)
+  /**
+   * 0.2.0 存储：协作事实全部落在 ledger（`ledger_members` / `ledger_entries` /
+   * `ledger_deliveries` / `ledger_operations`），不再使用旧 9 表。
+   *
+   * 下面保留旧调用面的 `one` / `many` 名字，只把表名翻译成 ledger 的 kind；
+   * 逻辑函数不动，减少行为漂移。
+   */
+  const KINDS: Record<string, string> = {
+    collaboration_agents: 'agent',
+    collaborations: 'collaboration',
+    collaboration_delegations: 'delegation',
+    collaboration_messages: 'message',
+    collaboration_waits: 'wait',
+    collaboration_executions: 'execution',
+    collaboration_constraints: 'constraint',
+  }
   const one = <T>(table: string, id: Binding): T | undefined => {
-    const row = get<{ data: string }>(`SELECT data FROM ${table} WHERE id = ?`, id)
+    if (table === 'collaboration_agents') {
+      const row = get<{ data: string }>('SELECT data FROM ledger_members WHERE id = ?', id)
+      return row ? JSON.parse(row.data) as T : undefined
+    }
+    if (table === 'collaborations') {
+      const row = get<{ data: string }>('SELECT data FROM ledgers WHERE id = ?', id)
+      return row ? JSON.parse(row.data) as T : undefined
+    }
+    const kind = KINDS[table]
+    if (kind === undefined) throw new Error(`未知协作表：${table}`)
+    if (kind === 'delegation') {
+      const row = get<{ data: string }>("SELECT data FROM ledger_entries WHERE kind='delegation' AND json_extract(data,'$.delegationId')=? ORDER BY id DESC LIMIT 1", id)
+      return row ? JSON.parse(row.data) as T : undefined
+    }
+    if (kind === 'execution' && typeof id === 'string') {
+      const row = get<{ data: string }>("SELECT data FROM ledger_entries WHERE kind='execution' AND json_extract(data,'$.operationId')=? ORDER BY id DESC LIMIT 1", id)
+      return row ? JSON.parse(row.data) as T : undefined
+    }
+    const row = get<{ data: string }>('SELECT data FROM ledger_entries WHERE id = ? AND kind = ?', id, kind)
     return row ? JSON.parse(row.data) as T : undefined
   }
-  const many = <T>(table: string, where: string, ...args: Binding[]): T[] =>
-    all<{ data: string }>(`SELECT data FROM ${table} WHERE ${where}`, ...args).map(row => JSON.parse(row.data) as T)
+  const many = <T>(table: string, where: string, ...args: Binding[]): T[] => {
+    if (table === 'collaborations') {
+      return all<{ data: string }>('SELECT data FROM ledgers ORDER BY created_at, id').map(row => JSON.parse(row.data) as T)
+    }
+    if (table === 'collaboration_agents') {
+      const session = where.startsWith('session=') ? args[0] : undefined
+      const rows = session === undefined
+        ? all<{ data: string }>('SELECT data FROM ledger_members WHERE ledger = ? ORDER BY joined_at, session', args[0] as string)
+        : all<{ data: string }>('SELECT data FROM ledger_members WHERE session = ?', session as string)
+      return rows.map(row => JSON.parse(row.data) as T)
+    }
+    const kind = KINDS[table]
+    if (kind === undefined) throw new Error(`未知协作表：${table}`)
+    if (where === "state='waiting'") {
+      return all<{ data: string }>("SELECT data FROM ledger_entries WHERE kind='wait' AND json_extract(data,'$.state')='waiting' ORDER BY id")
+        .map(row => JSON.parse(row.data) as T)
+    }
+    if (where.startsWith('agent=? AND state')) {
+      return all<{ data: string }>("SELECT data FROM ledger_entries WHERE kind='wait' AND json_extract(data,'$.agentId')=? AND json_extract(data,'$.state')<>'waiting' ORDER BY id", args[0] as string)
+        .map(row => JSON.parse(row.data) as T)
+    }
+    if (where.startsWith('collaboration')) {
+      const desc = where.includes('DESC')
+      return all<{ data: string }>(`SELECT data FROM ledger_entries WHERE ledger = ? AND kind = ? ORDER BY id ${desc ? 'DESC' : 'ASC'}`, args[0] as string, kind)
+        .map(row => JSON.parse(row.data) as T)
+    }
+    throw new Error(`未翻译的协作查询：${table} ${where}`)
+  }
   const tx = <T>(fn: () => T): T => db.transaction(fn).immediate()
   const nextId = () => ids.next()
   const agent = (id: AgentId): AgentIdentity => required(one<AgentIdentity>('collaboration_agents', id), 'agent not found')
@@ -31,21 +91,27 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
   const delegations = (id: string) => many<Delegation>('collaboration_delegations', 'collaboration = ? ORDER BY rowid', id)
   const waits = (id: string) => many<CollaborationWait>('collaboration_waits', 'collaboration = ? ORDER BY rowid', id)
   const executions = (id: string) => many<ExecutionAdmission>('collaboration_executions', 'collaboration = ? ORDER BY rowid', id)
-  const saveAgent = (a: AgentIdentity) => run('UPDATE collaboration_agents SET collaboration=?, data=? WHERE id=?', a.collaborationId ?? null, JSON.stringify(a), a.agentId)
-  const saveCollaboration = (c: Collaboration) => run('UPDATE collaborations SET data=? WHERE id=?', JSON.stringify(c), c.collaborationId)
-  const saveDelegation = (d: Delegation) => run('UPDATE collaboration_delegations SET state=?,data=? WHERE id=?', d.state, JSON.stringify(d), d.delegationId)
-  const saveWait = (w: CollaborationWait) => run('UPDATE collaboration_waits SET state=?,data=? WHERE id=?', w.state, JSON.stringify(w), w.waitId)
-  const saveMessage = (m: AgentMessage) => run('UPDATE collaboration_messages SET data=? WHERE id=?', JSON.stringify(m), m.messageId)
-  const saveExecution = (e: ExecutionAdmission) => run('UPDATE collaboration_executions SET state=?,data=? WHERE id=?', e.state, JSON.stringify(e), e.operationId)
+  const saveAgent = (a: AgentIdentity) => run('UPDATE ledger_members SET ledger=?, data=? WHERE id=?', a.collaborationId ?? '', JSON.stringify(a), a.agentId)
+  const saveCollaboration = (c: Collaboration) => run('UPDATE ledgers SET data=? WHERE id=?', JSON.stringify(c), c.collaborationId)
+  const saveDelegation = (d: Delegation) => run("UPDATE ledger_entries SET data=? WHERE kind='delegation' AND json_extract(data,'$.delegationId')=?", JSON.stringify(d), d.delegationId)
+  const saveWait = (w: CollaborationWait) => run("UPDATE ledger_entries SET data=? WHERE id=? AND kind='wait'", JSON.stringify(w), w.waitId)
+  const saveMessage = (m: AgentMessage) => run("UPDATE ledger_entries SET data=? WHERE id=? AND kind='message'", JSON.stringify(m), m.messageId)
+  const saveExecution = (e: ExecutionAdmission) => run("UPDATE ledger_entries SET data=? WHERE kind='execution' AND json_extract(data,'$.operationId')=?", JSON.stringify(e), e.operationId)
+  const insertLedgerEntry = (kind: string, ledger: string, actor: string | null, at: number, data: unknown, explicitId?: number): number => {
+    const id = explicitId ?? nextId()
+    const seq = (get<{ seq: number }>('SELECT COALESCE(MAX(seq),0) AS seq FROM ledger_entries WHERE ledger=?', ledger)?.seq ?? 0) + 1
+    run('INSERT INTO ledger_entries(id, ledger, seq, actor, kind, at, data) VALUES (?,?,?,?,?,?,?)', id, ledger, seq, actor, kind, at, JSON.stringify(data))
+    return id
+  }
   function prior(id: string, actor: string, kind: OperationResult['kind']): OperationResult | undefined {
     nonempty(id, 'operationId')
-    const row = get<{ actor: string; result: string }>('SELECT actor,result FROM collaboration_operations WHERE id=?', id)
+    const row = get<{ actor: string; kind: string; result: string }>('SELECT actor,kind,result FROM ledger_operations WHERE id=?', id)
     if (!row) return undefined
     const result = JSON.parse(row.result) as OperationResult
     if (row.actor !== actor || result.kind !== kind) throw new Error('operation identity conflict')
     return result
   }
-  const remember = (id: string, actor: string, result: OperationResult) => run('INSERT INTO collaboration_operations VALUES (?,?,?)', id, actor, JSON.stringify(result))
+  const remember = (id: string, actor: string, result: OperationResult) => run('INSERT INTO ledger_operations(id,actor,kind,result) VALUES (?,?,?,?)', id, actor, result.kind, JSON.stringify(result))
   const scopeFor = (actor: string): Collaboration => collaboration(required(agent(actor).collaborationId, 'agent has no collaboration'))
   function sameMember(id: string, c: Collaboration): AgentIdentity {
     const a = agent(id)
@@ -99,7 +165,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     nonempty(input.sessionId, 'sessionId'); nonempty(input.model.provider, 'provider'); nonempty(input.model.model, 'model')
     run('INSERT INTO sessions(id,at,workspace) VALUES (?,?,?) ON CONFLICT(id) DO NOTHING', input.sessionId, input.at, JSON.stringify(roots))
     const a: AgentIdentity = { agentId: randomUUID(), ...input, workspace: [...roots], reachability: 'active', ...(c ? { collaborationId: c } : {}), ...(createdBy ? { createdBy } : {}) }
-    run('INSERT INTO collaboration_agents VALUES (?,?,?,?)', a.agentId, a.sessionId, c ?? null, JSON.stringify(a))
+    run('INSERT INTO ledger_members(ledger,session,id,data,joined_at) VALUES (?,?,?,?,?)', c ?? '', a.sessionId, a.agentId, JSON.stringify(a), input.at)
     return a
   }
   function appendReference(recipient: AgentIdentity, m: AgentMessage, at: number): number {
@@ -114,7 +180,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     return id
   }
   function enqueue(m: AgentMessage, recipient: string): void {
-    run('INSERT INTO collaboration_inbox(recipient,message) VALUES (?,?) ON CONFLICT(recipient,message) DO NOTHING', recipient, m.messageId)
+    run('INSERT INTO ledger_deliveries(recipient,ledger_entry) VALUES (?,?) ON CONFLICT(recipient,ledger_entry) DO NOTHING', recipient, m.messageId)
   }
   function enqueueConstraints(a: AgentIdentity): void {
     if (!a.collaborationId) return
@@ -158,7 +224,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     if (input.discussionRoot !== undefined && message(input.discussionRoot).discussionRoot !== input.discussionRoot) throw new Error('invalid discussion root')
     const id = nextId()
     const m: AgentMessage = { ...input, body: messageBody(actor, input.body, input.generatedFrom), recipients, messageId: id, collaborationId: c.collaborationId, senderId: actor, withdrawn: false, ...(root ? { discussionRoot: id } : {}) }
-    run('INSERT INTO collaboration_messages VALUES (?,?,?,?)', id, c.collaborationId, actor, JSON.stringify(m))
+    insertLedgerEntry('message', c.collaborationId, actor, input.at, m, id)
     appendReference(agent(actor), m, input.at)
     for (const recipient of recipients) enqueue(m, recipient)
     // 普通告知与回执不解除等待。收到结果仅保存等待事实，唤起仍须过准入。
@@ -174,9 +240,9 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
   function canRead(actor: string, m: AgentMessage): boolean {
     const a = agent(actor)
     if (a.collaborationId !== m.collaborationId) return false
-    const constraint = get<{ data: string }>('SELECT data FROM collaboration_constraints WHERE message=?', m.messageId)
+    const constraint = get<{ data: string }>("SELECT data FROM ledger_entries WHERE kind='constraint' AND json_extract(data,'$.messageId')=?", m.messageId)
     const shared = constraint ? JSON.parse(constraint.data) as SharedConstraint : undefined
-    const discussion = m.discussionRoot !== undefined && get(`SELECT 1 FROM collaboration_messages WHERE collaboration=? AND json_extract(data,'$.discussionRoot')=? AND (sender=? OR EXISTS (SELECT 1 FROM json_each(json_extract(data,'$.recipients')) WHERE value=?))`, m.collaborationId, m.discussionRoot, actor, actor) !== undefined
+    const discussion = m.discussionRoot !== undefined && get(`SELECT 1 FROM ledger_entries WHERE kind='message' AND ledger=? AND json_extract(data,'$.discussionRoot')=? AND (json_extract(data,'$.senderId')=? OR EXISTS (SELECT 1 FROM json_each(json_extract(data,'$.recipients')) WHERE value=?))`, m.collaborationId, m.discussionRoot, actor, actor) !== undefined
     return m.senderId === actor || m.recipients.includes(actor) || discussion || !!(shared && (!shared.affectedAgents || shared.affectedAgents.includes(actor)))
   }
   function createDelegation(actor: string, input: DelegateInput): Delegation {
@@ -208,16 +274,16 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     const m = createMessage(actor, { recipients: [input.assigneeId], purpose: 'delegation', body: input.body, at: input.at, ...(input.generatedFrom === undefined ? {} : { generatedFrom: input.generatedFrom }) })
     const d: Delegation = { delegationId: m.messageId, collaborationId: c.collaborationId, delegatorId: actor, assigneeId: input.assigneeId, source: input.source, authorization, scope: input.scope, state: 'queued', at: input.at, ...(input.parentDelegationId === undefined ? {} : { parentDelegationId: input.parentDelegationId }) }
     saveMessage({ ...m, delegationId: d.delegationId })
-    run('INSERT INTO collaboration_delegations VALUES (?,?,?,?,?,?)', d.delegationId, c.collaborationId, d.parentDelegationId ?? null, d.assigneeId, d.state, JSON.stringify(d))
+    insertLedgerEntry('delegation', c.collaborationId, actor, input.at, d)
     return d
   }
-  const inbox = (id: string, after = 0): InboxItem[] => all<{ position: number; recipient: string; message: number; state: InboxItem['state']; entry: number | null; consumed_at: number | null; included_at: number | null }>('SELECT * FROM collaboration_inbox WHERE recipient=? AND position>? ORDER BY position', id, after).map(row => ({ position: row.position, recipientId: row.recipient, messageId: row.message, state: row.state, ...(row.entry === null ? {} : { entryId: row.entry }), ...(row.consumed_at === null ? {} : { consumedAt: row.consumed_at }), ...(row.included_at === null ? {} : { includedAt: row.included_at }) }))
+  const inbox = (id: string, after = 0): InboxItem[] => all<{ position: number; recipient: string; ledger_entry: number; state: InboxItem['state']; entry: number | null; consumed_at: number | null; included_at: number | null }>('SELECT * FROM ledger_deliveries WHERE recipient=? AND position>? ORDER BY position', id, after).map(row => ({ position: row.position, recipientId: row.recipient, messageId: row.ledger_entry, state: row.state, ...(row.entry === null ? {} : { entryId: row.entry }), ...(row.consumed_at === null ? {} : { consumedAt: row.consumed_at }), ...(row.included_at === null ? {} : { includedAt: row.included_at }) }))
   function interrupt(agentId: string, reason: string, generatedFrom?: EntryReference): CollaborationWait[] {
     const result = many<CollaborationWait>('collaboration_waits', "state='waiting'").filter(w => w.agentId === agentId || w.forAgents.includes(agentId)).map(w => ({ ...w, state: 'interrupted' as const, reason, reasonFrom: generatedFrom }))
     result.forEach(saveWait); return result
   }
   function closure(root: number): Delegation[] {
-    return all<{ data: string }>(`WITH RECURSIVE scope(id) AS (SELECT id FROM collaboration_delegations WHERE id=? UNION ALL SELECT d.id FROM collaboration_delegations d JOIN scope s ON d.parent=s.id) SELECT data FROM collaboration_delegations WHERE id IN (SELECT id FROM scope)`, root).map(r => JSON.parse(r.data) as Delegation)
+    return all<{ data: string }>(`WITH RECURSIVE scope(id) AS (SELECT json_extract(data,'$.delegationId') FROM ledger_entries WHERE kind='delegation' AND json_extract(data,'$.delegationId')=? UNION ALL SELECT json_extract(d.data,'$.delegationId') FROM ledger_entries d JOIN scope s ON json_extract(d.data,'$.parentDelegationId')=s.id WHERE d.kind='delegation') SELECT data FROM ledger_entries WHERE kind='delegation' AND json_extract(data,'$.delegationId') IN (SELECT id FROM scope)`, root).map(r => JSON.parse(r.data) as Delegation)
   }
   const api: CollaborationRecords = {
     registerAgent(input) { return tx(() => {
@@ -253,7 +319,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       entry(input.origin, undefined, true)
       const c: Collaboration = { collaborationId: randomUUID(), originSessionId: a.sessionId, origin: input.origin, coordinatorId: actor, defaultModel: a.model, state: 'open', at: input.at }
       requireOpen(c)
-      run('INSERT INTO collaborations VALUES (?,?,?)', c.collaborationId, c.originSessionId, JSON.stringify(c))
+      run('INSERT INTO ledgers(id, origin_session, title, data, created_at) VALUES (?,?,?,?,?)', c.collaborationId, c.originSessionId, null, JSON.stringify(c), c.at ?? 0)
       saveAgent({ ...a, collaborationId: c.collaborationId })
       remember(input.operationId, actor, { kind: 'collaboration', collaborationId: c.collaborationId }); return c
     }) },
@@ -356,21 +422,21 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       return items.map(item => {
         const m = message(item.messageId)
         const entryId = appendReference(a, m, at)
-        run("UPDATE collaboration_inbox SET state='consumed',entry=?,consumed_at=? WHERE position=?", entryId, at, item.position)
+        run("UPDATE ledger_deliveries SET state='consumed',entry=?,consumed_at=? WHERE position=?", entryId, at, item.position)
         return { ...item, state: 'consumed', entryId, consumedAt: at }
       })
     }) },
     markIncluded(id, ids, at) { tx(() => {
       for (const messageId of new Set(ids)) {
-        const row = get<{ state: string }>('SELECT state FROM collaboration_inbox WHERE recipient=? AND message=?', id, messageId)
+        const row = get<{ state: string }>('SELECT state FROM ledger_deliveries WHERE recipient=? AND ledger_entry=?', id, messageId)
         if (row?.state !== 'consumed') throw new Error('message must be consumed before request inclusion')
-        run('UPDATE collaboration_inbox SET included_at=COALESCE(included_at,?) WHERE recipient=? AND message=?', at, id, messageId)
+        run('UPDATE ledger_deliveries SET included_at=COALESCE(included_at,?) WHERE recipient=? AND ledger_entry=?', at, id, messageId)
       }
     }) },
     editMessage(actor, id, body) { return tx(() => {
       const m = message(id)
       if (m.senderId !== actor) throw new Error('only sender can edit')
-      if (m.withdrawn || ['delegation', 'delivery', 'constraint'].includes(m.purpose) || get("SELECT 1 FROM collaboration_inbox WHERE message=? AND state<>'pending'", id)) return false
+      if (m.withdrawn || ['delegation', 'delivery', 'constraint'].includes(m.purpose) || get("SELECT 1 FROM ledger_deliveries WHERE ledger_entry=? AND state<>'pending'", id)) return false
       validBody(body, collaboration(m.collaborationId), actor)
       const updated = { ...m, body: messageBody(actor, body, m.generatedFrom) }
       saveMessage(updated)
@@ -382,8 +448,8 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       const m = message(id)
       if (m.senderId !== actor) throw new Error('only sender can withdraw')
       if (m.withdrawn) return true
-      if (['delegation', 'delivery', 'constraint'].includes(m.purpose) || get("SELECT 1 FROM collaboration_inbox WHERE message=? AND state<>'pending'", id)) return false
-      saveMessage({ ...m, withdrawn: true }); run("UPDATE collaboration_inbox SET state='withdrawn' WHERE message=?", id); return true
+      if (['delegation', 'delivery', 'constraint'].includes(m.purpose) || get("SELECT 1 FROM ledger_deliveries WHERE ledger_entry=? AND state<>'pending'", id)) return false
+      saveMessage({ ...m, withdrawn: true }); run("UPDATE ledger_deliveries SET state='withdrawn' WHERE ledger_entry=?", id); return true
     }) },
     publishConstraint(actor, input) { return tx(() => {
       const old = prior(input.operationId, actor, 'constraint')
@@ -395,15 +461,15 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       if (input.replaces !== undefined) {
         const previous = api.listConstraints(c.collaborationId).find(item => item.messageId === input.replaces)
         if (!previous) throw new Error('constraint to replace not found')
-        run('UPDATE collaboration_constraints SET data=? WHERE message=?', JSON.stringify({ ...previous, active: false }), input.replaces)
+        run("UPDATE ledger_entries SET data=? WHERE kind='constraint' AND json_extract(data,'$.messageId')=?", JSON.stringify({ ...previous, active: false }), input.replaces)
       }
       const recipients = input.affectedAgents ?? members(c.collaborationId).filter(a => a.reachability !== 'historical').map(a => a.agentId)
       const m = createMessage(actor, { recipients, purpose: 'constraint', body: input.body, userSource: input.source, at: input.at })
       const constraint: SharedConstraint = { messageId: m.messageId, collaborationId: c.collaborationId, active: true, ...(input.affectedAgents ? { affectedAgents: [...input.affectedAgents] } : {}) }
-      run('INSERT INTO collaboration_constraints VALUES (?,?,?)', m.messageId, c.collaborationId, JSON.stringify(constraint))
+      insertLedgerEntry('constraint', c.collaborationId, actor, input.at, constraint)
       remember(input.operationId, actor, { kind: 'constraint', messageId: m.messageId }); return m
     }) },
-    listConstraints(id) { return all<{ data: string }>('SELECT data FROM collaboration_constraints WHERE collaboration=? ORDER BY rowid', id).map(row => JSON.parse(row.data) as SharedConstraint) },
+    listConstraints(id) { return all<{ data: string }>("SELECT data FROM ledger_entries WHERE kind='constraint' AND ledger=? ORDER BY id", id).map(row => JSON.parse(row.data) as SharedConstraint) },
     constraintStatus(id) {
       const m = message(id)
       const c = required(api.listConstraints(m.collaborationId).find(item => item.messageId === id), 'constraint not found')
@@ -438,7 +504,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       const unavailable = targets.find(id => agent(id).reachability === 'historical')
       const found = many<AgentMessage>('collaboration_messages', 'collaboration=? ORDER BY rowid DESC', c.collaborationId).find(m => !m.withdrawn && targets.includes(m.senderId) && m.recipients.includes(actor) && ['reply','delivery','clarification'].includes(m.purpose) && input.forMessageId !== undefined && (m.replyTo === input.forMessageId || m.delegationId === input.forMessageId))
       const w: CollaborationWait = { waitId: nextId(), collaborationId: c.collaborationId, agentId: actor, forAgents: targets, expectation: input.expectation, deadline: input.deadline, at: input.at, ...(input.generatedFrom === undefined ? {} : { generatedFrom: input.generatedFrom }), state: unavailable ? 'interrupted' : found ? 'resolved' : 'waiting', ...(unavailable ? { reason: 'target is historical' } : {}), ...(found ? { resultMessageId: found.messageId } : {}), ...(input.delegationId === undefined ? {} : { delegationId: input.delegationId }), ...(input.forMessageId === undefined ? {} : { forMessageId: input.forMessageId }) }
-      run('INSERT INTO collaboration_waits VALUES (?,?,?,?,?)', w.waitId, c.collaborationId, actor, w.state, JSON.stringify(w))
+      insertLedgerEntry('wait', c.collaborationId, actor, input.at, w, w.waitId)
       remember(input.operationId, actor, { kind: 'wait', waitId: w.waitId }); return { ok: true, wait: w }
     }) },
     listWaits: waits,
@@ -480,7 +546,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       if (executions(c.collaborationId).some(e => e.agentId === actor && e.runId === input.runId && e.cancelledAt !== undefined)) throw new Error('execution run was cancelled; use a new run identity')
       if (executions(c.collaborationId).some(e => e.agentId === actor && e.state !== 'finished' && e.runId !== input.runId)) throw new Error('agent already has a running executor')
       const e: ExecutionAdmission = { operationId: input.operationId, agentId: actor, runId: input.runId, kind: input.kind, ...(input.mode === undefined ? {} : { mode: input.mode }), state: 'running', at: input.at, ...(input.delegationId === undefined ? {} : { delegationId: input.delegationId }) }
-      run('INSERT INTO collaboration_executions VALUES (?,?,?,?,?,?)', e.operationId, actor, c.collaborationId, e.delegationId ?? null, e.state, JSON.stringify(e))
+      insertLedgerEntry('execution', c.collaborationId, actor, input.at, e)
       remember(input.operationId, actor, { kind: 'execution', operationId: input.operationId }); return e
     }) },
     finishExecution(id, reason) { tx(() => {
@@ -553,7 +619,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       return { closed: true, blockers: [] }
     }) },
     operation(id) {
-      const row = get<{ result: string }>('SELECT result FROM collaboration_operations WHERE id=?', id)
+      const row = get<{ result: string }>('SELECT result FROM ledger_operations WHERE id=?', id)
       return row ? JSON.parse(row.result) as OperationResult : undefined
     },
   }

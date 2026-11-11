@@ -143,17 +143,17 @@ describe('成员主机装配', () => {
         f.store.serviceFor('member').appendEntry({ kind: 'user', content: { text: '保留旧工作原文' }, at: 10 })
         f.store.setSessionTitle('member', '旧工作标题', 11)
         f.store.setSessionArchived('member', true)
-        const row = db.query<{ data: string }, [string]>('SELECT data FROM collaboration_agents WHERE session = ?').get('member')!
+        const row = db.query<{ data: string }, [string]>('SELECT data FROM ledger_members WHERE session = ?').get('member')!
         const legacy = JSON.parse(row.data)
         delete legacy.model[missing]
-        db.query('UPDATE collaboration_agents SET data = ? WHERE session = ?').run(JSON.stringify(legacy, null, 2), 'member')
+        db.query('UPDATE ledger_members SET data = ? WHERE session = ?').run(JSON.stringify(legacy, null, 2), 'member')
         // 新默认本身有效，也不能据此补造旧工作的模型来源。
         writeFileSync(f.configPath, JSON.stringify({ ...f.config, models: { ...f.config.models, default: { provider: 'ds', model: 'entry-model' } } }))
         // 元数据里的 next_id 会因装配预取递增；这里只看条目、会话与成员身份有没有变。
         const snapshot = () => ({
           entries: db.query('SELECT * FROM entries ORDER BY id').all(),
           sessions: db.query('SELECT * FROM sessions ORDER BY id').all(),
-          agents: db.query('SELECT * FROM collaboration_agents ORDER BY id').all(),
+          agents: db.query('SELECT * FROM ledger_members ORDER BY id').all(),
         })
         const before = snapshot(), config = readFileSync(f.configPath)
         let requests = 0
@@ -177,7 +177,7 @@ describe('成员主机装配', () => {
           } finally { shell.dispose() }
         } finally { app?.close() }
         // 旧字段保留：没有补写、没有迁移。
-        const after = JSON.parse(db.query<{ data: string }, [string]>('SELECT data FROM collaboration_agents WHERE session = ?').get('member')!.data)
+        const after = JSON.parse(db.query<{ data: string }, [string]>('SELECT data FROM ledger_members WHERE session = ?').get('member')!.data)
         expect(Object.hasOwn(after.model, missing)).toBe(false)
         expect(f.store.collaboration.getAgent(f.agent.agentId)?.model).toMatchObject({
           choice: 'default', provider: 'mm', model: 'member-model',
@@ -212,7 +212,7 @@ describe('成员主机装配', () => {
       const f = setup()
       const db = new Database(f.store.paths.database)
       try {
-        const row = db.query<{ data: string }, [string]>('SELECT data FROM collaboration_agents WHERE session = ?').get('member')!
+        const row = db.query<{ data: string }, [string]>('SELECT data FROM ledger_members WHERE session = ?').get('member')!
         const legacy = JSON.parse(row.data)
         let config: Record<string, unknown> = f.config
         if (missing === 'endpoint') {
@@ -220,7 +220,7 @@ describe('成员主机装配', () => {
           // 官方连接不给地址、又指了一个不存在的区域 ⇒ 当前配置确实没有有效服务地址。
           config = { ...f.config, providers: { ...f.providers, mm: { vendor: 'minimax', region: 'nowhere', protocol: 'chat-completions', apiKey: 'local-only-mm' } } }
         } else legacy.model[missing] = missing === 'provider' ? '' : ' '
-        db.query('UPDATE collaboration_agents SET data = ? WHERE session = ?').run(JSON.stringify(legacy, null, 2), 'member')
+        db.query('UPDATE ledger_members SET data = ? WHERE session = ?').run(JSON.stringify(legacy, null, 2), 'member')
         writeFileSync(f.configPath, JSON.stringify(config))
         const before = db.serialize()
         let requests = 0

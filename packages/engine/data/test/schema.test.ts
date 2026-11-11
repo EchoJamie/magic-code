@@ -251,13 +251,10 @@ describe('判据 4 · schema（结构 · 重开续写）', () => {
 
         expect(tables).toEqual([
           'attention_items',
-          'collaboration_agents', 'collaboration_constraints', 'collaboration_delegations',
-          'collaboration_executions', 'collaboration_inbox', 'collaboration_messages',
-          'collaboration_operations', 'collaboration_waits', 'collaborations',
           'entries', 'events', 'inputs', 'knowledge', 'knowledge_forgetting',
           'knowledge_search', 'knowledge_search_config', 'knowledge_search_content', 'knowledge_search_data',
           'knowledge_search_docsize', 'knowledge_search_idx',
-          'ledger_entries', 'ledger_members', 'ledger_refs', 'ledgers',
+          'ledger_deliveries', 'ledger_entries', 'ledger_members', 'ledger_operations', 'ledger_refs', 'ledgers',
           'records_meta', 'run_journal', 'runs', 'sessions', 'steps', 'turns',
         ])
         expect(db.query<{ value: string }, []>("SELECT value FROM records_meta WHERE key='schema_version'").get()).toEqual({
