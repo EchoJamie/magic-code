@@ -112,6 +112,13 @@ const ALLOWED_EXTERNAL: Record<string, readonly string[]> = {
  */
 const TEST_ONLY_DEP = '@magic/faux'
 
+/** 契约的正式子路径入口（0.2.0 两面／共享值）。 */
+const CONTRACT_SUBPATHS = [
+  '@magic/contracts/shared',
+  '@magic/contracts/conversation',
+  '@magic/contracts/scheduling',
+]
+
 /** 各包测试面额外许可的**特定**依赖（仍不进生产面）。 */
 const TEST_ONLY_DEPS: Record<string, readonly string[]> = {
   // 剪贴板测试复用执行域的认图判据（`imageBytesOf`）——只是测试取材，不是客户端依赖。
@@ -330,6 +337,8 @@ function isCrossing(
     const target = specifier.split('/', 2).join('/')
     if (target === packageName) return false // 自引用——不经包边界
     if (!allowed.includes(target)) return true
+    // 契约三个公开子路径是正式入口；其余深链（含契约的 src/*）仍算越界。
+    if (CONTRACT_SUBPATHS.includes(specifier) && allowed.includes('@magic/contracts')) return false
     return specifier.length > target.length // 已允许的包：深链他人内部同样越界
   }
 
@@ -698,11 +707,14 @@ describe('契约包零运行时依赖', () => {
 })
 
 describe('公开面', () => {
-  test('各包 exports 只出 `.`（不出子路径、不暴露内部目录）', async () => {
+  test('各包 exports 只出公开面（契约三面；其余只出 `.`）', async () => {
 
     for (const { dir, name } of packagesOf()) {
       const { exports } = manifestOfDir(dir)
-      expect(Object.keys(exports ?? {}), `${name} 的 exports`).toEqual(['.'])
+      const expected = name === '@magic/contracts'
+        ? ['.', './shared', './conversation', './scheduling']
+        : ['.']
+      expect(Object.keys(exports ?? {}), `${name} 的 exports`).toEqual(expected)
     }
   })
 })
