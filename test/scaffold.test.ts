@@ -35,7 +35,6 @@ const PACKAGE_TABLE: Record<string, readonly string[]> = {
   '@magic/config': ['@magic/contracts'],
   // **应用层**（U25）——「域之上」那一层：编排跨域的几步。与各域同一条纪律：
   // **只依赖契约**（它拿到的是一组端口，由装配根注入）。
-  '@magic/actions': ['@magic/contracts'],
   '@magic/conversation': ['@magic/contracts'],
   '@magic/records': ['@magic/contracts'],
   '@magic/model': ['@magic/contracts'],
@@ -51,7 +50,6 @@ const PACKAGE_TABLE: Record<string, readonly string[]> = {
   '@magic/app': [
     '@magic/config',
     '@magic/contracts',
-    '@magic/actions',
     '@magic/conversation',
     '@magic/records',
     '@magic/model',

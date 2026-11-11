@@ -2,7 +2,7 @@ import type {
   AgentIdentity, AgentModelConfig, CollaborationCommand, CollaborationReply, CollaborationRequest,
   CollaborationView, CollaborationUsage, MagicHome, ModelUsage, RunRow, StopResult, UserInput,
 } from '@magic/contracts'
-import { createCollaborationActions } from '@magic/actions'
+import { createCollaborationActions } from '@magic/host'
 import type { RecordsStore } from '@magic/records'
 import { managedModelChoices, resolveManagedModel } from '../agent-models.ts'
 

@@ -15,13 +15,12 @@
     "records": "bun run scripts/inspect-records.ts"
   },
   "dependencies": {
-    "@magic/actions": "workspace:*",
+    "@magic/host": "workspace:*",
     "@magic/client": "workspace:*",
     "@magic/contracts": "workspace:*",
     "@magic/control": "workspace:*",
     "@magic/conversation": "workspace:*",
     "@magic/execution": "workspace:*",
-    "@magic/host": "workspace:*",
     "@magic/mcp": "workspace:*",
     "@magic/model": "workspace:*",
     "@magic/records": "workspace:*",

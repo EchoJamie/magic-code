@@ -4,7 +4,7 @@
  *
  * 恢复要处置什么，**只能从记录里读出来**——本文件把那件事说全，且**只说不判**：
  * 判定「哪几笔在途、属于哪一轮、裁决走到了哪一步」，处置（重放 / 落账）归**应用层**
- * （`@magic/actions`——U25 起；此前归对话域）。
+ * （`@magic/host`——U25 起；此前归对话域）。
  *
  * ```
  *   有 `tool.call` 无 `tool.result`   ← 在途（①的原话）
@@ -50,7 +50,7 @@ import type {
 } from '@magic/contracts'
 
 // `InFlightCall` / `RecoveryScan` 的**形态归契约**（U25）：恢复的消费方是应用层
-// （`@magic/actions`），而应用层只认 `@magic/contracts`——再让每个消费方各持一份镜像
+// （`@magic/host`），而应用层只认 `@magic/contracts`——再让每个消费方各持一份镜像
 // （U15 时对话域就是这么干的）＝ N 处形态各写一遍、靠接线处对齐。形搬到契约，两处同源。
 export type { InFlightCall, RecoveryScan }
 

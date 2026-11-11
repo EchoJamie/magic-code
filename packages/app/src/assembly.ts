@@ -10,8 +10,8 @@ export type { EnvironmentVars } from './agent-assembly/session.ts'
 export { createStamper } from './agent-assembly/events.ts'
 export { workspaceOf } from './run/observation.ts'
 
-import type { SessionPorts } from '@magic/actions'
-import { createActions } from '@magic/actions'
+import type { SessionPorts } from '@magic/host'
+import { createActions } from '@magic/host'
 import type {
   AgentModelConfig,
   BackgroundRuns,

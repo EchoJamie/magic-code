@@ -13,5 +13,8 @@
     "@magic/conversation": "workspace:*",
     "@magic/execution": "workspace:*",
     "@magic/records": "workspace:*"
+  },
+  "devDependencies": {
+    "@magic/faux": "workspace:*"
   }
 }

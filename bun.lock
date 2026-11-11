@@ -19,7 +19,6 @@
         "magic": "./src/cli.ts",
       },
       "dependencies": {
-        "@magic/actions": "workspace:*",
         "@magic/client": "workspace:*",
         "@magic/config": "workspace:*",
         "@magic/contracts": "workspace:*",
@@ -81,16 +80,6 @@
       "name": "@magic/contracts",
       "version": "0.0.0",
     },
-    "packages/engine/actions": {
-      "name": "@magic/actions",
-      "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-      },
-      "devDependencies": {
-        "@magic/faux": "workspace:*",
-      },
-    },
     "packages/engine/data": {
       "name": "@magic/records",
       "version": "0.0.0",
@@ -106,6 +95,9 @@
         "@magic/conversation": "workspace:*",
         "@magic/execution": "workspace:*",
         "@magic/records": "workspace:*",
+      },
+      "devDependencies": {
+        "@magic/faux": "workspace:*",
       },
     },
     "packages/engine/state": {
@@ -194,8 +186,6 @@
     "@alcalzone/ansi-tokenize": ["@alcalzone/ansi-tokenize@0.3.1", "https://registry.npmmirror.com/@alcalzone/ansi-tokenize/-/ansi-tokenize-0.3.1.tgz", { "dependencies": { "ansi-styles": "^6.2.1", "is-fullwidth-code-point": "^5.0.0" } }, "sha512-cUD0PT0YX+rImRhfn7BfMRduP/tX/Zqt/N0dHlAyn2RlcJssCb5KsCJkhln61eh9vuJDkH8wKn3L8zJzzWXPFg=="],
 
     "@hono/node-server": ["@hono/node-server@2.1.1", "https://registry.npmmirror.com/@hono/node-server/-/node-server-2.1.1.tgz", { "peerDependencies": { "hono": "^4" } }, "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg=="],
-
-    "@magic/actions": ["@magic/actions@workspace:packages/engine/actions"],
 
     "@magic/app": ["@magic/app@workspace:packages/app"],
 

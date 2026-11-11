@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { createCollaborationActions } from '@magic/actions'
+import { createCollaborationActions } from '@magic/host'
 import type { CollaborationRequest } from '@magic/contracts'
 import { createRecordsStore } from '@magic/records'
 import { removeDir, tempDir } from './tmp.ts'
