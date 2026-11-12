@@ -73,6 +73,8 @@ export type ConversationDeps = {
   readonly consultationAvailable?: boolean | undefined
   /** 会话——条目按会话读；信封的 `session` 由铸造器持（装配按会话实例构造，两处同源）。 */
   readonly session: SessionId
+  /** 当前模型身份（用后留痕到 steps.provider/model）；缺省不记。 */
+  readonly stepIdentity?: (() => { readonly provider: string; readonly model: string } | undefined) | undefined
   /** 提示词运行时注入值（`cwd` / `platform` / `date`）——**缺项在构造期就报错**。 */
   readonly prompt: PromptVars
   readonly gateway: ModelGateway
@@ -335,6 +337,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     gateway: deps.gateway,
     tools: deps.tools,
     records: deps.records,
+    stepIdentity: deps.stepIdentity,
     sink,
     stamper,
     // 轮号归记录域：`turns.seq` 由库按会话取 max+1，重启后自然接着走。

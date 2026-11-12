@@ -130,6 +130,8 @@ export type LoopRuntime = {
   readonly gateway: ModelGateway
   readonly tools: ToolRuntime
   readonly records: RecordsService
+  /** 当前模型身份（用后留痕到 steps）；缺省不记。 */
+  readonly stepIdentity?: (() => { readonly provider: string; readonly model: string } | undefined) | undefined
   readonly sink: EventSink
   readonly stamper: EventStamper
   /**
@@ -332,6 +334,8 @@ export async function prepareInput(
     if (input !== undefined) {
       const refusal = runtime.collaboration?.admit()
       if (refusal !== undefined) { refuse(runtime, input, refusal); return undefined }
+      // 输入先落记录时就把所属轮定下来；事件仍按「输入先于轮」铸（`message.user` 的 turn 为 null）。
+      runtime.turn ??= runtime.nextTurnId()
       const entryId = await appendUserEntry(entryLogOf(runtime), input.text, {
         ...(input.ref === undefined ? {} : {ref:input.ref, revision:stored!.revision}),
         admit: () => runtime.collaboration?.admit(),
@@ -732,7 +736,7 @@ async function runTurn(
   const { gateway, tools, sink, stamper } = runtime
 
   // 轮起——记录域分配 `turns.id`；铸造器的 `turn` 自此生效（轮内所有事件共用它）
-  const turn = runtime.nextTurnId()
+  const turn = runtime.turn ?? runtime.nextTurnId()
   runtime.turn = turn
   stamper.beginTurn(turn)
   let step: StepId | undefined
@@ -793,7 +797,7 @@ async function runTurn(
       if (signal.aborted || runtime.collaboration?.admit() !== undefined) return close(runtime, 'aborted', false)
       // 一步＝轮内一次模型调用及它带出的工具执行；重发（超限）另起一步。
       endActiveStep('completed')
-      step = runtime.records.beginStep(turn, runtime.now())
+      step = runtime.records.beginStep(turn, runtime.now(), runtime.stepIdentity?.())
       stamper.beginStep?.(step)
       const stream = gateway.stream(
         { messages, tools: tools.definitions() },

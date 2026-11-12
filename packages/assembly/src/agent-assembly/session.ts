@@ -364,6 +364,10 @@ export function createAgentSession(input: {
     continuationGateway: { stream: (request, options) => (opened.models ?? fixed).stream(request, options) },
     noteTools: currentNotes => createToolRuntime({ sandbox, workspace, notes: currentNotes,
       gate: createPermissionGate({ sink: { emit() {} }, stamper, now }), sink: { emit() {} }, stamper, blobs: records.blobs, trashAvailable: false }),
+    stepIdentity: () => {
+      const selected = opened.models?.current()
+      return selected === undefined ? undefined : { provider: selected.provider, model: selected.model }
+    },
     capacity: () => {
       const selected = opened.models?.current()
       return selected === undefined ? {} : { ...opened.models?.capacityOf(selected.provider, selected.model), identity: JSON.stringify(selected) }
