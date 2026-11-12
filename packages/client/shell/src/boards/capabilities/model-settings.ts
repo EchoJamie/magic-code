@@ -8,7 +8,7 @@ import type {
   ModelRef,
   ReasoningSetting,
 } from '@magic/contracts'
-import { tokenLabel } from './components/lines.ts'
+import { tokenLabel } from '../../components/lines.ts'
 import type { ModelEditor } from './model-editor.ts'
 import {
   editorRows,
@@ -19,9 +19,9 @@ import {
   providerEditor,
   providerRequest,
 } from './model-editor.ts'
-import type { createPrompt } from './prompt.ts'
-import type { Picker, PickerRow, ShellView } from './view.ts'
-import type { ModelScope } from './view/models.ts'
+import type { createPrompt } from '../../prompt.ts'
+import type { Picker, PickerRow, ShellView } from '../../view.ts'
+import type { ModelScope } from './models.ts'
 import {
   cacheLabelOf,
   manageMetaOf,
@@ -33,8 +33,8 @@ import {
   reasoningHint,
   reasoningRows,
   vendorRows,
-} from './view/models.ts'
-import { dayLabel } from './view/time.ts'
+} from './models.ts'
+import { dayLabel } from '../settings/time.ts'
 
 export type ModelNavigation = {
   readonly manageAt: string

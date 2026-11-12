@@ -1,7 +1,7 @@
 import type { Command, SessionId } from '@magic/contracts'
-import type { Picker, PickerRow, ShellView } from './view.ts'
-import { STOP_KEYS_HINT } from './view.ts'
-import { inActiveSection, runDetail, sessionHint, sessionRows, type SessionScope } from './view/sessions.ts'
+import type { Picker, PickerRow, ShellView } from '../../view.ts'
+import { STOP_KEYS_HINT } from '../../view.ts'
+import { inActiveSection, runDetail, sessionHint, sessionRows, type SessionScope } from './sessions.ts'
 
 type SessionPicker = Picker & { readonly source: 'session' }
 

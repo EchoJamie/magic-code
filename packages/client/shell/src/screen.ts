@@ -33,8 +33,8 @@ import { unlinkSync, writeFileSync } from 'node:fs'
 import { displayWidth, PALETTE } from './components/lines.ts'
 import type { LogLine } from './components/log.ts'
 import type { LogRow } from './view.ts'
-import { matchesOf, screenKey, screenLayout, screenOpened, textOfLine, textOfLines } from './transcript.ts'
-import type { ScreenKey, ScreenLayout, ScreenState } from './transcript.ts'
+import { matchesOf, screenKey, screenLayout, screenOpened, textOfLine, textOfLines } from './boards/conversation/transcript.ts'
+import type { ScreenKey, ScreenLayout, ScreenState } from './boards/conversation/transcript.ts'
 import type { UserImage } from './view.ts'
 
 /** 进备用屏：存光标 ＋ 切缓冲 ＋ 清屏。 */

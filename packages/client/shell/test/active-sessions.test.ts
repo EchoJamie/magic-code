@@ -19,10 +19,10 @@ import {
   runDetail,
   runSummary,
   sessionRows,
-} from '../src/view/sessions.ts'
+} from '../src/boards/records/sessions.ts'
 import type {
   SessionScope,
-} from '../src/view/sessions.ts'
+} from '../src/boards/records/sessions.ts'
 import { createStage } from './screen.ts'
 import type { Frame } from './screen.ts'
 

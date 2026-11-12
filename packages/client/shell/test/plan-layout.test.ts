@@ -20,7 +20,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { PlanNote, PlanStep } from '@magic/contracts'
-import { PLAN_INDENT } from '../src/plan.ts'
+import { PLAN_INDENT } from '../src/boards/conversation/plan.ts'
 import { createStage } from './screen.ts'
 import type { Frame } from './screen.ts'
 import { event } from './events.ts'

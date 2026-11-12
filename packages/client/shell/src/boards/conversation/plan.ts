@@ -15,7 +15,7 @@
  */
 
 import type { PlanNote, PlanStep } from '@magic/contracts'
-import { PALETTE, truncate, wrap } from './components/lines.ts'
+import { PALETTE, truncate, wrap } from '../../components/lines.ts'
 
 // ══ 预算：动态区的余量怎么分 ══════════════════════════════════════════
 
@@ -396,7 +396,7 @@ export function planBlockOf(input: {
 //    这里**原样再导出**——既有调用方（`components/plan.ts` · `components/app.ts` · 用例）
 //    一个字都不用改。
 
-export { BREATH_MS, breathOf, breathColor } from './motion.ts'
+export { BREATH_MS, breathOf, breathColor } from '../../motion.ts'
 
 // 本文件自己也要用（`planStyleOf` 给进行中那一格取值）——故另外 import 一份进来。
-import { breathColor } from './motion.ts'
+import { breathColor } from '../../motion.ts'

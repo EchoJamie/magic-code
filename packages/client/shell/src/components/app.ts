@@ -1,4 +1,4 @@
-import { roundDuration, durationText } from '../round.ts'
+import { roundDuration, durationText } from '../boards/conversation/round.ts'
 import { breathColor, breathOf } from '../motion.ts'
 /**
  * 外壳 · 一屏（缺陷轮 III）——**内联渲染**下的三带结构。
@@ -34,8 +34,8 @@ import type { ReactElement, RefObject } from 'react'
 import { useSyncExternalStore } from 'react'
 import { PULSE_MS } from '../motion.ts'
 import { bannerOf } from '../banner.ts'
-import { planBudgetOf, planBlockOf, planScrolled } from '../plan.ts'
-import type { PlanBlock } from '../plan.ts'
+import { planBudgetOf, planBlockOf, planScrolled } from '../boards/conversation/plan.ts'
+import type { PlanBlock } from '../boards/conversation/plan.ts'
 import type { Shell } from '../shell.ts'
 import { toShellKeys, type ShellKey } from '../input.ts'
 export { toShellKeys, trailingEnterOf } from '../input.ts'
@@ -48,7 +48,7 @@ import {
 import {
   statusLineCellsOf,
   statusLineColorOf,
-} from '../view/config.ts'
+} from '../boards/settings/config.ts'
 import { Composer, PLACEHOLDER_LOST, clip, draftHeight, inkWidth, placeholderOf, type ComposerTone } from './composer.ts'
 import { LogRowView, needsSpacer, rowLines, spacerEnd, spacerWalk } from './log.ts'
 import { PALETTE, wrap } from './lines.ts'
@@ -56,7 +56,7 @@ import { PickerList, pickerBudget, pickerLayout, titleLines } from './picker.ts'
 import { PlanList } from './plan.ts'
 import { PromptLine } from './prompt.ts'
 import { StatusLine } from './status.ts'
-import { collaborationHeader, collaborationStatus } from '../collaboration.ts'
+import { collaborationHeader, collaborationStatus } from '../boards/conversation/collaboration.ts'
 import { runScreen } from '../screen.ts'
 import { readerLayout, RecordReader } from './reader.ts'
 

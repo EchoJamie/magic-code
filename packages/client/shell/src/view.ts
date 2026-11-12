@@ -1,9 +1,9 @@
 import type { InputPurpose, MagicConfig, StoredInput } from '@magic/contracts'
 import { isTurnTimingEvent, type TurnTimingEvent } from '@magic/contracts'
-import { foldRound, type RoundTiming } from './round.ts'
-import { messageRows } from './collaboration.ts'
-import type { McpCatalog } from './view/mcp.ts'
-import { modelLabel } from './view/models.ts'
+import { foldRound, type RoundTiming } from './boards/conversation/round.ts'
+import { messageRows } from './boards/conversation/collaboration.ts'
+import type { McpCatalog } from './boards/capabilities/mcp.ts'
+import { modelLabel } from './boards/capabilities/models.ts'
 
 import type { ModelSelectionRef } from '@magic/contracts'
 
@@ -41,7 +41,7 @@ import type {
 import { mcpToolLabel, parseMcpToolName } from '@magic/contracts'
 // 草稿里那几处引用的形态（外壳侧）——纯编辑规则在 `./components/inline.ts`
 import type { DraftRef } from './components/inline.ts'
-import { MARKS } from './marks.ts'
+import { MARKS } from './boards/conversation/marks.ts'
 
 function toolNameOf(name: string): string {
   const external = parseMcpToolName(name)
@@ -285,7 +285,7 @@ export type Picker = {
 
     | 'statusline'
 
-  readonly memory?: import('./memory-picker.ts').MemoryPage
+  readonly memory?: import('./boards/records/memory-picker.ts').MemoryPage
   readonly title?: string
   readonly rows: readonly PickerRow[]
   readonly selected: number

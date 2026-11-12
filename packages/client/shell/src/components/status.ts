@@ -29,12 +29,12 @@ import { breathColor, breathOf, pulseOf } from '../motion.ts'
 import type { ShellStatus } from '../view.ts'
 import {
   reasoningText,
-} from '../view/models.ts'
+} from '../boards/capabilities/models.ts'
 import {
   stateMark,
   stateText,
 } from '../view.ts'
-import { MARKS } from '../marks.ts'
+import { MARKS } from '../boards/conversation/marks.ts'
 import { PALETTE, displayWidth, truncate, usageLabel } from './lines.ts'
 
 export type StatusLineProps = {

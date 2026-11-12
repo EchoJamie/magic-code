@@ -29,7 +29,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { KernelEvent } from '@magic/contracts'
 import { event } from './events.ts'
-import { markdown, markdownStream } from '../src/markdown.ts'
+import { markdown, markdownStream } from '../src/boards/conversation/markdown.ts'
 import { AppView } from '../src/components/app.ts'
 import { rowLines } from '../src/components/log.ts'
 import { createView } from '../src/view.ts'

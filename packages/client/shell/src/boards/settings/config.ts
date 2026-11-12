@@ -1,6 +1,6 @@
 import type { EventDataOf, ModelCatalogRow, ModelRef, StatusLineCell, StatusLineConfig } from '@magic/contracts'
-import type { PickerRow } from '../view.ts'
-import type { McpCatalog } from './mcp.ts'
+import type { PickerRow } from '../../view.ts'
+import type { McpCatalog } from '../capabilities/mcp.ts'
 
 /**
  * **`/config` 那一屏里「不是读数」的那两件**——数据目录与工作区根。

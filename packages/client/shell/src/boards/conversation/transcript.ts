@@ -20,10 +20,10 @@
  *   不用我们的裁剪单位**。故锚点是 `kind === 'user'` 那几条的**头一行**。
  */
 
-import { rowDrawn, rowLines, spacerWalk } from './components/log.ts'
-import type { LogLine } from './components/log.ts'
-import { PALETTE } from './components/lines.ts'
-import type { LogRow, UserImage } from './view.ts'
+import { rowDrawn, rowLines, spacerWalk } from '../../components/log.ts'
+import type { LogLine } from '../../components/log.ts'
+import { PALETTE } from '../../components/lines.ts'
+import type { LogRow, UserImage } from '../../view.ts'
 
 /** 一行的缩进（与记录区同一格：`components/log.ts` 的 `INDENT`）。 */
 const INDENT = '  '

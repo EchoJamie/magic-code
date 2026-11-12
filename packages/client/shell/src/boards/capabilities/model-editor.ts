@@ -1,5 +1,5 @@
 import type { ModelCatalogRow, ModelProtocol, ProviderAuth, ProviderModelOverride, ProviderSaveRequest, VendorInfo } from '@magic/contracts'
-import type { PickerRow } from './view.ts'
+import type { PickerRow } from '../../view.ts'
 
 export const protocols: readonly { id: ModelProtocol; label: string }[] = [
   { id: 'responses', label: 'Responses' }, { id: 'messages', label: 'Anthropic Messages' }, { id: 'chat-completions', label: 'Chat Completions' },

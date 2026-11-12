@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createElement as h } from 'react'
 import { Text } from 'ink'
-import { MARKS } from '../../src/marks.ts'
+import { MARKS } from '../../src/boards/conversation/marks.ts'
 import { displayWidth } from '../../src/components/lines.ts'
 import { record, screenCells } from '../../test/terminal.ts'
 

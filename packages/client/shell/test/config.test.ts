@@ -9,7 +9,7 @@ import {
 } from '../src/view.ts'
 import {
   configRows,
-} from '../src/view/config.ts'
+} from '../src/boards/settings/config.ts'
 import { createStage } from './screen.ts'
 import type { Stage } from './screen.ts'
 import { event } from './events.ts'

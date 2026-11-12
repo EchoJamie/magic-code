@@ -21,7 +21,7 @@ import type { KernelEvent, SessionSummary } from '@magic/contracts'
 import { createStage } from './screen.ts'
 import type { Frame } from './screen.ts'
 import { event } from './events.ts'
-import { sessionRows } from '../src/view/sessions.ts'
+import { sessionRows } from '../src/boards/records/sessions.ts'
 
 const HERE = '/work/alpha'
 const ELSEWHERE = '/work/beta'

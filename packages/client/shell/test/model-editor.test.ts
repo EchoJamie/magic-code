@@ -3,7 +3,7 @@ import type { ModelCatalogRow, VendorInfo } from '@magic/contracts'
 import { createStage } from './screen.ts'
 import type { Stage } from './screen.ts'
 import { event } from './events.ts'
-import { modelEditor, modelOverride, providerEditor, providerRequest, protocols, effectiveProtocol } from '../src/model-editor.ts'
+import { modelEditor, modelOverride, providerEditor, providerRequest, protocols, effectiveProtocol } from '../src/boards/capabilities/model-editor.ts'
 
 const vendors: readonly VendorInfo[] = [{ vendor: 'official', label: '官方', regions: [{ id: 'cn', label: '中国', baseURL: 'https://secret.example/v1' }], protocols: protocols.map(one => ({ ...one, models: ['原始型号'] })) }]
 const entry: ModelCatalogRow = { provider: 'local', name: '本地', baseURL: 'http://localhost:1234/custom/v2', protocol: 'responses', auth: 'none' }

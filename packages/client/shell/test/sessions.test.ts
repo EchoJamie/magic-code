@@ -21,7 +21,7 @@ import {
 } from '../src/view.ts'
 import {
   STATUS_LINE_DEFAULT,
-} from '../src/view/config.ts'
+} from '../src/boards/settings/config.ts'
 import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
 import { plain, show } from './screen.ts'

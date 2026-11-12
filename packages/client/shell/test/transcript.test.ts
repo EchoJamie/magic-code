@@ -2,8 +2,8 @@
 
 import { describe, expect, test } from 'bun:test'
 import { parseScreenKeys, screenFrame } from '../src/screen.ts'
-import { matchesOf, screenKey, screenLayout, screenOpened, textOfLines } from '../src/transcript.ts'
-import type { MaterialSpot, ScreenKey, ScreenLayout, ScreenState } from '../src/transcript.ts'
+import { matchesOf, screenKey, screenLayout, screenOpened, textOfLines } from '../src/boards/conversation/transcript.ts'
+import type { MaterialSpot, ScreenKey, ScreenLayout, ScreenState } from '../src/boards/conversation/transcript.ts'
 import type { LogLine, Segment } from '../src/components/log.ts'
 import type { LogRow, UserImage } from '../src/view.ts'
 

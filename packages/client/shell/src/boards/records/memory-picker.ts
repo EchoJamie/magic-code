@@ -1,6 +1,6 @@
 import type { Command, KernelEvent, Knowledge, EventDataOf, NoteState, NoteReadQuery, MemorySourceRead } from '@magic/contracts'
-import type { Picker, PickerRow } from './view.ts'
-import type { DraftRef } from './components/inline.ts'
+import type { Picker, PickerRow } from '../../view.ts'
+import type { DraftRef } from '../../components/inline.ts'
 
 export type MemoryPage = {
   readonly session?: string

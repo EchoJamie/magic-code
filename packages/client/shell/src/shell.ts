@@ -1,9 +1,9 @@
 import type { BackgroundCommand, BackgroundView } from '@magic/contracts'
-import { backgroundDetail, backgroundKey, backgroundPicker } from './background.ts'
-import { createModelSettings, type ModelNavigation } from './model-settings.ts'
+import { backgroundDetail, backgroundKey, backgroundPicker } from './boards/conversation/background.ts'
+import { createModelSettings, type ModelNavigation } from './boards/capabilities/model-settings.ts'
 import { createPrompt, type Ask } from './prompt.ts'
-import { createMemoryPicker } from './memory-picker.ts'
-import { createSessionPicker } from './session-picker.ts'
+import { createMemoryPicker } from './boards/records/memory-picker.ts'
+import { createSessionPicker } from './boards/records/session-picker.ts'
 
 import { sanitizeForDisplay } from '@magic/contracts'
 import { dirname } from 'node:path'
@@ -35,7 +35,7 @@ import {
   memberRows,
   memberState,
   messageRows,
-} from './collaboration.ts'
+} from './boards/conversation/collaboration.ts'
 import { lineSpan, stepLeft, stepRight } from './components/composer.ts'
 import type { DraftRef } from './components/inline.ts'
 import {
@@ -101,11 +101,11 @@ import {
   statusLineColorOf,
   statusLineHint,
   statusLineRows,
-} from './view/config.ts'
-import { pathHint, pathRows, resolveSkill, sessionReferenceRows, skillHint, skillRows } from './view/materials.ts'
-import { mcpHint, mcpRows, mcpToolRows } from './view/mcp.ts'
-import { configReasoningOf, reasoningText } from './view/models.ts'
-import { runSummary } from './view/sessions.ts'
+} from './boards/settings/config.ts'
+import { pathHint, pathRows, resolveSkill, sessionReferenceRows, skillHint, skillRows } from './boards/capabilities/materials.ts'
+import { mcpHint, mcpRows, mcpToolRows } from './boards/capabilities/mcp.ts'
+import { configReasoningOf, reasoningText } from './boards/capabilities/models.ts'
+import { runSummary } from './boards/records/sessions.ts'
 
 export type { ShellKey } from './input.ts'
 import type { ShellKey } from './input.ts'

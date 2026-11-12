@@ -21,7 +21,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { GLYPH_WHITELIST, MARKS } from '../src/marks.ts'
+import { GLYPH_WHITELIST, MARKS } from '../src/boards/conversation/marks.ts'
 import { stateMark } from '../src/view.ts'
 import { BREATH_MS, PULSE_MS, breathColor, breathOf, pulseOf } from '../src/motion.ts'
 import { event } from './events.ts'

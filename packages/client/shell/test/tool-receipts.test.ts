@@ -14,7 +14,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { rowLines } from '../src/components/log.ts'
-import { MARKS } from '../src/marks.ts'
+import { MARKS } from '../src/boards/conversation/marks.ts'
 import { event } from './events.ts'
 import { createStage } from './screen.ts'
 

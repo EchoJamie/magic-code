@@ -1,7 +1,7 @@
 import type { BackgroundCommand, BackgroundTarget, BackgroundView } from '@magic/contracts'
 import { sanitizeForDisplay } from '@magic/contracts'
 import { collaborationRow } from './collaboration.ts'
-import type { Picker } from './view.ts'
+import type { Picker } from '../../view.ts'
 
 export const backgroundKey = (target: BackgroundTarget): string => JSON.stringify([target.execution, target.session, target.id])
 export const backgroundState = (command: BackgroundCommand): string => command.state === 'stopping' ? '停止中' : command.state === 'unconfirmed' ? '停止未确认' : '运行中'

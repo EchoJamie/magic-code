@@ -1,5 +1,5 @@
 import type { EventDataOf, PathCatalogRow, SkillCatalogRow } from '@magic/contracts'
-import type { PickerRow, SkillsCatalog } from '../view.ts'
+import type { PickerRow, SkillsCatalog } from '../../view.ts'
 
 export type SkillHit =
   | { readonly kind: 'one'; readonly skill: SkillCatalogRow }

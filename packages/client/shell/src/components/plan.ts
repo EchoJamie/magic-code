@@ -25,8 +25,8 @@
 import { Box, Text } from 'ink'
 import { createElement as h } from 'react'
 import type { ReactElement } from 'react'
-import { GLYPHS, MARK_WIDTH, PLAN_INDENT, breathOf, planStyleOf } from '../plan.ts'
-import type { PlanBlock, PlanRow } from '../plan.ts'
+import { GLYPHS, MARK_WIDTH, PLAN_INDENT, breathOf, planStyleOf } from '../boards/conversation/plan.ts'
+import type { PlanBlock, PlanRow } from '../boards/conversation/plan.ts'
 import { PALETTE } from './lines.ts'
 
 export type PlanListProps = {

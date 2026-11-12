@@ -10,9 +10,9 @@ import type {
   VendorInfo,
 } from '@magic/contracts'
 import { apiKeyEnvVarOf } from '@magic/contracts'
-import { tokenLabel } from '../components/lines.ts'
-import type { PickerRow } from '../view.ts'
-import { dayLabel } from './time.ts'
+import { tokenLabel } from '../../components/lines.ts'
+import type { PickerRow } from '../../view.ts'
+import { dayLabel } from '../settings/time.ts'
 
 /** **挑一家**那一屏的行（接入第一步）——取材就是答复里的那份名单。 */
 export function vendorRows(vendors: readonly VendorInfo[]): readonly PickerRow[] {

@@ -13,8 +13,8 @@ export type { Shell, ShellEffect, ShellKey, ShellOptions } from './shell.ts'
 
 // —— diff（工具输出的已知形态之一：改了什么 · U20）——
 
-export { diffRowsOf, looksLikeDiff, replaceDiff } from './diff.ts'
-export type { DiffKind, DiffRow } from './diff.ts'
+export { diffRowsOf, looksLikeDiff, replaceDiff } from './boards/conversation/diff.ts'
+export type { DiffKind, DiffRow } from './boards/conversation/diff.ts'
 
 // —— 启动字标（品牌视觉 · TUI Banner）——
 //
@@ -100,8 +100,8 @@ export {
   planStyleOf,
   planWindow,
   stepLines,
-} from './plan.ts'
-export type { PlanBlock, PlanRow, PlanStyle, PlanWindow } from './plan.ts'
+} from './boards/conversation/plan.ts'
+export type { PlanBlock, PlanRow, PlanStyle, PlanWindow } from './boards/conversation/plan.ts'
 export { PlanList } from './components/plan.ts'
 export type { PlanListProps } from './components/plan.ts'
 

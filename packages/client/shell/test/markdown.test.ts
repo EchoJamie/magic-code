@@ -6,8 +6,8 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { markdown } from '../src/markdown.ts'
-import type { MdLine } from '../src/markdown.ts'
+import { markdown } from '../src/boards/conversation/markdown.ts'
+import type { MdLine } from '../src/boards/conversation/markdown.ts'
 
 /** 一条显示行的纯文本（断言「看得见什么」）。 */
 const textOf = (line: MdLine): string => line.segments.map((piece) => piece.text).join('')

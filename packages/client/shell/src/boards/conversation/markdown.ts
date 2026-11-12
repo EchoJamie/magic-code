@@ -14,7 +14,7 @@
  * 也不必等定局才渲染。围栏那一处要有闭合才成块——见 `fenced` 的注。
  */
 
-import { PALETTE, displayWidth } from './components/lines.ts'
+import { PALETTE, displayWidth } from '../../components/lines.ts'
 
 /** 显示行里的一段（同段一个颜色）——与 `components/log.ts` 的 `Segment` 同形（那边只当它是色段）。 */
 export type MdSegment = {

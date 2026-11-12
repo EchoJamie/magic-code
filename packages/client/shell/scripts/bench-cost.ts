@@ -23,7 +23,7 @@
  */
 
 import type { LogRow } from '../src/view.ts'
-import { markdown } from '../src/markdown.ts'
+import { markdown } from '../src/boards/conversation/markdown.ts'
 import { rowLines } from '../src/components/log.ts'
 import { AppView } from '../src/components/app.ts'
 import { createView } from '../src/view.ts'

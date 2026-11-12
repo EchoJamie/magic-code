@@ -1,6 +1,6 @@
 import type { EventDataOf } from '@magic/contracts'
 import { sanitizeForDisplay } from '@magic/contracts'
-import type { PickerRow } from '../view.ts'
+import type { PickerRow } from '../../view.ts'
 
 /**
  * **`/mcp` 的行** —— 一台服务器一行（**与 `/skills` 同位置同开合**）。

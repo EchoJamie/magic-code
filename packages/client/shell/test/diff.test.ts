@@ -14,8 +14,8 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { diffRowsOf, looksLikeDiff, replaceDiff } from '../src/diff.ts'
-import type { DiffRow } from '../src/diff.ts'
+import { diffRowsOf, looksLikeDiff, replaceDiff } from '../src/boards/conversation/diff.ts'
+import type { DiffRow } from '../src/boards/conversation/diff.ts'
 
 /** 分档一串——「认不认得对」看它。 */
 const kinds = (rows: readonly DiffRow[]): readonly string[] => rows.map((row) => row.kind)

@@ -23,7 +23,7 @@ import { AppView, TuiApp, breathingOf, liveLayoutOf } from '../src/components/ap
 import { createShell } from '../src/shell.ts'
 import { PALETTE } from '../src/components/lines.ts'
 import { logLines, rowLines } from '../src/components/log.ts'
-import { planStyleOf } from '../src/plan.ts'
+import { planStyleOf } from '../src/boards/conversation/plan.ts'
 import { hasPlan, rebuild, createView, withPlan } from '../src/view.ts'
 import { createStage } from './screen.ts'
 import { blankRuns, duplicates, overflows } from './invariants.ts'

@@ -1,6 +1,6 @@
 import type { RunRow, RunState, SessionId, SessionSummary } from '@magic/contracts'
-import type { PickerRow } from '../view.ts'
-import { clockLabel, elapsedLabel } from './time.ts'
+import type { PickerRow } from '../../view.ts'
+import { clockLabel, elapsedLabel } from '../settings/time.ts'
 // ══ 选择器（`/resume` · `/model`）════════════════════════════════════
 
 export type SessionScope = 'all' | 'here'

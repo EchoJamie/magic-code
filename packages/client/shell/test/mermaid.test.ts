@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { markdown, markdownStream } from '../src/markdown.ts'
+import { markdown, markdownStream } from '../src/boards/conversation/markdown.ts'
 import { rowLines } from '../src/components/log.ts'
 import { PALETTE, displayWidth } from '../src/components/lines.ts'
 import type { LogLine } from '../src/components/log.ts'

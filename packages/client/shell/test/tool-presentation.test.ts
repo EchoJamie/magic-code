@@ -18,7 +18,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { logLines } from '../src/components/log.ts'
-import { screenLayout, screenOpened } from '../src/transcript.ts'
+import { screenLayout, screenOpened } from '../src/boards/conversation/transcript.ts'
 import { TEST_AT, event } from './events.ts'
 import { createStage, showScreen } from './screen.ts'
 import type { Frame, Stage } from './screen.ts'

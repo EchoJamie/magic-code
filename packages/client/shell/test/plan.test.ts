@@ -25,7 +25,7 @@ import {
   planScrolled,
   planWindow,
   stepLines,
-} from '../src/plan.ts'
+} from '../src/boards/conversation/plan.ts'
 
 // ══ 预算：给回复留够，其余给清单 ═════════════════════════════════════
 

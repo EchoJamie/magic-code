@@ -1,6 +1,6 @@
 import type { AgentId, AgentMessage, CollaborationMemberView, CollaborationView, Delegation, SessionId } from '@magic/contracts'
 import { sanitizeForDisplay } from '@magic/contracts'
-import type { PickerRow, ShellStatus, ShellView } from './view.ts'
+import type { PickerRow, ShellStatus, ShellView } from '../../view.ts'
 
 const clean = (text: string): string => sanitizeForDisplay(text).replace(/\s+/g, ' ').trim()
 export const collaborationRow = (value: string, label: string, meta = ''): PickerRow => ({
