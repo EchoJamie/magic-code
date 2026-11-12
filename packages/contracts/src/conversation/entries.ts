@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessagePayload } from './collaboration.ts'
-import type { BlobRef, RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
+import type { BlobRef, RecordId, SessionId, Timestamp, TurnId } from '../shared/ids.ts'
 
 /** 内容承载——正文内联，或大负载转 blob 引用。 */
 export type Content = { readonly text: string } | { readonly blob: BlobRef }
@@ -111,7 +111,7 @@ export type PlanSnapshot = {
 export type ToolResultPayload = {
   /** 工具结果实际提供的知识身份；不表示工作事项已经采用。 */
   readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[]
-  readonly background?: import('./ports.ts').BackgroundWait | import('./ports.ts').BackgroundFinish
+  readonly background?: import('../ports.ts').BackgroundWait | import('../ports.ts').BackgroundFinish
   readonly ok: boolean
   /** 内联或 blob 引用。 */
   readonly output: Content
@@ -378,7 +378,7 @@ export type AssistantPayload = {
 )
 
 /** 仅回传给同一连接、同一模型；details 原样存储，不参与正文显示。 */
-export type ReasoningState = import('./model.ts').ModelSource & {
+export type ReasoningState = import('../shared/model.ts').ModelSource & {
   /** 原协议 reasoning 项或 thinking 块；仅在相同来源回传。 */
   readonly items?: readonly Readonly<Record<string, unknown>>[]
   readonly provider: string
@@ -391,7 +391,7 @@ export type ReasoningState = import('./model.ts').ModelSource & {
  * `assistant` 条目自 U41 起有：供应商要求回传的那份思考，见 `AssistantPayload`）。
  */
 export type EntryPayload =
-  | { readonly preparation: string; readonly message: import('./ports.ts').ModelMessage }
+  | { readonly preparation: string; readonly message: import('../ports.ts').ModelMessage }
   | import('./memory.ts').SummaryPayload
   | AgentMessagePayload
   | ToolCallPayload

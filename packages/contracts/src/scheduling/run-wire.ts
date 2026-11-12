@@ -1,9 +1,9 @@
-import type { Diagnostics } from './diagnostics.ts'
-import type { McpCatalogRow } from './events.ts'
-import type { AgentModelConfig } from './collaboration.ts'
-import type { CollaborationReply, CollaborationRequest } from './collaboration-control.ts'
-import type { UserInput } from './control.ts'
-import type { NativeRequest, NativeResponse, ServiceIdentity } from './native.ts'
+import type { Diagnostics } from '../shared/diagnostics.ts'
+import type { McpCatalogRow } from '../conversation/events.ts'
+import type { AgentModelConfig } from '../conversation/collaboration.ts'
+import type { CollaborationReply, CollaborationRequest } from '../conversation/collaboration-control.ts'
+import type { UserInput } from '../conversation/control.ts'
+import type { NativeRequest, NativeResponse, ServiceIdentity } from '../conversation/native.ts'
 import type {
   Command,
   KernelEvent,
@@ -15,7 +15,7 @@ import type {
   SessionId,
   StopPhase,
   StopScope,
-} from './index.ts'
+} from '../index.ts'
 
 /**
  * **一台外部服务器的预检读数**（U48 第六段）——**探针的结论，不是工具连接的状态**。
@@ -194,7 +194,7 @@ export type ManagerToClient =
 /** 执行者 → 管理者。 */
 export type ExecutorToManager =
   | { readonly t: 'compact.started'; readonly requestId: string }
-  | { readonly t: 'compact.result'; readonly requestId: string; readonly state: import('./control.ts').CompactState }
+  | { readonly t: 'compact.result'; readonly requestId: string; readonly state: import('../conversation/control.ts').CompactState }
   | { readonly t: 'settings.synced'; readonly request: string; readonly note?: string; readonly error?: string; readonly mcp: readonly McpCatalogRow[] }
   | { readonly t: 'collaboration.request'; readonly requestId: string; readonly request: CollaborationRequest }
   | { readonly t: 'collaboration.changed' }

@@ -1,5 +1,5 @@
 import type { MemorySource } from './memory.ts'
-import type { ResolvedPath, Sandbox } from './ports.ts'
+import type { ResolvedPath, Sandbox } from '../ports.ts'
 
 /** 路径为本会话笔记目录内的规范相对路径；cursor 仅由宿主传递，不展示给模型。 */
 export type NoteReadQuery = {

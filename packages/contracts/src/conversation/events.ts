@@ -1,4 +1,4 @@
-import type { MagicConfig } from './config.ts'
+import type { MagicConfig } from '../shared/config.ts'
 import type { StoredInput } from './input.ts'
 /**
  * 共享语言 · 事件（kind 族与载荷 · 信封 · 不落库清单）——已冻结 v0。
@@ -13,13 +13,13 @@ import type { StoredInput } from './input.ts'
  * - `KernelEvent`——**消费面**：判别联合视图，按 `kind` 自动收窄。
  */
 
-import type { ModelChoice } from './model.ts'
+import type { ModelChoice } from '../shared/model.ts'
 
-import type { StatusLineConfig } from './config.ts'
+import type { StatusLineConfig } from '../shared/config.ts'
 import type { Content, Entry, PlanNote, SessionSummary, UsedSkill } from './entries.ts'
-import type { BlobRef, DelegationId, RecordId, SessionId, StepId, Timestamp, TurnId } from './ids.ts'
+import type { BlobRef, DelegationId, RecordId, SessionId, StepId, Timestamp, TurnId } from '../shared/ids.ts'
 // 模型面的两格（U41）——连线与缓存读数自 `model.ts`（两边都是 `import type`，编译期擦除）
-import type { ModelInfoRead, ReasoningSetting, VendorInfo } from './model.ts'
+import type { ModelInfoRead, ReasoningSetting, VendorInfo } from '../shared/model.ts'
 import type { CollaborationView } from './collaboration-control.ts'
 import type { AgentMessage } from './collaboration.ts'
 
@@ -200,12 +200,12 @@ export type OutputDelta = {
  */
 export type ModelCatalogRow = {
   /** 供应商与第三方资料的读取结果，不含用户覆盖；型号列表仍来自 cache。 */
-  readonly modelInfo?: Readonly<Record<string, import('./model.ts').ModelInfo>>
+  readonly modelInfo?: Readonly<Record<string, import('../shared/model.ts').ModelInfo>>
   readonly metadata?: { readonly fetchedAt?: number; readonly stale: boolean; readonly failure?: string }
-  readonly effectiveReasoning?: Readonly<Record<string, import('./model.ts').ReasoningSupport>>
-  readonly protocol?: import('./model.ts').ModelProtocol
-  readonly auth?: import('./model.ts').ProviderAuth
-  readonly modelOverrides?: Readonly<Record<string, import('./model.ts').ProviderModelOverride>>
+  readonly effectiveReasoning?: Readonly<Record<string, import('../shared/model.ts').ReasoningSupport>>
+  readonly protocol?: import('../shared/model.ts').ModelProtocol
+  readonly auth?: import('../shared/model.ts').ProviderAuth
+  readonly modelOverrides?: Readonly<Record<string, import('../shared/model.ts').ProviderModelOverride>>
   /** `providers` 的键（**连接 id**）——不是供应商细节，是「哪一格」。 */
   readonly provider: string
   /** 连接可读名（`providers.<id>.name`）——缺省＝用 id。 */
@@ -362,7 +362,7 @@ export type McpCatalogRow = {
  * 与 `ModelCatalogRow` 分开：选中**未必是表里的某一行**——`model.switch { model }`
  * 可以在同一格上换成本格默认之外的模型，那时选中仍成立，但表里那一行的 `model` 不变。
  */
-export type ModelSelectionRef = import('./model.ts').ModelSource & {
+export type ModelSelectionRef = import('../shared/model.ts').ModelSource & {
   readonly reasoning?: ReasoningSetting
   readonly choice: ModelChoice
   readonly provider: string
@@ -393,7 +393,7 @@ export type EventDataOf = {
   'message.assistant': { readonly entry: RecordId }
   // model——调用级
   'model.call.start': {
-    readonly protocol?: import('./model.ts').ModelProtocol
+    readonly protocol?: import('../shared/model.ts').ModelProtocol
     readonly endpoint?: string
     readonly choice?: ModelChoice
     readonly model: string
@@ -418,7 +418,7 @@ export type EventDataOf = {
     readonly inputBudget?: number
   }
   'model.call.end': EmptyPayload
-  'memory.model': { readonly purpose: 'organize' | 'compact' | 'knowledge'; readonly model?: string; readonly provider?: string; readonly durationMs: number; readonly usage?: import('./ports.ts').ModelUsage; readonly ok: boolean }
+  'memory.model': { readonly purpose: 'organize' | 'compact' | 'knowledge'; readonly model?: string; readonly provider?: string; readonly durationMs: number; readonly usage?: import('../ports.ts').ModelUsage; readonly ok: boolean }
   'model.usage': {
     /** 宿主在本次请求开始时绑定的委派；缺省表示当时没有已接受的委派。 */
     readonly delegationId?: DelegationId
@@ -618,7 +618,7 @@ export type EventDataOf = {
   // 说不出「何时改的、为什么没改成」；而用户命令不成立**不是内核异常**，
   // 混进 `error` 会污染观测（那一条的语义专留给「内核自身异常」）。
   'model.switched': {
-    readonly protocol?: import('./model.ts').ModelProtocol
+    readonly protocol?: import('../shared/model.ts').ModelProtocol
     readonly endpoint?: string
     readonly choice?: ModelChoice
     readonly reasoning?: ReasoningSetting
@@ -992,7 +992,7 @@ export type EventDataOf = {
     /** 状态行那一行怎么摆（`MagicConfig.statusLine`）——缺省＝还没配过（默认那条）。 */
     readonly statusLine?: StatusLineConfig
     /** 本轮耗时显示口径；缺省为完整经过时间。 */
-    readonly turnDuration?: import('./config.ts').TurnDurationMode
+    readonly turnDuration?: import('../shared/config.ts').TurnDurationMode
     /** 减少动效（`MagicConfig.motion.reduced`）——缺省＝没开。 */
     readonly reducedMotion?: boolean
     /** 一句话说明——只在有事要说时给（没写成的缘由 / 写成了哪几格）。 */
@@ -1002,7 +1002,7 @@ export type EventDataOf = {
     /** 当前网页服务连接（`web.provider`）；缺省＝未配置。 */
     readonly provider?: string
     /** Fetch 的提炼模型映射（`models.cantrip`）；缺省＝未配置（只影响 Fetch）。 */
-    readonly cantrip?: import('./model.ts').ModelRef
+    readonly cantrip?: import('../shared/model.ts').ModelRef
     /** 这次保存写成了没有；只给 `web.configure` 的答复。 */
     readonly saved?: boolean
     /** 一句话说明——写没写成、为什么没写成，或“浏览不等于已连通”。 */

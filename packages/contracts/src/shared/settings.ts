@@ -1,6 +1,6 @@
 import type { DiagnosticsChange } from './diagnostics.ts'
 import type { AgentRoleConfig, StatusLineConfig } from './config.ts'
-import type { ProviderSaveRequest, ModelConfigureRequest } from './control.ts'
+import type { ProviderSaveRequest, ModelConfigureRequest } from '../conversation/control.ts'
 import type { McpServerConfig } from './mcp.ts'
 import type { ProviderModelOverride } from './model.ts'
 

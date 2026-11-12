@@ -1,5 +1,5 @@
-import type { InputRecords, InputManage } from './input.ts'
-import type { CollaborationRecords } from './collaboration.ts'
+import type { InputRecords, InputManage } from './conversation/input.ts'
+import type { CollaborationRecords } from './conversation/collaboration.ts'
 /**
  * 跨域端口（九签名 ＋ 端口内类型）——已冻结 v0。
  * **阶段 3 加第十条**：`ProjectRules`（项目规约的来源面，U32）——源头是只读文件树，
@@ -35,7 +35,7 @@ import type {
   ProviderSaveRequest,
   SessionCommand,
   UserInput,
-} from './control.ts'
+} from './conversation/control.ts'
 import type {
   Content,
   Entry,
@@ -47,13 +47,13 @@ import type {
   ReasoningState,
   SessionSummary,
   UsedSkill,
-} from './entries.ts'
+} from './conversation/entries.ts'
 
 // MCP 那一支的身份源（`mcp.ts` 与本节互为类型引用——两边都是 `import type`，编译期擦除）
-import type { ExternalToolRef } from './mcp.ts'
-import type { Decider, Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './events.ts'
-import type { BlobRef, RecordId, SessionId, StepId, Timestamp, TurnId } from './ids.ts'
-import type { ReasoningSetting } from './model.ts'
+import type { ExternalToolRef } from './shared/mcp.ts'
+import type { Decider, Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './conversation/events.ts'
+import type { BlobRef, RecordId, SessionId, StepId, Timestamp, TurnId } from './shared/ids.ts'
+import type { ReasoningSetting } from './shared/model.ts'
 
 // ══ 端口 ══════════════════════════════════════════════════════════════
 
@@ -140,7 +140,7 @@ export interface ToolRuntime {
   definitions(): readonly ToolSpec[]
   invoke(
     call: ToolCall,
-    opts: { signal?: AbortSignal; onOutput?: (d: OutputDelta) => void; entry?: import('./collaboration.ts').EntryReference },
+    opts: { signal?: AbortSignal; onOutput?: (d: OutputDelta) => void; entry?: import('./conversation/collaboration.ts').EntryReference },
   ): Promise<ToolResult>
 }
 
@@ -237,7 +237,7 @@ export type StepIdentity = {
 
 /** 对话域 → 记录域。 */
 export interface RecordsService {
-  readonly coverage: import('./notes.ts').CoverageRecords
+  readonly coverage: import('./conversation/notes.ts').CoverageRecords
   readonly inputs: InputRecords
   readonly collaboration: CollaborationRecords
   /**
@@ -1176,7 +1176,7 @@ export type HistoryQuery = {
  * ⚠️ **不许把节选伪报成全文**（工单明写）：`text` 只到上限为止，超出部分由上面那两位说话。
  */
 export type HistoryEntry = {
-  readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[]
+  readonly knowledge?: readonly import('./conversation/knowledge.ts').KnowledgeReference[]
   readonly id: RecordId
   readonly kind: EntryKind
   readonly text: string
@@ -1454,7 +1454,7 @@ export type ToolCall = {
  */
 export type ToolResult = {
   /** 工具实际返回材料的知识关系；不由模型填写。 */
-  readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[]
+  readonly knowledge?: readonly import('./conversation/knowledge.ts').KnowledgeReference[]
   readonly ok: boolean
   /** 面向模型的文本（按上限截断）。 */
   readonly output: string
@@ -1648,7 +1648,7 @@ export type ExecOptions = {
  * `truncated` 即「到上限为止」，工具侧据它措辞（`edit` 放大到 1 MiB 再读，仍超限才拒）。
  */
 export type ReadResult = {
-  readonly note?: Omit<import('./notes.ts').NotePage, 'cursor' | 'links'>
+  readonly note?: Omit<import('./conversation/notes.ts').NotePage, 'cursor' | 'links'>
   readonly content: string
   readonly truncated?: boolean
 }
@@ -1787,7 +1787,7 @@ export type CommandRoutes = {
    */
   onProviderList(): void
   /** **保存一条连接**（接入 / 改名 / 更新认证 / 改地址）→ 装配（写盘归它）。 */
-  onModelOverride(request: Extract<import('./control.ts').Command, { type: 'model.override' }>): void | Promise<void>
+  onModelOverride(request: Extract<import('./conversation/control.ts').Command, { type: 'model.override' }>): void | Promise<void>
   onProviderSave(request: ProviderSaveRequest): void
   /** **移除一条连接** → 装配（写盘归它；有引用时的处置见 `ProviderRemove`）。 */
   onProviderRemove(provider: string): void

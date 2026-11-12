@@ -1,8 +1,8 @@
 /** 同一工作的身份、持久通信与准入事实。仅宿主持有写端口；actor 由执行连接注入。 */
-import type { AgentId, CollaborationId, DelegationId, MessageId, OperationId, RecordId, SessionId, Timestamp, WaitId } from './ids.ts'
-import type { ModelChoice, ReasoningSetting } from './model.ts'
+import type { AgentId, CollaborationId, DelegationId, MessageId, OperationId, RecordId, SessionId, Timestamp, WaitId } from '../shared/ids.ts'
+import type { ModelChoice, ReasoningSetting } from '../shared/model.ts'
 
-export type AgentModelConfig = import('./model.ts').ModelSource & { readonly choice: ModelChoice; readonly provider: string; readonly model: string; readonly reasoning?: ReasoningSetting }
+export type AgentModelConfig = import('../shared/model.ts').ModelSource & { readonly choice: ModelChoice; readonly provider: string; readonly model: string; readonly reasoning?: ReasoningSetting }
 export type EntryReference = { readonly sessionId: SessionId; readonly entryId: RecordId }
 export type AgentReachability = 'active' | 'suspended' | 'historical'
 export type AgentIdentity = {

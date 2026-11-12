@@ -1,10 +1,10 @@
-import type { AgentId, DelegationId, MessageId, SessionId } from './ids.ts'
+import type { AgentId, DelegationId, MessageId, SessionId } from '../shared/ids.ts'
 import type { AgentIdentity, AgentMessage, Collaboration, CollaborationWait, Delegation, MessagePart } from './collaboration.ts'
 import type { ModelSwitchRequest, UserInput } from './control.ts'
 import type { Entry } from './entries.ts'
 import type { RunRow } from './runs.ts'
-import type { ModelUsage } from './ports.ts'
-import type { ReasoningSetting } from './model.ts'
+import type { ModelUsage } from '../ports.ts'
+import type { ReasoningSetting } from '../shared/model.ts'
 
 /** 模型入口不接受 sender、工作区、授权来源或当前委派覆盖值。它们由宿主绑定。 */
 export type CollaborationRequest = CollaborationOperation & {

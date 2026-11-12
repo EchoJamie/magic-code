@@ -1,4 +1,4 @@
-import type { BackgroundRunning, BackgroundFinish, BackgroundStop } from './ports.ts'
+import type { BackgroundRunning, BackgroundFinish, BackgroundStop } from '../ports.ts'
 
 export type BackgroundTarget = { readonly execution: string; readonly session: string; readonly id: string }
 export type BackgroundCommand = BackgroundRunning & BackgroundTarget & { readonly member?: string; readonly agent?: string }

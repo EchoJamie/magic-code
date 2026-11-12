@@ -5,8 +5,8 @@
  * 引擎只决定「哪个执行者、在哪、能碰到什么」，然后退出路径；不解释会话消息。
  * 0.2.0 只有单引擎与本地执行者；远程宿主、多引擎目录是 0.3.0 预规划。
  */
-import type { ModelChoice } from '../model.ts'
-import type { SessionId, Timestamp, TurnId } from '../ids.ts'
+import type { ModelChoice } from '../shared/model.ts'
+import type { SessionId, Timestamp, TurnId } from '../shared/ids.ts'
 
 /** 执行者标识——由引擎分配，界面只在绑定里看到它。 */
 export type ExecutorId = string

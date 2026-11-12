@@ -10,10 +10,10 @@ import type { InputManage, InputPurpose } from './input.ts'
  * `events.ts` 的判别联合视图 `KernelEvent`。
  */
 
-import type { StatusLineConfig } from './config.ts'
+import type { StatusLineConfig } from '../shared/config.ts'
 import type { InputRefPlace } from './entries.ts'
-import type { BlobRef, RecordId, SessionId } from './ids.ts'
-import type { ModelChoice, ReasoningSetting } from './model.ts'
+import type { BlobRef, RecordId, SessionId } from '../shared/ids.ts'
+import type { ModelChoice, ReasoningSetting } from '../shared/model.ts'
 import type { CollaborationCommand } from './collaboration-control.ts'
 
 /**
@@ -433,8 +433,8 @@ export type ProviderSave = { readonly type: 'provider.save' } & ProviderSaveRequ
 /** `provider.save` 的负载——命令负载与路由入参同一形态。 */
 export type ProviderSaveRequest = {
   readonly expectedStamp?: string | null
-  readonly protocol?: import('./model.ts').ModelProtocol | null
-  readonly auth?: import('./model.ts').ProviderAuth
+  readonly protocol?: import('../shared/model.ts').ModelProtocol | null
+  readonly auth?: import('../shared/model.ts').ProviderAuth
   readonly provider: string
   readonly vendor?: string
   readonly name?: string
@@ -479,7 +479,7 @@ export type PrefsSet = { readonly type: 'prefs.set' } & PrefsSetRequest
  */
 export type PrefsSetRequest = {
   readonly statusLine?: StatusLineConfig
-  readonly turnDuration?: import('./config.ts').TurnDurationMode
+  readonly turnDuration?: import('../shared/config.ts').TurnDurationMode
   readonly reducedMotion?: boolean
 }
 
@@ -501,7 +501,7 @@ export type Command = import('./background.ts').BackgroundCommandRequest
   | ModelConfigure
   | WebList
   | WebConfigure
-  | { readonly type: 'model.override'; readonly expectedStamp?: string | null; readonly provider: string; readonly model: string; readonly override: import('./model.ts').ProviderModelOverride | null }
+  | { readonly type: 'model.override'; readonly expectedStamp?: string | null; readonly provider: string; readonly model: string; readonly override: import('../shared/model.ts').ProviderModelOverride | null }
   | ProviderList
   | ProviderSave
   | ProviderRemove

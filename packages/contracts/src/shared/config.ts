@@ -12,7 +12,7 @@ import type { LogLevel } from './diagnostics.ts'
 
 import type { McpConfig } from './mcp.ts'
 import type { ModelRef, ProviderModelOverride, ModelProtocol, ProviderAuth } from './model.ts'
-import type { ModelSwitchRequest } from './control.ts'
+import type { ModelSwitchRequest } from '../conversation/control.ts'
 
 /**
  * **Magic 基础目录的末段名**（U42）——统一基础路径 ＝ `<MAGIC_HOME 或 $HOME>` ＋ 它。

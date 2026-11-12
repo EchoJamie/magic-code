@@ -17,7 +17,7 @@
  * 凭据、完整请求头、对话正文一律不在其中。
  */
 
-import type { ModelTraits } from './ports.ts'
+import type { ModelTraits } from '../ports.ts'
 
 // —— 引用 ——
 

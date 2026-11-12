@@ -1,6 +1,6 @@
 import type { UserInput } from './control.ts'
 import type { NewEntry } from './entries.ts'
-import type { RecordId, TurnId } from './ids.ts'
+import type { RecordId, TurnId } from '../shared/ids.ts'
 export type InputPurpose = 'current' | 'next'
 export type StoredInput = {
   readonly ref: string
@@ -26,7 +26,7 @@ export interface InputRecords {
   fail(ref: string, reason: string): void
   included(entries: readonly RecordId[]): readonly StoredInput[]
 }
-export type InputManage = { readonly member?: import('./ids.ts').AgentId } & (
+export type InputManage = { readonly member?: import('../shared/ids.ts').AgentId } & (
   | { readonly type: 'input.manage'; readonly action: 'list' }
   | { readonly type: 'input.manage'; readonly action: 'edit'; readonly ref: string; readonly revision: number; readonly input: UserInput }
   | { readonly type: 'input.manage'; readonly action: 'withdraw' | 'continue'; readonly ref: string; readonly revision: number })

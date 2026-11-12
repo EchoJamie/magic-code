@@ -1,8 +1,8 @@
 import { expect, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { settingsRequest, settingsResult } from '../src/settings-codec.ts'
-import { decodeHostDiscovery, decodeNativeMessage } from '../src/native-codec.ts'
+import { settingsRequest, settingsResult } from '../src/shared/settings-codec.ts'
+import { decodeHostDiscovery, decodeNativeMessage } from '../src/conversation/native-codec.ts'
 
 const directory = new URL('../../../tests/fixtures/native-wire/', import.meta.url).pathname
 for (const file of readdirSync(directory).filter((name) => name.endsWith('.json'))) {

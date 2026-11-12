@@ -1,4 +1,4 @@
-import type { RecordId, SessionId } from './ids.ts'
+import type { RecordId, SessionId } from '../shared/ids.ts'
 import type { KnowledgeReference } from './knowledge.ts'
 
 /** 原文身份；part 省略为完整材料，-1 为真实 user 原始正文，非负为引用序号。offset 定位该段，不代表文件当前内容。 */

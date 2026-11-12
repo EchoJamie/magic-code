@@ -19,7 +19,7 @@
  * 故这份读数里一格都没有它们。列表上常见的那句「不把 PID 常驻」在这里是**结构上的**。
  */
 
-import type { RecordId, SessionId } from './ids.ts'
+import type { RecordId, SessionId } from '../shared/ids.ts'
 import type { TurnEndReason } from './events.ts'
 
 /**

@@ -19,7 +19,7 @@
  * 不占它们的名字。
  */
 
-import type { JsonSchema } from './ports.ts'
+import type { JsonSchema } from '../ports.ts'
 
 // ══ 命名与身份 ═══════════════════════════════════════════════════════
 
