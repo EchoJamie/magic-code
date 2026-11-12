@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { readRuns } from '@magic/host'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -586,8 +587,8 @@ describe('收缩与异常', () => {
       client?.send({ type: 'input.submit', text: '受控待答' })
 
       await waitFor('真实后台工具已登记', () => client?.runs().some(row => row.background === 1) === true)
-      const stored = JSON.parse(readFileSync(paths.runs, 'utf8')) as { runs: { owned?: { pgid: number }[] }[] }
-      const toolPid = stored.runs.flatMap(run => run.owned ?? [])[0]!.pgid
+      const stored = readRuns(paths)
+      const toolPid = stored.flatMap(run => run.owned ?? [])[0]!.pgid
       expect(alive(toolPid)).toBe(true)
       process.kill(managerPid, 'SIGKILL')
       await managerChild.exited

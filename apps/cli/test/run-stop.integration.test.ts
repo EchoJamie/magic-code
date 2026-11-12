@@ -18,13 +18,14 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { KernelEvent, OwnedProcess, RunNotice, RunRow, StopPhase, StopScope } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
 import { groupAlive, startTimeOf } from '@magic/resources'
 import { unreadSummaryOf } from '@magic/shell'
+import { readRuns } from '@magic/host'
 import { connectManager } from '@magic/host'
 import type { ManagerClient } from '@magic/host'
 import { startManager } from '@magic/host'
@@ -451,7 +452,7 @@ describe('崩溃与收回自有进程组', () => {
       // 那一下会把「账还没到、执行者已经没了」照进来（实测在整门上栽过一次）
       await waitFor('账到了管理者手上', () => {
         try {
-          return readFileSync(runPathsOf(g.magic, tmpdir()).runs, 'utf8').includes(String(ours.pid))
+          return readRuns(runPathsOf(g.magic, tmpdir())).some(run => run.owned?.some(group => group.pgid === ours.pid) === true)
         } catch {
           return false
         }
@@ -498,7 +499,7 @@ describe('崩溃与收回自有进程组', () => {
       ])
       await waitFor('账到了管理者手上', () => {
         try {
-          return readFileSync(runPathsOf(g.magic, tmpdir()).runs, 'utf8').includes(String(neighbour.pid))
+          return readRuns(runPathsOf(g.magic, tmpdir())).some(run => run.owned?.some(group => group.pgid === neighbour.pid) === true)
         } catch {
           return false
         }
@@ -800,37 +801,20 @@ describe('重启核对里的句柄身份', () => {
     })
 
     try {
-      writeFileSync(
-        paths.runs,
-        `${JSON.stringify({
-          v: 1,
-          at: 1,
-          runs: [
-            {
-              session: 's-alive',
-              gen: 7,
-              pid: sleeper.pid,
-              procStartedAt: (await startTimeOf(sleeper.pid)),
-              startedAt: 1_000,
-              workspace: [g.ws],
-              state: 'running',
-              since: 1_100,
-            },
-            {
-              session: 's-reused',
-              gen: 6,
-              pid: sleeper.pid,
-              // **那一刻与此刻差着一小时**：号还是那个号，人已经不是那个人了
-              procStartedAt: ((await startTimeOf(sleeper.pid)) as number) - 3_600_000,
-              startedAt: 900,
-              workspace: [g.ws],
-              state: 'running',
-              since: 950,
-            },
-          ],
-        })}\n`,
-        { mode: 0o600 },
-      )
+      const seeded = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
+      try {
+        seeded.runs.upsert({
+          id: 's-alive-7', session: 's-alive', generation: 7, pid: sleeper.pid,
+          procStartedAt: await startTimeOf(sleeper.pid), startedAt: 1_000,
+          workspace: [g.ws], state: 'running', updatedAt: 1_100,
+        })
+        seeded.runs.upsert({
+          id: 's-reused-6', session: 's-reused', generation: 6, pid: sleeper.pid,
+          // **那一刻与此刻差着一小时**：号还是那个号，人已经不是那个人了
+          procStartedAt: ((await startTimeOf(sleeper.pid)) as number) - 3_600_000,
+          startedAt: 900, workspace: [g.ws], state: 'running', updatedAt: 950,
+        })
+      } finally { seeded.close() }
 
       const b = await bench(g)
       const client = await open(g, b.manager)

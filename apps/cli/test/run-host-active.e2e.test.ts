@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
-import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { Database } from 'bun:sqlite'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { alive } from '@magic/host'
 import { connectManager, type ManagerClient } from '@magic/host'
 import { startResidentHost } from './resident-host-fixture.ts'
@@ -26,11 +27,14 @@ for (const how of ['shutdown', 'signal'] as const) {
       expect(client).toBeDefined()
       client!.send({ type: 'input.submit', text: '受控等待，不结束这一轮' })
       await waitFor(() => client!.runs().some((row) => row.state === 'running'))
-      const runs = join(dirname(host.discovery.socket), 'runs.json')
       await waitFor(() => {
-        if (!existsSync(runs)) return false
-        const registry = JSON.parse(readFileSync(runs, 'utf8')) as { runs: { gen: number; state: string }[] }
-        return registry.runs.some(row => row.state === 'running' && row.gen > 0)
+        try {
+          const db = new Database(join(sandbox.home, '.magic', 'records.db'), { readonly: true })
+          try {
+            return db.query<{ generation: number; state: string }, []>('SELECT generation, state FROM runs').all()
+              .some(row => row.state === 'running' && row.generation > 0)
+          } finally { db.close() }
+        } catch { return false }
       })
       expect(host.executorStarts()).toBe(1)
       expect(fixture.requests().filter((one) => one.path.endsWith('/chat/completions'))).toHaveLength(1)

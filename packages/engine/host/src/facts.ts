@@ -468,6 +468,8 @@ export type StoredRun = {
   readonly executionId?: string
   /** Agent 运行建立的时刻；工具进程身份保存在 owned。 */
   readonly startedAt: number
+  readonly pid?: number
+  readonly procStartedAt?: number
   readonly workspace: readonly string[]
   readonly state: RunState
   readonly since: number

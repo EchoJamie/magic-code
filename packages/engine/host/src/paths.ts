@@ -50,6 +50,10 @@ export type RunPaths = {
   readonly record: string
   /** **运行登记**那一份（见 `RUNS_NAME`）。 */
   readonly runs: string
+  /** 数据目录（`<magic-home>/.magic`）——运行状态库在它下面。 */
+  readonly dataDir: string
+  /** 记录/运行库文件。 */
+  readonly database: string
 }
 
 /**
@@ -102,10 +106,10 @@ export function fingerprintOf(normalizedDataDir: string): string {
 export function runPathsOf(magic: MagicHome, tmpdir: string): RunPaths {
   const base = normalizeDataDir(magic.base)
   const key = fingerprintOf(base)
-  const preferred = pathsIn(join(base, RUN_DIR_NAME, key))
+  const preferred = pathsIn(join(base, RUN_DIR_NAME, key), base)
   if (fits(preferred.socket)) return preferred
 
-  const fallback = pathsIn(join(tmpdir, `magic-run-${key}`))
+  const fallback = pathsIn(join(tmpdir, `magic-run-${key}`), base)
   if (fits(fallback.socket)) return fallback
 
   throw new SocketPathTooLong(fallback.socket, MAX_SOCKET_PATH)
@@ -130,12 +134,14 @@ export function backgroundOutputDirOf(runs: RunPaths): string {
   return join(runs.dir, OUTPUT_DIR_NAME)
 }
 
-function pathsIn(dir: string): RunPaths {
+function pathsIn(dir: string, dataDir: string): RunPaths {
   return {
     dir,
     socket: join(dir, SOCKET_NAME),
     record: join(dir, RECORD_NAME),
     runs: join(dir, RUNS_NAME),
+    dataDir,
+    database: join(dataDir, 'records.db'),
   }
 }
 

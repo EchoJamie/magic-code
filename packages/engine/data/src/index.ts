@@ -38,3 +38,4 @@ export type { ToolCallEntry, ToolResultEntry } from './entries.ts'
 // 恢复查询面（阶段 2 · U15）——**在途识别**（技术方案 · 领域划分：恢复的查询面由本域提供）
 export { scanForRecovery } from './recovery.ts'
 export type { InFlightCall, RecoveryScan, ScanInput } from './recovery.ts'
+export { readRunsAt, replaceRunsAt } from './run-snapshot.ts'

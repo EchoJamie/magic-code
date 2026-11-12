@@ -13,6 +13,7 @@ export type RunState = 'starting' | 'running' | 'waiting' | 'stopping' | 'stoppe
 export type RunRecord = {
   readonly id: RunId
   readonly pid?: number
+  readonly procStartedAt?: number
   readonly socket?: string
   readonly session?: SessionId
   readonly turn?: TurnId
@@ -25,6 +26,10 @@ export type RunRecord = {
   readonly exitCode?: number
   readonly background?: boolean
   readonly generation?: number
+  readonly workspace?: readonly string[]
+  readonly kind?: string
+  readonly lastTurn?: string
+  readonly owned?: unknown
 }
 
 export type RunJournalEntry = {
@@ -38,6 +43,8 @@ export type RunJournalEntry = {
 export type RunRecords = {
   /** 插入或更新；同一 `id` 以最后一次为准。 */
   upsert(record: RunRecord): void
+  /** 以这一份为全量快照替换（运行登记文件的原语义）。 */
+  replaceAll(records: readonly RunRecord[]): void
   /** 收束一次执行（幂等；已结束的不再改）。 */
   finish(id: RunId, input: { state: RunState; at: Timestamp; stopReason?: string; exitCode?: number }): void
   get(id: RunId): RunRecord | undefined
@@ -50,6 +57,7 @@ export type RunRecords = {
 type RunRow = {
   id: string
   pid: number | null
+  proc_started_at: number | null
   socket: string | null
   session: string | null
   turn_id: number | null
@@ -62,12 +70,17 @@ type RunRow = {
   exit_code: number | null
   background: number
   generation: number
+  workspace: string | null
+  kind: string | null
+  last_turn: string | null
+  owned: string | null
 }
 
 function ofRow(row: RunRow): RunRecord {
   return {
     id: row.id,
     ...(row.pid === null ? {} : { pid: row.pid }),
+    ...(row.proc_started_at === null ? {} : { procStartedAt: row.proc_started_at }),
     ...(row.socket === null ? {} : { socket: row.socket }),
     ...(row.session === null ? {} : { session: row.session }),
     ...(row.turn_id === null ? {} : { turn: row.turn_id }),
@@ -80,20 +93,26 @@ function ofRow(row: RunRow): RunRecord {
     ...(row.exit_code === null ? {} : { exitCode: row.exit_code }),
     ...(row.background === 1 ? { background: true } : {}),
     ...(row.generation === 0 ? {} : { generation: row.generation }),
+    ...(row.workspace === null ? {} : { workspace: JSON.parse(row.workspace) as readonly string[] }),
+    ...(row.kind === null ? {} : { kind: row.kind }),
+    ...(row.last_turn === null ? {} : { lastTurn: row.last_turn }),
+    ...(row.owned === null ? {} : { owned: JSON.parse(row.owned) as unknown }),
   }
 }
 
 export function createRunRecords(db: Database): RunRecords {
   const upsert = db.query<never, Record<string, string | number | null>>(
     `INSERT INTO ${RUNS_TABLE}
-       (id, pid, socket, session, turn_id, step_id, state, started_at, updated_at, ended_at, stop_reason, exit_code, background, generation)
-     VALUES ($id, $pid, $socket, $session, $turn, $step, $state, $startedAt, $updatedAt, $endedAt, $stopReason, $exitCode, $background, $generation)
+       (id, pid, proc_started_at, socket, session, turn_id, step_id, state, started_at, updated_at, ended_at, stop_reason, exit_code, background, generation, workspace, kind, last_turn, owned)
+     VALUES ($id, $pid, $procStartedAt, $socket, $session, $turn, $step, $state, $startedAt, $updatedAt, $endedAt, $stopReason, $exitCode, $background, $generation, $workspace, $kind, $lastTurn, $owned)
      ON CONFLICT(id) DO UPDATE SET
-       pid=excluded.pid, socket=excluded.socket, session=excluded.session, turn_id=excluded.turn_id,
+       pid=excluded.pid, proc_started_at=excluded.proc_started_at, socket=excluded.socket, session=excluded.session, turn_id=excluded.turn_id,
        step_id=excluded.step_id, state=excluded.state, updated_at=excluded.updated_at,
        ended_at=excluded.ended_at, stop_reason=excluded.stop_reason, exit_code=excluded.exit_code,
-       background=excluded.background, generation=excluded.generation`,
+       background=excluded.background, generation=excluded.generation,
+       workspace=excluded.workspace, kind=excluded.kind, last_turn=excluded.last_turn, owned=excluded.owned`,
   )
+  const clear = db.query('DELETE FROM ' + RUNS_TABLE)
   const finish = db.query<never, [string, number, number, string | null, number | null, string]>(
     `UPDATE ${RUNS_TABLE} SET state=?, ended_at=?, updated_at=?, stop_reason=?, exit_code=?
       WHERE id=? AND ended_at IS NULL`,
@@ -109,11 +128,11 @@ export function createRunRecords(db: Database): RunRecords {
     `SELECT run, seq, at, kind, data FROM ${RUN_JOURNAL_TABLE} WHERE run=? ORDER BY seq`,
   )
 
-  return {
-    upsert(record) {
+  const upsertRecord = (record: RunRecord): void => {
       upsert.run({
         $id: record.id,
         $pid: record.pid ?? null,
+        $procStartedAt: record.procStartedAt ?? null,
         $socket: record.socket ?? null,
         $session: record.session ?? null,
         $turn: record.turn ?? null,
@@ -126,8 +145,18 @@ export function createRunRecords(db: Database): RunRecords {
         $exitCode: record.exitCode ?? null,
         $background: record.background === true ? 1 : 0,
         $generation: record.generation ?? 0,
+        $workspace: record.workspace === undefined ? null : JSON.stringify(record.workspace),
+        $kind: record.kind ?? null,
+        $lastTurn: record.lastTurn ?? null,
+        $owned: record.owned === undefined ? null : JSON.stringify(record.owned),
       })
+  }
+
+  return {
+    replaceAll(records) {
+      db.transaction(() => { clear.run(); for (const record of records) upsertRecord(record) }).immediate()
     },
+    upsert(record) { upsertRecord(record) },
     finish(id, input) {
       finish.run(input.state, input.at, input.at, input.stopReason ?? null, input.exitCode ?? null, id)
     },

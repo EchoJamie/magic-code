@@ -1,6 +1,7 @@
 /** 停止回环专用：生产 manager/launcher/executor，进程内原始消息连接的顺序屏障。 */
+import { readRuns } from '@magic/host'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { Command, KernelEvent, OwnedProcess } from '@magic/contracts'
@@ -8,7 +9,6 @@ import { createRecordsStore } from '@magic/data'
 import { createShell } from '@magic/shell'
 import { loadConfig } from '@magic/state'
 import { connectManager } from '@magic/host'
-import type { StoredRuns } from '@magic/host'
 import { createAgentLauncher } from '@magic/host'
 import { startManager } from '@magic/host'
 import { runPathsOf } from '@magic/host'
@@ -119,7 +119,7 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
   const members = () => { const work = collaboration(); return work === undefined ? [] : store.collaboration.listMembers(work.collaborationId) }
   const delegations = () => { const work = collaboration(); return work === undefined ? [] : store.collaboration.listDelegations(work.collaborationId) }
   // kind/why 只在真实 ended 后落盘；摘要比对原启动 token，不把认证凭据输出到证据。
-  const storedRuns = () => (JSON.parse(readFileSync(paths.runs, 'utf8')) as StoredRuns).runs.map(({ executionId, ...run }) => ({
+  const storedRuns = () => readRuns(paths).map(({ executionId, ...run }) => ({
     ...run, tokenHash: executionId === undefined ? undefined : tokenHash(executionId),
   }))
   const wait = async (what: string, condition: () => boolean | Promise<boolean>, timeout = 10000) => {

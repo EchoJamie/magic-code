@@ -5,9 +5,9 @@
  * 本文件是现有 manager 仍在用的文件形。接线迁移时只替换本文件的读写实现，
  * manager 的调用面不变。
  */
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import type { OwnedProcess } from '@magic/contracts'
-import { RUNS_VERSION, type StoredRun, type StoredRuns } from './facts.ts'
+import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import type { StoredRun } from './facts.ts'
+import { readRunsAt, replaceRunsAt, type RunRecord } from '@magic/data'
 import type { RunPaths } from './paths.ts'
 
 export type ManagerRecord = {
@@ -60,76 +60,54 @@ export function clearRecord(paths: RunPaths): void {
   }
 }
 
-/** 持久工具归属；存在但格式无效时拒绝启动，不能把未读懂的责任当作不存在。 */
+/** 持久运行登记——读 `runs` 表；库还不存在＝没有登记（不是错误）。 */
 export function readRuns(paths: RunPaths): readonly StoredRun[] {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(readFileSync(paths.runs, 'utf8'))
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-    throw new Error(`运行归属记录不可读：${paths.runs}`, { cause: error })
-  }
-
-  if (typeof parsed !== 'object' || parsed === null) throw new Error('运行归属记录形状无效')
-  const runs = (parsed as Partial<StoredRuns>).runs
-  if (!Array.isArray(runs)) throw new Error('运行归属记录缺少 runs')
-
-  const kept: StoredRun[] = []
-  for (const one of runs) {
-    if (typeof one !== 'object' || one === null) throw new Error('运行归属条目无效')
-    const run = one as Partial<StoredRun>
-    if (run.session !== null && (typeof run.session !== 'string' || run.session === '')) throw new Error('运行归属缺少会话身份')
-    if (typeof run.gen !== 'number' || typeof run.startedAt !== 'number') throw new Error('运行归属代次无效')
-    if (!Array.isArray(run.workspace) || !run.workspace.every(root => typeof root === 'string')) throw new Error('运行归属工作区无效')
-
-    const owned = ownedOf(run.owned)
-    kept.push({
-      session: run.session,
-      gen: run.gen,
-      ...(typeof run.executionId === 'string' ? { executionId: run.executionId } : {}),
-      startedAt: run.startedAt,
-      workspace: run.workspace,
-      state: run.state ?? 'idle',
-      since: typeof run.since === 'number' ? run.since : run.startedAt,
-      ...(run.lastTurn === undefined ? {} : { lastTurn: run.lastTurn }),
-      ...(typeof run.why === 'string' ? { why: run.why } : {}),
-      ...(run.kind === undefined ? {} : { kind: run.kind }),
-      ...(owned === undefined ? {} : { owned }),
-    })
-  }
-  return kept
+  return readRunsAt(paths.dataDir).map(toStored)
 }
 
-function ownedOf(raw: unknown): readonly OwnedProcess[] | undefined {
-  if (raw === undefined) return undefined
-  if (!Array.isArray(raw)) throw new Error('工具归属账无效')
-
-  const kept: OwnedProcess[] = []
-  for (const one of raw) {
-    if (typeof one !== 'object' || one === null) throw new Error('工具归属条目无效')
-    const group = one as Partial<OwnedProcess>
-    if (typeof group.pgid !== 'number' || !Number.isInteger(group.pgid) || group.pgid <= 0) throw new Error('工具归属进程组无效')
-    if (typeof group.what !== 'string') throw new Error('工具归属名称无效')
-    if (group.kind !== 'exec' && group.kind !== 'background' && group.kind !== 'mcp') throw new Error('工具归属种类无效')
-    kept.push({
-      pgid: group.pgid,
-      startedAt: typeof group.startedAt === 'number' ? group.startedAt : undefined,
-      kind: group.kind,
-      what: group.what,
-    })
+function toStored(run: RunRecord): StoredRun {
+  const state = run.state === 'failed' || run.state === 'starting' ? 'unknown' : run.state
+  return {
+    session: run.session ?? null,
+    gen: run.generation ?? 0,
+    ...(run.id === undefined ? {} : { executionId: run.id }),
+    startedAt: run.startedAt,
+    ...(run.pid === undefined ? {} : { pid: run.pid }),
+    ...(run.procStartedAt === undefined ? {} : { procStartedAt: run.procStartedAt }),
+    workspace: run.workspace ?? [],
+    state,
+    since: run.updatedAt,
+    ...(run.lastTurn === undefined ? {} : { lastTurn: run.lastTurn as StoredRun['lastTurn'] }),
+    ...(run.stopReason === undefined ? {} : { why: run.stopReason }),
+    ...(run.kind === undefined ? {} : { kind: run.kind as StoredRun['kind'] }),
+    ...(run.owned === undefined ? {} : { owned: run.owned as StoredRun['owned'] }),
   }
+}
 
-  return kept.length === 0 ? undefined : kept
+function toRun(run: StoredRun, at: number): RunRecord {
+  return {
+    id: run.executionId ?? `${run.session ?? 'none'}:${run.gen}`,
+    state: run.state === 'unknown' ? 'failed' : run.state,
+    startedAt: run.startedAt,
+    updatedAt: run.since,
+    ...(run.pid === undefined ? {} : { pid: run.pid }),
+    ...(run.procStartedAt === undefined ? {} : { procStartedAt: run.procStartedAt }),
+    ...(run.session === null ? {} : { session: run.session }),
+    ...(run.lastTurn === undefined ? {} : { lastTurn: run.lastTurn }),
+    ...(run.why === undefined ? {} : { stopReason: run.why }),
+    ...(run.kind === undefined ? {} : { kind: run.kind }),
+    workspace: run.workspace,
+    generation: run.gen,
+    ...(run.owned === undefined ? {} : { owned: run.owned }),
+    at,
+  } as RunRecord
 }
 
 export function writeRuns(paths: RunPaths, runs: readonly StoredRun[], at: number): void {
-  const body: StoredRuns = { v: RUNS_VERSION, at, runs }
-  const temp = `${paths.runs}.tmp-${process.pid}`
+  // 运行登记现在落在 records.db 的 runs 表；整份快照替换，保持原文件的语义。
   try {
-    writeFileSync(temp, `${JSON.stringify(body)}\n`, { mode: 0o600 })
-    renameSync(temp, paths.runs)
+    replaceRunsAt(paths.dataDir, runs.map(run => toRun(run, at)))
   } catch (error) {
-    try { unlinkSync(temp) } catch { }
     throw new Error(`运行归属登记失败：${String(error)}`)
   }
 }

@@ -1,7 +1,8 @@
 /** 验证执行者登记、快照、代次、停止与通知路由。 */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { Database } from 'bun:sqlite'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { EventKind, KernelEvent, RunRow, RunSnapshot } from '@magic/contracts'
@@ -500,8 +501,9 @@ describe('登记落盘与重启核对', () => {
     seed(g, ['s-old'])
     const paths = runPathsOf(g.magic, g.tmp)
     mkdirSync(paths.dir, { recursive: true, mode: 0o700 })
-    writeFileSync(paths.runs, JSON.stringify({ v: 1, at: 1, runs: [{ session: 's-old', gen: 7, startedAt: 1000,
-      workspace: [g.ws], state: 'running', since: 1100 }] }), { mode: 0o600 })
+    const seeded = createRecordsStore({ dataDir: paths.dataDir, workspace: [g.ws] })
+    seeded.runs.upsert({ id: 'legacy-7', session: 's-old', generation: 7, state: 'running', startedAt: 1000, updatedAt: 1100, workspace: [g.ws] })
+    seeded.close()
     const b = await bench(g), client = await open(g, b.manager)
     try {
       await waitFor('旧代已中断', () => rowOf(client, 's-old')?.state === 'stopped')
@@ -535,10 +537,10 @@ describe('登记落盘与重启核对', () => {
       // 落盘是**合并写**（见 `saveRuns`）——等它一次
       await waitFor('写进盘里了', () => {
         try {
-          const parsed = JSON.parse(readFileSync(paths.runs, 'utf8')) as {
-            runs?: readonly { session?: string }[]
-          }
-          return parsed.runs?.some((one) => one.session === 's-persist') === true
+          const db = new Database(paths.database, { readonly: true })
+          try {
+            return db.query<{ session: string | null }, []>('SELECT session FROM runs').all().some(one => one.session === 's-persist')
+          } finally { db.close() }
         } catch {
           return false
         }

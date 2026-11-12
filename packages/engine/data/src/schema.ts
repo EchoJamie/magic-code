@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS ${META_TABLE} (
 CREATE TABLE IF NOT EXISTS ${RUNS_TABLE} (
   id          TEXT    PRIMARY KEY,
   pid         INTEGER,
+  proc_started_at INTEGER,
   socket      TEXT,
   session     TEXT,
   turn_id     INTEGER,
@@ -139,7 +140,11 @@ CREATE TABLE IF NOT EXISTS ${RUNS_TABLE} (
   stop_reason TEXT,
   exit_code   INTEGER,
   background  INTEGER NOT NULL DEFAULT 0 CHECK (background IN (0, 1)),
-  generation  INTEGER NOT NULL DEFAULT 0
+  generation  INTEGER NOT NULL DEFAULT 0,
+  workspace   TEXT,
+  kind        TEXT,
+  last_turn   TEXT,
+  owned       TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_by_session ON ${RUNS_TABLE} (session, started_at DESC);
 

@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { readRuns } from '@magic/host'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolveMagicHome } from '@magic/contracts'
@@ -54,7 +55,7 @@ test('Agent 取消等待真实完成，工具核销后才回 done，旧代回调
     exited = true; callbacks[0]!('Agent 已完成异步收尾')
     await until(() => done)
     expect(await tool.process.exited).toBe(137)
-    expect(JSON.parse(readFileSync(paths.runs, 'utf8')).runs[0].owned).toBeUndefined()
+    expect(readRuns(paths)[0]?.owned).toBeUndefined()
 
     const gen = request!.gen
     done = false
