@@ -12,7 +12,7 @@ VERSION="$(python3 -c 'import json; print(json.load(open("package.json"))["versi
 DMG="$OUTPUT/$NAME-$VERSION-arm64.dmg"
 PROTOCOL="$(python3 - "$VERSION" <<'PY'
 import re, pathlib, sys
-source = pathlib.Path('packages/contracts/src/native.ts').read_text()
+source = pathlib.Path('packages/contracts/src/conversation/native.ts').read_text()
 assert re.search(r"SOFTWARE_VERSION = '([^']+)'", source).group(1) == sys.argv[1], 'package 与 native SOFTWARE_VERSION 必须同版'
 print(re.search(r'NATIVE_PROTOCOL = ([0-9]+)', source).group(1))
 PY
