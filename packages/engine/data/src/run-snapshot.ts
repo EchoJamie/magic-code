@@ -12,7 +12,12 @@ export function readRunsAt(dataDir: string): readonly RunRecord[] {
   const path = join(dataDir, DATABASE_FILE)
   if (!existsSync(path)) return []
   const db = new Database(path, { readonly: true })
-  try { return createRunRecords(db).list() } finally { db.close() }
+  try {
+    return createRunRecords(db).list()
+  } catch {
+    // 旧 schema / 半建库：运行登记读不出来＝没有登记；真正的迁移由 createRecordsStore 引导。
+    return []
+  } finally { db.close() }
 }
 
 /** 以全量快照替换运行登记（库不存在则建库）。 */
