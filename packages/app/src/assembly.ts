@@ -14,7 +14,6 @@ import type { SessionPorts } from '@magic/actions'
 import { createActions } from '@magic/actions'
 import type {
   AgentModelConfig,
-  BackgroundRuns,
   CollaborationReply,
   CollaborationRequest,
   ControlTransport,
@@ -44,6 +43,7 @@ import type { ContextPolicy, SessionInstance } from '@magic/conversation'
 import { createConversationService, createPlanReader } from '@magic/conversation'
 import {
   createBackgroundRuns,
+  type BackgroundRegistry,
   createMaterials,
   createProcessLedger,
   createProjectRules,
@@ -205,7 +205,7 @@ export type Assembly = {
 
   readonly ledger: ProcessLedger
 
-  readonly background: BackgroundRuns | undefined
+  readonly background: BackgroundRegistry | undefined
 }
 
 export function assemble(options: AssembleOptions): Assembly {
@@ -242,7 +242,7 @@ export function assemble(options: AssembleOptions): Assembly {
     }
   })()
 
-  const backgroundRuns =
+  const backgroundRuns: BackgroundRegistry | undefined =
     backgroundDir === undefined
       ? undefined
       : createBackgroundRuns({ dir: backgroundDir, workspace, ledger, env: environment, signal })

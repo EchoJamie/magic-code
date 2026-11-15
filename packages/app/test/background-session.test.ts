@@ -15,7 +15,7 @@ function fixture() {
     callbacks.get(id)?.(done)
     return done
   }
-  const runs: BackgroundRuns = {
+  const runs: BackgroundRuns & { adopt: (run: unknown) => Promise<{ ok: false; reason: string }> } = {
     start: async (command, options) => {
       const id = `bg-${++starts}`, outputPath = `/output/${id}.log`
       live.set(id, { id, command, outputPath }); callbacks.set(id, options?.onFinish)
@@ -23,6 +23,7 @@ function fixture() {
     },
     running: () => [...live.values()],
     stop: async id => { stops++; if (failure) return { ok: false, reason: failure }; finish(id, true); return { ok: true, note: '已停止' } },
+    adopt: async () => ({ ok: false, reason: '本夹具不接管' }),
   }
   const make = (session: string) => createBackgroundSession({ runs, session, execution: 'exec-1',
     begin: () => { responsibility++; let released = false; return () => { if (!released) responsibility--; released = true } },
@@ -84,11 +85,41 @@ test('停止未确认唤醒明确等待，但不伪造退出事实或移除仍�
   expect(f.delivered[0]?.fact).not.toHaveProperty('exit')
 })
 
+test('接管一条已经跑起来的命令：归属照建、结束时照旧通知模型', async () => {
+  const facts: BackgroundChange[] = []
+  let released = false
+  const session = createBackgroundSession({ session: 'a', execution: 'e',
+    runs: {
+      start: async () => ({ ok: false, reason: '本用例不起新进程' }),
+      adopt: async (run) => {
+        // 立刻「结束」，验证归属先建立、终态再受理
+        setTimeout(() => run.onFinish?.({ id: 'bg-9', command: run.command, outputPath: '/x/bg-9.log', ok: true, exit: 0 }), 0)
+        return { ok: true, id: 'bg-9', outputPath: '/x/bg-9.log', write: () => {} }
+      },
+      running: () => [],
+      stop: async () => ({ ok: true, note: 'ended' }),
+    },
+    begin: () => () => { released = true },
+    deliver: fact => { expect(released).toBe(false); facts.push(fact); return true },
+    changed: () => {}, stopped: () => false,
+  })
+
+  const adopted = await session.port.adopt!({
+    command: 'make', cwd: '/work', proc: { pid: 1, exited: Promise.resolve(0) }, startedAt: 1, prefix: '',
+  })
+
+  expect(adopted.ok).toBe(true)
+  await new Promise(resolve => setTimeout(resolve, 10))
+  expect(facts).toHaveLength(1)
+  expect(facts[0]?.id).toBe('bg-9')
+  expect(released).toBe(true)
+})
+
 test('极短命令在 start 返回之前结束，归属先建立再受理终态', async () => {
   const facts: BackgroundChange[] = []
   let released = false
   const a = createBackgroundSession({ session: 'a', execution: 'e',
-    runs: { start: async (_, options) => { options?.onFinish?.({ id: 'bg-1', command: 'true', outputPath: '/x', ok: true, exit: 0 }); return { ok: true, id: 'bg-1', outputPath: '/x' } }, running: () => [], stop: async () => ({ ok: true, note: 'ended' }) },
+    runs: { start: async (_, options) => { options?.onFinish?.({ id: 'bg-1', command: 'true', outputPath: '/x', ok: true, exit: 0 }); return { ok: true, id: 'bg-1', outputPath: '/x' } }, running: () => [], stop: async () => ({ ok: true, note: 'ended' }), adopt: async () => ({ ok: false, reason: '本夹具不接管' }) },
     begin: () => () => { released = true }, deliver: fact => { expect(released).toBe(false); facts.push(fact); return true }, changed: () => {}, stopped: () => false,
   })
   await a.port.start('true')

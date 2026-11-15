@@ -28,6 +28,239 @@ import {
   createWorkspaceService,
 } from '../src/index.ts'
 
+/**
+ * **超时转后台**（2026-11 定）——`exec` 到点没跑完，交出去接着跑。
+ *
+ * 判据四件：
+ * ① 命令**还在跑**（不是被杀）：交出去之后它照样写下后面那半段；
+ * ② 输出文件**接得上**：交出去之前读到的正文写在开头，之后每一块原文按到达顺序追加；
+ * ③ 后台那一套**一切照旧**：`running()` 看得见、`stop()` 停得掉、退出时 `onFinish` 响一次；
+ * ④ 沙箱这一侧报得出来：`reason: 'timeout'` ＋ `background: { id, outputPath }`，没有 `cleanup`。
+ */
+describe('超时转后台（沙箱交给后台登记）', () => {
+  test('到点未结束 → 交给后台接着跑；输出接得上、停得掉、结束时响一声', async () => {
+    const land = freshLand()
+    const workspace = createWorkspaceService({ roots: [land.workspace] })
+    const runs = createBackgroundRuns({ dir: land.outputDir, workspace })
+    const finishes: BackgroundFinish[] = []
+    const sandbox = createSandbox({ workspace })
+
+    // 先吐一行、停 0.4s、再吐一行：超时设 200ms ⇒ 交出去时第二行还没来
+    const result = await sandbox.exec('printf 前半段; sleep 0.4; printf 后半段', {
+      cwd: '.',
+      timeoutMs: 200,
+      onTimeout: 'background',
+      adopt: run => runs.adopt({ ...run, onFinish: finish => finishes.push(finish) }),
+    })
+
+    if (result.ok || result.reason !== 'timeout') throw new Error('应当是超时转后台')
+    const adopted = 'background' in result ? result.background : undefined
+    expect(adopted).toBeDefined()
+    if (adopted === undefined) throw new Error('应当给出后台编号')
+    expect(result.stdout).toContain('前半段')
+    expect('cleanup' in result).toBe(false)
+
+    // ② 还在跑：编号在账上
+    expect(runs.running().map(run => run.id)).toContain(adopted.id)
+
+    // ① ③ 等它自己跑完 → 通知响一次；文件里前半段与后半段都在
+    await waitFor(() => finishes.length === 1, 4000)
+    expect(finishes[0]?.id).toBe(adopted.id)
+    expect(finishes[0]?.exit).toBe(0)
+    expect(runs.running().map(run => run.id)).not.toContain(adopted.id)
+
+    const text = readFileSync(adopted.outputPath, 'utf8')
+    expect(text).toContain('前半段')
+    expect(text).toContain('后半段')
+  })
+
+  test('交出去之后照样停得掉（按进程组）', async () => {
+    const land = freshLand()
+    const workspace = createWorkspaceService({ roots: [land.workspace] })
+    const runs = createBackgroundRuns({ dir: land.outputDir, workspace })
+    const sandbox = createSandbox({ workspace })
+
+    const result = await sandbox.exec('sleep 30', {
+      cwd: '.', timeoutMs: 150, onTimeout: 'background', adopt: run => runs.adopt(run),
+    })
+    if (result.ok || result.reason !== 'timeout' || !('background' in result) || result.background === undefined) {
+      throw new Error('应当超时转后台')
+    }
+
+    const stopped = await runs.stop(result.background.id)
+    expect(stopped.ok).toBe(true)
+    await waitFor(() => runs.running().length === 0, 4000)
+  })
+
+  test('移交前已经吐过一大段：文件里不缺那一段（不再只剩头部那半截）', async () => {
+    const land = freshLand()
+    const workspace = createWorkspaceService({ roots: [land.workspace] })
+    const runs = createBackgroundRuns({ dir: land.outputDir, workspace })
+    const sandbox = createSandbox({ workspace })
+
+    // 100 KB 一口气吐完、然后停住 ⇒ 到点时移交：那 100 KB **全部**已经产出
+    const result = await sandbox.exec('head -c 100000 /dev/zero | tr "\\0" a; sleep 0.4; printf TAIL', {
+      cwd: '.', timeoutMs: 300, onTimeout: 'background', adopt: run => runs.adopt({ ...run, onFinish: () => {} }),
+    })
+    if (result.ok || result.reason !== 'timeout' || !('background' in result) || result.background === undefined) {
+      throw new Error('应当超时转后台')
+    }
+
+    // 回执里只有头部那一段，且**说得出来**（不是「就这么点输出」）
+    expect(result.stdout.startsWith('a'.repeat(32768))).toBe(true)
+    expect(result.stdout).toContain('只带回这一段')
+    expect(result.truncated).toBe(true)
+
+    const outputPath = result.background.outputPath
+    await waitFor(() => readFileSync(outputPath, 'utf8').endsWith('TAIL'), 4000)
+    const text = readFileSync(outputPath, 'utf8')
+    // 100000 个 a 一个不少（旧写法这里只剩头部 32768 个，中间整段丢掉）
+    expect(text.match(/a/g)?.length).toBe(100000)
+    expect(text.endsWith('TAIL')).toBe(true)
+  })
+
+  test('非 ASCII 输出、一字节没丢：不误报「只带回了一段」', async () => {
+    const land = freshLand()
+    const workspace = createWorkspaceService({ roots: [land.workspace] })
+    const runs = createBackgroundRuns({ dir: land.outputDir, workspace })
+    const sandbox = createSandbox({ workspace })
+
+    const result = await sandbox.exec("printf '中文一两句'; sleep 0.5; printf 尾巴", {
+      cwd: '.', timeoutMs: 200, onTimeout: 'background', adopt: run => runs.adopt({ ...run, onFinish: () => {} }),
+    })
+    if (result.ok || result.reason !== 'timeout' || !('background' in result) || result.background === undefined) {
+      throw new Error('应当超时转后台')
+    }
+
+    // 字节数天生大于字符数（中文 3 字节一个字），拿字节比字符会把这一趟判成「缺了一段」
+    expect(result.stdout).toBe('中文一两句')
+    expect(result.stdout).not.toContain('只带回这一段')
+    expect(result.truncated).toBeUndefined()
+
+    const outputPath = result.background.outputPath
+    await waitFor(() => readFileSync(outputPath, 'utf8').endsWith('尾巴'), 4000)
+    expect(readFileSync(outputPath, 'utf8')).toBe('中文一两句尾巴')
+  })
+
+  test('移交前吐得比缓冲上限还多：留最近那一段，开头砍了多少说得出来', async () => {
+    const land = freshLand()
+    const workspace = createWorkspaceService({ roots: [land.workspace] })
+    const runs = createBackgroundRuns({ dir: land.outputDir, workspace })
+    const sandbox = createSandbox({ workspace })
+
+    // 600 KB（> 512 KiB 缓冲）一口气吐完再停住 ⇒ 文件里的开头会缺一段
+    const result = await sandbox.exec('head -c 600000 /dev/zero | tr "\\0" z; sleep 0.4; printf TAIL', {
+      cwd: '.', timeoutMs: 300, onTimeout: 'background', adopt: run => runs.adopt({ ...run, onFinish: () => {} }),
+    })
+    if (result.ok || result.reason !== 'timeout' || !('background' in result) || result.background === undefined) {
+      throw new Error('应当超时转后台')
+    }
+
+    const outputPath = result.background.outputPath
+    await waitFor(() => readFileSync(outputPath, 'utf8').endsWith('TAIL'), 4000)
+    const text = readFileSync(outputPath, 'utf8')
+    // 开头那一段明说省略了多少；正文接的是**最近**的几块（不是最前面那一段）
+    const note = text.match(/^…（交到后台之前已产出 (\d+) 字节，开头 (\d+) 字节已省略，这里接着 (\d+) 字节之后）\n/)
+    expect(note).not.toBeNull()
+    const [total, dropped, kept] = [Number(note![1]), Number(note![2]), Number(note![3])]
+    expect(total).toBe(600000)
+    expect(dropped + kept).toBe(600000)
+    expect(kept).toBeLessThanOrEqual(512 * 1024)
+    expect(kept).toBeGreaterThan(0)
+    expect(text.match(/z/g)?.length).toBe(kept)
+    expect(text.endsWith('TAIL')).toBe(true)
+  })
+
+  test('交出去之后就退出：最后一块字节照旧落进文件（关文件排在流读干之后）', async () => {
+    const land = freshLand()
+    const workspace = createWorkspaceService({ roots: [land.workspace] })
+    const runs = createBackgroundRuns({ dir: land.outputDir, workspace })
+    const finishes: BackgroundFinish[] = []
+    const sandbox = createSandbox({ workspace })
+
+    // 移交之后进程很快退出——退出那一刻管道里还卡着 `末尾` 那一块
+    const result = await sandbox.exec('printf 开头; sleep 0.15; printf 末尾; exit 0', {
+      cwd: '.', timeoutMs: 100, onTimeout: 'background',
+      adopt: run => runs.adopt({ ...run, onFinish: finish => finishes.push(finish) }),
+    })
+    if (result.ok || result.reason !== 'timeout' || !('background' in result) || result.background === undefined) {
+      throw new Error('应当超时转后台')
+    }
+
+    await waitFor(() => finishes.length === 1, 4000)
+    // 通报响的时候文件已经收好尾：不必再等，读到的就是全文
+    const text = readFileSync(result.background.outputPath, 'utf8')
+    expect(text).toBe('开头末尾')
+  })
+
+  test('命令退了但孙进程攥着管道：等一秒就收尾（不把「结束」永远压着）', async () => {
+    const land = freshLand()
+    const workspace = createWorkspaceService({ roots: [land.workspace] })
+    const runs = createBackgroundRuns({ dir: land.outputDir, workspace })
+    const finishes: BackgroundFinish[] = []
+    const sandbox = createSandbox({ workspace })
+
+    // 有个**逃出进程组**的孙进程攥着 stdout（`start_new_session`）：命令退了，管道还没关
+    const began = Date.now()
+    const result = await sandbox.exec(
+      'python3 -c "import subprocess;subprocess.Popen([\'sleep\',\'2\'],start_new_session=True)"; printf 走了; sleep 0.3', {
+      cwd: '.', timeoutMs: 100, onTimeout: 'background',
+      adopt: run => runs.adopt({ ...run, onFinish: finish => finishes.push(finish) }),
+    })
+    if (result.ok || result.reason !== 'timeout' || !('background' in result) || result.background === undefined) {
+      throw new Error('应当超时转后台')
+    }
+
+    await waitFor(() => finishes.length === 1, 4000)
+    expect(finishes[0]?.exit).toBe(0)
+    // 一秒宽限 + 余量；没有这一条上界时这里会一直等下去（孙进程 2 秒）
+    expect(Date.now() - began).toBeLessThan(3500)
+    // 宽限先到、`outputSettled` 后落定的那一路**不许再响一遍**（评审实测曾响两次）
+    await new Promise(resolve => setTimeout(resolve, 1200))
+    expect(finishes.length).toBe(1)
+    expect(readFileSync(result.background.outputPath, 'utf8')).toContain('走了')
+
+    await runs.stop(result.background.id) // 收掉那个还攥着管道的孙进程，别留给后面的用例
+  })
+
+  test('adopt 抛异常 ⇒ 落回按进程组收掉，不留一条没人认领的进程', async () => {
+    const land = freshLand()
+    const workspace = createWorkspaceService({ roots: [land.workspace] })
+    const sandbox = createSandbox({ workspace })
+
+    const result = await sandbox.exec('sleep 30', {
+      cwd: '.', timeoutMs: 150, onTimeout: 'background',
+      adopt: () => { throw new Error('接不了') },
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok || result.reason !== 'timeout') throw new Error('应当超时')
+    expect('background' in result ? result.background : undefined).toBeUndefined()
+    expect(result.cleanup?.confirmed).toBe(true)
+  })
+
+  test('没接 adopt 就照旧按进程组收掉——不静默改成「一直在跑」', async () => {
+    const land = freshLand()
+    const workspace = createWorkspaceService({ roots: [land.workspace] })
+    const sandbox = createSandbox({ workspace })
+
+    const result = await sandbox.exec('sleep 5', { cwd: '.', timeoutMs: 150, onTimeout: 'background' })
+
+    expect(result.ok).toBe(false)
+    if (result.ok || result.reason !== 'timeout') throw new Error('应当超时')
+    expect('background' in result ? result.background : undefined).toBeUndefined()
+    expect(result.cleanup?.confirmed).toBe(true)
+  })
+})
+
+async function waitFor(condition: () => boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('等超时了')
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+}
+
 // —— 夹具 ——
 
 const lands: string[] = []

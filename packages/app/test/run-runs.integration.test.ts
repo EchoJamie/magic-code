@@ -403,7 +403,7 @@ describe('接回＝快照 ＋ 水位', () => {
       // 快照回来之前，这一段里发生的事——**一条都不许丢**（那正是缓冲区的用处）
       fake.emit('turn.start', {}, 's-live')
       fake.emit('agent.state', { state: 'resumed' }, 's-live')
-      const early = fake.emit('tool.call', { name: 'bash', args: { cmd: 'pwd' } }, 's-live')
+      const early = fake.emit('tool.call', { name: 'bash', args: { command: 'pwd' } }, 's-live')
       // 重复的一条（同一 id 又发了一遍）——放行时按 id 去重
       fake.send({
         t: 'ev',
@@ -413,7 +413,7 @@ describe('接回＝快照 ＋ 水位', () => {
           turn: null,
           at: Date.now(),
           kind: 'tool.call',
-          data: { name: 'bash', args: { cmd: 'pwd' } },
+          data: { name: 'bash', args: { command: 'pwd' } },
         } as KernelEvent,
       })
 

@@ -27,7 +27,7 @@ import { eventsOfKind, makeStage, readDatabase } from './support.ts'
  */
 const REFUSED_TURNS: readonly FauxTurn[] = [
   {
-    toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build' } }],
+    toolCalls: [{ name: 'exec', args: { command: 'rm -rf build' } }],
     usage: { inputTokens: 11, outputTokens: 3 },
   },
   { text: '跑完了', usage: { inputTokens: 21, outputTokens: 7 } },

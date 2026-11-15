@@ -90,7 +90,7 @@ describe('开工位——`agent.start` 每个实例一条', () => {
 describe('纪律', () => {
   test('干活时不许重建——与循环抢同一条记录流', async () => {
     const stage = makeStage({
-      turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'sleep 100' } }] }],
+      turns: [{ toolCalls: [{ name: 'exec', args: { command: 'sleep 100' } }] }],
       handlers: { exec: () => new Promise(() => {}) },
     })
     const service = sessionOf(stage)

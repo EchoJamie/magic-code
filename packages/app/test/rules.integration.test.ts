@@ -28,8 +28,7 @@ describe('真装配 · 「没跑」与「跑了没成」分得开（2026-09-20 �
       // 真跑一次：写下一个文件（副作用真的发生了）＋ 打一行以「未执行」起头的输出 ＋ 非 0 退出
       const call = {
         name: 'exec',
-        args: {
-          cmd: 'echo SIDE_EFFECT > side-effect.txt; echo "未执行后续步骤：前一步已经写入，但校验失败"; exit 1',
+        args: { command: 'echo SIDE_EFFECT > side-effect.txt; echo "未执行后续步骤：前一步已经写入，但校验失败"; exit 1',
         },
       }
       const assembly = stage.assemble({ turns: [{ toolCalls: [call] }, { text: '没成' }] })

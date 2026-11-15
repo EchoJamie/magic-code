@@ -4,7 +4,7 @@ import { startResidentHost } from './resident-host-fixture.ts'
 import { connectManager } from '../src/run/client.ts'
 
 test('后台工具返回后继续下一次模型请求，停止收回全部资源', async () => {
-  const fixture = startFixture({ turns: [{ kind: 'tool', name: 'exec', args: { cmd: 'sleep 30', background: true } }, { kind: 'text', text: '交出去了。', chunkDelayMs: 200 }] })
+  const fixture = startFixture({ turns: [{ kind: 'tool', name: 'exec', args: { command: 'sleep 30', background: true } }, { kind: 'text', text: '交出去了。', chunkDelayMs: 200 }] })
   const sandbox = createSandbox({ baseURL: fixture.baseURL })
   const host = await startResidentHost(sandbox)
   const client = (await connectManager(host.discovery.socket, { cwd: sandbox.workspace, environment: sandbox.env }))!

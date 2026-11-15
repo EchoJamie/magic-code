@@ -4,7 +4,6 @@ import type {
   AgentModelConfig,
   AgentRoleConfig,
   BackgroundChange,
-  BackgroundRuns,
   CollaborationReply,
   CollaborationRequest,
   EventSink,
@@ -27,7 +26,9 @@ import type {
 import { CONSULTATION_TOOL_NAMES } from '@magic/contracts'
 import type { ContextPolicy, ConversationSession, PromptVars } from '@magic/conversation'
 import { createConversationSession, createPlanReader } from '@magic/conversation'
-import { createProjectRules, createWorkingNotes } from '@magic/execution'
+import { createProjectRules, createWorkingNotes,
+  type BackgroundRegistry,
+} from '@magic/execution'
 import type { ModelRegistry } from '@magic/model'
 import { createPageDistiller } from '@magic/model'
 import { createPermissionGate } from '@magic/permission'
@@ -93,7 +94,7 @@ export function createAgentSession(input: {
   signal: AbortSignal
   network: WorkEnvironment
   executionId: string
-  backgroundRuns: BackgroundRuns | undefined
+  backgroundRuns: BackgroundRegistry | undefined
   sandbox: Sandbox
   projectRules: ProjectRules
   skills: Skills

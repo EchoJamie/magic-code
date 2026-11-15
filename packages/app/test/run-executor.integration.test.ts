@@ -38,7 +38,7 @@ function ground(name: string, mode: 'held' | 'settled' | 'background' | 'backgro
   // 真执行者只连接本机受控模型；待答命令绝不批准，不产生工具副作用。
   const complete = { kind: 'text' as const, text: '核心隔离回合完成', chunks: 1, chunkDelayMs: 0 }
   const fixture = startFixture({ turns: turns ?? (mode.startsWith('background')
-    ? [{ kind: 'tool', name: 'exec', args: { cmd: mode === 'background-finish' ? 'sleep 1.5' : 'sleep 300', background: true } }, complete]
+    ? [{ kind: 'tool', name: 'exec', args: { command: mode === 'background-finish' ? 'sleep 1.5' : 'sleep 300', background: true } }, complete]
     : [mode === 'settled' ? complete : { kind: 'text', text: '受控等待中', chunks: 200, chunkDelayMs: 100 }]),
   })
   const environment: Record<string, string> = { ...Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined)), HOME: home, MAGIC_HOME: base }
@@ -423,7 +423,7 @@ describe('收缩与异常', () => {
   test('真实模型与工具：中间轮无 done，最终事项只交给绑定终端，执行者释放不重复系统通知', async () => {
     const marker = 'resident-continues-tool-output'
     const g = ground('attention', 'settled', [
-      { kind: 'tool', name: 'exec', args: { cmd: `echo ${marker}` } },
+      { kind: 'tool', name: 'exec', args: { command: `echo ${marker}` } },
       // 保留真实流式阶段，第一轮结束时可直接检查持久事项，不能只在最终数总数。
       { kind: 'text', text: '工具结果已收到，这才是本次交代的最终结果。', chunks: 10, chunkDelayMs: 100 },
     ])
@@ -652,9 +652,9 @@ test('在途执行者动态调整诊断等级，代次与审批保持；错误�
 
 test('配置文件争锁与大输出期间仍能查询并独立停止另一工作', async () => {
   const g = ground('control-pressure', 'settled', [
-    { kind: 'tool', name: 'exec', args: { cmd: 'yes u122-output', background: true } },
+    { kind: 'tool', name: 'exec', args: { command: 'yes u122-output', background: true } },
     { kind: 'text', text: '后台输出继续' },
-    { kind: 'tool', name: 'exec', args: { cmd: 'sleep 30' } },
+    { kind: 'tool', name: 'exec', args: { command: 'sleep 30' } },
   ])
   const { acquireFileLock } = await import('@magic/config')
   const manager = await standUp(g)
@@ -690,8 +690,7 @@ test('配置文件争锁与大输出期间仍能查询并独立停止另一工�
 }, 15000)
 
 test('D57 · 客户端整项停止覆盖主命令退出后的管道等待，队列不再启动', async () => {
-  const g = ground('pipe-stop', 'settled', [{ kind: 'tool', name: 'exec', args: {
-    cmd: 'cd /tmp && /bin/sleep 30 >/dev/null 2>&1 & echo parent-done',
+  const g = ground('pipe-stop', 'settled', [{ kind: 'tool', name: 'exec', args: { command: 'cd /tmp && /bin/sleep 30 >/dev/null 2>&1 & echo parent-done',
   } }])
   const manager = await standUp(g)
   const client = await open(g, manager, 'pipe-stop')

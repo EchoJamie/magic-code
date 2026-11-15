@@ -11,8 +11,8 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
 test('Engine 无 TUI：只等待有限测试，完成自动进入原会话一次，常驻服务仍计数且不阻止结果通知', async () => {
   const f = await collaborationRuntime('u124-no-tui', call => {
     if (call.index === 0) return { tools: [
-      { tool: 'exec', args: { cmd: 'sleep 60', background: true } },
-      { tool: 'exec', args: { cmd: `while [ ! -f ${quote(join(f.workspace, 'finish'))} ]; do sleep 0.02; done; printf TEST_DONE`, background: true } },
+      { tool: 'exec', args: { command: 'sleep 60', background: true } },
+      { tool: 'exec', args: { command: `while [ ! -f ${quote(join(f.workspace, 'finish'))} ]; do sleep 0.02; done; printf TEST_DONE`, background: true } },
     ] }
     if (call.index === 1) return { tool: 'background_wait', args: { ids: ['bg-2'] } }
     return { text: '测试结果已经处理，服务继续运行。' }
@@ -46,8 +46,8 @@ test('Engine 无 TUI：只等待有限测试，完成自动进入原会话一次
 
 test('Engine 用户只停选定命令，过期或跨工作身份失败，停止事实解除等待而不冒充普通失败', async () => {
   const f = await collaborationRuntime('u124-stop', call => call.index === 0 ? { tools: [
-    { tool: 'exec', args: { cmd: 'sleep 60', background: true } },
-    { tool: 'exec', args: { cmd: 'sleep 60', background: true } },
+    { tool: 'exec', args: { command: 'sleep 60', background: true } },
+    { tool: 'exec', args: { command: 'sleep 60', background: true } },
   ] } : call.index === 1 ? { tool: 'background_wait', args: { ids: ['bg-2'] } } : { text: '已理解用户停止，继续其他工作。' })
   try {
     f.client.send({ type: 'input.submit', text: '两个命令，仅等第二个' })
@@ -74,7 +74,7 @@ test('Engine 用户只停选定命令，过期或跨工作身份失败，停止�
 
 test('Engine 模型停止结果已承接，不再产生第二条完成输入；读快照不调用模型', async () => {
   const f = await collaborationRuntime('u124-model-stop', call => call.index === 0
-    ? { tool: 'exec', args: { cmd: 'sleep 60', background: true } }
+    ? { tool: 'exec', args: { command: 'sleep 60', background: true } }
     : call.index === 1 ? { tool: 'background_stop', args: { id: 'bg-1' } } : { text: '已停止。' })
   try {
     f.client.send({ type: 'input.submit', text: '启动并主动停止' })
@@ -93,7 +93,7 @@ test('Engine 模型停止结果已承接，不再产生第二条完成输入；�
 
 test('Engine 整体停止先取消接续资格，迟到终态只记录，不唤醒模型', async () => {
   const f = await collaborationRuntime('u124-scope-stop', call => call.index === 0
-    ? { tool: 'exec', args: { cmd: 'sleep 60', background: true } }
+    ? { tool: 'exec', args: { command: 'sleep 60', background: true } }
     : { tool: 'background_wait', args: { ids: ['bg-1'] } })
   try {
     f.client.send({ type: 'input.submit', text: '等待后台测试' })
@@ -160,7 +160,7 @@ test('成员已交付仍持有服务；无 TUI 时异常结束在原成员协调
       return { text: call.index === 4 ? '已收下结果，服务继续托管。' : '已处理成员的服务退出回报。' }
     }
     if (call.index === 0) return { tool: 'agent_message', args: { action: 'respond', operationId: 'accept', delegation, response: 'accept' } }
-    if (call.index === 1) return { tool: 'exec', args: { cmd: `while [ ! -f ${quote(join(f.workspace, 'finish-member'))} ]; do sleep 0.02; done; exit 7`, background: true } }
+    if (call.index === 1) return { tool: 'exec', args: { command: `while [ ! -f ${quote(join(f.workspace, 'finish-member'))} ]; do sleep 0.02; done; exit 7`, background: true } }
     if (call.index === 2) return { tool: 'agent_message', args: { action: 'deliver', operationId: 'delivered', delegation, conclusion: '服务已经启动', artifacts: [], verified: ['启动受理'], unresolved: [] } }
     if (call.index === 3) return { text: '服务继续由本会话托管。' }
     if (call.index === 4) return { tool: 'background_stop', args: { id: 'bg-1' } }
@@ -193,7 +193,7 @@ test('整件工作跨深层成员平铺，同名成员及三个 bg-1 仍按执�
   const f = await collaborationRuntime('u124-deep', call => {
     const actor = f.members().find(one => one.model.model === call.model)
     const delegation = f.collaboration() && f.store.collaboration.listDelegations(f.collaboration()!.collaborationId).find(one => one.assigneeId === actor?.agentId)
-    const service = { tool: 'exec', args: { cmd: 'sleep 60', background: true } } as const
+    const service = { tool: 'exec', args: { command: 'sleep 60', background: true } } as const
     const wait = { tool: 'background_wait', args: { ids: ['bg-1'] } } as const
     if (call.model === 'entry-model') {
       if (call.index === 0) return service
@@ -230,7 +230,7 @@ test('整件工作跨深层成员平铺，同名成员及三个 bg-1 仍按执�
 
 test('执行实例已空闲退出后，旧详情停止仍从持久终态回已经结束，不重启执行者', async () => {
   const f = await collaborationRuntime('u124-ended-target', call => call.index === 0
-    ? { tool: 'exec', args: { cmd: `while [ ! -f ${quote(join(f.workspace, 'finished'))} ]; do sleep 0.02; done`, background: true } }
+    ? { tool: 'exec', args: { command: `while [ ! -f ${quote(join(f.workspace, 'finished'))} ]; do sleep 0.02; done`, background: true } }
     : call.index === 1 ? { tool: 'background_wait', args: { ids: ['bg-1'] } } : { text: '完成已处理。' })
   try {
     f.client.send({ type: 'input.submit', text: '等一个有限命令' })

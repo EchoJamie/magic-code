@@ -444,6 +444,14 @@ export interface BackgroundRuns {
    */
   start(cmd: string, opts?: BackgroundStartOptions): Promise<BackgroundStart>
   /**
+   * **接管一条已经跑起来的命令**——`exec` 到点还没结束时走这一格（超时转后台）。
+   *
+   * 与 `start` 的区别只有「进程是谁起的」：这里收一个现成的，之后的记账、
+   * `running()`、`stop()`、结束通知全与 `start` 那一支同一套。不接这一格时
+   * `exec` 的超时照旧按进程组收掉。
+   */
+  adopt?(run: HandoverRun, opts?: { readonly onFinish?: (finish: BackgroundFinish) => void }): Promise<HandoverResult>
+  /**
    * **还在跑的那些**（按交出去的次序）——**现读**：读一次就是一次当下的读数。
    *
    * ## 为什么要这一面（U89）
@@ -487,7 +495,36 @@ export type BackgroundStartOptions = {
   readonly onFinish?: (finish: BackgroundFinish) => void
 }
 
-/** `BackgroundRuns.start` 的产物——判别式（**发起不成立**是返回值，不是异常）。 */
+/**
+ * **一条已经跑起来、到点还没结束的命令**（超时转后台时执行域交出来的那一份）。
+ *
+ * 只带两样东西：**认得出这个进程**（pid ＋ 退出承诺）与**交出来之前已经读到的正文**。
+ * 工具域只把它原样转手，不读里面的内容；真正接管的是后台登记那一侧。
+ */
+export type HandoverRun = {
+  readonly command: string
+  /** 解析后的绝对工作目录（沙箱在起进程之前已核对过身份）。 */
+  readonly cwd: string
+  readonly proc: { readonly pid: number; readonly exited: Promise<number> }
+  readonly startedAt: number
+  /** 交出来之前的正文——写进输出文件的开头，之后的由 `write` 接着追加。 */
+  readonly prefix: string
+  /**
+   * **输出到头了**——落定之后不会再有 `write`（读到的原文到此为止）。
+   *
+   * 接管方要等它落定再关输出文件、再报「结束」：进程退出与「最后一块字节落进文件」
+   * 不是同一个时刻（尾巴还卡在管道里），拿进程退出当关文件时机，最后那一截会被丢掉。
+   * 退路照旧：不接这一格＝按「进程退出即收尾」处置；接了这一格也**应当有上界**
+   * （命令退了、可它起的孙进程还攥着管道时，落定会迟到——别让收尾一直等下去）。
+   */
+  readonly outputSettled?: Promise<unknown>
+}
+
+/** 交出去的产物——认它的 id、它的输出文件，以及「之后读到的原文往哪儿写」。 */
+export type HandoverResult =
+  | { readonly ok: true; readonly id: string; readonly outputPath: string; readonly write: (chunk: Uint8Array) => void }
+  | { readonly ok: false; readonly reason: string }
+
 export type BackgroundStart =
   | {
       readonly ok: true
@@ -1567,14 +1604,27 @@ export type ExecResult =
       readonly outputIncomplete?: boolean
       readonly message: string
       /**
+       * **超时之后转成了后台**（`opts.onTimeout: 'background'`）——命令**没被收掉**，
+       * 而是交出去接着跑：这里给认它的 id 与它的输出文件，结束时由后台那一套通知。
+       *
+       * 有这一格时 `cleanup` 缺席（进程还活着，没有「收尾」可言），`stdout`/`stderr`
+       * 是交出去之前已经读到的**那一段**。
+       */
+      readonly background?: { readonly id: string; readonly outputPath: string }
+      /**
        * **真报了的那条上界**——报文里那个数的**唯一出处**（调用方自己记的那份可能与之不符：
        * 换过沙箱实现、或调用方压根没给而上界另有其源）。工具域据它措辞。
        */
       readonly timeoutMs: number
-      /** 被掐断前**已经产出**的输出——与 `ok:true` 那一支同形、同口径。 */
+      /** 被掐断前（或**交出去之前**）**已经产出**的输出——与 `ok:true` 那一支同形、同口径。 */
       readonly stdout: string
       readonly stderr: string
-      /** 超限截断（同上；不到上限就没有这个字段）。 */
+      /**
+       * 这一份**不是全貌**。两种来由：
+       * - 超了 `maxOutputBytes`（与 `ok:true` 那一支同一条规矩）；
+       * - **转后台那一条**：回执里只带回「头一半」（尾巴还卡在流里，写进了输出文件）——
+       *   有 `background` 时，`truncated` 与 `message` 说的是这件事，不是「命令被掐断」。
+       */
       readonly truncated?: boolean
     }
   | {
@@ -1614,6 +1664,16 @@ export type ExecOptions = {
    */
   readonly timeoutMs?: number | null
   readonly maxOutputBytes?: number
+  /**
+   * **超时之后拿它怎么办**——缺省 `kill`（按进程组收掉，已有行为）。
+   *
+   * `background`：不杀，交给后台继续跑（执行域构造时接了 `adopt` 才有这一形；没接时
+   * 与 `kill` 同效）。由头：「这条命令比自己给的上界还长」不等于「这条命令该被删掉」——
+   * 构建、装依赖、起服务都长这样，模型给的上界只是它愿意等多久。
+   */
+  readonly onTimeout?: 'kill' | 'background'
+  /** 真正接管的那一下——工具把上下文里的后台端口接在这一格上（不接＝按 kill 处置）。 */
+  readonly adopt?: (run: HandoverRun) => Promise<HandoverResult>
   /** 流式增量——实时回调；消费方转 `tool.output.delta` 事件（**不落库**）。 */
   readonly onOutput?: (delta: OutputDelta) => void
   /** 取消——中止在途（**返回不抛**）。 */
@@ -1983,7 +2043,7 @@ export type ToolSetRow = Omit<ToolSpec, 'parameters'>
  * **参数键（工具集 v1 全表 · U13 锚定）**——工具的参数模式按此命名：工具域**分发**与
  * 权限域**分析**都按它取字段（危险归类＝按命令 / 按路径判定，见 `by-call` 支）。
  *
- * - `exec` —— `cmd`（命令；阶段 1 即锚定，**收窄为单一键**，不按候选键兜底）
+ * - `exec` —— `command`（命令，**唯一必填**）· `description?`（一句话意图）· `cwd?` · `timeoutMs?` · `background?`
  * - `read` —— `path` · `from?`（从第几行起，1 起）· `lines?`（最多多少行）；
  *   **普通文件与工作笔记同一套**（早先只有笔记能分页，且按字符偏移）
  * - `write` —— `path` · `content`（**整写**——不是追加；空串＝写空文件）
@@ -2007,7 +2067,9 @@ export type ToolSetRow = Omit<ToolSpec, 'parameters'>
 export const TOOLSET_V1 = [
   {
     name: 'exec',
-    summary: '命令执行；dev server/watch 用 background:true，命令不加 nohup 或末尾 &，启动与健康检查分开',
+    summary:
+      '命令执行：在「工作目录」下起一个新 shell（要换目录填 cwd，命令里不必 cd）。' +
+      '等满两分钟还没结束就转后台；dev server/watch 直接用 background:true，命令不加 nohup 或末尾 &。',
     danger: { level: 'by-call', note: '按命令解析' },
   },
   { name: 'read', summary: '读文件（按行分段）', danger: { level: 'light' } },

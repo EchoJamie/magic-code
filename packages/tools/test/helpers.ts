@@ -126,10 +126,10 @@ export function makeToolDeps(options: ToolDepsOptions = {}): ToolDeps {
 
 /** 一个 `exec` 调用（用例里反复要）。 */
 export function execCall(
-  cmd: string,
+  command: string,
   id = 'call_1',
 ): { id: string; name: 'exec'; args: Record<string, unknown> } {
-  return { id, name: 'exec', args: { cmd } }
+  return { id, name: 'exec', args: { command } }
 }
 
 /**

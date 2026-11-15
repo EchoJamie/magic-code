@@ -164,7 +164,7 @@ export function createScriptedKernel(options: ScriptedKernelOptions = {}): Scrip
       () => emit('model.delta', { channel: 'toolcall', name: 'exec', id: 'tc_1', text: '}' }),
       () => {
         // `tool.call` 的 id 即调用链的 `call`——后续四处同指它
-        const call = emit('tool.call', { name: 'exec', args: { cmd: 'ls' } }).id
+        const call = emit('tool.call', { name: 'exec', args: { command: 'ls' } }).id
         emit('tool.decision', { call, decision: 'approve', decider: 'user', elapsedMs: 1200 })
         emit('tool.output.delta', { call, channel: 'stdout', text: 'README.md\n' })
         emit('tool.output.delta', { call, channel: 'stdout', text: 'packages\n' })

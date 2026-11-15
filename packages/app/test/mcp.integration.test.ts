@@ -352,7 +352,7 @@ describe('失败路径', () => {
       const assembly = stage.assemble({
         // 内置件照跑：U129 起判轻与改权限都默认放行，`echo 内置照常` 那串输出原样回来。
         turns: [
-          { toolCalls: [{ name: 'exec', args: { cmd: 'echo 内置照常' } }] },
+          { toolCalls: [{ name: 'exec', args: { command: 'echo 内置照常' } }] },
           { text: '好' },
         ],
       })

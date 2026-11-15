@@ -60,7 +60,7 @@ describe('超时与取消同一口径', () => {
     const outcome = await deps.runtime.invoke(execCall('x'), {})
 
     expect(outcome.output).toBe(
-      '已超时——命令跑过了、被掐断（2000ms 到点）\n第一行\n第二行\n\n[stderr]\n一个警告\n',
+      '已超时——命令跑过了、被掐断（2000ms 到点）\n第一行\n第二行\n\n[stderr]\n一个警告\n[超时，已按进程组收掉 · /work/proj]',
     )
   })
 
@@ -69,7 +69,7 @@ describe('超时与取消同一口径', () => {
 
     const outcome = await deps.runtime.invoke(execCall('x'), {})
 
-    expect(outcome.output).toBe('已超时——命令跑过了、被掐断（2000ms 到点）')
+    expect(outcome.output).toBe('已超时——命令跑过了、被掐断（2000ms 到点）\n[超时，已按进程组收掉 · /work/proj]')
   })
 
   /**
@@ -150,9 +150,9 @@ describe('超时与取消同一口径', () => {
       },
     })
 
-    const outcome = await deps.runtime.invoke(execCallWith({ cmd: 'x', timeoutMs: 2000 }), {})
+    const outcome = await deps.runtime.invoke(execCallWith({ command: 'x', timeoutMs: 2000 }), {})
 
-    expect(outcome.output).toBe('已超时——命令跑过了、被掐断（300ms 到点）')
+    expect(outcome.output).toBe('已超时——命令跑过了、被掐断（300ms 到点）\n[超时，已按进程组收掉 · /work/proj]')
   })
 
   test('不带 `[exit N]`——退出码是收命的产物（137），抬头已经把事实说全了', async () => {

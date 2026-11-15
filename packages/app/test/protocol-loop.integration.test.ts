@@ -7,7 +7,7 @@ import { eventsOfKind, makeStage, readDatabase } from './support.ts'
 const protocols = ['responses', 'messages', 'chat-completions'] as const
 const model = 'local/U126:exact'
 const key = 'u126-local-test-key'
-const command = { cmd: 'echo U126' }
+const command = { command: 'echo U126' }
 const prompt = '请执行 echo U126，然后告诉我结果。'
 const thought = '只执行指定的本地回显命令。'
 const answer = '命令已完成，输出 U126。'
@@ -173,14 +173,14 @@ for (const protocol of protocols) test(`真装配 ${protocol}：exec 执行、�
     await shell.submit(prompt)
     expect(eventsOfKind(shell.events, 'error')).toEqual([])
     expect(eventsOfKind(shell.events, 'turn.end').map(e => e.data.reason)).toEqual(['settled', 'settled'])
-    expect(eventsOfKind(shell.events, 'tool.result').map(e => ({ ok: e.data.ok, output: e.data.output }))).toEqual([{ ok: true, output: { text: 'U126\n' } }])
+    expect(eventsOfKind(shell.events, 'tool.result').map(e => ({ ok: e.data.ok, text: String((e.data.output as { text?: string }).text ?? '') }))).toEqual([{ ok: true, text: expect.stringMatching(/^\[退出 0 · .+\]\nU126\n$/) }])
     expect(endpoint.requests).toHaveLength(2)
     const [first, second] = endpoint.requests as [WireRequest, WireRequest]
     expect(historyOf(first)).toEqual([{ role: 'user', text: prompt }])
     // 落盘及下一次请求保留供应商原始调用 ID。
     const pair = storedCalls(assembly.paths.database)[0]!
     expect(pair).toBe(callId(protocol))
-    const completed = [{ role: 'user', text: prompt }, { call: pair, name: 'exec', args: command }, { result: pair, text: 'U126\n' }]
+    const completed = [{ role: 'user', text: prompt }, { call: pair, name: 'exec', args: command }, { result: pair, text: expect.stringMatching(/^\[退出 0 · .+\]\nU126\n/) }]
     expect(historyOf(second)).toEqual(completed)
     const firstHistory = conversationOf(first)
     expect(conversationOf(second).slice(0, firstHistory.length)).toEqual(firstHistory)
@@ -221,7 +221,7 @@ for (const protocol of protocols) test(`真装配 ${protocol}：exec 执行、�
       expect(JSON.stringify(switched.body)).not.toContain('responses-private')
       const nextPair = storedCalls(assembly.paths.database)[1]!
       expect(nextPair).not.toBe(pair)
-      expect(historyOf(refilled)).toEqual([...oldHistory, { call: nextPair, name: 'exec', args: command }, { result: nextPair, text: 'U126\n' }])
+      expect(historyOf(refilled)).toEqual([...oldHistory, { call: nextPair, name: 'exec', args: command }, { result: nextPair, text: expect.stringMatching(/^\[退出 0 · .+\]\nU126\n/) }])
       assertPrivate(refilled)
       expect(JSON.stringify(refilled.body)).not.toContain('responses-private')
 
@@ -232,7 +232,7 @@ for (const protocol of protocols) test(`真装配 ${protocol}：exec 执行、�
       expect(historyOf(returned)).toEqual([...historyOf(refilled), { role: 'assistant', text: answer }, { role: 'user', text: '保留之前记录，确认即可。' }])
       assertPrivate(returned)
       expect(JSON.stringify(returned.body)).not.toContain('messages-signature')
-      expect(eventsOfKind(shell.events, 'tool.result').map(e => e.data.output)).toEqual([{ text: 'U126\n' }, { text: 'U126\n' }])
+      expect(eventsOfKind(shell.events, 'tool.result').map(e => String((e.data.output as { text?: string }).text ?? ''))).toEqual([expect.stringMatching(/^\[退出 0 · .+\]\nU126\n/), expect.stringMatching(/^\[退出 0 · .+\]\nU126\n/)])
       expect(eventsOfKind(shell.events, 'turn.end').map(e => e.data.reason)).toEqual(['settled', 'settled', 'settled', 'settled', 'settled'])
       const after = readDatabase(assembly.paths.database)
       try {

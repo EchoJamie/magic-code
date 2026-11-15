@@ -511,7 +511,7 @@ describe('目标预查 —— 拦在副作用之前', () => {
       targets.length === 0 ? load([]) : load([doc('src/AGENTS.md', 'src 的约定')])
 
     const { stage, runtime } = stageWith(answer, [
-      { toolCalls: [{ name: 'write', args: { cmd: 'ls' } }] },
+      { toolCalls: [{ name: 'write', args: { command: 'ls' } }] },
       { text: '好了' },
     ])
 

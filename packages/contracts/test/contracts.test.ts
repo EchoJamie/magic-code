@@ -66,7 +66,7 @@ export function kernelEventNarrowsByKind(): void {
       turn: null,
       at: 0,
       kind: 'tool.call',
-      data: { name: 'exec', args: { cmd: 'ls' } },
+      data: { name: 'exec', args: { command: 'ls' } },
     },
     {
       id: 2,
@@ -204,7 +204,7 @@ export function eventStamperIsUsable(): void {
     },
   }
 
-  const e = stamper.stamp('tool.call', { name: 'exec', args: { cmd: 'ls' } })
+  const e = stamper.stamp('tool.call', { name: 'exec', args: { command: 'ls' } })
   if (e.kind === 'tool.call') {
     const name: string = e.data.name // 收窄生效
     void name
@@ -291,7 +291,7 @@ export function toolResultCarriesThreeParts(): void {
 
 /** 条目的工具载荷保留原始调用 ID、名称与参数。 */
 export function entryCarriesToolPayload(): void {
-  const call: ToolCallPayload = { id: 'call-ls', name: 'exec', args: { cmd: 'ls' } }
+  const call: ToolCallPayload = { id: 'call-ls', name: 'exec', args: { command: 'ls' } }
   const result: ToolResultPayload = { ok: true, output: { text: 'done' } }
   const entry: NewEntry = { kind: 'tool-call', content: { text: '' }, payload: call, at: 0 }
   const full: Entry = { ...entry, id: 1 }
@@ -315,7 +315,7 @@ export function modelMessageNarrowsByRole(): void {
     {
       role: 'assistant',
       content: 'ok',
-      toolCalls: [{ id: 'call_1', name: 'exec', args: { cmd: 'ls' } }],
+      toolCalls: [{ id: 'call_1', name: 'exec', args: { command: 'ls' } }],
     },
     // 补锚：`tool` 支带 `name`（取件层回填需要工具名——反查在压缩后会静默退化）
     { role: 'tool', callId: 'call_1', name: 'exec', ok: true, output: 'done' },

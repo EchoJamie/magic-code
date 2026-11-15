@@ -24,7 +24,7 @@ test('当前来源替换不累积历史，实际呈现才已读且失败停点�
   const fixture = startFixture({ turns: [
     { kind: 'text', text: '历史第一条结果' }, { kind: 'text', text: '' },
     { kind: 'text', text: '这次真正显示的新结果' },
-    { kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 .' } },
+    { kind: 'tool', name: 'exec', args: { command: 'chmod 755 .' } },
     { kind: 'http', status: 400, message: '隔离失败验收' },
   ] })
   const sandbox = createSandbox({ baseURL: fixture.baseURL })

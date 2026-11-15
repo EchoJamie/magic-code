@@ -9,7 +9,7 @@ test('执行者已核销后保留未发送草稿与记录（在飞工具标失�
   const shell = createShell(spy.transport, { magicBase: '/test/.magic', detached: (listener) => { detached = listener } })
   for (const char of '未发送草稿') shell.key({ kind: 'char', char })
   spy.emit(event('turn.start', {}))
-  spy.emit(event('tool.call', { name: 'exec', args: { cmd: 'echo fixture' } }, { id: 71 }))
+  spy.emit(event('tool.call', { name: 'exec', args: { command: 'echo fixture' } }, { id: 71 }))
   expect(shell.getView().dock.kind).toBe('input')
   detached('执行者已退出')
   expect(shell.getView().dock.kind).toBe('input')

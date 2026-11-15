@@ -29,7 +29,7 @@ import { eventsOfKind, readDatabase } from './support.ts'
 const PLAIN: readonly { readonly text: string }[] = [{ text: '好' }]
 
 const T0 = 1_700_000_000_000
-const WORKSPACE_CALL = { name: 'exec', args: { cmd: 'mkdir -p src/new' } }
+const WORKSPACE_CALL = { name: 'exec', args: { command: 'mkdir -p src/new' } }
 
 test('真实写入后模型失败，重开保留执行事实与工作笔记，明确接续不重放副作用', async () => {
   const stage = makeStage()
@@ -187,7 +187,7 @@ describe('接续（`resume` 那条路）——装载 ＋ 恢复 ＋ 重建展示
       const session = await seedSession(stage, '起个头')
 
       const resumed = stage.assemble({ turns: PLAIN, session })
-      writeCrashSite(resumed, session, { name: 'exec', args: { cmd: 'ls' } })
+      writeCrashSite(resumed, session, { name: 'exec', args: { command: 'ls' } })
       const handle = attach(resumed)
       await resumed.boot()
 
@@ -222,7 +222,7 @@ describe('接续（`resume` 那条路）——装载 ＋ 恢复 ＋ 重建展示
 
       const resumed = stage.assemble({ turns: PLAIN, session })
       // 记录里出现过的最大轮号是 7（崩溃就断在这一轮）
-      writeCrashSite(resumed, session, { name: 'exec', args: { cmd: 'ls' } }, 7)
+      writeCrashSite(resumed, session, { name: 'exec', args: { command: 'ls' } }, 7)
       const handle = attach(resumed)
       await resumed.boot()
 

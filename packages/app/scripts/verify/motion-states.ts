@@ -5,8 +5,8 @@ import {createUiSession, REPO_ROOT } from '../../test/ui/driver.ts'
 for(const reduced of [false,true]){
  const ui=await createUiSession({columns:200,rows:40,label:`U114-motion-${reduced?'reduced':'normal'}`,artifacts:REPO_ROOT + '/.ui-runs/motion-states',config:{motion:{reduced}},turns:[
   {kind:'tool',name:'plan_update',args:{plan:{goal:'验证真实动效',steps:[{text:'执行受控工具并等待用户',status:'in_progress'}],notes:''}},reasoning:'THINKING_'+ 'a'.repeat(114),text:'执行',chunks:5,chunkDelayMs:1000},
-  {kind:'tool',name:'exec',args:{cmd:'sleep 5; printf U114_TOOL_DONE'}},
-  {kind:'tool',name:'exec',args:{cmd:'chmod 700 approved.sh'}},
+  {kind:'tool',name:'exec',args: { command:'sleep 5; printf U114_TOOL_DONE'}},
+  {kind:'tool',name:'exec',args: { command:'chmod 700 approved.sh'}},
   {kind:'text',text:'U114_MOTION_FINISHED',chunks:1,chunkDelayMs:10},
  ]})
  try{

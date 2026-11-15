@@ -30,7 +30,7 @@ const viewed = (events: readonly Parameters<typeof reduce>[1][]): ShellView =>
 describe('工具计时从发起算', () => {
   test('起算点就是发起那一刻', () => {
     const view = viewed([
-      event('tool.call', { name: 'exec', args: { cmd: 'echo hi' } }, { id: 71 }),
+      event('tool.call', { name: 'exec', args: { command: 'echo hi' } }, { id: 71 }),
       event('tool.decision', { call: 71, decision: 'approve', decider: 'auto', elapsedMs: 0 }, { id: 90 }),
     ])
 
@@ -39,7 +39,7 @@ describe('工具计时从发起算', () => {
 
   test('落地耗时＝**发起 → 落地**', () => {
     const view = viewed([
-      event('tool.call', { name: 'exec', args: { cmd: 'echo hi' } }, { id: 71 }),
+      event('tool.call', { name: 'exec', args: { command: 'echo hi' } }, { id: 71 }),
       event('tool.decision', { call: 71, decision: 'approve', decider: 'auto', elapsedMs: 0 }, { id: 90 }),
       event('tool.result', { call: 71, ok: true, output: { text: 'hi' } }, { id: 271 }),
     ])
@@ -51,7 +51,7 @@ describe('工具计时从发起算', () => {
     const stage = live()
     stage.feed([
       event('turn.start', {}),
-      event('tool.call', { name: 'exec', args: { cmd: 'echo hi' } }, { id: 71 }),
+      event('tool.call', { name: 'exec', args: { command: 'echo hi' } }, { id: 71 }),
       event('tool.decision', { call: 71, decision: 'approve', decider: 'auto', elapsedMs: 0 }, { id: 90 }),
     ])
 
@@ -65,7 +65,7 @@ describe('工具计时从发起算', () => {
 describe('没跑的那一笔没有「耗了多久」', () => {
   test('被拒：落地也不报耗时（`✗ 未获批准，未执行`——那个数会是「他想的时间」）', () => {
     const view = viewed([
-      event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
+      event('tool.call', { name: 'exec', args: { command: 'ls' } }, { id: 71 }),
       event('tool.decision', { call: 71, decision: 'reject', decider: 'user', elapsedMs: 2800 }, { id: 90 }),
       event('tool.result', { call: 71, ok: false, output: { text: '（未获批准，未执行）' } }, { id: 271 }),
     ])
@@ -88,7 +88,7 @@ describe('没跑的那一笔没有「耗了多久」', () => {
 
   test('**真跑失败**照旧报耗时（「没跑」与「跑了没成」两码事）', () => {
     const view = viewed([
-      event('tool.call', { name: 'exec', args: { cmd: 'false' } }, { id: 71 }),
+      event('tool.call', { name: 'exec', args: { command: 'false' } }, { id: 71 }),
       event('tool.result', { call: 71, ok: false, output: { text: 'exit 1' } }, { id: 271 }),
     ])
 

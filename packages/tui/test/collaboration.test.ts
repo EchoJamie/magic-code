@@ -171,7 +171,7 @@ test('子会话里工具行实时追加；默认折叠，Ctrl+O 那一屏才能�
   const app = collaborationStage()
   app.enter()
   const output = Array.from({ length: 40 }, (_, index) => `行${index} 输出`).join('\n')
-  app.spy.emit(event('tool.call', { name: 'exec', args: { cmd: 'bun test' } }, { id: 70, session: 'member' }))
+  app.spy.emit(event('tool.call', { name: 'exec', args: { command: 'bun test' } }, { id: 70, session: 'member' }))
   app.spy.emit(event('tool.result', { call: 70, ok: true, output: { text: output } }, { id: 270, session: 'member' }))
   const rows = app.view().rows
   expect(rows.some(row => row.kind === 'tool' && row.name === 'exec')).toBe(true)

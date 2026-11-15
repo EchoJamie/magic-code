@@ -120,6 +120,8 @@ export function createSandbox(options: SandboxOptions): Sandbox {
             maxOutputBytes: positiveOr(opts.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES),
             onOutput: opts.onOutput,
             signal: opts.signal,
+            onTimeout: opts.onTimeout,
+            ...(opts.adopt === undefined ? {} : { adopt: opts.adopt }),
             ...(options.ledger === undefined ? {} : { ledger: options.ledger }),
           })
         },

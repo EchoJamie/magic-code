@@ -61,7 +61,7 @@ describe('流式与终值', () => {
     expect(seen.deltas.map((d) => d.text)).toEqual(['A', 'E', 'B'])
 
     // 终值进 tool.result——只此一处，不在事件里重复
-    expect(outcome.output).toBe('AB\n[stderr]\nE')
+    expect(outcome.output).toBe('[退出 0 · /work/proj]\nAB\n[stderr]\nE')
     expect(deps.sink.byKind('tool.result')[0]?.data.output).toEqual({ text: outcome.output })
   })
 
@@ -77,13 +77,13 @@ describe('流式与终值', () => {
     const deps = makeToolDeps()
 
     await deps.runtime.invoke(execCall('ls'), {})
-    expect(deps.sandbox.execs[0]?.opts.timeoutMs).toBeNull()
+    expect(deps.sandbox.execs[0]?.opts.timeoutMs).toBe(120_000)
 
-    await deps.runtime.invoke(execCallWith({ cmd: 'ls', timeoutMs: 2500 }), {})
+    await deps.runtime.invoke(execCallWith({ command: 'ls', timeoutMs: 2500 }), {})
     expect(deps.sandbox.execs[1]?.opts.timeoutMs).toBe(2500)
 
     // `null` 是**显式的**「一直等」——与不填同义，但不是「沙箱自己看着办」
-    await deps.runtime.invoke(execCallWith({ cmd: 'ls', timeoutMs: null }), {})
+    await deps.runtime.invoke(execCallWith({ command: 'ls', timeoutMs: null }), {})
     expect(deps.sandbox.execs[2]?.opts.timeoutMs).toBeNull()
   })
 
@@ -91,7 +91,7 @@ describe('流式与终值', () => {
     const deps = makeToolDeps()
 
     for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, '5000']) {
-      const outcome = await deps.runtime.invoke(execCallWith({ cmd: 'ls', timeoutMs: bad }), {})
+      const outcome = await deps.runtime.invoke(execCallWith({ command: 'ls', timeoutMs: bad }), {})
       expect(outcome.ok).toBe(false)
       expect(outcome.output).toBe(OUTPUT_EXEC_BAD_TIMEOUT)
     }
@@ -113,7 +113,7 @@ describe('流式与终值', () => {
     const outcome = await deps.runtime.invoke(execCall('x'), {})
 
     expect(outcome.ok).toBe(true)
-    expect(outcome.output).toBe('AAAA')
+    expect(outcome.output).toBe('[退出 0 · /work/proj]\nAAAA')
     expect(outcome.output).not.toContain('输出已截断')
   })
 
@@ -123,7 +123,7 @@ describe('流式与终值', () => {
     const outcome = await deps.runtime.invoke(execCall('x'), {})
 
     expect(outcome.ok).toBe(false)
-    expect(outcome.output).toBe('[exit 3]')
+    expect(outcome.output).toBe('[退出 3 · /work/proj]')
     expect(deps.sink.byKind('tool.result')[0]?.data.ok).toBe(false)
     // 命令跑了（不是沙箱级失败）——沙箱那一侧照旧是 ok:true
     expect(deps.sandbox.execs).toHaveLength(1)
@@ -136,7 +136,7 @@ describe('流式与终值', () => {
 
     const outcome = await deps.runtime.invoke(execCall('x'), {})
 
-    expect(outcome.output).toBe('out\n\n[stderr]\nerr\n')
+    expect(outcome.output).toBe('[退出 0 · /work/proj]\nout\n\n[stderr]\nerr\n')
   })
 })
 
@@ -174,21 +174,22 @@ describe('大块转存（写权唯一归记录域）', () => {
     expect(outcome.content).toEqual({ blob: ref })
 
     // 面向模型的文本照旧是全文——转存改的是「记录怎么存」，不是「模型看见什么」
-    expect(outcome.output).toBe(big)
+    expect(outcome.output).toBe(`[退出 0 · /work/proj]\n${big}`)
 
     // 存进去的确实是全文（逐字节）
-    expect(new TextDecoder().decode(await deps.records.blobs.get(ref))).toBe(big)
+    expect(new TextDecoder().decode(await deps.records.blobs.get(ref))).toBe(`[退出 0 · /work/proj]\n${big}`)
   })
 
   test('阈值内 → 内联；恰好等于阈值不算超（判据取「大于」）', async () => {
-    const exact = 'A'.repeat(BLOB_THRESHOLD_BYTES)
+    // 事实行（`[退出 0 · …]`）也算在这份正文里，故留出它的位置
+    const exact = 'A'.repeat(BLOB_THRESHOLD_BYTES - 64)
     const deps = makeToolDeps({ exec: { x: { ok: true, exit: 0, stdout: exact, stderr: '' } } })
 
     const outcome = await deps.runtime.invoke(execCall('x'), {})
 
     expect(deps.records.blobRefs).toHaveLength(0)
-    expect(outcome.content).toEqual({ text: exact })
-    expect(deps.sink.byKind('tool.result')[0]?.data.output).toEqual({ text: exact })
+    expect(outcome.content).toEqual({ text: `[退出 0 · /work/proj]\n${exact}` })
+    expect(deps.sink.byKind('tool.result')[0]?.data.output).toEqual({ text: `[退出 0 · /work/proj]\n${exact}` })
   })
 
   test('阈值按**字节**计（多字节字符不按字符数蒙混过关）', async () => {
@@ -216,8 +217,8 @@ describe('大块转存（写权唯一归记录域）', () => {
     const outcome = await deps.runtime.invoke(execCall('x'), {})
 
     expect(outcome.ok).toBe(true)
-    expect(outcome.output).toBe(big)
-    expect(outcome.content).toEqual({ text: big })
-    expect(deps.sink.byKind('tool.result')[0]?.data.output).toEqual({ text: big })
+    expect(outcome.output).toBe(`[退出 0 · /work/proj]\n${big}`)
+    expect(outcome.content).toEqual({ text: `[退出 0 · /work/proj]\n${big}` })
+    expect(deps.sink.byKind('tool.result')[0]?.data.output).toEqual({ text: `[退出 0 · /work/proj]\n${big}` })
   })
 })

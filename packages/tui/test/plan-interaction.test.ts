@@ -705,7 +705,7 @@ describe('返修⑤ · 看不见的进行中项不动（共享时钟也在）', 
     ...Array.from({ length: 60 }, (_unused, at) => step(`第 ${at + 1} 步`, at === 0 ? 'in_progress' : 'pending')),
   )
   /** 一个**正在跑**的工具行——共享那支钟就是为它走的（「时钟在走 ≠ 这一块该动」）。 */
-  const running = [event('tool.call', { name: 'exec', args: { cmd: 'sleep 9' } }, { id: 90 })]
+  const running = [event('tool.call', { name: 'exec', args: { command: 'sleep 9' } }, { id: 90 })]
 
 
   test('进行中项翻出视口 ⇒ 不呼吸（`hasRunning` 跟着画出来的行）', () => {

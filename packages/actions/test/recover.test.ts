@@ -34,7 +34,7 @@ describe('② 幂等的那笔——静默重放（首站不可达：没有声明
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { id: 'call-fixture-1', name: 'exec', args: { cmd: 'ls' } },
+      payload: { id: 'call-fixture-1', name: 'exec', args: { command: 'ls' } },
       at: T0,
     })
     stage.records.appendEvent({
@@ -43,7 +43,7 @@ describe('② 幂等的那笔——静默重放（首站不可达：没有声明
       turn: 1,
       at: T0,
       kind: 'tool.call',
-      data: { name: 'exec', args: { cmd: 'ls' } },
+      data: { name: 'exec', args: { command: 'ls' } },
     } as KernelEvent)
 
     const report = await recoverSession(runtimeOf(stage, () => true))
@@ -76,7 +76,7 @@ describe('② 幂等的那笔——静默重放（首站不可达：没有声明
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { id: 'call-fixture-2', name: 'exec', args: { cmd: 'ls' } },
+      payload: { id: 'call-fixture-2', name: 'exec', args: { command: 'ls' } },
       at: T0,
     })
 
@@ -92,12 +92,12 @@ describe('② 非幂等的那笔——拒绝自动恢复（本单元最硬的一
   test('已批准但非幂等：**一次都不重跑**，落「未重跑」失败', async () => {
     const stage = makeStage({
       handlers: { exec: () => ({ ok: true, output: '不该跑' }) },
-      scan: scanOf([callOf({ args: { cmd: 'mkdir -p src/new' } })]),
+      scan: scanOf([callOf({ args: { command: 'mkdir -p src/new' } })]),
     })
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { id: 'call-fixture-3', name: 'exec', args: { cmd: 'mkdir -p src/new' } },
+      payload: { id: 'call-fixture-3', name: 'exec', args: { command: 'mkdir -p src/new' } },
       at: T0,
     })
 
@@ -129,7 +129,7 @@ describe('② 非幂等的那笔——拒绝自动恢复（本单元最硬的一
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { id: 'call-fixture-4', name: 'exec', args: { cmd: 'ls' } },
+      payload: { id: 'call-fixture-4', name: 'exec', args: { command: 'ls' } },
       at: T0,
     })
 
@@ -149,7 +149,7 @@ describe('④ 未答复裁决＝按「拒绝」落账（保守）', () => {
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { id: 'call-fixture-5', name: 'exec', args: { cmd: 'rm -rf build' } },
+      payload: { id: 'call-fixture-5', name: 'exec', args: { command: 'rm -rf build' } },
       at: T0,
     })
 
@@ -166,7 +166,7 @@ describe('④ 未答复裁决＝按「拒绝」落账（保守）', () => {
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { id: 'call-fixture-6', name: 'exec', args: { cmd: 'ls' } },
+      payload: { id: 'call-fixture-6', name: 'exec', args: { command: 'ls' } },
       at: T0,
     })
 
@@ -224,7 +224,7 @@ describe('判据之外的钉子', () => {
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { id: 'call-fixture-7', name: 'exec', args: { cmd: 'ls' } },
+      payload: { id: 'call-fixture-7', name: 'exec', args: { command: 'ls' } },
       at: T0,
     })
 
@@ -239,27 +239,27 @@ describe('判据之外的钉子', () => {
     const stage = makeStage({
       handlers: { exec: () => ({ ok: true, output: 'ok' }) },
       scan: scanOf([
-        callOf({ call: 42, entry: 2, args: { cmd: 'ls' } }),
-        callOf({ call: 43, entry: 3, args: { cmd: 'pwd' }, decision: null, decider: null }),
+        callOf({ call: 42, entry: 2, args: { command: 'ls' } }),
+        callOf({ call: 43, entry: 3, args: { command: 'pwd' }, decision: null, decider: null }),
       ]),
     })
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { id: 'call-fixture-8', name: 'exec', args: { cmd: 'ls' } },
+      payload: { id: 'call-fixture-8', name: 'exec', args: { command: 'ls' } },
       at: T0,
     })
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { id: 'call-fixture-9', name: 'exec', args: { cmd: 'pwd' } },
+      payload: { id: 'call-fixture-9', name: 'exec', args: { command: 'pwd' } },
       at: T0,
     })
 
     const report = await recoverSession(runtimeOf(stage, () => true))
 
     expect(report.dispositions.map((entry) => entry.action.kind)).toEqual(['replayed', 'not-replayed'])
-    expect(stage.tools.calls.map((call) => call.args['cmd'])).toEqual(['ls'])
+    expect(stage.tools.calls.map((call) => call.args['command'])).toEqual(['ls'])
     expect(stage.records.entries.map((entry) => entry.kind)).toEqual([
       'tool-call',
       'tool-call',
@@ -302,7 +302,7 @@ describe('用例入口（`createActions`）——⑤ 的递手', () => {
     stage.records.appendEntry({
       kind: 'tool-call',
       content: { text: '' },
-      payload: { id: 'call-fixture-10', name: 'exec', args: { cmd: 'ls' } },
+      payload: { id: 'call-fixture-10', name: 'exec', args: { command: 'ls' } },
       at: T0,
     })
 

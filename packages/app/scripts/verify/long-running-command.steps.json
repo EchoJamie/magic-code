@@ -1,5 +1,5 @@
 {
-  "label": "u69-长活不被掐（U76：判轻默认通 ⇒ 这一趟没有裁决卡）",
+  "label": "u69-长活跑过 120 秒那一屏（U76：判轻默认通 ⇒ 这一趟没有裁决卡）",
   "steps": [
     {
       "cmd": "start",
@@ -11,12 +11,12 @@
           "kind": "tool",
           "name": "exec",
           "args": {
-            "cmd": "sleep 125 && echo 构建完成"
+            "command": "sleep 125 && echo 构建完成"
           }
         },
         {
           "kind": "text",
-          "text": "构建跑到底了——没设上界，也就没人掐它。"
+          "text": "跑过 120 秒没结束，它转到后台接着跑——构建没被掐断，我去读那个输出文件就行。"
         }
       ]
     },
@@ -30,27 +30,35 @@
       "session": "乙",
       "key": "enter",
       "wait": {
-        "text": "✓"
+        "text": "已转后台"
       },
       "timeoutMs": 200000
     },
     {
       "cmd": "capture",
       "session": "乙",
-      "label": "01-长活跑到自己结束（125.0s，活过了 120 秒那个旧常量）"
+      "label": "01-长活跑过 120 秒：转到后台（不是被掐断）"
     },
     {
       "cmd": "wait",
       "session": "乙",
       "condition": {
-        "text": "没人掐它"
+        "text": "构建没被掐断"
+      },
+      "timeoutMs": 30000
+    },
+    {
+      "cmd": "wait",
+      "session": "乙",
+      "condition": {
+        "text": "bg-1 跑完了"
       },
       "timeoutMs": 30000
     },
     {
       "cmd": "capture",
       "session": "乙",
-      "label": "02-模型读到的那个意思（没设上界、没人掐它）"
+      "label": "02-模型读到的那个意思（没被掐、接着在跑）"
     },
     {
       "cmd": "quit",

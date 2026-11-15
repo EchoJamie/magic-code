@@ -90,11 +90,31 @@ export const OUTPUT_CANCELED_RUNNING = '已取消——命令被中止'
 export const execTimedOutOutput = (boundMs: number): string =>
   `已超时——命令跑过了、被掐断（${boundMs}ms 到点）`
 
+/**
+ * **超时之后转成了后台**——命令没被收掉，它还在跑。
+ *
+ * 三件必须说全：它**还在跑**（不是失败、不是被杀）、怎么认它（编号）、输出在哪（文件）。
+ * 另加一句「跑完会通知」——不说这句，模型会去轮着读那个文件等结束。
+ */
+export const execMovedToBackground = (id: string, outputPath: string, boundMs: number): string =>
+  `命令超过 ${boundMs}ms 还没结束，已转后台继续跑：编号 ${id}，输出写到 ${outputPath}。` +
+  '跑完会有一条消息带这个路径回来，不用轮着读它等结束。'
+
 /** 参数解析不出（`ToolCall.invalid`）——模型侧没给成形的参数，不再往下走。 */
 export const OUTPUT_INVALID_ARGS = '参数解析不出——未执行'
 
-/** `exec` 的命令字段取不到（键名锚定单一键 `cmd`——写错的键名不该被猜中）。 */
-export const OUTPUT_EXEC_NO_CMD = '参数错误：cmd 须为非空字符串；命令字段为 cmd'
+/**
+ * `exec` 的命令字段取不到（键名锚定单一键 `command`——写错的键名不该被猜中）。
+ *
+ * **说清「收到了什么」**：空的参数与「键写错了」是两件事，而这一句多半出现在模型
+ * 真以为给了命令的时候。未声明的键在外层先被拦下（`registry.ts` 的未知键检查），
+ * 走到这里的通常是**一个参数都没有**，或者 `command` 给了空串 / 非字符串——收到的键
+ * 摆出来，模型才知道差在哪一步。
+ */
+export const execNoCommandOutput = (keys: readonly string[]): string =>
+  keys.length === 0
+    ? '参数错误：exec 要的是 command（命令写在 command 里）；本次没有收到任何参数；未执行'
+    : `参数错误：command 须为非空字符串；本次收到的键：${keys.join('、')}；未执行`
 
 // —— sudo 专用认证（U129）——
 
@@ -203,7 +223,12 @@ export const OUTPUT_NEW_REQUIRED = '参数错误：new 须为字符串'
 /** `read` 读到空文件。 */
 export const OUTPUT_FILE_EMPTY = '[文件为空]'
 
-/** `read` 到了沙箱的读取上限——量由沙箱定，工具不猜数（契约 `ReadResult.truncated`）。 */
+/**
+ * `read` 到了沙箱的读取上限**却没给行窗口**时的兜底话（契约 `ReadResult.window` 缺席）。
+ *
+ * 真实现总会给窗口，工具侧据它说「行 a–b；继续用 from=…」；这一句只兜
+ * 「截断了但不知道截到哪」的那一格——说出来总比不说强，但它给不了续读点。
+ */
 export const OUTPUT_READ_TRUNCATED = '[已截断——文件超长，只读到前一段]'
 
 /** `ls` 空目录。 */

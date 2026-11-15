@@ -31,7 +31,7 @@ const TRANSIENT = ['background.state', 'model.delta', 'tool.output.delta', 'inpu
  */
 const GATED_TURNS: readonly FauxTurn[] = [
   {
-    toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 . && echo hello-magic' } }],
+    toolCalls: [{ name: 'exec', args: { command: 'chmod 755 . && echo hello-magic' } }],
     usage: { inputTokens: 11, outputTokens: 3 },
   },
   { text: '跑完了', usage: { inputTokens: 21, outputTokens: 7 } },
@@ -115,7 +115,7 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
       expect(prompt).toContain('平台：darwin')
       expect(prompt).toContain('日期：2026-09-18')
       // 工具结果条目与事件的 `output` **同物**（契约 `ToolResult.content` 的口径）
-      expect(toolResult?.data.output).toEqual({ text: 'hello-magic\n' })
+      expect((toolResult?.data.output as { text?: string }).text).toMatch(/^\[退出 0 · .+\]\nhello-magic\n$/)
 
       // —— 4 瞬时类只走订阅、不进库 ——
       for (const kind of TRANSIENT) {
@@ -157,7 +157,7 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
         expect(JSON.parse(toolCall?.payload ?? '{}')).toEqual({
           id: 'call_1',
           name: 'exec',
-          args: { cmd: 'chmod 755 . && echo hello-magic' },
+          args: { command: 'chmod 755 . && echo hello-magic' },
         })
 
         const toolResultRow = raw.entries.find((row) => row.kind === 'tool-result')

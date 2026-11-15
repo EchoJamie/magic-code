@@ -1,5 +1,5 @@
 {
-  "label": "u69-超时那一屏（U76：判轻默认通 ⇒ 这一趟没有裁决卡）",
+  "label": "u69-到点转后台那一屏（U76：判轻默认通 ⇒ 这一趟没有裁决卡）",
   "steps": [
     {
       "cmd": "start",
@@ -11,13 +11,13 @@
           "kind": "tool",
           "name": "exec",
           "args": {
-            "cmd": "echo '正在下载依赖 10%'; echo '正在下载依赖 55%'; sleep 60",
-            "timeoutMs": 3000
+            "command": "echo '正在下载依赖 10%'; echo '正在下载依赖 55%'; sleep 4",
+            "timeoutMs": 1000
           }
         },
         {
           "kind": "text",
-          "text": "到点被掐断了。看提示它已经跑过一段、那两行也在——我不当它是没跑。"
+          "text": "到点还没跑完，它接着在后台跑——编号和输出文件都在回执里，我不当它是没跑。"
         }
       ]
     },
@@ -31,20 +31,28 @@
       "session": "甲",
       "key": "enter",
       "wait": {
-        "text": "已超时"
+        "text": "已转后台"
       },
       "timeoutMs": 30000
     },
     {
       "cmd": "capture",
       "session": "甲",
-      "label": "01-超时那一屏（这一次带了 timeoutMs）"
+      "label": "01-到点转后台那一屏（这一次带了 timeoutMs）"
     },
     {
       "cmd": "wait",
       "session": "甲",
       "condition": {
         "text": "我不当它是没跑"
+      },
+      "timeoutMs": 30000
+    },
+    {
+      "cmd": "wait",
+      "session": "甲",
+      "condition": {
+        "text": "bg-1 跑完了"
       },
       "timeoutMs": 30000
     },

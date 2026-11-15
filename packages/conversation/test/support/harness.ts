@@ -71,7 +71,7 @@ export const EXEC_SPEC: ToolSpec = {
 }
 
 /** 缺省工具处理器——回一句「跑了什么」，便于断言回填内容。 */
-export const echoExec: FauxToolHandler = (call) => ({ ok: true, output: `跑了 ${String(call.args.cmd)}` })
+export const echoExec: FauxToolHandler = (call) => ({ ok: true, output: `跑了 ${String(call.args.command)}` })
 
 // ═══════════════════════════════════════════════════════════════════════
 // 工具域替身

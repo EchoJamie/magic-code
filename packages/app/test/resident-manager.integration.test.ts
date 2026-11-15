@@ -346,7 +346,7 @@ test('原生停止绑定当前输入代次，旧菜单不误停下一轮，同�
     const entries: import('@magic/contracts').NewEntry[] = [
       { kind: 'user', content: { text: `第${i}次交代\n保留原文` }, at: 10 + i * 4 },
       { kind: 'assistant', content: { text: `第${i}次答复` }, at: 11 + i * 4 },
-      { kind: 'tool-call', content: { text: 'exec: echo fixture' }, payload: { id: 'call-fixture-1', name: 'exec', args: { cmd: 'echo fixture' } }, at: 12 + i * 4 },
+      { kind: 'tool-call', content: { text: 'exec: echo fixture' }, payload: { id: 'call-fixture-1', name: 'exec', args: { command: 'echo fixture' } }, at: 12 + i * 4 },
       { kind: 'tool-result', content: { text: `fixture-${i}` }, payload: { ok: true, output: { text: `fixture-${i}` } }, at: 13 + i * 4 },
     ]
     for (const entry of entries) expected.push({ ...entry, id: records.appendEntry(entry) })

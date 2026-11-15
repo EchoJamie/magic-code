@@ -58,7 +58,7 @@ export function callOf(overrides: Partial<RecoveryScan['calls'][number]> = {}): 
     call: 42,
     entry: 2,
     name: 'exec',
-    args: { cmd: 'ls' },
+    args: { command: 'ls' },
     turn: 1,
     requested: true,
     decision: 'approve',
@@ -107,7 +107,7 @@ export function makeStage(options: StageOptions = {}): Stage {
   const gate = makeFauxPermissionGate({ auto: options.auto ?? 'approve' })
   const tools = makeFauxToolRuntime({
     definitions: [EXEC_SPEC],
-    handlers: options.handlers ?? { exec: (call) => ({ ok: true, output: `跑了 ${String(call.args.cmd)}` }) },
+    handlers: options.handlers ?? { exec: (call) => ({ ok: true, output: `跑了 ${String(call.args.command)}` }) },
   })
 
   return {
