@@ -123,11 +123,17 @@ export function createSandbox(options: SandboxOptions): Sandbox {
             ...(options.ledger === undefined ? {} : { ledger: options.ledger }),
           })
         },
-        async read(path: string, opts?: { maxBytes?: number; offset?: number; limit?: number }): Promise<ReadResult> {
+        async read(path: string, opts?: { maxBytes?: number; from?: number; lines?: number }): Promise<ReadResult> {
           const target = targetOf(path)
-          if (opts?.offset !== undefined || opts?.limit !== undefined) throw new Error('offset/limit 分页仅用于自身工作笔记；普通文件仍使用原有读取方式')
           const cap = positiveOr(opts?.maxBytes, DEFAULT_MAX_READ_BYTES)
-          return bound === undefined ? readText(target, cap) : readOpened(await fileOf(target), target.absolute, cap)
+          // 行窗口对**任何**文件一视同仁（`from` 1 起、`lines` 最多多少行）——
+          // 早先这两格只给工作笔记，普通文件要靠 `exec` 的 `sed` / `head` 自己截
+          if (opts?.from !== undefined && (!Number.isSafeInteger(opts.from) || opts.from < 1)) throw new Error('读取位置无效：from 须为从 1 起的整数')
+          if (opts?.lines !== undefined && (!Number.isSafeInteger(opts.lines) || opts.lines < 1)) throw new Error('读取行数无效：lines 须为正整数')
+          const window = opts?.from === undefined && opts?.lines === undefined
+            ? undefined
+            : { ...(opts?.from === undefined ? {} : { from: opts.from }), ...(opts?.lines === undefined ? {} : { lines: opts.lines }) }
+          return bound === undefined ? readText(target, cap, window) : readOpened(await fileOf(target), target.absolute, cap, window)
         },
         async write(path: string, data: WriteData, opts?: { expectedContent?: string }): Promise<void> {
           const target = targetOf(path)

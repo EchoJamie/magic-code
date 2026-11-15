@@ -20,8 +20,8 @@ test('真实装配：自身笔记六工具独立于工作区，计划只更新�
     const turns: FauxTurn[] = [
       { toolCalls: [{ name: 'write', args: { path, content: '约束：保留用户输入\n验证：尚未核对' } }] },
       { toolCalls: [{ name: 'edit', args: { path, old: '尚未核对', new: '已核对输入，焦点未验' } }] },
-      { toolCalls: [{ name: 'read', args: { path, limit: 8 } }] },
-      { toolCalls: [{ name: 'read', args: { path, offset: 8 } }] },
+      { toolCalls: [{ name: 'read', args: { path, from: 1, lines: 1 } }] },
+      { toolCalls: [{ name: 'read', args: { path, from: 2 } }] },
       { toolCalls: [{ name: 'plan_update', args: { steps: [{ text: '核对焦点', status: 'pending' }] } }] },
       { toolCalls: [{ name: 'plan_update', args: { steps: [] } }] },
       { text: '已保存笔记，计划步骤已清空' },

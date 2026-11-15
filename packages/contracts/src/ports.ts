@@ -346,7 +346,11 @@ export interface Sandbox {
   bindTarget?(target: ResolvedPath, tool: string): { sandbox: Sandbox; release(): Promise<void> }
   exec(cmd: string, opts: ExecOptions): Promise<ExecResult>
   /**
-   * 读文件——`opts.maxBytes` 缺省＝**实现常量**（64 KiB）。
+   * 读文件——**按行分段**：`opts.from`（1 起）＋ `opts.lines`（最多多少行），
+   * 两者都可缺省（缺省＝从第 1 行读到 `opts.maxBytes` 为止）。普通文件与工作笔记同一套。
+   *
+   * **上限**：`opts.maxBytes` 缺省＝**实现常量**（64 KiB）。它是**单次**上限，不是
+   * 文件的尽头——没读完时 `ReadResult.window.next` 给出下一段从哪一行起。
    *
    * **为什么要有这个口子**：`write` / `edit` 走「读 → 改 → 写回」时，按缺省上限读到的
    * 是**截断文本**——原样写回即**抹掉尾巴**（数据安全件）。故 `edit` 显式放大上限
@@ -354,7 +358,7 @@ export interface Sandbox {
    *
    * 目标已由上游闸门批准；执行层不另设工作区或产物目录准入名单。
    */
-  read(path: string, opts?: { maxBytes?: number; offset?: number; limit?: number }): Promise<ReadResult>
+  read(path: string, opts?: { maxBytes?: number; from?: number; lines?: number }): Promise<ReadResult>
   write(path: string, data: WriteData, opts?: { expectedContent?: string }): Promise<void>
   /** 自身笔记可在完整最新正文中唯一替换，不把大文件截断后写回。 */
   edit?(path: string, old: string, replacement: string): Promise<void>
@@ -1617,17 +1621,45 @@ export type ExecOptions = {
 }
 
 /**
- * `read` 返回——读文件（超长截断）。
+ * `read` 返回——读文件（**按行分段**，超长时分次读）。
  *
- * 落形态（U13）：`content` ＝**解码后的文本**；`truncated` ＝**到上限为止**，
+ * 落形态（U13）：`content` ＝**解码后的文本**（以整行收尾：本段最后一行的换行之后不再接
+ * 半行）；`window` ＝**本段是哪几行、后面还有没有**；`truncated` ＝**不是文件全貌**，
  * **字段缺席＝没截**（与 `ExecResult.truncated` 同口径——缺省态不占位）。
  * 上限是**字节**：调用方可经 `Sandbox.read` 的 `opts.maxBytes` 指定（缺省＝实现常量 64 KiB）——
- * `truncated` 即「到上限为止」，工具侧据它措辞（`edit` 放大到 1 MiB 再读，仍超限才拒）。
+ * `truncated` 即「到上限（或 `opts.lines`）为止」，工具侧据 `window` 措辞（`edit` 放大到 1 MiB
+ * 再读，仍超限才拒）。
  */
 export type ReadResult = {
   readonly note?: Omit<import('./notes.ts').NotePage, 'cursor' | 'links'>
   readonly content: string
   readonly truncated?: boolean
+  /** 本段的行范围与续读位置；`content` 是文件全貌时也照给（`from: 1`、`through: 末行`）。 */
+  readonly window?: ReadWindow
+}
+
+/**
+ * **一次读的是哪几行**——模型据它续读，不必再拿 `sed` / `head` 试。
+ *
+ * 行号 1 起，与 `grep` 报的行号、编译器报的行号同一套数法（这是**唯一**的地址空间：
+ * 早先按字符偏移，模型拿到 `grep` 的行号也无从下手）。
+ */
+export type ReadWindow = {
+  /** 本段第一行（1 起）。 */
+  readonly from: number
+  /** 本段最后一行（1 起，含）；空文件为 0。 */
+  readonly through: number
+  /** 文件总行数——**未统计时缺席**（大文件按 `next` 一页页读到底也照样可行）。 */
+  readonly totalLines?: number
+  /** 文件字节数（`stat` 给的，不额外扫）。 */
+  readonly totalBytes: number
+  /** 下一段的第一行；缺席＝已到文件末尾。 */
+  readonly next?: number
+  /**
+   * **单行本身就超上限**时的那一行号——这一行没法按行续读（越界的是行，不是段），
+   * 故 `next` 缺席，内容只给到上限为止。工具侧据此说「用 `grep` 或 `exec` 取这一段」。
+   */
+  readonly oversizedLine?: number
 }
 
 /**
@@ -1952,7 +1984,8 @@ export type ToolSetRow = Omit<ToolSpec, 'parameters'>
  * 权限域**分析**都按它取字段（危险归类＝按命令 / 按路径判定，见 `by-call` 支）。
  *
  * - `exec` —— `cmd`（命令；阶段 1 即锚定，**收窄为单一键**，不按候选键兜底）
- * - `read` —— `path`；自身工作笔记另支持字符分页 `offset` / `limit`
+ * - `read` —— `path` · `from?`（从第几行起，1 起）· `lines?`（最多多少行）；
+ *   **普通文件与工作笔记同一套**（早先只有笔记能分页，且按字符偏移）
  * - `write` —— `path` · `content`（**整写**——不是追加；空串＝写空文件）
  * - `edit` —— `path` · `old` · `new`（`old` 须在文件中**唯一**出现；`new` 空串＝删除）
  * - `grep` —— `pattern`（正则）· `path?`（搜索起点）
@@ -1977,7 +2010,7 @@ export const TOOLSET_V1 = [
     summary: '命令执行；dev server/watch 用 background:true，命令不加 nohup 或末尾 &，启动与健康检查分开',
     danger: { level: 'by-call', note: '按命令解析' },
   },
-  { name: 'read', summary: '读文件（超长截断）', danger: { level: 'light' } },
+  { name: 'read', summary: '读文件（按行分段）', danger: { level: 'light' } },
   {
     name: 'write',
     summary: '新建 / 整写文件',

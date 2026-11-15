@@ -2,12 +2,18 @@ import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { lstat, mkdir, open, readdir, rename, link, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep, posix } from 'node:path'
-import type { NoteLink, NoteReadQuery, NoteState, ResolvedPath, Sandbox, WorkingNotes } from '@magic/contracts'
+import type { NoteLink, NotePage, NoteReadQuery, NoteState, ResolvedPath, Sandbox, WorkingNotes } from '@magic/contracts'
 import { assertIdentity, assertTarget, inspectTarget, isInside, resolveTarget } from './workspace.ts'
 import { listDir } from './files.ts'
 import { matchIn } from './match.ts'
 
 const saves = new Map<string, Promise<void>>()
+/**
+ * 一页的**字符**预算（工具读笔记时用；`pageLimit` 是整篇覆盖前的宽上限）。
+ *
+ * 按行切页时这是软预算：一页装到它为止，但**至少收下起读的那一行**——一行就超预算时
+ * 也只能整行给出，否则它永远读不完，「覆盖前须完整读取」就再也达不成。
+ */
 const PAGE_CHARS = 8000
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT'
@@ -24,10 +30,22 @@ export function normalizeNotePath(path: string): string {
   return path
 }
 
+/** 各行起始的字符位置（行号 1 起＝下标 +1）；末尾换行不算多出一行。 */
+function lineStarts(text: string): number[] {
+  if (text === '') return []
+  const starts = [0]
+  for (let index = 0; index < text.length; index += 1) {
+    if (text.charCodeAt(index) !== 10) continue
+    if (index + 1 < text.length) starts.push(index + 1)
+  }
+  return starts
+}
+
 /** 文件为唯一正文；读取不建目录，保存只建立实际需要的父目录。 */
 export function createWorkingNotes(dataDir: string, session: string, pageLimit = 32000): WorkingNotes {
   const directory = noteDirectory(dataDir, session)
   const base = resolveTarget(resolve(dataDir))
+  /** 读过哪几行（`through` 是 1 起的末行号）：连着读成一片且到末尾，才允许整篇覆盖。 */
   const receipts = new Map<string, { fingerprint: string; cursor: string; through: number; complete: boolean }>()
   const written: Record<string, string> = {}
   let saved = 0
@@ -80,6 +98,16 @@ export function createWorkingNotes(dataDir: string, session: string, pageLimit =
     return found.sort()
   }
   async function read(query: NoteReadQuery = {}): Promise<NoteState> {
+    return readPage(query, pageLimit)
+  }
+  /**
+   * 一次读一页——**按行**（与普通文件同一套：`from` 1 起、`lines` 最多多少行）。
+   *
+   * `cap` 是这一页的字符上限：一页里装到 `cap` 就停，**但至少收下起读的那一行**
+   * （一行就超 `cap` 时也只能整行给出——按行续读没有「半行」这一格，硬切则永远读不完，
+   * 覆盖前的「完整读取」就再也达不成）。
+   */
+  async function readPage(query: NoteReadQuery, cap: number): Promise<NoteState> {
     const path = normalizeNotePath(query.path ?? 'MEMORY.md')
     const list = await files()
     const state = { directory, path, files: list }
@@ -87,14 +115,37 @@ export function createWorkingNotes(dataDir: string, session: string, pageLimit =
     if (!current) return { ...state, status: path !== 'MEMORY.md' ? 'missing' : list.length ? 'entry-missing' : 'empty' }
     const cursor = hash(`${session}\0${path}\0${current.fingerprint}`)
     if (query.cursor !== undefined && query.cursor !== cursor) return { ...state, status: 'changed' }
-    const offset = query.offset ?? 0, limit = query.limit ?? PAGE_CHARS
-    if (!Number.isSafeInteger(offset) || offset < 0 || offset > current.text.length || !Number.isSafeInteger(limit) || limit < 1) throw new Error('笔记分页位置或长度无效')
-    const text = current.text.slice(offset, offset + Math.min(limit, pageLimit))
-    const next = offset + text.length
-    return { ...state, status: 'ready', page: { session, path, absolute: join(directory, path), text, offset,
-      total: current.text.length, complete: next === current.text.length, ...(next < current.text.length ? { next } : {}), cursor,
-      links: noteLinks(path, text),
-    } }
+    return { ...state, status: 'ready', page: notePage(path, current.text, query, cursor, cap) }
+  }
+  /** 行窗口：`from` 从第几行起（1 起），`lines` 最多多少行，`cap` 最多多少字符。 */
+  function notePage(path: string, text: string, query: NoteReadQuery, cursor: string, cap: number): NotePage {
+    const from = query.from ?? 1
+    const lines = query.lines
+    if (!Number.isSafeInteger(from) || from < 1) throw new Error('笔记起读行无效')
+    if (lines !== undefined && (!Number.isSafeInteger(lines) || lines < 1)) throw new Error('笔记行数无效')
+    const starts = lineStarts(text)
+    const totalLines = starts.length
+    // 空笔记也是「0 行、已读完」，不是越界——空输出会被当成失败，越界更会
+    if (totalLines === 0) {
+      return { session, path, absolute: join(directory, path), text: '', from: 1, through: 0, totalLines: 0, complete: true, cursor, links: [] }
+    }
+    if (from > totalLines) throw new Error(`笔记共 ${totalLines} 行，from=${from} 已越过末尾`)
+    const first = from - 1
+    const last = lines === undefined ? totalLines : Math.min(totalLines, first + lines)
+    let index = first
+    let end = starts[first]!
+    while (index < last) {
+      const stop = index + 1 < totalLines ? starts[index + 1]! : text.length
+      if (index > first && stop - end > cap) break
+      end = stop
+      index += 1
+      if (end - starts[first]! >= cap) break
+    }
+    const pageText = text.slice(starts[first], end)
+    return { session, path, absolute: join(directory, path), text: pageText, from, through: index, totalLines,
+      complete: index === totalLines, ...(index < totalLines ? { next: index + 1 } : {}), cursor,
+      links: noteLinks(path, pageText),
+    }
   }
   async function serial<T>(operation: () => Promise<T>): Promise<T> {
     const previous = saves.get(directory) ?? Promise.resolve()
@@ -168,15 +219,16 @@ export function createWorkingNotes(dataDir: string, session: string, pageLimit =
           const key = same(path)
           await checkPath(path); assertIdentity(target)
           const previous = receipts.get(key)
-          const offset = opts?.offset ?? 0
-          const result = await read({ path: key, offset, limit: opts?.limit ?? (tool === 'edit' ? 32000 : PAGE_CHARS),
-            ...(offset > 0 && previous ? { cursor: previous.cursor } : {}) })
+          const from = opts?.from ?? 1
+          const result = await readPage({ path: key, from, ...(opts?.lines === undefined ? {} : { lines: opts.lines }),
+            ...(from > 1 && previous ? { cursor: previous.cursor } : {}) }, tool === 'edit' ? pageLimit : PAGE_CHARS)
           if (!result.page) throw new Error(result.status === 'changed' ? '续读期间笔记已变化，请从头重新读取' : `笔记不存在：${key}`)
           const page = result.page
           const current = await content(key)
           if (!current || hash(`${session}\0${key}\0${current.fingerprint}`) !== page.cursor) throw new Error('笔记已变化，请重新读取')
-          const through = offset === 0 || previous?.through === offset ? offset + page.text.length : -1
-          receipts.set(key, { fingerprint: current.fingerprint, cursor: page.cursor, through, complete: through === page.total })
+          // 只有「从头读起」或「接着上一次的末行」才算连成一片——中间断过就不算完整读过
+          const through = from === 1 || previous?.through === from - 1 ? page.through : -1
+          receipts.set(key, { fingerprint: current.fingerprint, cursor: page.cursor, through, complete: through === page.totalLines })
           const { cursor: _, links: __, ...note } = page
           return { content: page.text, ...(page.complete ? {} : { truncated: true }), note }
         },

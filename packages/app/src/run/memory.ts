@@ -16,7 +16,7 @@ export async function readMemory(store: RecordsStore, session: string | undefine
   if (session === undefined) return { workspace }
   if (!store.hasSession(session)) throw new Error('会话已不可读取')
   const metadata = (await store.listSessions({ ids: [session] }))[0]
-  if ((query.offset ?? 0) > 0 && query.cursor === undefined) throw new Error('续读缺少原读取身份；请从头重新读取')
+  if ((query.from ?? 1) > 1 && query.cursor === undefined) throw new Error('续读缺少原读取身份；请从头重新读取')
   const notes = await createWorkingNotes(dirname(store.paths.database), session).read(query)
   const references: NonNullable<EventDataOf['memory.state']['references']>[number][] = []
   for (const input of store.serviceFor(session).inputs.list()) {

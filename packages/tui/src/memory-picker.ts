@@ -59,7 +59,7 @@ export function createMemoryPicker(ui: {
   const notes = (page: MemoryPage, result?: NoteState) => {
     const previous = ui.picker, content = result?.page
     const stale = !content && previous?.detail !== undefined
-    const status = !result ? '尚无当前会话笔记' : ({ ready: content?.complete ? content.offset === 0 ? '本文件已读完整' : '已读至文件末尾，当前显示节选' : '当前为节选，可继续阅读', empty: '尚无笔记', 'entry-missing': '尚无入口笔记，可选择已有主题', missing: `文件已不存在：${result.path}`, changed: '内容已变化，请重新读取；此前已读内容不再代表当前全文' })[result.status]
+    const status = !result ? '尚无当前会话笔记' : ({ ready: content?.complete ? content.from === 1 ? '本文件已读完整' : '已读至文件末尾，当前显示节选' : '当前为节选，可继续阅读', empty: '尚无笔记', 'entry-missing': '尚无入口笔记，可选择已有主题', missing: `文件已不存在：${result.path}`, changed: '内容已变化，请重新读取；此前已读内容不再代表当前全文' })[result.status]
     show({ ...page, request: undefined, notes: result, references: page.references }, [
       ...(content ? [row('correct-note', '纠正这份笔记', ui.archived ? '已归档，需明确恢复后交代' : '加入普通交代草稿，尚不发送'),
         ...(content.next === undefined ? [] : [row('next-note', '继续阅读')]),
@@ -118,7 +118,7 @@ export function createMemoryPicker(ui: {
       if (value.startsWith('file:')) { ui.push(); readNote({ session: page.session, mode: 'work' }, { path: value.slice(5) }); return }
       if (value === 'next-note' && page.notes?.page?.next !== undefined) {
         const content = page.notes.page
-        ui.push(); readNote(page, { path: content.path, offset: content.next, cursor: content.cursor }); return
+        ui.push(); readNote(page, { path: content.path, from: content.next, cursor: content.cursor }); return
       }
       if (value.startsWith('link:')) {
         const link = page.notes?.page?.links[Number(value.slice(5))]

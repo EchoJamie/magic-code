@@ -100,18 +100,101 @@ describe('read —— 读文件（超长截断）', () => {
     expect(result.truncated).toBeUndefined()
   })
 
-  test('超长 → 截到上限为止（truncated）· 内容是原文前缀 · 不超过上限字节', async () => {
+  test('超长多行文件：一页只收整行，回执给行范围与 next；按 from 续读能接上', async () => {
     const { box, root } = freshSandbox()
-    const original = 'abcdefgh'.repeat(DEFAULT_MAX_READ_BYTES / 8 + 512)
+    const line = 'abcdefgh\n'
+    const original = line.repeat(DEFAULT_MAX_READ_BYTES / 8 + 512)
     seed(root, 'big.txt', original)
 
-    const result = await box.read('big.txt')
+    const first = await box.read('big.txt')
+
+    expect(first.truncated).toBe(true)
+    expect(original.startsWith(first.content)).toBe(true) // 截下来的是原文前缀
+    // 段尾是整行：以换行收尾，不会把半行当成完整内容
+    expect(first.content.endsWith('\n')).toBe(true)
+    expect(new TextEncoder().encode(first.content).byteLength).toBeLessThanOrEqual(DEFAULT_MAX_READ_BYTES)
+    const window = first.window!
+    expect(window.from).toBe(1)
+    expect(window.next).toBe(window.through! + 1)
+    expect(window.totalLines).toBe(original.split('\n').length - 1)
+    expect(window.totalBytes).toBe(Buffer.byteLength(original))
+
+    const rest = await box.read('big.txt', { from: window.next! })
+    expect(rest.window!.from).toBe(window.next!)
+    expect(rest.content.startsWith(line)).toBe(true)
+    expect(rest.window!.next).toBeUndefined() // 剩下的尾巴一页读完
+    expect(rest.window!.through).toBe(window.totalLines!)
+  })
+
+  test('按行取一段：from 与 lines 都以整行为界，正文一字不改', async () => {
+    const { box, root } = freshSandbox()
+    seed(root, 'source.ts', '一\n二\n三\n四\n五\n')
+
+    const middle = await box.read('source.ts', { from: 2, lines: 2 })
+
+    expect(middle.content).toBe('二\n三\n')
+    expect(middle.window).toMatchObject({ from: 2, through: 3, totalLines: 5, next: 4 })
+    expect(middle.truncated).toBe(true)
+
+    const tail = await box.read('source.ts', { from: 5 })
+    expect(tail.content).toBe('五\n')
+    expect(tail.window).toMatchObject({ from: 5, through: 5, totalLines: 5 })
+    expect(tail.window!.next).toBeUndefined()
+    expect(tail.truncated).toBeUndefined()
+  })
+
+  test('末行没有换行也算一行；from 越过末尾就抛，并报实际行数', async () => {
+    const { box, root } = freshSandbox()
+    seed(root, 'tail.txt', '甲\n乙')
+
+    const all = await box.read('tail.txt')
+    expect(all.content).toBe('甲\n乙')
+    expect(all.window).toMatchObject({ from: 1, through: 2, totalLines: 2 })
+
+    await expect(box.read('tail.txt', { from: 3 })).rejects.toThrow('文件共 2 行，from=3 已越过末尾')
+  })
+
+  test('末尾带换行时 from = 总行数 + 1 也抛越界（不是一份空正文）', async () => {
+    const { box, root } = freshSandbox()
+    seed(root, 'lines.txt', '甲\n乙\n')
+
+    expect((await box.read('lines.txt')).window).toMatchObject({ totalLines: 2 })
+    // 落点正好在文件末尾＝没有这一行；与 notes 那侧同一条规矩，别给空正文配一个 through < from 的窗口
+    await expect(box.read('lines.txt', { from: 3 })).rejects.toThrow('文件共 2 行，from=3 已越过末尾')
+    // 空文件仍读得（「共 0 行」是正常的，不是越界）
+    seed(root, 'empty.txt', '')
+    expect((await box.read('empty.txt')).content).toBe('')
+  })
+
+  test('单行自己超上限：明说是哪一行，不给续读点（按行续读没有下一段）', async () => {
+    const { box, root } = freshSandbox()
+    seed(root, 'min.json', 'x'.repeat(DEFAULT_MAX_READ_BYTES * 2))
+
+    const result = await box.read('min.json')
 
     expect(result.truncated).toBe(true)
-    expect(original.startsWith(result.content)).toBe(true) // 截下来的是原文前缀
-    expect(new TextEncoder().encode(result.content).byteLength).toBeLessThanOrEqual(
-      DEFAULT_MAX_READ_BYTES,
-    )
+    expect(new TextEncoder().encode(result.content).byteLength).toBeLessThanOrEqual(DEFAULT_MAX_READ_BYTES)
+    expect(result.window).toMatchObject({ from: 1, through: 1, oversizedLine: 1 })
+    expect(result.window!.next).toBeUndefined()
+  })
+
+  test('行窗口参数无效（0 / 负数 / 小数）→ 抛，不悄悄当成「从头读」', async () => {
+    const { box, root } = freshSandbox()
+    seed(root, 'a.txt', 'x\n')
+
+    await expect(box.read('a.txt', { from: 0 })).rejects.toThrow('from 须为从 1 起的整数')
+    await expect(box.read('a.txt', { lines: 0 })).rejects.toThrow('lines 须为正整数')
+    await expect(box.read('a.txt', { from: 1.5 })).rejects.toThrow('from 须为从 1 起的整数')
+  })
+
+  test('空文件：共 0 行，不抛也不给空结果当失败', async () => {
+    const { box, root } = freshSandbox()
+    seed(root, 'empty.txt', '')
+
+    const result = await box.read('empty.txt')
+
+    expect(result.content).toBe('')
+    expect(result.window).toMatchObject({ from: 1, through: 0, totalLines: 0 })
   })
 
   test('恰好等于上限 → 不算截断（边界取「大于」）', async () => {

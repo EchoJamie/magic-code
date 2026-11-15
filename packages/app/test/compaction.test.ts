@@ -80,7 +80,10 @@ test('39KB协作正文与27未决点经过真实工作循环、连续两次自�
       expect(app.records.serviceFor(app.session!).coverage.read().summary).toBe(finalSummary.id)
     } finally { db.close() }
     const counts = continuationCounts(await Array.fromAsync(app.records.serviceFor('origin').readEntries('origin', { auxiliary: true })), preparations)
-    expect(counts).toEqual({ contexts: 8, requests: 31, saves: 8, coverages: 2 })
+    // 这几个数是**这份夹具**的轮数快照：接续按「记录 + 字符区间」切块，所以任何一次
+    // 工具回执的**文字长度**变化都会挪动切块边界（`read` 回执改成行范围之后就是如此），
+    // 多/少一块就多/少一轮。判据本身是上面那几条（正文、来源、两次压缩、无错误）。
+    expect(counts).toEqual({ contexts: 9, requests: 35, saves: 9, coverages: 2 })
     expect(eventsOfKind(shell.events, 'turn.end').every(event => event.data.reason === 'settled')).toBe(true)
   } finally { shell.dispose(); app.close(); stage.dispose() }
 }, 30000)

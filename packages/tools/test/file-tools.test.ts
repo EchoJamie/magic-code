@@ -58,7 +58,65 @@ describe('read', () => {
 
     const result = await runtime.invoke({ id: 'c1', name: 'read', args: { path: '/work/proj/big.txt' } }, {})
 
+    // 没给行窗口（桩不做分页）⇒ 只能说「到上限了」，给不了续读点
     expect(result.output).toBe('abc\n[已截断——文件超长，只读到前一段]')
+  })
+
+  test('按行分段：行范围 ＋ 续读用 from（正文一字不改，注自成一行）', async () => {
+    const windowed = {
+      ...makeFauxSandbox(),
+      read: (): Promise<ReadResult> => Promise.resolve({
+        content: 'a\nb\n', truncated: true,
+        window: { from: 3, through: 4, totalLines: 12, totalBytes: 40, next: 5 },
+      }),
+    }
+    const { runtime } = makeToolDeps({ sandbox: windowed })
+
+    const result = await runtime.invoke({ id: 'c1', name: 'read', args: { path: '/work/proj/big.txt', from: 3, lines: 2 } }, {})
+
+    expect(result.output).toBe('a\nb\n[行 3–4 / 共 12 行；下一段 from=5]')
+  })
+
+  test('读到末尾：给了窗口就说范围，从头一次读完则不加注', async () => {
+    const tail = { ...makeFauxSandbox(), read: (): Promise<ReadResult> => Promise.resolve({
+      content: 'z\n', window: { from: 11, through: 12, totalLines: 12, totalBytes: 40 },
+    }) }
+    const whole = { ...makeFauxSandbox(), read: (): Promise<ReadResult> => Promise.resolve({
+      content: 'x\n', window: { from: 1, through: 1, totalLines: 1, totalBytes: 2 },
+    }) }
+
+    const middle = await makeToolDeps({ sandbox: tail }).runtime.invoke({ id: 'c1', name: 'read', args: { path: '/work/proj/big.txt', from: 11 } }, {})
+    expect(middle.output).toBe('z\n[行 11–12 / 共 12 行]')
+
+    const small = await makeToolDeps({ sandbox: whole }).runtime.invoke({ id: 'c1', name: 'read', args: { path: '/work/proj/a.ts' } }, {})
+    expect(small.output).toBe('x\n')
+  })
+
+  test('单行自己超上限：明说换一种取法，不给一个续读点骗人', async () => {
+    const oversized = { ...makeFauxSandbox(), read: (): Promise<ReadResult> => Promise.resolve({
+      content: 'aaaa', truncated: true,
+      window: { from: 7, through: 7, totalBytes: 900000, oversizedLine: 7 },
+    }) }
+    const { runtime } = makeToolDeps({ sandbox: oversized })
+
+    const result = await runtime.invoke({ id: 'c1', name: 'read', args: { path: '/work/proj/min.json', from: 7 } }, {})
+
+    expect(result.output).toBe('aaaa\n[第 7 行本身比本次读取上限还长，这一行没有读完]')
+  })
+
+  test('分段参数进沙箱（缺省→from=1），非法值在授权前就报', async () => {
+    const { runtime, sandbox, gate } = makeToolDeps({ sandbox: makeFauxSandbox({ files: { '/work/proj/a.ts': 'x\n' } }) })
+
+    await runtime.invoke({ id: 'c1', name: 'read', args: { path: '/work/proj/a.ts', from: 2, lines: 3 } }, {})
+    expect(sandbox.reads).toEqual([{ path: '/work/proj/a.ts', opts: { from: 2, lines: 3 } }])
+
+    for (const args of [{ path: 'a.ts', from: 0 }, { path: 'a.ts', from: 1.5 }, { path: 'a.ts', lines: 0 }, { path: 'a.ts', lines: -2 }]) {
+      const result = await runtime.invoke({ id: 'c2', name: 'read', args }, {})
+      expect(result.ok).toBe(false)
+      expect(result.output).toMatch(/参数错误：from 须为|参数错误：lines 须为/)
+    }
+    expect(sandbox.reads).toHaveLength(1)
+    expect(gate.requests).toHaveLength(1)
   })
 
   test('沙箱失败（越界 / 不存在）→ ok:false ＋ 沙箱那句**逐字**回填（不加前缀、不自造口径）', async () => {
@@ -85,11 +143,16 @@ describe('read', () => {
   test('参数错误：缺键 / 非串 / 空串——一律不碰沙箱（键名不被猜中）', async () => {
     const { runtime, sandbox } = makeToolDeps()
 
-    for (const args of [{}, { path: 42 }, { path: '' }, { file: 'a.txt' }]) {
+    for (const args of [{}, { path: 42 }, { path: '' }]) {
       const result = await runtime.invoke({ id: 'c1', name: 'read', args }, {})
       expect(result.ok).toBe(false)
       expect(result.output).toBe('参数错误：path 须为非空字符串')
     }
+
+    // 键名写错**先于**「缺了什么」报出来：模型拿到的是「改哪个键」，不是「你没给 path」
+    const misnamed = await runtime.invoke({ id: 'c2', name: 'read', args: { file: 'a.txt' } }, {})
+    expect(misnamed.ok).toBe(false)
+    expect(misnamed.output).toBe('参数错误（read）：未声明字段 file；可用字段：from、lines、path')
 
     expect(sandbox.reads).toEqual([])
   })
@@ -99,23 +162,38 @@ describe('read', () => {
     const { runtime, sandbox, gate } = makeToolDeps()
 
     const result = await runtime.invoke(
-      { id: 'c1', name: 'read', args: { path: 'a.txt', lines: 10 } },
+      { id: 'c1', name: 'read', args: { path: 'a.txt', range: '1-10' } },
       {},
     )
 
     expect(result.ok).toBe(false)
-    expect(result.output).toBe('参数错误（read）：未声明字段 lines；可用字段：offset、limit、path')
+    expect(result.output).toBe('参数错误（read）：未声明字段 range；可用字段：from、lines、path')
     expect(sandbox.reads).toEqual([])
     expect(gate.requests).toHaveLength(0) // D58：参数错在授权之前，不会先问一次
   })
 
-  test('描述区分笔记字符分页与普通文件上限，行范围不在参数中', () => {
+  test('笔记：回执写行范围与续读行号（不再是字符位置）', async () => {
+    const notes = { ...makeFauxSandbox(), read: (): Promise<ReadResult> => Promise.resolve({
+      content: '# 目标\n\n步骤一\n', truncated: true,
+      note: { session: 's-1', path: 'MEMORY.md', absolute: '/notes/s-1/MEMORY.md', text: '# 目标\n\n步骤一\n',
+        from: 1, through: 3, totalLines: 9, complete: false, next: 4 },
+    }) }
+    const { runtime } = makeToolDeps({ sandbox: notes })
+
+    const result = await runtime.invoke({ id: 'c1', name: 'read', args: { path: '/notes/s-1/MEMORY.md' } }, {})
+
+    expect(result.output.startsWith('笔记 /notes/s-1/MEMORY.md（会话 s-1；行 1–3 / 共 9 行；下一段 from=4）\n')).toBe(true)
+    expect(result.output.endsWith('# 目标\n\n步骤一\n')).toBe(true)
+  })
+
+  test('描述写清按行分段：普通文件与笔记同一套，续读用 from', () => {
     const { runtime } = makeToolDeps()
     const parameters = runtime.definitions().find(tool => tool.name === 'read')!.parameters as { description: string; properties: Record<string, unknown> }
-    expect(parameters.description).toContain('工作笔记可用 offset')
-    expect(parameters.description).toContain('字符位置')
-    expect(parameters.description).toContain('普通文件不接受分页参数')
-    expect(Object.keys(parameters.properties)).toEqual(['offset', 'limit', 'path'])
+    expect(parameters.description).toContain('按行分段')
+    expect(parameters.description).toContain('from 从第几行起')
+    expect(parameters.description).toContain('普通文件与工作笔记同一套')
+    expect(parameters.description).toContain('下一段的 from')
+    expect(Object.keys(parameters.properties)).toEqual(['from', 'lines', 'path'])
   })
 
   test('有效调用照旧只经过既有权限判定一次（D64 只改错误文案）', async () => {

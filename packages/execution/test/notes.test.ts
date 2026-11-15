@@ -7,6 +7,14 @@ import { createWorkingNotes } from '../src/notes.ts'
 
 const roots: string[] = []
 afterEach(async () => { for (const path of roots.splice(0)) await rm(path, { recursive: true, force: true }) })
+/** 一页一页读到末尾——按行续读（笔记页回执里的 `next` 是下一行的行号）。 */
+async function readThrough(path: string, sandbox: { read: (path: string, opts?: { from?: number; lines?: number }) => Promise<{ note?: { next?: number } }> }) {
+  for (let from: number | undefined = 1; from !== undefined;) {
+    const page = await sandbox.read(path, { from })
+    from = page.note?.next
+  }
+}
+
 async function fixture() {
   const base = await mkdtemp(join(tmpdir(), 'magic-notes-')); roots.push(base)
   const notes = createWorkingNotes(base, 'session')
@@ -20,12 +28,26 @@ test('读取不建目录；仅主题时有真实入口，分页变化不混拼',
   expect((await notes.read()).status).toBe('empty')
   expect(await readdir(base)).toEqual([])
   const path = join(notes.directory, 'topic.md')
-  await notes.bindTarget(notes.resolve(path)!, 'write').sandbox.write(path, { text: '甲乙丙丁' })
+  await notes.bindTarget(notes.resolve(path)!, 'write').sandbox.write(path, { text: '甲乙\n丙丁' })
   expect(await notes.read()).toMatchObject({ status: 'entry-missing', files: ['topic.md'] })
-  const first = (await notes.read({ path: 'topic.md', limit: 2 })).page!
-  expect(first).toMatchObject({ text: '甲乙', next: 2, complete: false })
-  await writeFile(path, '新甲乙丙丁')
-  expect((await notes.read({ path: 'topic.md', offset: 2, cursor: first.cursor })).status).toBe('changed')
+  // 按行分页：一页一行，续读用 from（行号），不是字符位置
+  const first = (await notes.read({ path: 'topic.md', lines: 1 })).page!
+  expect(first).toMatchObject({ text: '甲乙\n', from: 1, through: 1, totalLines: 2, next: 2, complete: false })
+  const rest = (await notes.read({ path: 'topic.md', from: 2, cursor: first.cursor })).page!
+  expect(rest).toMatchObject({ text: '丙丁', from: 2, through: 2, complete: true })
+  expect(rest.next).toBeUndefined()
+  await writeFile(path, '新甲乙\n丙丁')
+  expect((await notes.read({ path: 'topic.md', from: 2, cursor: first.cursor })).status).toBe('changed')
+  await expect(notes.read({ path: 'topic.md', from: 3 })).rejects.toThrow('已越过末尾')
+})
+
+test('空笔记读到「共 0 行、已读完」，不报越界；写完仍是 0 行', async () => {
+  const { notes, path, bound } = await fixture()
+  await bound('write').write(path, { text: '' })
+
+  const page = (await notes.read()).page!
+  expect(page).toMatchObject({ text: '', from: 1, through: 0, totalLines: 0, complete: true })
+  expect(page.next).toBeUndefined()
 })
 
 test('整篇覆盖要求同调用者完整读取，外部编辑冲突保留；唯一编辑保留其余大正文', async () => {
@@ -34,13 +56,13 @@ test('整篇覆盖要求同调用者完整读取，外部编辑冲突保留；�
   await expect(bound('write').write(path, { text: '未读覆盖' })).rejects.toThrow('完整读取')
   await bound('edit').edit!(path, '末尾', '新末尾')
   expect((await readFile(path, 'utf8')).endsWith('新末尾')).toBe(true)
-  await bound('read').read(path, { limit: 32000 })
+  await bound('read').read(path, { lines: 1 })
   await expect(bound('write').write(path, { text: '部分读覆盖' })).rejects.toThrow('完整读取')
-  await bound('read').read(path, { offset: 32000, limit: 32000 })
+  await readThrough(path, bound('read'))
   await writeFile(path, '用户外部编辑')
   await expect(bound('write').write(path, { text: '陈旧覆盖' })).rejects.toThrow('完整读取')
   expect(await readFile(path, 'utf8')).toBe('用户外部编辑')
-  await bound('read').read(path)
+  await readThrough(path, bound('read'))
   const other = notes.fork()
   await expect(other.bindTarget(other.resolve(path)!, 'write').sandbox.write(path, { text: '另一调用者' })).rejects.toThrow('完整读取')
   await bound('write').write(path, { text: '已重读更新' })
