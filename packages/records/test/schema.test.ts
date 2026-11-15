@@ -147,6 +147,8 @@ describe('判据 3 · 不落库清单', () => {
     // U110 补锚：`image.exported`——同 `input.pasted` 那一条（一次动作的当场答复）。
     // U112 补锚：`prefs.state`——同 `provider.catalog` 那一条（界面偏好那两格的**写盘答复**，
     // 痕在配置文件的 `statusLine` / `motion` 里；落库＝把同一份读数存第二遍）。
+    // U41 补锚：`models.search`——同 `model.catalog` 那条（资料在盘上的 `models.dev.json` 里，
+    // 检索是**边问边看**的动作，问几次都不混）。
     // **当前**：U111 撤掉 U37 那条 ＋ U110 补回导出那条 ＋ 本单这条。
 
     expect([...TRANSIENT_EVENT_KINDS].sort()).toEqual([
@@ -168,6 +170,8 @@ describe('判据 3 · 不落库清单', () => {
       'model.catalog',
       'model.delta',
       'model.retry',
+      // 手动对位 Models.dev：读出来的，不落库（同 `model.catalog`）。
+      'models.search',
       'paths.catalog',
       'paths.identified',
       'plan.changed',

@@ -90,6 +90,7 @@ export function editorRows(editor: ModelEditor): readonly PickerRow[] {
       meta: field.secret ? (editor.values.apiKey ? '已输入（隐藏）' : editor.original ? '未修改' : '未填写；可使用环境变量') : field.choices?.find(one => one.id === editor.values[field.key])?.label ?? editor.values[field.key] ?? '',
     })),
     ...(editor.kind === 'model' ? [{ label: editor.expanded ? '收起模型信息' : '展开模型信息（可选）', value: 'expand', current: false, oneLine: true, meta: '用户填写优先；留空恢复供应商信息或未知' }] : []),
+    ...(editor.kind === 'model' ? [{ label: '从 Models.dev 检索资料', value: 'models-dev', current: false, oneLine: true, meta: '名字对不上时手动挑一条，资料填进用户覆盖' }] : []),
     { label: '保存', value: 'save', current: false, oneLine: true, meta: editor.pending ? '正在保存…' : '一次保存全部字段' },
     ...(editor.kind === 'model' && editor.override !== undefined ? [{ label: '删除用户覆盖', value: 'remove-override', current: false, oneLine: true, meta: '恢复供应商信息；不删除已有映射' }] : []),
     { label: '取消并返回', value: 'cancel', current: false, oneLine: true, meta: '不写配置；保留本次草稿' },

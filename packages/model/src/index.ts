@@ -77,7 +77,7 @@ export { createModelInfoService, resolveConnection, modelSpecOf } from './model-
 export { vendorCatalog, resolveModelSource, authOf, PROTOCOLS } from './vendors.ts'
 export type { ModelConnection, ModelInfoService, ModelInfoServiceOptions } from './model-info.ts'
 export { MODEL_INFO_FAILURE_COOLDOWN_MS, MODEL_INFO_TTL_MS } from './model-info.ts'
-export { MODELS_DEV_URL, MODELS_DEV_TTL_MS, parseModelsDev } from './models-dev.ts'
+export { MODELS_DEV_URL, MODELS_DEV_TTL_MS, parseModelsDev, searchModelsDev, modelsDevMatchOf } from './models-dev.ts'
 export type { ModelsDevResource, ModelsDevSnapshot } from './models-dev.ts'
 
 // —— ③ 构造子（Faux Provider 与循环测试用；信封由注入的 `EventStamper` 铸）——

@@ -420,6 +420,20 @@ export type ModelRefresh = {
   readonly provider?: string
 }
 
+/**
+ * **检索 Models.dev 的型号**（手动对位）——答复走 `models.search`（不落库）。
+ *
+ * 由头：自定义渠道常把型号名改成自己的写法，`models.dev` 上那条却对不上名字。
+ * 这里只**按名字/供应商找候选**，让用户挑一条、把它的资料填进自己那条型号的用户覆盖；
+ * 抄进覆盖的始终是**我们这条连接的原始型号**，不改写供应商缓存。
+ *
+ * 读的是本地那份 Models.dev 资料：没有缓存就如实说没有，不替用户联网兜底。
+ */
+export type ModelsSearch = {
+  readonly type: 'models.search'
+  readonly query: string
+}
+
 /** 连接一览（**管理面读侧** · U41）——答复走 `provider.catalog`（不落库）。 */
 export type ProviderList = { readonly type: 'provider.list' }
 
@@ -498,6 +512,7 @@ export type Command = import('./background.ts').BackgroundCommandRequest
   | HistoryRead
   | ModelList
   | ModelRefresh
+  | ModelsSearch
   | ModelConfigure
   | WebList
   | WebConfigure

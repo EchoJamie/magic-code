@@ -112,7 +112,7 @@ describe('回放 · 正文', () => {
 
 describe('回放 · 工具调用', () => {
   test('工具调用 → 先出名字（空文本）再出参数 JSON——同 id', async () => {
-    const { gateway } = fauxOf([{ toolCalls: [{ name: 'exec', args: { cmd: 'ls' } }] }])
+    const { gateway } = fauxOf([{ toolCalls: [{ name: 'exec', args: { command: 'ls' } }] }])
 
     const { events, result } = await drainStream(gateway.stream(REQUEST))
 
@@ -120,20 +120,20 @@ describe('回放 · 工具调用', () => {
     expect(shape(events).slice(0, 3)).toEqual([
       'model.call.start',
       'delta:toolcall:|exec',
-      'delta:toolcall:{"cmd":"ls"}|exec',
+      'delta:toolcall:{"command":"ls"}|exec',
     ])
     expect(result.finishReason).toBe('tool-calls')
   })
 
   test('聚合结果载工具调用——循环据以回填（不解析事件流拼装）', async () => {
     const { gateway } = fauxOf([
-      { toolCalls: [{ name: 'exec', args: { cmd: 'ls' }, id: 'call_a' }] },
+      { toolCalls: [{ name: 'exec', args: { command: 'ls' }, id: 'call_a' }] },
     ])
 
     const { result } = await drainStream(gateway.stream(REQUEST))
 
     expect(result.toolCalls).toEqual([
-      { id: 'call_a', name: 'exec', args: { cmd: 'ls' } },
+      { id: 'call_a', name: 'exec', args: { command: 'ls' } },
     ])
   })
 
@@ -154,7 +154,7 @@ describe('回放 · 工具调用', () => {
   })
 
   test('工具调用的两条增量带同一个供应商侧 id——渲染侧据以分组', async () => {
-    const { gateway } = fauxOf([{ toolCalls: [{ name: 'exec', args: { cmd: 'pwd' } }] }])
+    const { gateway } = fauxOf([{ toolCalls: [{ name: 'exec', args: { command: 'pwd' } }] }])
 
     const { events } = await drainStream(gateway.stream(REQUEST))
     const toolDeltas = events.flatMap((e) =>
@@ -216,7 +216,7 @@ describe('回放 · 错误分档', () => {
 describe('脚本 · 一段一轮', () => {
   test('两次 stream 取两段——调用 → 工具 → 回填 → 收束 的往复可写', async () => {
     const { gateway, stamper } = fauxOf([
-      { toolCalls: [{ name: 'exec', args: { cmd: 'ls' } }] },
+      { toolCalls: [{ name: 'exec', args: { command: 'ls' } }] },
       { text: '跑完了' },
     ])
 

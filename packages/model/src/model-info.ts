@@ -49,7 +49,7 @@ import type {
 } from '@magic/contracts'
 import type { FetchLike } from './ai-sdk.ts'
 import { effectiveSpecOf, resolveApiKey } from './gateway.ts'
-import { normalizeBaseURL, vendorOf } from './vendors.ts'
+import { authOf, listModelsOfProtocol, normalizeBaseURL, vendorOf } from './vendors.ts'
 import type { VendorAdapter } from './vendors.ts'
 import { mergeModelInfo, modelsDevProvider, MODELS_DEV_TTL_MS } from './models-dev.ts'
 import type { ModelsDevResource } from './models-dev.ts'
@@ -70,7 +70,7 @@ export const MODEL_INFO_FAILURE_COOLDOWN_MS = 60 * 1000
 export type ModelConnection = {
   readonly id: string
   readonly config: ProviderConfig
-  /** 已解析的基址（官方适配按区域给 / 兼容接入用配置里那个）。 */
+  /** 已解析的基址（官方适配按区域给 / 自定义连接用配置里那个）。 */
   readonly baseURL: string
   /** 缺失时**不发请求**：如实报「这条连接没有可用认证」。 */
   readonly apiKey?: string | undefined
@@ -181,7 +181,7 @@ export type ModelInfoService = {
    * 把「缓存没能清掉」如实写进那次动作的答复。
    */
   drop(providerId: string): Promise<void>
-  /** 该连接是否**有自动获取能力**（官方适配）——兼容接入为 `false`。 */
+  /** 该连接是否**有可取列表的路**——官方适配或按协议取（三大协议都自带列表规范）。 */
   canFetch(providerId: string): boolean
 }
 
@@ -208,20 +208,52 @@ function snapshotKeyOf(providerId: string, accessId: string | undefined): string
   return `${providerId.length}:${providerId}:${accessId ?? ''}`
 }
 
-/** 一条连接该走哪个适配——没 `vendor` ＝兼容接入（没有自动列表能力）。 */
+/**
+ * 取列表的那条路——**官方适配优先，其余按连接所选协议**。
+ *
+ * 三个接入协议本身就是闭环规范（列表 · 信息 · 对话），所以「自定义 / 尚未注册的供应商」
+ * 不再被当成**没有列表能力**：按 `protocol` 走协议自带的 `/models`，只在供应商确有
+ * 非标准行为（端点、分页、字段名）时才需要一条适配去补差异。
+ *
+ * `id` 进 `scope`（缓存范围）：官方适配用适配名；协议这条路用**空串**——与 App 那一侧
+ * 同一把尺子（`@<地址>#<协议>`）。
+ */
+type Lister = {
+  readonly id: string
+  readonly list: (ctx: {
+    readonly providerId: string
+    readonly baseURL: string
+    readonly apiKey: string
+    readonly fetch: FetchLike
+    readonly signal?: AbortSignal | undefined
+  }) => Promise<readonly ModelInfo[]>
+}
+
+/** 一条连接该走哪个适配——没 `vendor` 或认不出 ＝ 没有官方适配，交给协议那条路。 */
 function adapterOf(config: ProviderConfig): VendorAdapter | undefined {
   if (config.vendor === undefined) return undefined
   return vendorOf(config.vendor)
 }
 
+/** 这条连接的列表来源；**连地址都没有**才真的没有可取之处。 */
+function listerOf(connection: ModelConnection): Lister | undefined {
+  const adapter = adapterOf(connection.config)
+  if (adapter !== undefined) return { id: adapter.id, list: ctx => adapter.listModels(ctx) }
+  if (connection.baseURL.length === 0) return undefined
+
+  const protocol = connection.config.protocol ?? 'responses'
+  const auth = authOf(connection.config, protocol)
+  return { id: '', list: ctx => listModelsOfProtocol({ ...ctx, protocol, auth }) }
+}
+
 /**
- * 接入范围标识——适配名 ＋ 地址（**不含密钥**）。
+ * 接入范围标识——**列表来源名** ＋ 地址（**不含密钥**）。
  *
- * 它管的是「这份列表说的是哪个范围」：换了供应商或换了地址就是另一个范围，
- * 旧快照即刻作废。`baseURL` 为空串的历史写法也照收（那仍是一个明确的取值）。
+ * 它管的是「这份列表说的是哪个范围」：换了供应商（改成按协议取也算换了来源）或换了地址，
+ * 就是另一个范围，旧快照即刻作废。`baseURL` 为空串的历史写法也照收（那仍是一个明确的取值）。
  */
-function scopeOf(adapter: VendorAdapter, baseURL: string, protocol?: ProviderConfig['protocol']): string {
-  return `${adapter.id}@${baseURL}#${protocol ?? 'auto'}`
+function scopeOf(listerId: string, baseURL: string, protocol?: ProviderConfig['protocol']): string {
+  return `${listerId}@${baseURL}#${protocol ?? 'auto'}`
 }
 
 /**
@@ -263,9 +295,9 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
 
   const readOf = (providerId: string): ModelInfoRead => {
     const connection = connectionOf(providerId)
-    const adapter = connection === undefined ? undefined : adapterOf(connection.config)
+    const lister = connection === undefined ? undefined : listerOf(connection)
     const stored = snapshots.get(snapshotKeyOf(providerId, connection?.access?.id))
-    const snapshot = connection !== undefined && adapter !== undefined && stored?.scope === scopeOf(adapter, connection.baseURL, connection.config.protocol) ? stored : undefined
+    const snapshot = connection !== undefined && lister !== undefined && stored?.scope === scopeOf(lister.id, connection.baseURL, connection.config.protocol) ? stored : undefined
     const failure = failures.get(providerId)
     const refreshing = inflight.has(providerId)
 
@@ -305,15 +337,16 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
     const entry: InflightFetch = { task: Promise.resolve(), voided: false }
 
     const task = (async () => {
-      const adapter = adapterOf(connection.config)
-      // 兼容接入没有自动列表能力——**不发请求**，也不报错（设计：不假称已支持）
-      if (adapter === undefined) return
+      const lister = listerOf(connection)
+      // 连地址都没有：没有可取之处（显式刷新会单独报一句，见 `refresh`）
+      if (lister === undefined) return
 
-      const scope = scopeOf(adapter, connection.baseURL, connection.config.protocol)
+      const scope = scopeOf(lister.id, connection.baseURL, connection.config.protocol)
       // **获取时捕获该身份**：发布前拿它跟**现取的**核一次——这一趟用的是哪份接入，
       // 只有发起时那个连接资料说得准
       const access = connection.access
-      if (connection.apiKey === undefined || connection.apiKey.length === 0) {
+      // 无需认证的连接照常取（本机 / 局域网服务）；要认证却没凭据才取不了
+      if (authOf(connection.config, connection.config.protocol ?? 'responses') !== 'none' && (connection.apiKey === undefined || connection.apiKey.length === 0)) {
         // 缺认证＝取不了：**照样记一笔失败**（用户该知道这条为什么一直空着）
         failures.set(id, { at: options.now(), reason: '这条连接没有可用的认证' })
         options.onChange?.(id)
@@ -321,10 +354,10 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
       }
 
       try {
-        const listed = await adapter.listModels({
+        const listed = await lister.list({
           providerId: id,
           baseURL: connection.baseURL,
-          apiKey: connection.apiKey,
+          apiKey: connection.apiKey ?? '',
           fetch: options.fetch,
         })
 
@@ -338,8 +371,8 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
           current === undefined
             ? undefined
             : (() => {
-                const now = adapterOf(current.config)
-                return now === undefined ? undefined : scopeOf(now, current.baseURL, current.config.protocol)
+                const now = listerOf(current)
+                return now === undefined ? undefined : scopeOf(now.id, current.baseURL, current.config.protocol)
               })()
 
         if (currentScope !== scope) return
@@ -424,9 +457,9 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
         // **核范围**：盘上那份说的是不是这条连接**现在这个范围**——
         // 不是就不接纳（设计：认证或接入范围改变时废弃该连接的旧缓存）。
         // 上一轮改了地址却没删成的（跨进程改的 / 上次崩在删之前），在这里挡住
-        const adapter = adapterOf(connection.config)
-        if (adapter === undefined) continue
-        if (stored.scope !== scopeOf(adapter, connection.baseURL, connection.config.protocol)) continue
+        const lister = listerOf(connection)
+        if (lister === undefined) continue
+        if (stored.scope !== scopeOf(lister.id, connection.baseURL, connection.config.protocol)) continue
 
         snapshots.set(snapshotKeyOf(connection.id, connection.access.id), stored)
       }
@@ -437,7 +470,7 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
     read(providerId: string): ModelInfoRead {
       void refreshMetadata().then(changed => { if (changed) options.onChange?.(providerId) })
       const connection = connectionOf(providerId)
-      if (connection !== undefined && adapterOf(connection.config) !== undefined) {
+      if (connection !== undefined && listerOf(connection) !== undefined) {
         if (shouldRefresh(providerId)) {
           // **后台**取——读面不等它（设计：过期先回旧缓存，后台刷新）
           void fetchOnce(connection)
@@ -451,6 +484,12 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
       if (connection === undefined) return readOf(providerId)
 
       failures.delete(providerId)
+      // 连地址都没有的连接：**如实说这一条没得取**，不假装刷新过
+      if (listerOf(connection) === undefined) {
+        failures.set(providerId, { at: options.now(), reason: '这条连接没有可用的服务地址' })
+        options.onChange?.(providerId)
+        return readOf(providerId)
+      }
       await Promise.all([fetchOnce(connection), options.metadata?.refresh(true)])
       options.onChange?.(providerId)
       return readOf(providerId)
@@ -478,7 +517,7 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
 
     canFetch(providerId: string): boolean {
       const connection = connectionOf(providerId)
-      return connection !== undefined && adapterOf(connection.config) !== undefined
+      return connection !== undefined && listerOf(connection) !== undefined
     },
   }
 }

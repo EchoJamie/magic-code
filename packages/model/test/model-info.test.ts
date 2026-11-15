@@ -273,17 +273,24 @@ describe('一趟在途 · 失败与冷却', () => {
     expect(service.read('ds').failure?.reason).toContain('没有可用的认证')
   })
 
-  test('兼容接入（没 `vendor`）⇒ 没有自动列表能力，不请求也不报错', async () => {
-    const counter = { calls: 0 }
+  test('自定义接入（没 `vendor`）⇒ 按所选协议取列表，不再当成没有列表能力', async () => {
+    const seen: { url: string; authorization: string | undefined }[] = []
     const { service } = stage({
-      connections: [connectionOf({ config: { baseURL: 'https://x/v1' } })],
-      fetch: listFetch(['a'], counter),
+      connections: [connectionOf({ config: { baseURL: 'https://x/v1', auth: 'bearer' }, baseURL: 'https://x/v1' })],
+      fetch: (async (input: unknown, init?: { headers?: unknown }) => {
+        const headers = new Headers(init?.headers as Record<string, string> | undefined)
+        seen.push({ url: String(input), authorization: headers.get('authorization') ?? undefined })
+        return Response.json({ object: 'list', data: [{ id: 'a' }] })
+      }) as unknown as FetchLike,
     })
 
-    expect(service.canFetch('ds')).toBe(false)
-    expect(service.read('ds')).toEqual({})
+    expect(service.canFetch('ds')).toBe(true)
+    service.read('ds')
     await settle()
-    expect(counter.calls).toBe(0)
+    expect(seen).toEqual([{ url: 'https://x/v1/models', authorization: 'Bearer sk-not-a-real-key' }])
+    expect(service.peek('ds').snapshot?.models).toEqual([{ id: 'a' }])
+    // 范围里没有适配名（与 App 那一侧同一把尺子）；没写协议＝`auto`
+    expect(service.peek('ds').snapshot?.scope).toBe('@https://x/v1#auto')
   })
 })
 
@@ -601,12 +608,51 @@ test('同身份切换协议不复用缓存，自动列表保留原始资料，�
   expect(service.peek('ds').snapshot?.scope).toEndWith('#chat-completions')
 })
 
-test('无列表接口的自定义接入不自动发现或记录后台失败', async () => {
+test('消息协议的自定义接入：无需认证也照协议取列表（版本头 + 分页）', async () => {
+  const seen: { url: string; headers: Headers }[] = []
+  const local = connectionOf({
+    config: { baseURL: 'http://local/v1', protocol: 'messages', auth: 'none' },
+    baseURL: 'http://local/v1',
+    apiKey: undefined,
+  })
+  const { service } = stage({
+    connections: [local],
+    fetch: (async (input: unknown, init?: { headers?: unknown }) => {
+      const headers = new Headers(init?.headers as Record<string, string> | undefined)
+      seen.push({ url: String(input), headers })
+      const after = new URL(String(input)).searchParams.get('after_id')
+      return Response.json(after === null
+        ? { data: [{ id: 'claude-one', display_name: '一号' }], has_more: true, last_id: 'claude-one' }
+        : { data: [{ id: 'claude-two', display_name: '二号' }], has_more: false, last_id: 'claude-two' })
+    }) as unknown as FetchLike,
+  })
+
+  expect(service.canFetch('ds')).toBe(true)
+  await service.refresh('ds')
+  expect(seen.map(one => one.url)).toEqual([
+    'http://local/v1/models?limit=1000',
+    'http://local/v1/models?limit=1000&after_id=claude-one',
+  ])
+  expect(seen[0]!.headers.get('anthropic-version')).toBe('2023-06-01')
+  expect(seen[0]!.headers.get('authorization')).toBeNull()
+  expect(seen[0]!.headers.get('x-api-key')).toBeNull()
+  expect(service.peek('ds').snapshot?.models).toEqual([
+    { id: 'claude-one', name: '一号' },
+    { id: 'claude-two', name: '二号' },
+  ])
+  expect(service.peek('ds').snapshot?.scope).toBe('@http://local/v1#messages')
+})
+
+test('没有服务地址的自定义接入：不请求，显式刷新如实说没法取', async () => {
   let calls = 0
-  const local = connectionOf({ config: { baseURL: 'http://local/v1', protocol: 'messages', auth: 'none' }, baseURL: 'http://local/v1', apiKey: undefined })
-  const { service } = stage({ connections: [local], fetch: async () => { calls++; throw new Error('no discovery') } })
+  const empty = connectionOf({ config: { auth: 'none' }, baseURL: '', apiKey: undefined })
+  const { service } = stage({ connections: [empty], fetch: async () => { calls++; throw new Error('不应请求') } })
+
   expect(service.canFetch('ds')).toBe(false)
+  service.read('ds')
+  await settle()
   expect(service.read('ds')).toEqual({})
-  expect(await service.refresh('ds')).toEqual({})
+  const refreshed = await service.refresh('ds')
+  expect(refreshed.failure?.reason).toContain('没有可用的服务地址')
   expect(calls).toBe(0)
 })

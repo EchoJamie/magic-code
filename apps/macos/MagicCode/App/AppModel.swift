@@ -20,6 +20,10 @@ import ServiceManagement
     @Published private(set) var settingsSavedKey: String?
     private var settingsErrorFromWrite = false
     @Published var settingsCategory = "models"
+    /// Models.dev 检索（手动对位）：候选、说明、在途——与保存那一路分开（检索不改配置）。
+    @Published private(set) var modelsDevMatches: [SettingsValue] = []
+    @Published private(set) var modelsDevNote: String?
+    @Published private(set) var modelsDevBusy = false
     private var queuedSettingsPreview: SettingsValue?
     @Published private(set) var runtimeMcp: [SettingsValue] = []
     @Published private(set) var runtimeSettingsError: String?
@@ -327,6 +331,36 @@ import ServiceManagement
         }
         callSettings(action: action, stamp: stamp, key: key, preview: nil)
     }
+    /// **检索 Models.dev 的型号**（手动对位）——只读本地那份资料，不改配置、不联网兜底。
+    func searchModelsDev(_ query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { modelsDevMatches = []; modelsDevNote = "请输入型号名或供应商"; return }
+        guard !modelsDevBusy, settingsSnapshot != nil else { return }
+        let base = effectiveBase.appendingPathComponent(".magic").path
+        let path = URL(fileURLWithPath: base).appendingPathComponent("config.json").path
+        let request = UUID().uuidString
+        let fields: [String: SettingsValue] = [
+            "request": .string(request), "home": .string(userHome.path), "base": .string(base), "configPath": .string(path),
+            "modelsDevSearch": .object(["query": .string(trimmed), "limit": .number(20)]),
+        ]
+        modelsDevBusy = true; modelsDevNote = nil
+        var environment = ProcessInfo.processInfo.environment
+        if isValidation { environment = ["HOME": userHome.path, "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"] }
+        Task {
+            defer { modelsDevBusy = false }
+            do {
+                let result = try await SettingsCall.run(metadataURL: appURL.appendingPathComponent("Contents/Resources/settings-data.json"), request: .object(fields), environment: environment)
+                guard result.request == request, result.base == base else { return }
+                modelsDevMatches = result.modelsDev?["matches"].array ?? []
+                let note = result.modelsDev?["note"].text ?? ""
+                modelsDevNote = note.isEmpty ? nil : note
+            } catch {
+                modelsDevMatches = []
+                modelsDevNote = error.localizedDescription
+            }
+        }
+    }
+    func clearModelsDevSearch() { modelsDevMatches = []; modelsDevNote = nil }
     private func callSettings(action: SettingsValue?, stamp: String?, key: String?, preview: SettingsValue?) {
         let request = UUID().uuidString
         let base = effectiveBase.appendingPathComponent(".magic").path

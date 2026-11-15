@@ -247,6 +247,7 @@ export async function readModelInfo(loaded: LoadedConfig, magic: MagicHome): Pro
     provider,
     configPath: loaded.path,
     apiKey: entry.apiKey,
+    auth: entry.auth,
     processToken: crypto.randomUUID(),
   })
   if (!access.persistent) return undefined // 环境变量来路：盘上根本没有它那一份

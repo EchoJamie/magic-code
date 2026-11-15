@@ -150,6 +150,11 @@ export function createControlHub(onError?: (error: unknown) => void): ControlHub
         // 显式刷新模型信息（U41）——**原样转手**给**装配**（模型信息缓存与在途获取在它那一层，
         // 同 `model.list` 之于注册表）。缺省那条连接由装配按「当下选中」解释，本域不猜。
         return target.onModelRefresh(command.provider)
+      case 'models.search':
+        // Models.dev 检索（手动对位）——读的是**本地资料**（`<base>/cache/models.dev.json`），
+        // 归设置那一侧：外壳在 `terminalSettings` 里**本地处置**（离线设置也一样）。
+        // 真从这里进来时如实说，不静默丢弃。
+        throw new Error('该操作由设置界面在本地处置')
       case 'model.override':
         return target.onModelOverride(command)
       case 'model.configure':

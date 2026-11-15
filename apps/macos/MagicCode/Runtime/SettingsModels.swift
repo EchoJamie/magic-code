@@ -52,13 +52,14 @@ final class SettingsModels {
         guard config["modelOverrides"][model]["capabilities"]["chat"] != .bool(false) else { throw WireError.invalid("模型不支持对话") }
     }
     private func scope(_ config: SettingsValue) throws -> String { config["vendor"].text + "@" + (try endpoint(config)) + "#" + (config.object["protocol"]?.text ?? "auto") }
+    /// 认证取出处：无需认证的连接没有凭据可随行，配置指纹本身就是身份（与 TS 同一把尺子）。
+    private func identityIsConfig(_ config: SettingsValue) -> Bool { config["apiKey"].nonempty || config["auth"].text == "none" }
     private func cachePath(_ id: String, config: SettingsValue, stamp: String?) -> String? {
-        guard config["apiKey"].nonempty, let stamp else { return nil }
+        guard identityIsConfig(config), let stamp else { return nil }
         func slug(_ text: String) -> String { String(Data(SHA256.hash(data: Data(text.utf8))).base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").prefix(22)) }
         return base + "/cache/models/" + slug(id) + "." + slug("cfg:\(id):\(stamp)") + ".json"
     }
     func snapshot(_ id: String, config: SettingsValue, stamp: String?) -> SettingsValue? {
-        guard vendor(config) != nil else { return nil }
         let value = cachePath(id, config: config, stamp: stamp).flatMap { try? SettingsFile.read($0) } ?? transient[id]
         guard var value, value["provider"].text == id, value["scope"].text == (try? scope(config)),
               value["fetchedAt"].number?.isFinite == true, value["models"].isArray else { return nil }
@@ -129,43 +130,9 @@ final class SettingsModels {
     func modelInfo(_ config: SettingsValue, model: String, supplied: SettingsValue?, resource: SettingsValue?) -> SettingsValue? {
         var info: [String: SettingsValue] = [:]
         if let provider = modelsDevProvider(config, data: resource?["data"] ?? .null),
-           let source = resource?["data"][provider]["models"].object[model], source["id"].text == model {
-            info["id"] = .string(model)
-            for key in ["name", "description"] { if source[key].isText { info[key] = source[key] } }
-            var limits: [String: SettingsValue] = [:]
-            for (from, to) in [("context", "maxContextTokens"), ("input", "maxInputTokens"), ("output", "maxOutputTokens")] {
-                if let n = source["limit"][from].number, n > 0, n <= 9_007_199_254_740_991, n.rounded() == n { limits[to] = .number(n) }
-            }
-            if let context = limits["maxContextTokens"]?.number {
-                for key in ["maxInputTokens", "maxOutputTokens"] where (limits[key]?.number ?? 0) > context { limits.removeValue(forKey: key) }
-            }
-            if !limits.isEmpty { info["limits"] = .object(limits) }
-            var capabilities: [String: SettingsValue] = [:]
-            for (key, capability, modality) in [("input", "image", "image"), ("output", "chat", "text")] {
-                let values = source["modalities"][key]
-                if values.isArray && values.array.allSatisfy({ $0.isText && $0.nonempty }) { capabilities[capability] = .bool(values.array.contains(.string(modality))) }
-            }
-            if source["tool_call"].isBool { capabilities["tools"] = source["tool_call"] }
-            if !capabilities.isEmpty { info["capabilities"] = .object(capabilities) }
-            if source["reasoning_options"].isArray {
-                let options = source["reasoning_options"].array
-                var reasoning: [String: SettingsValue] = [:]
-                if options.contains(where: { $0["type"].text == "toggle" }) { reasoning["disable"] = .bool(true) }
-                if let effort = options.first(where: { $0["type"].text == "effort" }) {
-                    if effort["values"].isArray && effort["values"].array.allSatisfy({ $0.isText && $0.nonempty }) { reasoning["levels"] = effort["values"] }
-                } else { reasoning["levels"] = .array([]) }
-                if let budget = options.first(where: { $0["type"].text == "budget_tokens" }) {
-                    var range: [String: SettingsValue] = [:]
-                    for (from, to) in [("min", "minTokens"), ("max", "maxTokens")] {
-                        if let n = budget[from].number, n > 0, n <= 9_007_199_254_740_991, n.rounded() == n { range[to] = .number(n) }
-                    }
-                    reasoning["budget"] = .object(range)
-                }
-                info["reasoning"] = .object(reasoning)
-            }
-            var origin: [String: SettingsValue] = ["provider": .string(provider)]
-            if source["last_updated"].isText { origin["updatedAt"] = source["last_updated"] }
-            info["metadata"] = .object(origin)
+           let source = resource?["data"][provider]["models"].object[model],
+           let mapped = metadataInfo(provider: provider, model: model, source: source) {
+            info = mapped.object
         }
         if let supplied {
             for (key, value) in supplied.object {
@@ -174,6 +141,86 @@ final class SettingsModels {
             }
         }
         return info.isEmpty ? nil : .object(info)
+    }
+
+    /// Models.dev 的一条型号 → 我们消费的那几格（读面与检索共用这一套映射，免得两处各说一套）。
+    private func metadataInfo(provider: String, model: String, source: SettingsValue) -> SettingsValue? {
+        guard source["id"].text == model else { return nil }
+        var info: [String: SettingsValue] = ["id": .string(model)]
+        for key in ["name", "description"] { if source[key].isText { info[key] = source[key] } }
+        var limits: [String: SettingsValue] = [:]
+        for (from, to) in [("context", "maxContextTokens"), ("input", "maxInputTokens"), ("output", "maxOutputTokens")] {
+            if let n = source["limit"][from].number, n > 0, n <= 9_007_199_254_740_991, n.rounded() == n { limits[to] = .number(n) }
+        }
+        if let context = limits["maxContextTokens"]?.number {
+            for key in ["maxInputTokens", "maxOutputTokens"] where (limits[key]?.number ?? 0) > context { limits.removeValue(forKey: key) }
+        }
+        if !limits.isEmpty { info["limits"] = .object(limits) }
+        var capabilities: [String: SettingsValue] = [:]
+        for (key, capability, modality) in [("input", "image", "image"), ("output", "chat", "text")] {
+            let values = source["modalities"][key]
+            if values.isArray && values.array.allSatisfy({ $0.isText && $0.nonempty }) { capabilities[capability] = .bool(values.array.contains(.string(modality))) }
+        }
+        if source["tool_call"].isBool { capabilities["tools"] = source["tool_call"] }
+        if !capabilities.isEmpty { info["capabilities"] = .object(capabilities) }
+        if source["reasoning_options"].isArray {
+            let options = source["reasoning_options"].array
+            var reasoning: [String: SettingsValue] = [:]
+            if options.contains(where: { $0["type"].text == "toggle" }) { reasoning["disable"] = .bool(true) }
+            if let effort = options.first(where: { $0["type"].text == "effort" }) {
+                if effort["values"].isArray && effort["values"].array.allSatisfy({ $0.isText && $0.nonempty }) { reasoning["levels"] = effort["values"] }
+            } else { reasoning["levels"] = .array([]) }
+            if let budget = options.first(where: { $0["type"].text == "budget_tokens" }) {
+                var range: [String: SettingsValue] = [:]
+                for (from, to) in [("min", "minTokens"), ("max", "maxTokens")] {
+                    if let n = budget[from].number, n > 0, n <= 9_007_199_254_740_991, n.rounded() == n { range[to] = .number(n) }
+                }
+                reasoning["budget"] = .object(range)
+            }
+            info["reasoning"] = .object(reasoning)
+        }
+        var origin: [String: SettingsValue] = ["provider": .string(provider)]
+        if source["last_updated"].isText { origin["updatedAt"] = source["last_updated"] }
+        info["metadata"] = .object(origin)
+        return .object(info)
+    }
+
+    /**
+     * **按名字检索 Models.dev 的型号**（手动对位）——与 TS 的 `searchModelsDev` 同一套判法：
+     * id 完全相同 → id 前缀 → id 含查询 → 名称含查询 → 供应商名含查询；同档按供应商、型号 id 排。
+     *
+     * 只读本地那份资料（没有就返回空，让界面如实说「先刷新一次」），不改配置。
+     */
+    func searchModelsDev(query: String, limit: Int = 20) -> [SettingsValue] {
+        let wanted = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !wanted.isEmpty, limit > 0, let data = modelsDevSnapshot()?["data"] else { return [] }
+        var ranked: [(rank: Int, provider: String, model: String, row: SettingsValue)] = []
+        for (provider, value) in data.object {
+            let providerHit = provider.lowercased().contains(wanted)
+            for (model, source) in value["models"].object {
+                let id = model.lowercased(), name = source["name"].text.lowercased()
+                let rank: Int
+                if id == wanted { rank = 0 }
+                else if id.hasPrefix(wanted) { rank = 1 }
+                else if id.contains(wanted) { rank = 2 }
+                else if name.contains(wanted) { rank = 3 }
+                else if providerHit { rank = 4 }
+                else { continue }
+                guard let info = metadataInfo(provider: provider, model: model, source: source) else { continue }
+                var row: [String: SettingsValue] = ["provider": .string(provider), "model": .string(model)]
+                for key in ["name", "description", "limits", "capabilities", "reasoning"] where info[key] != .null { row[key] = info[key] }
+                if info["metadata"]["updatedAt"] != .null { row["updatedAt"] = info["metadata"]["updatedAt"] }
+                ranked.append((rank, provider, model, .object(row)))
+            }
+        }
+        ranked.sort { a, b in
+            if a.rank != b.rank { return a.rank < b.rank }
+            let providerA = a.provider.lowercased(), providerB = b.provider.lowercased()
+            if providerA != providerB { return providerA < providerB }
+            let idA = a.model.lowercased(), idB = b.model.lowercased()
+            return idA == idB ? false : idA < idB
+        }
+        return ranked.prefix(limit).map(\.row)
     }
     func refreshMetadata(_ configs: [SettingsValue], force: Bool = false) async -> String? {
         let resource = modelsDevSnapshot()
@@ -223,45 +270,82 @@ final class SettingsModels {
         }
         return URLSession(configuration: configuration)
     }
+    /// Anthropic Messages 的接口版本（列表与对话同一版）。
+    private static let anthropicVersion = "2023-06-01"
+    /// 官方连接的列表端点：列表与调用共用同一个基址，端点本身是协议标准的那一条。
+    private static let listProtocol = "chat-completions"
+
+    /// 取一趟完整列表：**官方适配优先，其余按连接所选协议**（协议自带列表规范）。
     func refresh(_ id: String, config: SettingsValue, stamp: String?) async throws {
-        guard vendor(config) != nil else { return }
-        guard let url = URL(string: try endpoint(config) + "/models") else { throw WireError.invalid("该连接没有可用的官方模型列表接口") }
+        let custom = vendor(config) == nil
+        let protocolID = custom ? (config.object["protocol"]?.text ?? "responses") : Self.listProtocol
+        let base = try endpoint(config)
+        guard !base.isEmpty else { throw WireError.invalid("该连接没有可用的服务地址") }
+
+        let auth = config.object["auth"]?.text ?? (protocolID == "messages" ? "api-key" : "bearer")
         let key = config["apiKey"].nonempty ? config["apiKey"].text.trimmingCharacters(in: .whitespacesAndNewlines) : environment[Self.environmentKey(id)]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !key.isEmpty else { throw WireError.invalid("连接缺少认证凭据") }
-        var request = URLRequest(url: url); request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization"); request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let data: Data
-        do {
-            let session = try session(for: url); defer { session.invalidateAndCancel() }
-            let (received, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw WireError.invalid("模型列表刷新失败") }
-            data = received
-        } catch { throw WireError.invalid("模型列表刷新失败，请检查连接与认证") }
-        guard let body = try? JSONDecoder().decode(SettingsValue.self, from: data), body["data"].isArray else { throw WireError.invalid("模型列表响应无效") }
-        let models = body["data"].array.compactMap { source -> SettingsValue? in
-            guard source["id"].isText, !source["id"].text.isEmpty else { return nil }
-            var row: [String: SettingsValue] = ["id": source["id"]]
-            for key in ["name", "description"] { if source[key].isText { row[key] = source[key] } }
-            var limits: [String: SettingsValue] = [:]
-            for (from, to) in [("max_input_tokens", "maxInputTokens"), ("max_output_tokens", "maxOutputTokens"), ("context_window", "maxContextTokens")] {
-                if let n = source[from].number, n > 0, n <= 9_007_199_254_740_991, n.rounded() == n { limits[to] = .number(n) }
+        if auth != "none", key.isEmpty { throw WireError.invalid("连接缺少认证凭据") }
+
+        var headers = ["Accept": "application/json"]
+        if auth == "bearer" { headers["Authorization"] = "Bearer " + key } else if auth == "api-key" { headers["x-api-key"] = key }
+        if protocolID == "messages" { headers["anthropic-version"] = Self.anthropicVersion }
+
+        var models: [SettingsValue] = [], after: String?
+        for _ in 0..<100 {
+            guard var components = URLComponents(string: base + "/models") else { throw WireError.invalid("模型列表地址无效") }
+            if protocolID == "messages" {
+                components.queryItems = [URLQueryItem(name: "limit", value: "1000")] + (after.map { [URLQueryItem(name: "after_id", value: $0)] } ?? [])
             }
-            var capabilities = source["capabilities"].object.filter { ["chat", "image", "tools"].contains($0.key) && $0.value.isBool }
-            if capabilities["image"] == nil, source["input_modalities"].isArray, source["input_modalities"].array.allSatisfy(\.isText) { capabilities["image"] = .bool(source["input_modalities"].array.contains(.string("image"))) }
-            var reasoning = source["reasoning"].object.filter { ($0.key == "disable" && $0.value.isBool) || ($0.key == "default" && ["on", "off"].contains($0.value.text)) }
-            let levels = source["reasoning"].object["levels"] ?? source["effort"].object["supported_levels"]
-            if let levels, levels.isArray, levels.array.allSatisfy({ $0.isText && !$0.text.isEmpty }) { reasoning["levels"] = levels }
-            var budget: [String: SettingsValue] = [:]
-            for (from, to) in [("min_tokens", "minTokens"), ("max_tokens", "maxTokens")] {
-                if let n = source["reasoning"]["budget"][from].number, n > 0, n <= 9_007_199_254_740_991, n.rounded() == n { budget[to] = .number(n) }
-            }
-            if let min = budget["minTokens"]?.number, let max = budget["maxTokens"]?.number, min > max { budget = [:] }
-            if !budget.isEmpty { reasoning["budget"] = .object(budget) }
-            if !limits.isEmpty { row["limits"] = .object(limits) }; if !capabilities.isEmpty { row["capabilities"] = .object(capabilities) }; if !reasoning.isEmpty { row["reasoning"] = .object(reasoning) }
-            return .object(row)
+            guard let url = components.url else { throw WireError.invalid("模型列表地址无效") }
+            var request = URLRequest(url: url)
+            for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+            let received: Data
+            do {
+                let session = try session(for: url); defer { session.invalidateAndCancel() }
+                let (data, response) = try await session.data(for: request)
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw WireError.invalid("模型列表刷新失败") }
+                received = data
+            } catch { throw WireError.invalid("模型列表刷新失败，请检查连接与认证") }
+            guard let body = try? JSONDecoder().decode(SettingsValue.self, from: received), body["data"].isArray else { throw WireError.invalid("模型列表响应无效") }
+            models += body["data"].array.compactMap { protocolID == "messages" ? SettingsModels.anthropicRow($0) : SettingsModels.listRow($0) }
+            guard protocolID == "messages", body["has_more"].flag, !body["last_id"].text.isEmpty, body["last_id"].text != after else { break }
+            after = body["last_id"].text
         }
         let snapshot = SettingsValue.object(["provider": .string(id), "scope": .string(try scope(config)), "fetchedAt": .number(Date().timeIntervalSince1970 * 1000), "models": .array(models)])
         // 迟到结果只写入发起时的认证范围；后续读取会按当前指纹选取。
         try store(snapshot, config: config, stamp: stamp)
+    }
+
+    /// Anthropic Messages 的列表行：`{ id, display_name, created_at }`（字段少，只取有用的两格）。
+    private static func anthropicRow(_ source: SettingsValue) -> SettingsValue? {
+        guard source["id"].isText, !source["id"].text.isEmpty else { return nil }
+        var row: [String: SettingsValue] = ["id": source["id"]]
+        if source["display_name"].isText, !source["display_name"].text.isEmpty { row["name"] = source["display_name"] }
+        return .object(row)
+    }
+
+    /// 协议标准（OpenAI 形状）的列表行：`{ id, name?, description?, 容量/能力/思考? }`。
+    private static func listRow(_ source: SettingsValue) -> SettingsValue? {
+        guard source["id"].isText, !source["id"].text.isEmpty else { return nil }
+        var row: [String: SettingsValue] = ["id": source["id"]]
+        for key in ["name", "description"] { if source[key].isText { row[key] = source[key] } }
+        var limits: [String: SettingsValue] = [:]
+        for (from, to) in [("max_input_tokens", "maxInputTokens"), ("max_output_tokens", "maxOutputTokens"), ("context_window", "maxContextTokens")] {
+            if let n = source[from].number, n > 0, n <= 9_007_199_254_740_991, n.rounded() == n { limits[to] = .number(n) }
+        }
+        var capabilities = source["capabilities"].object.filter { ["chat", "image", "tools"].contains($0.key) && $0.value.isBool }
+        if capabilities["image"] == nil, source["input_modalities"].isArray, source["input_modalities"].array.allSatisfy(\.isText) { capabilities["image"] = .bool(source["input_modalities"].array.contains(.string("image"))) }
+        var reasoning = source["reasoning"].object.filter { ($0.key == "disable" && $0.value.isBool) || ($0.key == "default" && ["on", "off"].contains($0.value.text)) }
+        let levels = source["reasoning"].object["levels"] ?? source["effort"].object["supported_levels"]
+        if let levels, levels.isArray, levels.array.allSatisfy({ $0.isText && !$0.text.isEmpty }) { reasoning["levels"] = levels }
+        var budget: [String: SettingsValue] = [:]
+        for (from, to) in [("min_tokens", "minTokens"), ("max_tokens", "maxTokens")] {
+            if let n = source["reasoning"]["budget"][from].number, n > 0, n <= 9_007_199_254_740_991, n.rounded() == n { budget[to] = .number(n) }
+        }
+        if let min = budget["minTokens"]?.number, let max = budget["maxTokens"]?.number, min > max { budget = [:] }
+        if !budget.isEmpty { reasoning["budget"] = .object(budget) }
+        if !limits.isEmpty { row["limits"] = .object(limits) }; if !capabilities.isEmpty { row["capabilities"] = .object(capabilities) }; if !reasoning.isEmpty { row["reasoning"] = .object(reasoning) }
+        return .object(row)
     }
 }
 

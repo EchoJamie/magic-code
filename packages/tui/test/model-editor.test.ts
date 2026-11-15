@@ -85,8 +85,52 @@ describe('/model 集中编辑', () => {
     stage.feed([event('model.catalog', { entries, saved: false, note: '冲突' })]); expect(picker(stage).source).toBe('model')
   })
 
-  test('三态与删除字段恢复来源；容量、预算校验不把输入输出相加', () => {
-    const draft = modelEditor('local', 'm', { traits: {}, capabilities: { image: false }, reasoningSupport: { disable: true } })
+  test('从 Models.dev 检索：候选只为填用户覆盖，型号名与供应商缓存都不动', () => {
+    const stage = createStage(); open(stage, 'manage', [entry]); pick(stage, 'local'); pick(stage, 'manual')
+    const model = 'Qwen-Flash'
+    fill(stage, 'model', model)
+
+    // 先问一句型号名；回车后发出检索命令（本地资料，不改配置）
+    pick(stage, 'models-dev')
+    const asking = stage.shell.getView().dock
+    expect(asking.kind).toBe('prompt')
+    stage.type('flash'); stage.press({ kind: 'enter' })
+    expect(stage.commands().some(one => one.type === 'models.search' && one.query === 'flash')).toBe(true)
+    expect(picker(stage).source).toBe('model-editor')
+
+    // 答复到了：铺候选（名字 · 供应商 · 规格），选中即回编辑屏并填好
+    stage.feed([event('models.search', { query: 'flash', matches: [{
+      provider: 'alibaba', model: 'qwen-flash', name: 'Qwen Flash',
+      limits: { maxContextTokens: 128_000, maxOutputTokens: 8_192 },
+      capabilities: { chat: true, image: false, tools: true },
+      reasoning: { disable: true, levels: ['low', 'high'] },
+    }] })])
+    expect(picker(stage).source).toBe('models-dev')
+    expect(picker(stage).rows[0]?.meta).toContain('alibaba')
+    pick(stage, '0')
+
+    expect(picker(stage).source).toBe('model-editor')
+    const rows = picker(stage).rows
+    expect(rows.find(one => one.value === 'maxContextTokens')?.meta).toBe('128000')
+    expect(rows.find(one => one.value === 'image')?.meta).toBe('不支持')
+    expect(rows.find(one => one.value === 'levels')?.meta).toBe('low, high')
+    expect(picker(stage).hint).toContain('已从 Models.dev')
+
+    pick(stage, 'save')
+    expect(writes(stage).at(-1)).toEqual({
+      type: 'model.override', provider: 'local', model,
+      override: {
+        limits: { maxContextTokens: 128_000, maxOutputTokens: 8_192 },
+        capabilities: { image: false, tools: true },
+        reasoningSupport: { disable: true, levels: ['low', 'high'] },
+      },
+      expectedStamp: 'initial',
+    })
+    // 型号名没有被替换成目录里的那串
+    expect(writes(stage).at(-1)).toMatchObject({ model })
+  })
+
+  test('三态与删除字段恢复来源；容量、预算校验不把输入输出相加', () => {    const draft = modelEditor('local', 'm', { traits: {}, capabilities: { image: false }, reasoningSupport: { disable: true } })
     expect(draft.values.image).toBe('false'); draft.values.image = ''; draft.values.disable = ''; draft.changed!.add('disable')
     Object.assign(draft.values, { maxInputTokens: '90', maxOutputTokens: '90', maxContextTokens: '100' })
     expect(modelOverride(draft)).toEqual({ traits: {}, limits: { maxInputTokens: 90, maxOutputTokens: 90, maxContextTokens: 100 } })

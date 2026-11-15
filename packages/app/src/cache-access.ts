@@ -22,13 +22,16 @@
  * - **环境变量来源**——没有可验证的共同身份（另一个进程的 env 是另一回事），
  *   故 `persistent: false`：**不落盘**，进程内照常复用。
  *
+ * - **无需认证**（`auth: 'none'`）——没有凭据可随行，配置指纹本身就是可信身份，
+ *   故照 `cfg:…` 走：本地 / 局域网服务也能跨进程记住列表（文件名里只有指纹，没有凭据）。
+ *
  * ⚠️ **本文件只算身份**：装配把它交给缓存端口（`ModelInfoCache` 的 `access`）与连接资料
  * （`ModelConnection.access`，那一格由缓存线加）——**在缓存实现消费它之前**，读面按
  * 「缺可信身份不读共享盘」处理，不得声称隔离已完成。
  */
 
 import { configFingerprintOf, type ConfigFingerprint } from '@magic/config'
-import type { ModelCacheAccess, ProviderConfig } from '@magic/contracts'
+import type { ModelCacheAccess, ProviderAuth, ProviderConfig } from '@magic/contracts'
 
 /**
  * 算一条连接的**接入身份**。
@@ -57,11 +60,16 @@ export function cacheAccessFor(input: {
   readonly configPath: string
   /** 该连接写在配置里的 `apiKey`（**不落盘、不进身份**，只用来判「从哪来」）。 */
   readonly apiKey?: string | undefined
+  /**
+   * 该连接的认证方式——**无需认证**的连接没有凭据可随行，配置指纹就够当身份
+   * （本地 / 局域网服务也能跨进程记住列表；文件名里仍然只有指纹，没有凭据）。
+   */
+  readonly auth?: ProviderAuth | undefined
   /** 本进程的唯一值（环境变量来源用）。 */
   readonly processToken: string
 }): ModelCacheAccess {
   const fromFile =
-    input.apiKey !== undefined && input.apiKey.trim().length > 0
+    (input.apiKey !== undefined && input.apiKey.trim().length > 0) || input.auth === 'none'
       ? configFingerprintOf(input.configPath)
       : undefined
 

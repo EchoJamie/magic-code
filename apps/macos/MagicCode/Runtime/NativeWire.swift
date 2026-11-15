@@ -172,8 +172,10 @@ struct MemorySource: Codable, Equatable, Hashable {
 }
 struct NoteReadQuery: Codable, Equatable {
     var path: String? = nil
-    var offset: Int? = nil
-    var limit: Int? = nil
+    /// 从第几行起（1 起）——与普通文件同一套，按行不按字符。
+    var from: Int? = nil
+    /// 最多读多少行；不给＝读到本次上限。
+    var lines: Int? = nil
     var cursor: String? = nil
 }
 struct NoteLink: Codable, Equatable {
@@ -190,9 +192,14 @@ struct NotePage: Codable, Equatable {
     let path: String
     let absolute: String
     let text: String
-    let offset: Int
-    let total: Int
+    /// 本页第一行（1 起）。
+    let from: Int
+    /// 本页最后一行（1 起，含）。
+    let through: Int
+    /// 整个文件的行数。
+    let totalLines: Int
     let complete: Bool
+    /// 下一页的第一行；nil＝已到末尾。
     let next: Int?
     let cursor: String
     let links: [NoteLink]

@@ -8,6 +8,7 @@ import { createSettings, type SettingsContext } from '../src/settings.ts'
 import { cliGround } from './resident-cli-fixture.ts'
 import { nativeModelsDevCatalog } from './native-settings-fixture.ts'
 import type { SettingsAction } from '@magic/contracts'
+import type { ModelCatalogRow } from '@magic/contracts'
 const cleanups: (() => void)[] = []
 afterEach(() => { while (cleanups.length) cleanups.pop()!() })
 function setup() {
@@ -34,4 +35,22 @@ test('显式刷新真实本地列表，保存映射与偏好后仍能读取缓�
   await g.apply({ type: 'model.configure', choice: 'default', provider: 'local', model: 'deepseek-v4-pro' })
   await g.apply({ type: 'prefs.set', reducedMotion: true })
   const after = await g.settings.read(); expect(JSON.stringify(after.catalog)).toContain('deepseek-v4-pro'); expect(JSON.stringify(after)).not.toContain('SENTINEL_REFRESH'); expect(requests).toBe(1)
+})
+
+test('自定义连接（没有 vendor）按所选协议取列表；读面不自动外连', async () => {
+  const g = setup(); const calls: { url: string; authorization: string | null }[] = []
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(request) {
+    calls.push({ url: new URL(request.url).pathname, authorization: request.headers.get('authorization') })
+    return Response.json({ object: 'list', data: [{ id: 'Qwen-Flash', name: '快' }, { id: 'GLM' }] })
+  } })
+  cleanups.push(() => server.stop(true))
+  await g.apply({ type: 'provider.save', provider: 'relay', baseURL: `http://127.0.0.1:${server.port}/api`, protocol: 'responses', auth: 'bearer', apiKey: 'SENTINEL_RELAY' })
+  await g.settings.read(); expect(calls).toEqual([])
+  const note = await g.apply({ type: 'model.refresh', provider: 'relay' })
+  expect(note).toContain('模型列表与 Models.dev 资料已刷新')
+  expect(calls).toEqual([{ url: '/api/models', authorization: 'Bearer SENTINEL_RELAY' }])
+  const row = (await g.settings.read()).catalog[0] as ModelCatalogRow
+  expect(row.modelInfo?.['Qwen-Flash']).toEqual({ id: 'Qwen-Flash', name: '快' })
+  expect(row.cache?.snapshot?.models.map(one => one.id)).toEqual(['Qwen-Flash', 'GLM'])
+  expect(JSON.stringify(await g.settings.read())).not.toContain('SENTINEL_RELAY')
 })

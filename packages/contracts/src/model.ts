@@ -330,6 +330,27 @@ export type ProviderModelOverride = {
 /** 工作选择标识；实际连接与型号只在配置和运行事实中出现。 */
 export type ModelChoice = 'default' | 'cantrip' | 'spell' | 'arcane'
 
+/**
+ * **Models.dev 里的一条候选**——用户手动检索、对位自己那条连接上的原始型号时看的就是它。
+ *
+ * 由头：自定义渠道常把型号名改成自己的写法（`GLM`、`Qwen-Flash`），供应商列表只给 `id`；
+ * 而 Models.dev 上那条的资料（窗口 · 能力 · 思考）是现成的、只是名字对不上。故这里**只带
+ * 能填进用户覆盖的那几格**，让人挑一条抄过去——不假装「匹配上了」，只是**人选定的一条资料**。
+ */
+export type ModelsDevMatch = {
+  /** Models.dev 的供应商目录名（如 `alibaba`）——只是来源标注。 */
+  readonly provider: string
+  /** Models.dev 的型号 id——抄进覆盖的是**我们那条连接的原始型号**，不是它。 */
+  readonly model: string
+  readonly name?: string
+  readonly description?: string
+  readonly limits?: ModelLimits
+  readonly capabilities?: ModelCapabilities
+  readonly reasoning?: ReasoningSupport
+  /** Models.dev 标注的资料更新时间（缺省＝没写）。 */
+  readonly updatedAt?: string
+}
+
 /** 已解析的协议与无凭据服务来源；历史缺项必须保留未知，不按当前默认补写。 */
 export type ModelProtocol = 'responses' | 'messages' | 'chat-completions'
 export type ProviderAuth = 'none' | 'bearer' | 'api-key'

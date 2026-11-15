@@ -127,6 +127,9 @@ export function commandSubjectOf(command: Command): string {
     case 'model.refresh':
       // U41 显式刷新——绕开有效期，明确要求现在就取一趟
       return `刷新模型信息：${command.provider ?? '（当前那条）'}`
+    case 'models.search':
+      // 手动对位——按名字找 Models.dev 的候选（读本地资料，不改配置）
+      return `检索 Models.dev：${command.query}`
     case 'model.override': return '保存模型信息'
     case 'model.configure':
       // U41 设为默认——写**配置里的默认选择**（与 `model.switch` 改当下那一件分开）
@@ -611,7 +614,7 @@ describe('可序列化守护（消息是纯数据）', () => {
     const messages: unknown[] = [
       { type: 'input.submit', text: 'x' },
       { type: 'turn.interrupt' },
-      envelope(1, 'tool.call', { name: 'exec', args: { cmd: 'ls', flags: ['-la'], depth: 1 } }),
+      envelope(1, 'tool.call', { name: 'exec', args: { command: 'ls', flags: ['-la'], depth: 1 } }),
       envelope(2, 'tool.decision', { call: 7, decision: 'reject', decider: 'kernel', elapsedMs: 0 }),
       Object.freeze({ type: 'turn.interrupt' }),
     ]

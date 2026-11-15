@@ -8,6 +8,7 @@ import { expandHome, apiKeyEnvVarOf } from '@magic/contracts'
 import { createWorkspaceService, DEEPSEEK_WEB_ORIGIN } from '@magic/execution'
 import type { FetchLike, ModelInfoService } from '@magic/model'
 import { createModelInfoService, resolveConnection, selectModel, vendorCatalog } from '@magic/model'
+import { searchModelsDev as searchModelsDevCatalog } from '@magic/model'
 import { loadConfig, parseConfig, webReferenceProblem, type LoadedConfig } from '@magic/config'
 import { editConfigFile, saveProvider, removeProvider, configureModel, configureWeb, setPrefs } from '@magic/config'
 import { createFileModelInfoCache } from './model-cache.ts'
@@ -29,6 +30,8 @@ export function createSettings(context: SettingsContext) {
   const processToken = crypto.randomUUID()
   let currentLoaded: LoadedConfig | undefined
   let info: ModelInfoService | undefined
+  /** 公共目录那份（模型信息与手动检索共用一份；按需从文件解析，不常驻轮询）。 */
+  const modelsDev = createModelsDevResource(context.magic.base, context.fetch, context.now ?? Date.now)
   function modelInfo(loaded: LoadedConfig): ModelInfoService {
     if (info !== undefined && currentLoaded !== undefined) for (const [provider, config] of Object.entries(currentLoaded.config.providers)) {
       if (connectionScopeChanged(config, loaded.config.providers[provider])) info.drop(provider)
@@ -36,9 +39,9 @@ export function createSettings(context: SettingsContext) {
     currentLoaded = loaded
     if (info === undefined) {
       info = createModelInfoService({ connections: () => Object.entries(currentLoaded!.config.providers).map(([providerId, config]) => ({
-        ...resolveConnection({ providerId, config, env: context.environment }), access: cacheAccessFor({ provider: providerId, configPath, apiKey: config.apiKey, processToken }),
+        ...resolveConnection({ providerId, config, env: context.environment }), access: cacheAccessFor({ provider: providerId, configPath, apiKey: config.apiKey, auth: config.auth, processToken }),
       })), cache: createFileModelInfoCache(context.magic.base), now: context.now ?? Date.now, fetch: context.fetch,
-      metadata: createModelsDevResource(context.magic.base, context.fetch, context.now) })
+      metadata: modelsDev })
     }
     return info
   }
@@ -195,7 +198,7 @@ export function createSettings(context: SettingsContext) {
     const modelCache = createFileModelInfoCache(context.magic.base)
     for (const { provider, config, snapshot } of snapshots) {
       if (snapshot !== undefined && !connectionScopeChanged(config, reloaded.config.providers[provider])) {
-        const access = cacheAccessFor({ provider, configPath, apiKey: reloaded.config.providers[provider]?.apiKey, processToken })
+        const access = cacheAccessFor({ provider, configPath, apiKey: reloaded.config.providers[provider]?.apiKey, auth: reloaded.config.providers[provider]?.auth, processToken })
         if (configStamp(configPath) !== reloaded.stamp) throw new Error('配置在读取期间已改变，请重新刷新列表')
         await modelCache.replace(snapshot, access)
       }
@@ -214,5 +217,27 @@ export function createSettings(context: SettingsContext) {
     if (configStamp(configPath) !== loaded.stamp) throw new Error('配置在读取期间已改变，请重新读取')
     return { ...reader, env: context.environment, stamp: loaded.stamp ?? null, configuredModels: loaded.config.models }
   }
-  return { read, apply, catalog }
+  /**
+   * **检索 Models.dev 的型号**（手动对位）——读本地那份资料；一份都没有时才按 TTL 取一次。
+   *
+   * 只读：不改配置、不联网兜底第二遍。把挑中的那条抄进用户覆盖是界面那一步的事
+   * （仍然走 `model.override`，抄进去的是**我们这条连接的原始型号**）。
+   */
+  /**
+   * **检索 Models.dev 的型号**（手动对位）——读本地那份资料，**不替用户联网兜底**。
+   *
+   * 只读：不改配置。把挑中的那条抄进用户覆盖是界面那一步的事
+   * （仍然走 `model.override`，抄进去的是**我们这条连接的原始型号**）。
+   */
+  async function search(query: string, limit = 20) {
+    const read = modelsDev.read()
+    const matches = searchModelsDevCatalog(read.snapshot?.providers ?? {}, query, limit)
+    const note = read.snapshot === undefined
+      ? '尚未获取 Models.dev 资料；请先在任一连接上刷新模型列表与资料'
+      : matches.length === 0
+        ? `没有匹配「${query.trim()}」的型号`
+        : read.failure === undefined ? undefined : `Models.dev 资料可能不是最新：${read.failure}`
+    return { matches, ...(note === undefined ? {} : { note }) }
+  }
+  return { read, apply, catalog, searchModelsDev: search }
 }

@@ -140,9 +140,14 @@ export type VendorAdapter = {
 
 // —— 列表响应归一（两家共用的那半：`{ object: 'list', data: [{ id, … }] }`）——
 
+/** 把一个未知值当对象读（读不懂就空对象）——归一里到处都是这一下。 */
+function asRecord(v: unknown): Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : {}
+}
+
 /** 列表中已有明确语义且被消费的信息；缺失或无效字段保持未知。 */
 function toModelsOf(body: unknown): readonly ModelInfo[] {
-  const record = (v: unknown): Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : {}
+  const record = asRecord
   const data = record(body).data
   if (!Array.isArray(data)) throw new Error('模型列表里没有 data 数组')
   return data.flatMap(value => {
@@ -181,10 +186,23 @@ function toModelsOf(body: unknown): readonly ModelInfo[] {
   })
 }
 
+/** 列表请求头——认证形式由**连接的 `auth`** 定，协议要求的版本头由**协议**定。 */
+export function listHeadersOf(auth: ProviderAuth, apiKey: string, protocol: ModelProtocol = 'chat-completions'): Readonly<Record<string, string>> {
+  return {
+    ...(auth === 'bearer' ? { authorization: `Bearer ${apiKey}` } : auth === 'api-key' ? { 'x-api-key': apiKey } : {}),
+    // Anthropic Messages 的列表接口要求带版本头；其余协议不带
+    ...(protocol === 'messages' ? { 'anthropic-version': ANTHROPIC_VERSION } : {}),
+    accept: 'application/json',
+  }
+}
+
+/** Anthropic Messages 的接口版本（列表与对话同一版；官方文档 2026-09 仍是它）。 */
+export const ANTHROPIC_VERSION = '2023-06-01'
+
 /** 发一次 GET，回 JSON——失败当场抛（**带状态码，不带响应正文里的凭据**）。 */
-async function getJson(ctx: VendorRequestContext, path: string): Promise<unknown> {
+async function getJson(ctx: VendorRequestContext, path: string, headers: Readonly<Record<string, string>> = listHeadersOf('bearer', ctx.apiKey)): Promise<unknown> {
   const response = await ctx.fetch(`${ctx.baseURL}${path}`, {
-    headers: { authorization: `Bearer ${ctx.apiKey}`, accept: 'application/json' },
+    headers,
     ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
   })
 
@@ -193,6 +211,51 @@ async function getJson(ctx: VendorRequestContext, path: string): Promise<unknown
     throw new Error(`取模型列表失败（HTTP ${response.status}）`)
   }
   return response.json()
+}
+
+/** Anthropic Messages 的列表形状：`{ data: [{ id, display_name, … }], has_more, last_id }`。 */
+function anthropicModelsOf(body: Record<string, unknown>): readonly ModelInfo[] {
+  const data = body.data
+  if (!Array.isArray(data)) throw new Error('模型列表里没有 data 数组')
+  return data.flatMap(value => {
+    const raw = asRecord(value)
+    if (typeof raw.id !== 'string' || raw.id.length === 0) return []
+    return [{
+      id: raw.id,
+      ...(typeof raw.display_name === 'string' && raw.display_name.length > 0 ? { name: raw.display_name } : {}),
+    }]
+  })
+}
+
+/**
+ * **按协议本身**取完整列表——三个接入协议都是闭环规范（列表 · 信息 · 对话），
+ * 故**没有官方适配的连接（自定义 / 尚未注册的供应商）优先走这一条**：
+ * 供应商确有非标准行为时，才在 `VendorAdapter` 里补差异。
+ *
+ * - `chat-completions` / `responses`：`GET /models`，认证按连接的 `auth`（Bearer 或 `x-api-key`），
+ *   形状同 OpenAI（`{ data: [{ id, … }] }`，可带容量/能力/思考字段）；
+ * - `messages`（Anthropic）：`GET /models?limit=&after_id=`，带 `anthropic-version`，
+ *   按 `has_more` / `last_id` 翻页；`display_name` 作可读名。
+ *
+ * 一致性边界沿用 `collectPages`：**全部成功才返回**，中途失败不提交半份快照。
+ */
+export async function listModelsOfProtocol(ctx: VendorRequestContext & {
+  readonly protocol: ModelProtocol
+  readonly auth: ProviderAuth
+}): Promise<readonly ModelInfo[]> {
+  const headers = listHeadersOf(ctx.auth, ctx.apiKey, ctx.protocol)
+
+  if (ctx.protocol !== 'messages') {
+    const body = await getJson(ctx, '/models', headers)
+    return collectPages(() => Promise.resolve({ models: toModelsOf(body) }))
+  }
+
+  return collectPages(async (cursor) => {
+    const query = `?limit=1000${cursor === undefined ? '' : `&after_id=${encodeURIComponent(cursor)}`}`
+    const body = asRecord(await getJson(ctx, `/models${query}`, headers))
+    const next = body.has_more === true && typeof body.last_id === 'string' && body.last_id.length > 0 ? body.last_id : undefined
+    return { models: anthropicModelsOf(body), ...(next === undefined ? {} : { next }) }
+  })
 }
 
 export const PROTOCOLS = [

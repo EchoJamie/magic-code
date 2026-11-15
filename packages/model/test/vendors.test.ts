@@ -13,6 +13,7 @@ import {
   DEEPSEEK_VENDOR,
   MINIMAX_VENDOR,
   collectPages,
+  listModelsOfProtocol,
   vendorCatalog,
   vendorIds,
   vendorOf,
@@ -309,5 +310,115 @@ describe('思考设置映射', () => {
     expect(MINIMAX_VENDOR.reasoningOf({ mode: 'off' }, 'unknown')).toEqual({ params: { thinking: { type: 'disabled' } } })
     const budget = MINIMAX_VENDOR.reasoningOf({ mode: 'budget', budgetTokens: 1024 }, 'unknown')
     expect(budget !== undefined && 'gap' in budget && budget.gap).toMatch(/不支持该思考设置/)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// 六 · 协议自带列表（自定义 / 尚未注册的供应商走这一条）
+// ═══════════════════════════════════════════════════════════════════════
+
+/** 一次请求的现场：地址 ＋ 全部请求头（认证位置、协议版本头都在这上面看）。 */
+type ProtocolSeen = { readonly url: string; readonly headers: Headers }
+
+/** 按顺序回放几页响应（页数用完就重复最后一页）。 */
+function capturingPages(bodies: readonly unknown[]): { readonly fetch: FetchLike; readonly seen: ProtocolSeen[] } {
+  const seen: ProtocolSeen[] = []
+  let at = 0
+  const fetch = (async (input: unknown, init?: { headers?: unknown }) => {
+    seen.push({ url: String(input), headers: new Headers(init?.headers as Record<string, string> | undefined) })
+    const body = bodies[Math.min(at, bodies.length - 1)]
+    at += 1
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as unknown as FetchLike
+  return { fetch, seen }
+}
+
+describe('协议自带列表', () => {
+  test('Chat Completions / Responses：`GET {base}/models`，Bearer 认证，归一 `data[]`', async () => {
+    const { fetch, seen } = capturingPages([listBody('Qwen-Flash', 'GLM')])
+
+    const models = await listModelsOfProtocol({
+      providerId: 'relay',
+      baseURL: 'https://relay.example/api',
+      apiKey: 'sk-not-a-real-key',
+      fetch,
+      protocol: 'responses',
+      auth: 'bearer',
+    })
+
+    expect(models.map((one) => one.id)).toEqual(['Qwen-Flash', 'GLM'])
+    expect(seen[0]?.url).toBe('https://relay.example/api/models')
+    expect(seen[0]?.headers.get('authorization')).toBe('Bearer sk-not-a-real-key')
+    // 版本头只归 Messages 协议，别的协议不带
+    expect(seen[0]?.headers.get('anthropic-version')).toBeNull()
+  })
+
+  test('认证位置按连接的 `auth`：`api-key` ⇒ `x-api-key`，不带 `authorization`', async () => {
+    const { fetch, seen } = capturingPages([listBody('Qwen-Flash')])
+
+    await listModelsOfProtocol({
+      providerId: 'relay',
+      baseURL: 'https://relay.example/api',
+      apiKey: 'sk-not-a-real-key',
+      fetch,
+      protocol: 'chat-completions',
+      auth: 'api-key',
+    })
+
+    expect(seen[0]?.headers.get('x-api-key')).toBe('sk-not-a-real-key')
+    expect(seen[0]?.headers.get('authorization')).toBeNull()
+  })
+
+  test('Messages：带 `anthropic-version`，按 `has_more` / `last_id` 翻页，取 `display_name` 作可读名', async () => {
+    const { fetch, seen } = capturingPages([
+      { data: [{ id: 'claude-one', display_name: '一号' }], has_more: true, last_id: 'claude-one' },
+      { data: [{ id: 'claude-two', display_name: '二号' }], has_more: false, last_id: 'claude-two' },
+    ])
+
+    const models = await listModelsOfProtocol({
+      providerId: 'relay',
+      baseURL: 'https://relay.example/v1',
+      apiKey: 'sk-not-a-real-key',
+      fetch,
+      protocol: 'messages',
+      auth: 'api-key',
+    })
+
+    expect(seen.map((one) => one.url)).toEqual([
+      'https://relay.example/v1/models?limit=1000',
+      'https://relay.example/v1/models?limit=1000&after_id=claude-one',
+    ])
+    expect(seen[0]?.headers.get('anthropic-version')).toBe('2023-06-01')
+    expect(seen[0]?.headers.get('x-api-key')).toBe('sk-not-a-real-key')
+    expect(models).toEqual([
+      { id: 'claude-one', name: '一号' },
+      { id: 'claude-two', name: '二号' },
+    ])
+  })
+
+  test('对面对不上协议：HTTP 状态当场抛，不带响应正文', async () => {
+    const fetch = (async () => new Response(JSON.stringify({ error: 'sk-not-a-real-key' }), { status: 502 })) as unknown as FetchLike
+
+    await expect(listModelsOfProtocol({
+      providerId: 'relay',
+      baseURL: 'https://relay.example/api',
+      apiKey: 'sk-not-a-real-key',
+      fetch,
+      protocol: 'responses',
+      auth: 'bearer',
+    })).rejects.toThrow('取模型列表失败（HTTP 502）')
+  })
+
+  test('响应不是 `data[]`：报「没有 data 数组」，不拿空列表冒充没有型号', async () => {
+    const { fetch } = capturingPages([{ object: 'list', items: [] }])
+
+    await expect(listModelsOfProtocol({
+      providerId: 'relay',
+      baseURL: 'https://relay.example/api',
+      apiKey: 'sk-not-a-real-key',
+      fetch,
+      protocol: 'responses',
+      auth: 'bearer',
+    })).rejects.toThrow('模型列表里没有 data 数组')
   })
 })

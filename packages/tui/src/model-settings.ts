@@ -6,6 +6,7 @@ import type {
   ModelChoice,
   ModelInfo,
   ModelRef,
+  ModelsDevMatch,
   ReasoningSetting,
 } from '@magic/contracts'
 import { tokenLabel } from './components/lines.ts'
@@ -44,7 +45,7 @@ export type ModelNavigation = {
 }
 
 export type ModelPicker = Picker & {
-  readonly source: 'model' | 'model-choice' | 'model-detail' | 'model-reasoning' | 'model-manual' | 'model-editor' | 'provider' | 'provider-detail' | 'vendor'
+  readonly source: 'model' | 'model-choice' | 'model-detail' | 'model-reasoning' | 'model-manual' | 'model-editor' | 'models-dev' | 'provider' | 'provider-detail' | 'vendor'
 }
 
 /** 模型选择、连接编辑及待保存草稿；执行选择仍通过控制协议受理。 */
@@ -80,6 +81,10 @@ export function createModelSettings(ui: {
   let detailAt: ModelRef = { provider: '', model: '' }
   let modelScope: ModelScope = 'session'
   let collaborationModel: { readonly member?: AgentId } | null = null
+  /** 正在等 Models.dev 检索结果的编辑草稿（答复到了才铺候选）。 */
+  let modelsDevPending: { readonly draft: ModelEditor & { stamp?: string | null }; readonly query: string } | null = null
+  /** 上一次检索的候选（挑选按行号回查）。 */
+  let modelsDevMatches: readonly ModelsDevMatch[] = []
   // 离开编辑上下文只撤销界面与应用动作；已发出的配置保存仍等待回执。
   let mappingSave: 'start' | 'update' | 'detached' | null = null
 
@@ -359,6 +364,45 @@ export function createModelSettings(ui: {
     })
   }
 
+  /**
+   * 把一条 Models.dev 候选的**资料**抄进这份草稿（用户覆盖）。
+   *
+   * 抄过去的只是规格与能力；**型号名一个字不动**——调用时发的是我们这条连接的原始型号，
+   * Models.dev 那串只是资料出处。抄完仍由用户逐项改、再按保存。
+   */
+  const applyModelsDevMatch = (match: ModelsDevMatch): void => {
+    if (editor === null) return
+    const limits = match.limits ?? {}
+    for (const key of ['maxInputTokens', 'maxOutputTokens', 'maxContextTokens'] as const) {
+      editor.values[key] = limits[key] === undefined ? '' : String(limits[key])
+      editor.changed?.add(key)
+    }
+    for (const key of ['image', 'tools'] as const) {
+      editor.values[key] = match.capabilities?.[key] === undefined ? '' : String(match.capabilities[key])
+      editor.changed?.add(key)
+    }
+    const support = match.reasoning
+    editor.values.default = support?.default ?? ''
+    editor.values.disable = support?.disable === undefined ? '' : String(support.disable)
+    editor.values.levels = support?.levels?.join(', ') ?? ''
+    editor.values.minTokens = support?.budget?.minTokens === undefined ? '' : String(support.budget.minTokens)
+    editor.values.maxTokens = support?.budget?.maxTokens === undefined ? '' : String(support.budget.maxTokens)
+    for (const key of ['default', 'disable', 'levels', 'minTokens', 'maxTokens']) editor.changed?.add(key)
+    editor.expanded = true
+    editor.note = `已从 Models.dev「${match.provider} · ${match.model}」填入资料；逐项可改，保存后才生效`
+  }
+
+  /** 候选那一行的一句话说清它是什么：供应商 · 显示名 · 窗口 · 思考档位。 */
+  const modelsDevMetaOf = (match: ModelsDevMatch): string => {
+    const limits = match.limits
+    return [
+      match.provider,
+      match.name === undefined || match.name === match.model ? null : match.name,
+      limits?.maxContextTokens === undefined ? null : `窗口 ${tokenLabel(limits.maxContextTokens)}`,
+      match.reasoning?.levels === undefined ? null : `思考 ${match.reasoning.levels.length === 0 ? '无档位' : match.reasoning.levels.join('/')}`,
+    ].filter((one): one is string => one !== null).join(' · ')
+  }
+
   const settleEditor = (saved: boolean, note?: string): void => {
     const pending = savingEditor
     if (pending === null) return
@@ -404,8 +448,32 @@ export function createModelSettings(ui: {
       showEditor()
       return
     }
-    if (key === 'save' || key === 'remove-override') {
-      if (savingEditor !== null) {
+    if (key === 'models-dev') {
+      // 检索 Models.dev（手动对位）——先问一句型号名，答复到了才铺候选。
+      enterLayer()
+      ui.prompt.open({
+        label: '检索 Models.dev 型号',
+        secret: false,
+        value: '',
+        caret: 0,
+        placeholder: '型号名或供应商，如 qwen-flash',
+        note: '回车检索；选中只把资料填进用户覆盖，型号名与供应商缓存都不动',
+        submit: () => null,
+        local: text => {
+          const query = text.trim()
+          if (query === '') {
+            ui.prompt.note('请输入型号名或供应商')
+            return
+          }
+          modelsDevPending = { draft: held, query }
+          popLayer()
+          showEditor()
+          send({ type: 'models.search', query })
+        },
+      })
+      return
+    }
+    if (key === 'save' || key === 'remove-override') {      if (savingEditor !== null) {
         held.note = '上一笔保存尚未完成，请稍后重试'
         showEditor()
         return
@@ -592,6 +660,14 @@ export function createModelSettings(ui: {
       if (row.reasoning !== undefined) applyReasoning(row.reasoning)
       return true
     }
+    if (ui.picker.source === 'models-dev') {
+      const match = modelsDevMatches[Number(row.value)]
+      if (match === undefined) return true
+      applyModelsDevMatch(match)
+      // 回编辑屏：那一层恢复时会照**此刻的草稿**重铺（见外壳 `restoreLayer` 的 model-editor 一支）
+      popLayer()
+      return true
+    }
     if (ui.picker.source === 'provider') {
       enterLayer() // 进了明细那一屏（U61）——`←` 退回一览
       openManageDetail(row.value)
@@ -696,7 +772,37 @@ export function createModelSettings(ui: {
     return false
   }
 
-  const receive = (event: Extract<KernelEvent, { kind: 'model.catalog' | 'provider.catalog' }>): void => {
+  const receive = (event: Extract<KernelEvent, { kind: 'model.catalog' | 'provider.catalog' | 'models.search' }>): void => {
+    if (event.kind === 'models.search') {
+      const pending = modelsDevPending
+      modelsDevPending = null
+      // 迟到的答复只认**当时那一份草稿**还与屏上那扇编辑器同物
+      if (pending === null || editor !== pending.draft) return
+      if (ui.picker === null || ui.picker.source !== 'model-editor') return
+      modelsDevMatches = event.data.matches
+      if (modelsDevMatches.length === 0) {
+        receipt(event.data.note ?? `没有匹配「${pending.query}」的型号`)
+        return
+      }
+      enterLayer()
+      present({
+        source: 'models-dev',
+        selected: 0,
+        rows: modelsDevMatches.map((match, index) => ({
+          label: match.model,
+          value: String(index),
+          current: false,
+          oneLine: true,
+          meta: modelsDevMetaOf(match),
+        })),
+        hint: [
+          `检索「${pending.query}」：选中把那条的资料填入「${pending.draft.values.model ?? ''}」的用户覆盖`,
+          event.data.note ?? '',
+          '型号名、协议与供应商缓存都不动；保存后才生效',
+        ].filter(Boolean).join('\n'),
+      })
+      return
+    }
     const intent = opening
     if ((event.kind === 'model.catalog' && intent === 'model') ||
         (event.kind === 'provider.catalog' && (intent === 'connect' || intent === 'manage'))) opening = null

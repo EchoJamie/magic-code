@@ -61,6 +61,7 @@ export function createModelConfiguration(input: {
       provider,
       configPath: loaded.path,
       apiKey: config?.apiKey,
+      auth: config?.auth,
       processToken,
     })
 

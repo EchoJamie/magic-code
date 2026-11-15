@@ -76,8 +76,68 @@ test('断连 TUI 可读、选、清除网页服务引用；删除被引用的连
   } finally { shell.dispose(); g.close() }
 })
 
-test('断连 TUI 可保存偏好，普通草稿保留且不创建业务库', async () => {
+test('断连 TUI 按名字检索 Models.dev 候选；检索不联网，挑中的资料写进用户覆盖', async () => {
   const g = ground(), workspace = createWorkspaceService({ roots: [g.home] })
+  mkdirSync(join(g.base, 'cache'), { recursive: true })
+  writeFileSync(join(g.base, 'cache', 'models.dev.json'), JSON.stringify({ fetchedAt: 1_700_000_000_000, data: {
+    alibaba: { api: 'https://dashscope.example/v1', models: {
+      'qwen-flash': { id: 'qwen-flash', name: 'Qwen Flash', limit: { context: 128_000, output: 8_192 }, modalities: { input: ['text'], output: ['text'] }, tool_call: true, last_updated: '2026-09-01' },
+      'qwen-max': { id: 'qwen-max' },
+    } },
+    zhipu: { models: { 'glm-4': { id: 'glm-4', name: '智谱四' } } },
+  } }))
+  writeFileSync(g.configPath, JSON.stringify({ providers: { relay: { baseURL: 'https://relay.test/api', protocol: 'responses', auth: 'bearer', apiKey: 'offline-test-only' } } }))
+  const events: KernelEvent[] = []
+  const transport = terminalSettings({ send() {}, subscribe() { return () => {} } }, { home: g.home, base: g.base }, workspace)
+  transport.subscribe(event => events.push(event))
+  const before = readFileSync(g.configPath, 'utf8')
+  try {
+    transport.send({ type: 'models.search', query: 'flash' })
+    await waitFor(() => events.some(event => event.kind === 'models.search'))
+    const found = events.find(event => event.kind === 'models.search')!
+    expect(found.kind === 'models.search' && found.data.matches).toEqual([{
+      provider: 'alibaba', model: 'qwen-flash', name: 'Qwen Flash',
+      limits: { maxContextTokens: 128_000, maxOutputTokens: 8_192 },
+      capabilities: { chat: true, image: false, tools: true },
+      updatedAt: '2026-09-01',
+    }])
+
+    transport.send({ type: 'models.search', query: '智谱' })
+    await waitFor(() => events.filter(event => event.kind === 'models.search').length === 2)
+    const named = events.filter(event => event.kind === 'models.search').at(-1)!
+    expect(named.kind === 'models.search' && named.data.matches.map(one => one.model)).toEqual(['glm-4'])
+
+    transport.send({ type: 'models.search', query: 'nothing-here' })
+    await waitFor(() => events.filter(event => event.kind === 'models.search').length === 3)
+    const none = events.filter(event => event.kind === 'models.search').at(-1)!
+    expect(none.kind === 'models.search' && none.data.matches).toEqual([])
+    expect(none.kind === 'models.search' && none.data.note).toContain('没有匹配')
+    expect(readFileSync(g.configPath, 'utf8')).toBe(before)
+
+    // 挑中的那条抄进**用户覆盖**：调用时仍发我们这条连接上的原始型号（Qwen-Flash），
+    // 规格/能力/思考按 Models.dev 那条走；供应商缓存一个字没动。
+    transport.send({ type: 'model.override', provider: 'relay', model: 'Qwen-Flash', override: {
+      limits: { maxContextTokens: 128_000, maxOutputTokens: 8_192 },
+      capabilities: { chat: true, image: false, tools: true },
+      reasoningSupport: { disable: true, levels: ['low', 'high'] },
+    } })
+    await waitFor(() => events.some(event => event.kind === 'model.catalog'))
+    const saved = events.filter(event => event.kind === 'model.catalog').at(-1)!
+    const row = (saved.kind === 'model.catalog' ? saved.data.entries[0] : undefined) as { modelOverrides?: Record<string, unknown>, modelInfo?: Record<string, { limits?: unknown, capabilities?: unknown, reasoning?: unknown }> } | undefined
+    expect(row?.modelOverrides?.['Qwen-Flash']).toEqual({
+      limits: { maxContextTokens: 128_000, maxOutputTokens: 8_192 },
+      capabilities: { chat: true, image: false, tools: true },
+      reasoningSupport: { disable: true, levels: ['low', 'high'] },
+    })
+    expect(row?.modelInfo?.['Qwen-Flash']?.limits).toBeUndefined()
+    // 用户覆盖走**有效规格**那一层（不混进供应商/目录资料）：能力与思考按覆盖生效
+    expect((row as { effectiveReasoning?: Record<string, { disable?: boolean, levels?: readonly string[] }> } | undefined)?.effectiveReasoning?.['Qwen-Flash'])
+      .toEqual({ disable: true, levels: ['low', 'high'] })
+    expect(JSON.parse(readFileSync(join(g.base, 'cache', 'models.dev.json'), 'utf8')).data.alibaba.models['qwen-flash'].id).toBe('qwen-flash')
+  } finally { g.close() }
+})
+
+test('断连 TUI 可保存偏好，普通草稿保留且不创建业务库', async () => {  const g = ground(), workspace = createWorkspaceService({ roots: [g.home] })
   const forwarded: Command[] = [], events: KernelEvent[] = []
   const transport = terminalSettings({ send(command) { forwarded.push(command) }, subscribe() { return () => {} } }, { home: g.home, base: g.base }, workspace)
   transport.subscribe(event => events.push(event))

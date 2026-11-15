@@ -278,6 +278,7 @@ export type Picker = {
     | 'model-choice'
     | 'model-detail'
     | 'model-reasoning'
+    | 'models-dev'
 
     | 'config'
 
@@ -884,6 +885,11 @@ export function reduce(
         // 内置供应商与官方区域——名单随答复来、**不落壳里**（适配现取，契约的 `VendorInfo`）
         vendors: event.data.vendors,
       }
+
+    // Models.dev 检索的答复归 `/model` 那一摊（`model-settings` 的 `receive`）；
+    // 基础视图没有要改的格子。
+    case 'models.search':
+      return view
 
 
     case 'skills.catalog':
