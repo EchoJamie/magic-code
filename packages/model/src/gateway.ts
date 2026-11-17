@@ -320,8 +320,9 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
       const reasoning = requestedReasoning === undefined ? undefined : { ...requestedReasoning }
       const capabilities = effectiveCapabilitiesOf(model, config, known)
       const hasImage = effective.messages.some(message => message.role === 'user' && typeof message.content !== 'string' && message.content.some(part => part.type === 'image'))
-      const failure = hasImage && capabilities?.image === false ? `模型「${model}」不支持图片输入` : effective.tools?.length && capabilities?.tools === false ? `模型「${model}」不支持工具调用` : capabilities?.chat === false
-        ? `模型「${model}」不支持对话` : reasoningFailure(config, model, reasoning, known)
+      // ⚠️ **不再因 `chat` 能力拒绝**（对话能力不是硬闸门）：图片与工具两条照旧——
+      // 明确不支持就当场说清，不发一次注定被拒的请求。
+      const failure = hasImage && capabilities?.image === false ? `模型「${model}」不支持图片输入` : effective.tools?.length && capabilities?.tools === false ? `模型「${model}」不支持工具调用` : reasoningFailure(config, model, reasoning, known)
       let attempts = 0
       const streamRetrying = withTransientRetry(streamVendor, {
         policy: retryPolicy, sleep: options.sleep, onAttempt: attempt => { attempts = attempt },

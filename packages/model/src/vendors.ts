@@ -272,15 +272,37 @@ export function normalizeBaseURL(base: string): string {
   return endpoint.href.replace(/\/+$/, '')
 }
 
-/** 只校验和解析，不读凭据、不访问网络。显式协议不支持时绝不降级。 */
+/**
+ * 官方适配的**协议固定优先级**——官方还没给出该型号的提示时按它兜底。
+ *
+ * 与 `PROTOCOLS` 同序（Responses → Anthropic Messages → Chat Completions）。
+ */
+const PROTOCOL_PRIORITY: readonly ModelProtocol[] = ['responses', 'messages', 'chat-completions']
+
+/**
+ * 该型号的默认协议——**官方提示里有的取第一个**（适配声明的次序）；
+ * **一个提示都没有时按固定优先级兜底**（官方还没发布这个型号的资料，不因此拒绝它）。
+ */
+function defaultProtocolOf(adapter: VendorAdapter, model: string): ModelProtocol {
+  const supported = adapter.protocols.filter(p => p.models === undefined || p.models.includes(model))
+  const first = supported[0]
+  if (first !== undefined) return first.id
+  for (const id of PROTOCOL_PRIORITY) if (adapter.protocols.some(p => p.id === id)) return id
+  return adapter.protocols[0]?.id ?? 'responses'
+}
+
+/**
+ * 只校验和解析，不读凭据、不访问网络。
+ *
+ * ⚠️ **协议兼容不是硬闸门**：型号不在官方支持提示里**不再拒绝**——
+ * 显式写了协议就用它；没写时取官方提示里第一个支持该型号的协议；官方还没有该型号的
+ * 提示时按固定优先级（Responses → Anthropic Messages → Chat Completions）兜底。
+ * 端点与区域照旧解析——**没有地址就报错**（不猜、不回落）。
+ */
 export function resolveModelSource(config: ProviderConfig, model: string): ModelSource {
   const adapter = config.vendor === undefined ? undefined : vendorOf(config.vendor)
   if (config.vendor !== undefined && adapter === undefined) throw new Error(`未知供应商适配「${config.vendor}」`)
-  const supported = adapter?.protocols.filter(p => p.models === undefined || p.models.includes(model))
-  const protocol = config.protocol ?? (adapter === undefined ? 'responses' : supported?.[0]?.id)
-  if (protocol === undefined || (supported !== undefined && !supported.some(p => p.id === protocol))) {
-    throw new Error(`模型「${model}」不支持${config.protocol === undefined ? '已核实的官方协议' : `协议「${config.protocol}」`}；请核对精确型号`)
-  }
+  const protocol = config.protocol ?? (adapter === undefined ? 'responses' : defaultProtocolOf(adapter, model))
   const base = adapter === undefined ? config.baseURL : adapter.baseURLOf(config, protocol)
   if (!base) throw new Error('连接没有有效服务地址或官方区域')
   return { protocol, endpoint: normalizeBaseURL(base) }
@@ -362,7 +384,8 @@ export const MINIMAX_VENDOR: VendorAdapter = {
 export const DEEPSEEK_VENDOR: VendorAdapter = {
   id: 'deepseek',
   label: 'DeepSeek',
-  protocols: PROTOCOLS.map(p => ({ ...p, models: p.id === 'responses' ? ['deepseek-flash'] : ['deepseek-flash', 'deepseek-v4-pro'] })),
+  // 三种协议都给这两个型号（Responses 的支持提示里也有 `deepseek-v4-pro`）。
+  protocols: PROTOCOLS.map(p => ({ ...p, models: ['deepseek-flash', 'deepseek-v4-pro'] })),
   regions: [{ id: 'official', label: '官方', baseURL: 'https://api.deepseek.com' }],
   // 思考模式的工具往返要求把历史轮的 `reasoning_content` 原样回传（官方文档明文）
   separatesReasoning: true,

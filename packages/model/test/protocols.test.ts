@@ -106,9 +106,9 @@ describe('三种 SDK 的受控多轮工具闭环', () => {
 
 test('精确官方支持范围、默认顺序及协议级地址', () => {
   expect(resolveModelSource({ vendor: 'minimax' }, 'MiniMax-M3')).toEqual({ protocol: 'responses', endpoint: 'https://api.minimax.cn/v1' })
-  expect(resolveModelSource({ vendor: 'deepseek' }, 'deepseek-v4-pro')).toEqual({ protocol: 'messages', endpoint: 'https://api.deepseek.com/anthropic/v1' })
-  expect(() => resolveModelSource({ vendor: 'deepseek', protocol: 'responses' }, 'deepseek-v4-pro')).toThrow('deepseek-v4-pro')
-  for (const model of ['deepseek-chat', 'deepseek-v4-flash', 'claude-opus-4']) expect(() => resolveModelSource({ vendor: 'deepseek' }, model)).toThrow(model)
+  expect(resolveModelSource({ vendor: 'deepseek' }, 'deepseek-v4-pro')).toEqual({ protocol: 'responses', endpoint: 'https://api.deepseek.com' })
+  expect(resolveModelSource({ vendor: 'deepseek', protocol: 'responses' }, 'deepseek-v4-pro')).toEqual({ protocol: 'responses', endpoint: 'https://api.deepseek.com' })
+  for (const model of ['deepseek-chat', 'deepseek-v4-flash', 'claude-opus-4']) expect(resolveModelSource({ vendor: 'deepseek' }, model)).toEqual({ protocol: 'responses', endpoint: 'https://api.deepseek.com' })
   expect(vendorCatalog()[0]?.protocols.map(p => p.id)).toEqual([...protocols])
 })
 
@@ -318,4 +318,9 @@ test('自定义 Responses 型号恰与 SDK 官方名相同，仍采用已声明�
   expect(result.error).toBeUndefined()
   expect(bodies[0].model).toBe('gpt-5-pro')
   expect(bodies[0].reasoning).toEqual({ effort: 'low' })
+})
+
+test('官方提示里没有的型号按显式或默认协议照发', () => {
+  expect(resolveModelSource({ vendor: 'deepseek', protocol: 'messages' }, '尚未公布的型号')).toEqual({ protocol: 'messages', endpoint: 'https://api.deepseek.com/anthropic/v1' })
+  expect(resolveModelSource({ vendor: 'deepseek' }, '尚未公布的型号')).toEqual({ protocol: 'responses', endpoint: 'https://api.deepseek.com' })
 })

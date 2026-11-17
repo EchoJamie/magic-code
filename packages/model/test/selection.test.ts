@@ -143,3 +143,10 @@ test('有效思考支持与实际映射同源，协议不能表达的用户声�
   expect(effectiveReasoningSupportOf({ vendor: 'deepseek', protocol: 'responses' }, 'deepseek-v4-pro')).toBeUndefined()
   expect(effectiveReasoningSupportOf(config, 'undeclared')).toBeUndefined()
 })
+
+test('未在官方提示里的型号仍可选，协议按显式设置走', () => {
+  const result = selectModel({ providers: { ds: { vendor: 'deepseek', protocol: 'messages', apiKey: 'k' } } },
+    { choice: 'default', provider: 'ds', model: '尚未公布的型号' })
+  expect(result.ok).toBe(true)
+  if (result.ok) expect(result.selection.protocol).toBe('messages')
+})
