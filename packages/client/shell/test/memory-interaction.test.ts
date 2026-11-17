@@ -120,8 +120,8 @@ function deliverNotes(stage: ReturnType<typeof createStage>, notes?: NoteState) 
 }
 function noteState(path = 'MEMORY.md', text = '正文 👩🏽‍💻 é', next?: number): NoteState {
   return { directory: '/isolated/notes', path, status: 'ready', files: [path], page: {
-    session: 'notes-session', path, absolute: '/isolated/notes/' + path, text, offset: 0,
-    total: next === undefined ? text.length : 9999, complete: next === undefined, next, cursor: 'opaque-version',
+    session: 'notes-session', path, absolute: '/isolated/notes/' + path, text, from: 1,
+    through: next === undefined ? 2 : 1, totalLines: next === undefined ? 2 : 9999, complete: next === undefined, next, cursor: 'opaque-version',
     links: [{ kind: 'note', label: '同名主题', path: '子目录/主题.md' }, { kind: 'unavailable', label: '越界位置', target: '../业务.md', reason: '不在本会话笔记范围' }, { kind: 'source', label: '原始交代', source: { session: 'notes-session', entry: 2 } }],
   } }
 }
@@ -156,14 +156,14 @@ test('笔记续读带宿主游标，变化不混拼，重新读取与来源往�
   const stage = openNotes()
   deliverNotes(stage, noteState('MEMORY.md', '旧片段', 3))
   choose(stage, 'next-note')
-  expect(last(stage, 'memory.read')).toMatchObject({ offset: 3, cursor: 'opaque-version', path: 'MEMORY.md' })
+  expect(last(stage, 'memory.read')).toMatchObject({ from: 3, cursor: 'opaque-version', path: 'MEMORY.md' })
   deliverNotes(stage, { directory: '/isolated/notes', path: 'MEMORY.md', status: 'changed', files: ['MEMORY.md'] })
   expect(picker(stage).hint).toContain('内容已变化')
   expect(picker(stage).detail).toContain('旧片段')
   expect(picker(stage).rows.some(row => row.value === 'next-note')).toBe(false)
   choose(stage, 'refresh')
   expect(last(stage, 'memory.read').cursor).toBeUndefined()
-  expect(last(stage, 'memory.read').offset).toBeUndefined()
+  expect(last(stage, 'memory.read').from).toBeUndefined()
   deliverNotes(stage, noteState('MEMORY.md', '外部编辑后的当前正文'))
   expect(picker(stage).detail).toContain('外部编辑后的当前正文')
   expect(picker(stage).detail).not.toContain('旧片段')

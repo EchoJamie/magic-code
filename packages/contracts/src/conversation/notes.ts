@@ -1,11 +1,17 @@
 import type { MemorySource } from './memory.ts'
 import type { ResolvedPath, Sandbox } from '../ports.ts'
 
-/** 路径为本会话笔记目录内的规范相对路径；cursor 仅由宿主传递，不展示给模型。 */
+/**
+ * 路径为本会话笔记目录内的规范相对路径；cursor 仅由宿主传递，不展示给模型。
+ *
+ * 分页与普通文件**同一套**：`from` 从 1 数、`lines` 最多多少行（见 `NotePage`）。
+ * 早先这里是字符偏移（`offset`/`limit`）——那样一个工具里就有两种地址，模型把
+ * `grep` 报的行号换成偏移得先猜；现在只有行。
+ */
 export type NoteReadQuery = {
   readonly path?: string
-  readonly offset?: number
-  readonly limit?: number
+  readonly from?: number
+  readonly lines?: number
   readonly cursor?: string
 }
 export type NoteLink =
@@ -17,9 +23,14 @@ export type NotePage = {
   readonly path: string
   readonly absolute: string
   readonly text: string
-  readonly offset: number
-  readonly total: number
+  /** **本页第一行**（1 起）。 */
+  readonly from: number
+  /** **本页最后一行**（1 起，含）；空文件为 0。 */
+  readonly through: number
+  /** 整个文件的行数——续读与「已读到末尾」都按它对。 */
+  readonly totalLines: number
   readonly complete: boolean
+  /** 下一页的第一行；缺席＝已到末尾。 */
   readonly next?: number
   readonly cursor: string
   readonly links: readonly NoteLink[]

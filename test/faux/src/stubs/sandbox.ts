@@ -45,7 +45,7 @@ export type FauxSandboxOptions = {
 /** `read` 的入参——路径 ＋ 选项（`opts` 可省，故**原样记**，不改写成缺省值）。 */
 export type FauxReadCall = {
   readonly path: string
-  readonly opts: { readonly maxBytes?: number } | undefined
+  readonly opts: { readonly maxBytes?: number; readonly from?: number; readonly lines?: number } | undefined
 }
 
 /** 沙箱桩的观察面——调用留痕。 */
@@ -94,7 +94,7 @@ export function makeFauxSandbox(options: FauxSandboxOptions = {}): FauxSandbox {
       return script[cmd] ?? OK_EMPTY
     },
 
-    async read(path: string, opts?: { maxBytes?: number }): Promise<ReadResult> {
+    async read(path: string, opts?: { maxBytes?: number; from?: number; lines?: number }): Promise<ReadResult> {
       reads.push({ path, opts })
       return { content: files.get(path) ?? '' }
     },

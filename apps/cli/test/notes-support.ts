@@ -27,8 +27,8 @@ export function continuationTurn(request: ModelRequest, summarize: (text: string
   const listing = results.find(result => result.name === 'ls')!
   const reads = results.filter(result => result.name === 'read')
   if (listing.output.includes('MEMORY.md') && !reads.length) return { toolCalls: [{ name: 'read', args: { path } }] }
-  const next = reads.length ? /继续读取 offset=(\d+)/.exec(reads.at(-1)!.output) : undefined
-  if (next) return { toolCalls: [{ name: 'read', args: { path, offset: Number(next[1]) } }] }
+  const next = reads.length ? /下一段 from=(\d+)/.exec(reads.at(-1)!.output) : undefined
+  if (next) return { toolCalls: [{ name: 'read', args: { path, from: Number(next[1]) } }] }
   const prior = reads.map(result => result.output.slice(result.output.indexOf('\n') + 1)).join('')
   let content = prior
   for (const source of sources) {

@@ -2,7 +2,7 @@
  * 文件类工具 —— `read` · `write` · `edit`（工具集 v1 之三）。
  *
  * 出处：技术方案 · 工具「工具集 v1（阶段 2 · 规格）」——
- * `read` 读文件（超长截断）· `write` 新建 / 整写文件 · `edit` 串替换增量编辑（唯一定位 · 失配即报）。
+ * `read` 读文件（按行分段）· `write` 新建 / 整写文件 · `edit` 串替换增量编辑（唯一定位 · 失配即报）。
  *
  * 三件共同的形态（与 `exec-tool.ts` 同一姿势）：
  * - **规格的静态三件取自契约 `TOOLSET_V1` 的冻结行**（经 `rowOf`——本域不另抄一份），
@@ -46,13 +46,17 @@ import { refused, reasonOf, rowOf } from './toolkit.ts'
  * 参数模式——**命令之外的键名也锚在契约里**（技术方案 · 工具 · 参数键：随 U13 定）。
  * 模式写一份朴素的 JSON Schema（`JsonSchema` 的承载形态＝自写、不取件）：送得出去、
  * 也读得懂，不赌任何库。`description` 是给模型读的——它就是「这个键怎么用」的说明书。
+ *
+ * **按行分段**：`from` / `lines` 取代原来的字符偏移 `offset` / `limit`。
+ * 原来那两格只有工作笔记能用，普通文件一传就拒——于是读大文件只能绕去 `exec` 的
+ * `sed` / `head`：同一个地址要两份换算（`grep` 报行号，`read` 却只认字符位置）。
  */
 export const READ_PARAMETERS = {
   type: 'object',
-  description: '读取文件。工作笔记可用 offset（从 0 起的字符位置）和 limit 分段读取；工作笔记返回实际范围及续读位置，变化时须从头重读。普通文件不接受分页参数，沿原有上限读取并明确标注截断。',
+  description: '读取文件。按行分段：from 从第几行起（1 起），lines 最多读多少行；都不给就从头读到本次上限。普通文件与工作笔记同一套。回执末尾给出本次的行范围与下一段的 from（读到头就不给）。单行本身超出上限时另行说明。',
   properties: {
-    offset: { type: 'integer', minimum: 0, description: '起始字符位置，从 0 起；续读使用返回的 next' },
-    limit: { type: 'integer', minimum: 1, maximum: 32000, description: '本次最多读取的字符数' },
+    from: { type: 'integer', minimum: 1, description: '从第几行开始读（1 起）' },
+    lines: { type: 'integer', minimum: 1, description: '最多读多少行（不给＝读到本次上限）' },
     path: {
       type: 'string',
       /**
@@ -73,17 +77,36 @@ export const READ_PARAMETERS = {
   additionalProperties: false,
 } as const
 
-/** 读到的内容摆成面向模型的文本（空文件与截断都**明说**——空输出会被当成失败）。 */
+/** `ReadResult.window` 摆成一句话：读到哪几行、还有没有、下一段从哪行起。 */
+function windowNote(window: NonNullable<ReadResult['window']>): string | undefined {
+  if (window.oversizedLine !== undefined) {
+    // 越界的是**行**不是段：这一行按行续读没有下一段
+    return `[第 ${window.oversizedLine} 行本身比本次读取上限还长，这一行没有读完]`
+  }
+  const range = window.totalLines !== undefined && window.totalLines > 0
+    ? `行 ${window.from}–${window.through} / 共 ${window.totalLines} 行`
+    : window.totalLines === 0 ? '共 0 行' : `行 ${window.from}–${window.through}（文件 ${window.totalBytes} 字节，总行数未统计）`
+  if (window.next !== undefined) return `[${range}；下一段 from=${window.next}]`
+  // 从头一次读完：不加注（正文照旧，免得每读一个小文件都多一行）
+  return window.from === 1 ? undefined : `[${range}]`
+}
+
+/** 读到的内容摆成面向模型的文本（空文件、分段与截断都**明说**——空输出会被当成失败）。 */
 function composeRead(result: ReadResult): string {
   if (result.note !== undefined) {
     const note = result.note
-    return `笔记 ${note.absolute}（会话 ${note.session}；字符 ${note.offset}–${note.offset + note.text.length}/${note.total}；${note.complete ? '已读至末尾' : `节选，继续读取 offset=${note.next}`}）\n${result.content}`
+    const range = note.totalLines > 0 ? `行 ${note.from}–${note.through} / 共 ${note.totalLines} 行` : '共 0 行'
+    const hint = note.complete ? '已读至末尾' : `下一段 from=${note.next}`
+    return `笔记 ${note.absolute}（会话 ${note.session}；${range}；${hint}）\n${result.content}`
   }
   const body = result.content === '' ? OUTPUT_FILE_EMPTY : result.content
-  if (result.truncated !== true) return body
+  const note = result.window === undefined
+    ? (result.truncated === true ? OUTPUT_READ_TRUNCATED : undefined)
+    : windowNote(result.window)
+  if (note === undefined) return body
 
-  // 截断说明自成一行——正文不以换行收尾时先补一个，免得注与末行黏成一句
-  return (body.endsWith('\n') ? body : `${body}\n`) + OUTPUT_READ_TRUNCATED
+  // 说明自成一行——正文不以换行收尾时先补一个，免得注与末行黏成一句
+  return (body.endsWith('\n') ? body : `${body}\n`) + note
 }
 
 /** 造 `read` 的工具定义。 */
@@ -97,14 +120,15 @@ export function defineReadTool(): ToolDefinition {
       const path = args['path']
       if (!isText(path)) throw new Error(OUTPUT_PATH_REQUIRED)
 
-      const offset = args['offset'], limit = args['limit']
-      if (offset !== undefined && (!Number.isSafeInteger(offset) || (offset as number) < 0)) throw new Error('offset 必须是非负整数')
-      if (limit !== undefined && (!Number.isSafeInteger(limit) || (limit as number) < 1 || (limit as number) > 32000)) throw new Error('limit 必须在 1 到 32000 之间')
-      return { path, ...(offset === undefined ? {} : { offset: offset as number }), ...(limit === undefined ? {} : { limit: limit as number }) }
+      const from = args['from'], lines = args['lines']
+      if (from !== undefined && (!Number.isSafeInteger(from) || (from as number) < 1)) throw new Error('参数错误：from 须为从 1 起的正整数')
+      if (lines !== undefined && (!Number.isSafeInteger(lines) || (lines as number) < 1)) throw new Error('参数错误：lines 须为正整数')
+      return { path, ...(from === undefined ? {} : { from: from as number }), ...(lines === undefined ? {} : { lines: lines as number }) }
     },
-    async run({ path, offset, limit }, ctx): Promise<ToolRunResult> {
+    async run({ path, from, lines }, ctx): Promise<ToolRunResult> {
       try {
-        return { ok: true, output: composeRead(await ctx.sandbox.read(path, offset === undefined && limit === undefined ? undefined : { offset, limit })) }
+        const window = from === undefined && lines === undefined ? undefined : { ...(from === undefined ? {} : { from }), ...(lines === undefined ? {} : { lines }) }
+        return { ok: true, output: composeRead(await ctx.sandbox.read(path, window)) }
       } catch (error) {
         // 原样回填：沙箱那句已是**一整句**（名分 ＋ 路径 ＋ 原委），本域不再加前缀
         // （U83 · D41——「写入失败：写入失败（path）：…」就是把一条事实说了两遍）

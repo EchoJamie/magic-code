@@ -12,11 +12,12 @@ import { dirname, join } from 'node:path'
 import { assertTarget, identityOf, sameIdentity } from './workspace.ts'
 
 /**
- * 读取上限——**字节**（实现级常量）。
+ * 读取上限——**字节**（实现级常量），**单次**而非文件的尽头。
  *
- * 为什么由沙箱持有而不是调用方给：端口签名 `read(path)` **没有选项位**——这是它的形态
- * （技术方案 · 领域划分的冻签名）。64 KiB ≈ 一万六千 token，够读一个大源码文件；
- * 再长的部分模型用 `exec` 的 `sed` / `head` 自己取（工具侧只据 `truncated` 如实措辞）。
+ * 为什么由沙箱持有而不是调用方给：端口签名 `read(path, opts?)` 的缺省就在这里
+ * （技术方案 · 领域划分的冻签名）。64 KiB ≈ 一万六千 token，一页够读一个大源码段；
+ * 读不完的部分不是「此路不通」——`ReadResult.window.next` 给出下一段从哪一行起，
+ * 模型用 `from` 续读，不必绕去 `exec` 的 `sed` / `head`。
  */
 export const DEFAULT_MAX_READ_BYTES = 64 * 1024
 
@@ -107,23 +108,130 @@ export async function verifyHandle(target: ResolvedPath, handle: FileHandle): Pr
   }
 }
 
-/** 所有读取从句柄的零偏移开始，编辑随后仍使用此句柄。 */
-export async function readOpened(handle: FileHandle, absolute: string, cap: number): Promise<ReadResult> {
+/** `read` 的行窗口请求——`from` 从 1 数，`lines` 最多多少行；都缺省＝从第 1 行读到字节上限。 */
+export type ReadWindowRequest = { readonly from?: number; readonly lines?: number }
+
+/** 换行的字节（`read` 按行切段只认它；落在段尾的半行留到下一段）。 */
+const NEWLINE = 0x0a
+
+/** 统计总行数时的扫描上限——再大的文件只报「总行数未统计」（照样能一页页读到底）。 */
+const LINE_COUNT_MAX_BYTES = 16 * 1024 * 1024
+
+/** 顺序读的一段（`fill` 只用显式位置，不移动句柄游标：`edit` 读改写共用同一个句柄）。 */
+async function fill(handle: FileHandle, start: number, length: number): Promise<Buffer> {
+  const buffer = Buffer.allocUnsafe(Math.max(length, 0))
+  let filled = 0
+  while (filled < length) {
+    const { bytesRead } = await handle.read(buffer, filled, length - filled, start + filled)
+    if (bytesRead === 0) break
+    filled += bytesRead
+  }
+  return buffer.subarray(0, filled)
+}
+
+async function countLines(handle: FileHandle, start: number, size: number): Promise<{ lines: number; endsWithNewline: boolean }> {
+  let lines = 0, position = start, tail = NEWLINE
+  while (position < size) {
+    const chunk = await fill(handle, position, Math.min(DEFAULT_MAX_READ_BYTES, size - position))
+    if (chunk.length === 0) break
+    for (const byte of chunk) if (byte === NEWLINE) lines += 1
+    tail = chunk[chunk.length - 1]!
+    position += chunk.length
+  }
+  return { lines, endsWithNewline: tail === NEWLINE }
+}
+
+/**
+ * 第 `line` 行的行首字节位置（`line` 从 1 数）；越过末尾就抛，并报**实际**多少行。
+ *
+ * 只能顺着扫——文本文件没有行索引。代价是 `from` 越大越贵（O(前缀)），换来的是
+ * **一个地址空间**：`grep` 报第几行、`from` 就填第几行，模型不必换算。
+ */
+async function startOfLine(handle: FileHandle, size: number, line: number): Promise<number> {
+  if (line <= 1) return 0
+  let position = 0, seen = 0
+  while (position < size) {
+    const chunk = await fill(handle, position, Math.min(DEFAULT_MAX_READ_BYTES, size - position))
+    if (chunk.length === 0) break
+    for (let index = 0; index < chunk.length; index += 1) {
+      if (chunk[index] !== NEWLINE) continue
+      seen += 1
+      if (seen === line - 1) return position + index + 1
+    }
+    position += chunk.length
+  }
+  const counted = await countLines(handle, 0, size)
+  throw new Error(`文件共 ${counted.lines + (counted.endsWithNewline || size === 0 ? 0 : 1)} 行，from=${line} 已越过末尾`)
+}
+
+/**
+ * 按行切一段：从 `from` 行起，最多 `lines` 行、最多 `cap` 字节。
+ *
+ * 三条都以**整行**为界：`content` 不会停在一行的中间（`edit` 要拿它逐字匹配），
+ * 没读完的部分由 `window.next` 指路。唯一例外是一行本身就超 `cap`——那时只能给到上限
+ * 并明说（`oversizedLine`），因为**行**越界了，按行续读根本没有下一段。
+ */
+async function readWindow(handle: FileHandle, size: number, cap: number, request?: ReadWindowRequest): Promise<ReadResult> {
+  const from = request?.from ?? 1
+  const limit = request?.lines
+  const start = await startOfLine(handle, size, from)
+  // 末尾带换行时 `from = 总行数 + 1` 会落在 `size` 上（不越界）——但那是「没有这一行」，
+  // 与 notes 那侧同一条规矩：越过末尾就抛，别给一份空正文配一个 `through < from` 的窗口。
+  if (start >= size && size > 0) {
+    const counted = await countLines(handle, 0, size)
+    throw new Error(`文件共 ${counted.lines + (counted.endsWithNewline ? 0 : 1)} 行，from=${from} 已越过末尾`)
+  }
+  const bytes = await fill(handle, start, Math.min(cap + 1, size - start))
+
+  // 行数上限：第 limit 个换行之后本段就到头（那个换行本身留在段内）
+  let budget = bytes.length
+  if (limit !== undefined) {
+    let seen = 0
+    for (let index = 0; index < bytes.length; index += 1) {
+      if (bytes[index] !== NEWLINE) continue
+      seen += 1
+      if (seen === limit) { budget = index + 1; break }
+    }
+  }
+  const more = start + budget < size
+
+  if (more && bytes.lastIndexOf(NEWLINE, budget - 1) < 0) {
+    // 一页里连一个换行都没有：这一行自己就超上限，按行续读没有下一段
+    return {
+      content: new TextDecoder().decode(bytes.subarray(0, cap), { stream: true }),
+      truncated: true,
+      window: { from, through: from, totalBytes: size, oversizedLine: from },
+    }
+  }
+
+  // 后面还有内容时，段尾的半行不收——留到下一段，免得把半行当成完整内容
+  const end = more ? bytes.lastIndexOf(NEWLINE, budget - 1) + 1 : budget
+  const body = bytes.subarray(0, end)
+  let newlines = 0
+  for (const byte of body) if (byte === NEWLINE) newlines += 1
+  const through = from + newlines + (!more && body.length > 0 && body[body.length - 1] !== NEWLINE ? 1 : 0) - 1
+  let totalLines: number | undefined = through
+  if (more) {
+    totalLines = undefined
+    if (size <= LINE_COUNT_MAX_BYTES) {
+      const rest = await countLines(handle, start + end, size)
+      totalLines = through + rest.lines + (rest.endsWithNewline ? 0 : 1)
+    }
+  }
+
+  return {
+    content: new TextDecoder().decode(body, { stream: true }),
+    ...(more ? { truncated: true } : {}),
+    window: { from, through, totalBytes: size, ...(totalLines === undefined ? {} : { totalLines }), ...(more ? { next: through + 1 } : {}) },
+  }
+}
+
+/** 所有读取从句柄上按显式位置取（不移动游标），编辑随后仍使用此句柄。 */
+export async function readOpened(handle: FileHandle, absolute: string, cap: number, request?: ReadWindowRequest): Promise<ReadResult> {
   try {
     const info = await handle.stat()
     if (info.isDirectory()) throw new Error('是目录，不是文件')
-    const buffer = new Uint8Array(cap + 1)
-    let length = 0
-    while (length < buffer.length) {
-      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length)
-      if (bytesRead === 0) break
-      length += bytesRead
-    }
-    const truncated = length > cap || info.size > cap
-    return {
-      content: new TextDecoder().decode(buffer.subarray(0, Math.min(length, cap)), { stream: truncated }),
-      ...(truncated ? { truncated: true } : {}),
-    }
+    return await readWindow(handle, info.size, cap, request)
   } catch (error) { throw failureOf('读取', absolute, error) }
 }
 
@@ -148,9 +256,9 @@ export async function writeOpened(
   } catch (error) { throw failureOf('写入', target.absolute, error) }
 }
 
-export async function readText(target: ResolvedPath, cap: number): Promise<ReadResult> {
+export async function readText(target: ResolvedPath, cap: number, request?: ReadWindowRequest): Promise<ReadResult> {
   const handle = await openTarget(target, 'read')
-  try { return await readOpened(handle, target.absolute, cap) } finally { await handle.close() }
+  try { return await readOpened(handle, target.absolute, cap, request) } finally { await handle.close() }
 }
 
 export async function writeInto(target: ResolvedPath, data: WriteData, expectedContent?: string): Promise<void> {
