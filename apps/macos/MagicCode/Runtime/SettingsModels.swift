@@ -2,6 +2,31 @@ import Foundation
 import CryptoKit
 import Network
 
+/// 官方适配的协议固定优先级；显示与解析共用这一份（D62：不能各算一份）。
+let providerProtocolPriority = ["responses", "messages", "chat-completions"]
+
+/// 协议解析结果——`fallback` 表示官方提示里没有这个型号，按固定优先级兜底。
+struct ProtocolResolution {
+    let id: String
+    let fallback: Bool
+}
+
+/// 协议解析的唯一来源：显式 → 官方提示里第一个支持该型号的协议 → 固定优先级兜底。
+/// `SettingsModels.protocolID` 与界面显示（`modelProtocolName`）都走这里。
+func resolveProtocol(vendor: SettingsValue, explicit: String, model: String) -> ProtocolResolution {
+    let declared = vendor["protocols"].array
+    // 固定优先级不依赖适配表的书写顺序；未知协议留在末尾（仅为不丢资料）。
+    let protocols = providerProtocolPriority.compactMap { id in declared.first { $0["id"].text == id } }
+        + declared.filter { entry in !providerProtocolPriority.contains(entry["id"].text) }
+    if !explicit.isEmpty { return ProtocolResolution(id: explicit, fallback: false) }
+    let supported = protocols.filter { $0.object["models"] == nil || $0["models"].array.contains(.string(model)) }
+    if let id = supported.first?["id"].text, !id.isEmpty { return ProtocolResolution(id: id, fallback: false) }
+    if let id = providerProtocolPriority.first(where: { id in protocols.contains { $0["id"].text == id } }) {
+        return ProtocolResolution(id: id, fallback: true)
+    }
+    return ProtocolResolution(id: protocols.first?["id"].text ?? "responses", fallback: true)
+}
+
 /// 只供离线设置的目录资料与列表刷新；不装配模型或执行请求。
 final class SettingsModels {
     let metadata: SettingsValue
@@ -37,22 +62,15 @@ final class SettingsModels {
         if (normalized.scheme == "http" && normalized.port == 80) || (normalized.scheme == "https" && normalized.port == 443) { normalized.port = nil }
         return (normalized.string ?? address).replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
     }
-    /// 官方适配的协议固定优先级（官方还没给出该型号的提示时按它兜底）。
-    private static let protocolPriority = ["responses", "messages", "chat-completions"]
     /// 该型号的协议——**协议兼容不是硬闸门**：型号不在官方支持提示里也照用。
     ///
     /// 显式写了协议就用它；没写时取官方提示里第一个支持该型号的协议；官方还没有该型号的
     /// 提示时按固定优先级（Responses → Anthropic Messages → Chat Completions）兜底。
-    /// 地址与区域照旧解析——**没有地址就报错**（不猜）。
+    /// 地址与区域照旧解析——**没有地址就报错**（不猜）。解析规则与界面显示共用 `resolveProtocol`。
     func protocolID(_ config: SettingsValue, model: String) throws -> String {
         if config.object["vendor"] == nil { _ = try endpoint(config); return config.object["protocol"]?.text ?? "responses" }
         guard let vendor = vendor(config) else { throw WireError.invalid("未知供应商适配，请检查 vendor") }
-        let protocols = vendor["protocols"].array
-        let supported = protocols.filter { $0.object["models"] == nil || $0["models"].array.contains(.string(model)) }
-        let selected = config.object["protocol"]?.text
-            ?? supported.first?["id"].text
-            ?? Self.protocolPriority.first { id in protocols.contains { $0["id"].text == id } }
-            ?? protocols.first?["id"].text ?? "responses"
+        let selected = resolveProtocol(vendor: vendor, explicit: config.object["protocol"]?.text ?? "", model: model).id
         guard try !endpoint(config, protocolID: selected).isEmpty else {
             throw WireError.invalid("连接没有有效服务地址或官方区域")
         }

@@ -3,7 +3,7 @@ import type { ModelCatalogRow, VendorInfo } from '@magic/contracts'
 import { createStage } from './screen.ts'
 import type { Stage } from './screen.ts'
 import { event } from './events.ts'
-import { modelEditor, modelOverride, providerEditor, providerRequest, protocols, effectiveProtocol } from '../src/boards/capabilities/model-editor.ts'
+import { modelEditor, modelOverride, providerEditor, providerRequest, protocols, effectiveProtocol, protocolDisplay } from '../src/boards/capabilities/model-editor.ts'
 
 const vendors: readonly VendorInfo[] = [{ vendor: 'official', label: '官方', regions: [{ id: 'cn', label: '中国', baseURL: 'https://secret.example/v1' }], protocols: protocols.map(one => ({ ...one, models: ['原始型号'] })) }]
 const entry: ModelCatalogRow = { provider: 'local', name: '本地', baseURL: 'http://localhost:1234/custom/v2', protocol: 'responses', auth: 'none' }
@@ -187,8 +187,13 @@ describe('/model 集中编辑', () => {
     const official = { provider: 'p', vendor: vendor.vendor }
     expect(effectiveProtocol(official, vendor, 'exact')).toBe('responses')
     expect(effectiveProtocol(official, vendor, 'message-only')).toBe('messages')
-    expect(effectiveProtocol(official, vendor, 'EXACT')).toBeUndefined()
+    // 官方提示里没有的型号按固定优先级兜底，并在显示上标明来源。
+    expect(effectiveProtocol(official, vendor, 'EXACT')).toBe('responses')
+    expect(protocolDisplay(official, vendor, 'EXACT')).toBe('Responses（按优先级兜底）')
     expect(effectiveProtocol({ ...official, protocol: 'chat-completions' }, vendor, 'exact')).toBe('chat-completions')
+    // 自定义连接没写协议＝还没选，不伪造默认值。
+    expect(effectiveProtocol({ provider: 'p' }, undefined, 'x')).toBeUndefined()
+    expect(protocolDisplay({ provider: 'p' }, undefined, 'x')).toBe('请选择协议')
   })
 
   for (const columns of [200, 100]) test(`生产渲染 ${columns}×40：长型号、展开信息与保存焦点`, async () => {

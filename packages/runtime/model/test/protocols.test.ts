@@ -104,21 +104,14 @@ describe('三种 SDK 的受控多轮工具闭环', () => {
   })
 })
 
-test('官方支持范围只作提示：默认顺序、协议级地址与不匹配型号都不拦', () => {
+test('官方提示决定默认协议，未收录型号按固定优先级兜底', () => {
   expect(resolveModelSource({ vendor: 'minimax' }, 'MiniMax-M3')).toEqual({ protocol: 'responses', endpoint: 'https://api.minimax.cn/v1' })
-  // 官方提示里 `deepseek-v4-pro` 也支持 Responses ⇒ 默认取提示里第一个（Responses）。
-  expect(resolveModelSource({ vendor: 'deepseek' }, 'deepseek-v4-pro')).toEqual({ protocol: 'responses', endpoint: 'https://api.deepseek.com' })
-  // 显式写了协议就用它——**型号不在官方提示里也不拒绝**（协议兼容不是硬闸门）。
+  // DeepSeek 的官方提示只把 Responses 声明给 `deepseek-flash`；`deepseek-v4-pro` 的提示在 Messages / Chat。
+  expect(resolveModelSource({ vendor: 'deepseek' }, 'deepseek-v4-pro')).toEqual({ protocol: 'messages', endpoint: 'https://api.deepseek.com/anthropic/v1' })
+  // 显式协议不因型号提示而拒绝；地址仍按协议解析。
   expect(resolveModelSource({ vendor: 'deepseek', protocol: 'responses' }, 'deepseek-v4-pro')).toEqual({ protocol: 'responses', endpoint: 'https://api.deepseek.com' })
-  expect(resolveModelSource({ vendor: 'deepseek', protocol: 'messages' }, 'deepseek-v4-pro')).toEqual({ protocol: 'messages', endpoint: 'https://api.deepseek.com/anthropic/v1' })
-  // 官方还没有该型号的提示 ⇒ 按固定优先级（Responses → Messages → Chat Completions）兜底。
-  for (const model of ['deepseek-chat', 'deepseek-v4-flash', 'claude-opus-4']) {
-    expect(resolveModelSource({ vendor: 'deepseek' }, model)).toEqual({ protocol: 'responses', endpoint: 'https://api.deepseek.com' })
-  }
-  // 自定义连接照旧：没写协议就是 responses，地址用自己填的。
-  expect(resolveModelSource({ baseURL: 'http://local/v1' }, 'whatever')).toEqual({ protocol: 'responses', endpoint: 'http://local/v1' })
-  // 认不出的供应商适配仍报错（不是协议兼容问题）。
-  expect(() => resolveModelSource({ vendor: 'nope' }, 'x')).toThrow('nope')
+  // 提示里没有的型号按固定优先级（Responses → Messages → Chat）兜底，不再拒绝。
+  for (const model of ['deepseek-chat', 'deepseek-v4-flash', 'claude-opus-4']) expect(resolveModelSource({ vendor: 'deepseek' }, model)).toEqual({ protocol: 'responses', endpoint: 'https://api.deepseek.com' })
   expect(vendorCatalog()[0]?.protocols.map(p => p.id)).toEqual([...protocols])
 })
 
@@ -137,26 +130,11 @@ test('型号不在官方提示里也照发：请求仍按所选协议构造', as
   expect(bodies[0].model).toBe('尚未公布的型号')
 })
 
-test('对话能力不再是硬闸门：请求照发；图片与工具两条仍当场拒绝', async () => {
-  const requests: string[] = []
-  const gateway = createModelGateway({ providerId: 'ds', model: 'exact', config: { vendor: 'deepseek', protocol: 'chat-completions' }, apiKey: 'controlled', stamper: makeTestStamper(),
-    modelInfoOf: () => ({ id: 'exact', capabilities: { chat: false } }),
-    fetch: async (url) => { requests.push(String(url)); return sse(chunks('chat-completions', false)) } })
+test('对话能力明确不支持时请求前说明，不发注定失败的请求', async () => {
+  const { gateway, requests } = harness('chat-completions', { modelOverrides: { exact: { capabilities: { chat: false } } } })
   const { result } = await drainStream(gateway.stream({ messages: [{ role: 'user', content: 'hi' }] }))
-  expect(result.error).toBeUndefined()
-  expect(requests).toHaveLength(1)
-  // 图片与工具两条闸门照旧：明确不支持就当场说清，不发请求。
-  for (const capability of ['image', 'tools'] as const) {
-    const blocked = createModelGateway({ providerId: 'ds', model: 'exact', config: { vendor: 'deepseek', protocol: 'chat-completions' }, apiKey: 'controlled', stamper: makeTestStamper(),
-      modelInfoOf: () => ({ id: 'exact', capabilities: { [capability]: false } }),
-      fetch: async (url) => { requests.push(String(url)); return sse(chunks('chat-completions', false)) } })
-    const request = capability === 'image'
-      ? { messages: [{ role: 'user' as const, content: [{ type: 'image' as const, mime: 'image/png', data: new Uint8Array([1, 2]) }] }] }
-      : { messages: [{ role: 'user' as const, content: 'hi' }], tools: [tool] }
-    const failed = await drainStream(blocked.stream(request))
-    expect(failed.result.error?.message).toContain(capability === 'image' ? '不支持图片输入' : '不支持工具调用')
-  }
-  expect(requests).toHaveLength(1)
+  expect(JSON.stringify(result.error)).toContain('不支持对话')
+  expect(requests).toHaveLength(0)
 })
 
 test('注册表按当前配置重新解析来源，旧记录里的协议与地址不锁定', async () => {

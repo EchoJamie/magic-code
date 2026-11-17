@@ -58,7 +58,10 @@ final class NativeTests: XCTestCase {
         let unset = snapshot.configuration["providers"]["official"]
         XCTAssertEqual(modelProtocolName(provider: unset, model: "exact-model", vendors: snapshot.vendors), "Responses")
         XCTAssertEqual(modelProtocolName(provider: unset, model: "other-model", vendors: snapshot.vendors), "Anthropic Messages")
-        XCTAssertTrue(modelProtocolName(provider: unset, model: "unknown-model", vendors: snapshot.vendors).hasPrefix("未知"))
+        // 官方提示里没有的型号不再显示「未知」：显示实际兜底协议并标明来源（D62）。
+        XCTAssertEqual(modelProtocolName(provider: unset, model: "unknown-model", vendors: snapshot.vendors), "Responses（按优先级兜底）")
+        // 自定义连接没写协议就是还没选，不伪造默认值。
+        XCTAssertEqual(modelProtocolName(provider: .object(["baseURL": .string("http://local/v1")]), model: "whatever", vendors: snapshot.vendors), "请选择协议")
         XCTAssertEqual(providerProtocolOptions(snapshot.vendors[0]).map { $0["id"].text }, ["responses", "messages", "chat-completions"])
         draft.put("protocol", .string("messages"))
         // 协议兼容不再在保存前拦截：型号与协议是否匹配由服务端最终裁定。
@@ -135,6 +138,8 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(try models.protocolID(official, model: "尚未公布的型号"), "responses")
         // 区域认不出 ⇒ 没有有效服务地址就报错（不猜、不回落）。
         XCTAssertThrowsError(try models.protocolID(SettingsValue.object(["vendor": .string("fixture"), "region": .string("mars"), "protocol": .string("responses")]), model: "exact-model"))
+        // 界面显示与解析同源：兜底时标出来源。
+        XCTAssertEqual(modelProtocolName(provider: official, model: "尚未公布的型号", vendors: metadata["vendors"].array), "Responses（按优先级兜底）")
     }
 
     @MainActor func testU126CustomAuthenticationAddressAndWireValidation() {
