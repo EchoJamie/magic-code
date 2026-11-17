@@ -36,32 +36,45 @@ App 可执行文件同样接受这些参数。显式参数保存当前实例 `co
 
 ## 开发
 
+- **研发规则**：分支、合并与提交见 `rules/分支维护与研发流程.md`；测试分层与门禁见 `rules/TESTING.md`；代理常驻约束见 `AGENTS.md`。
 - **规划材料**（外部）：Obsidian「Magic」工作区 · `Magic Code/交接/`——材料清单（读什么）· 进度台账（当前开发项）· 回报（完成或卡住写回 `<单元号>.md`）；开工第一动作＝对表。
 - **工作分解**：单元 · 契约 · 并行切分 · 集成顺序——开发以此为基准。
 - **`playground/`**：试跑区——给 Agent 练手的临时目录，内容不入库。
 
 ## 仓库结构
 
-Bun workspaces 分包：**一域一包**，外加契约包、外壳、装配根与测试层。
+Bun workspaces 分包：应用入口、装配层、引擎宿主、客户端、运行时域与测试层。
 
-包间只经**契约**交互——共享语言 ＋ 跨域端口的代码落点在 `packages/contracts/`。
-依赖方向：**域 / 外壳 → `@magic/contracts`**（＋许可外部库）；**`app` → 全部**（装配根）；`faux` 只依赖契约。越界由 `test/scaffold.test.ts` 拦截。
+包间只经**契约**交互——共享语言、跨域端口与 wire 编解码落在 `packages/contracts/`。
+依赖方向按 `test/scaffold.test.ts` 的包表：域包 → contracts；外壳 → contracts；应用层与装配根按包表跨域；`faux` 只依赖 contracts。越界由 `bun run check:imports` 拦截。
 
 | 包 | 职责 |
 | --- | --- |
-| `packages/config` | 共享配置解析、校验、锁、指纹、原子保存与监听；仅依赖契约 |
-| `packages/contracts` | 共享语言、跨域端口与原生 wire 编解码；零外部运行时依赖 |
-| `packages/records` | 记录域——库 · blob（**写权唯一**） |
-| `packages/model` | 模型域——供应商适配（AI SDK 封在域内） |
-| `packages/permission` | 权限域——闸门（裁决 · 询问流转 · 度量） |
-| `packages/execution` | 执行域——沙箱原语 · 工作区解析 |
-| `packages/tools` | 工具域——机制 · 注册 · 分发（闸门在执行路径内） |
-| `packages/conversation` | 对话域——主循环 · 上下文装配 · 系统提示词 |
-| `packages/control` | 控制域——命令通道 · 事件订阅 · 可序列化 |
-| `packages/faux` | **测试层 · 非域**——Faux Provider ＋ 共享测试替身（任何域的测试皆可安全取用） |
-| `packages/tui` | 外壳——显示组件自持；只认控制面 |
-| `packages/app` | 装配根 ＋ 独立入口——`magic-cli` 与 `magic-engine` |
+| `apps/cli` | CLI 入口、TUI 接线、设置与脚本 |
+| `apps/engine` | Engine 进程入口与组件安装 |
 | `apps/macos` | SwiftUI/AppKit 客户端、状态栏、通知、Terminal 与设置 |
+| `packages/assembly` | 装配根——会话链、模型配置、后台会话与协作边界 |
+| `packages/contracts` | 共享语言、跨域端口与原生 wire 编解码；零运行时依赖 |
+| `packages/client/shell` | TUI 外壳与各显示板；只认契约 |
+| `packages/client/transport` | 控制面传输与 hub |
+| `packages/client/local-capabilities` | 客户端本地能力（剪贴板等） |
+| `packages/engine/data` | 记录与数据服务——库、schema、ledger、runs（**写权唯一**） |
+| `packages/engine/host` | Engine 宿主——manager、run-store、设置、观察与 native server |
+| `packages/engine/state` | 配置状态——修订、订阅、锁、指纹与原子保存 |
+| `packages/runtime/conversation` | 对话域——主循环、上下文、提示词与整理 |
+| `packages/runtime/model` | 模型域——供应商适配、协议与 Models.dev |
+| `packages/runtime/resources` | 执行域——沙箱、工作区、后台命令与规约来源 |
+| `packages/runtime/tools` | 工具域——机制、注册、分发与权限闸门 |
+| `packages/runtime/mcp` | MCP 接入与工具桥 |
+| `test/faux` | **测试层 · 非域**——Faux Provider ＋ 共享测试替身 |
+
+仓库级研发文档：
+
+| 路径 | 职责 |
+| --- | --- |
+| `rules/分支维护与研发流程.md` | 分支模型、版本线、合并与提交规则 |
+| `rules/TESTING.md` | 测试分层、门禁与夹具规范 |
+| `AGENTS.md` | 代理常驻约束（高频、精炼） |
 
 ## 常用命令
 
@@ -96,7 +109,7 @@ bun run ui script <步骤文件>     # **要有一段自己的交互、想看屏
 
 ### 测试与辅助脚本
 
-新增、修改或清理测试前，参照 [测试开发指南](TESTING.md)：按行为选择测试层级，区分快速提交门禁与完整回归，复用夹具，并同步维护辅助脚本与产物清理。自动测试位于各包 `test/`，人工检查位于 `scripts/verify/`，性能测量位于 `scripts/bench-*.ts`。
+新增、修改或清理测试前，参照 [测试开发指南](rules/TESTING.md)：按行为选择测试层级，区分快速提交门禁与完整回归，复用夹具，并同步维护辅助脚本与产物清理。自动测试位于 `packages/**/test/` 与 `apps/*/test/`，人工检查位于 `apps/cli/scripts/verify/`，性能测量位于 `apps/cli/scripts/bench-*.ts`。
 
 ### 界面验收工具（`bun run ui`）
 
@@ -121,7 +134,7 @@ bun run ui script <步骤文件>     # **要有一段自己的交互、想看屏
 每一步**就是 `serve` 认的那条命令**（`start` / `send` / `key` / `resize` / `wait` / `capture` /
 `quit` / `close`）；**别在外面拿 bash ＋ FIFO 把 `serve` 包起来**——那条路已经开在这儿了。
 
-**看帧是四项**（`AGENTS.md`）：布局 · 文案语义 · 层级 · 通读。**「判据过了」不等于「看得过去」。**
+**看帧是四项**：布局 · 文案语义 · 层级 · 通读。**「判据过了」不等于「看得过去」。**
 
 **位置**：入口 `packages/app/scripts/ui.ts`；驱动与产物那一侧 `packages/app/test/ui/`；
 每次运行的现场（`run.json` · `steps.ndjson` · `raw.bin` · `frames/` · `viewer.html`）
@@ -229,15 +242,11 @@ Magic 能连**你自己配置**的本地 MCP 服务器，把它们的工具交�
 
 ## 质量闸与守护
 
-- **提交前自动跑**——`.githooks/pre-commit` 执行 `check:commit`（类型检查、结构守护和快速回归），经 `bun install` 的 prepare 装配 `core.hooksPath`。
-- **校验对象＝暂存内容**——闸把暂存区物化到临时目录，按暂存锁文件离线安装依赖；workspace 链接也指向暂存树，未暂存源码与未跟踪草稿不参与。缓存不足或依赖清单与锁文件不一致时拒绝提交，先核对并运行 `bun install` 准备依赖。
-- **合并前全量回归**——`bun run check` 始终包含全部 TS 测试；PR 检查执行全量 TS 与原生检查。直接合并也须在最终内容上完成相应检查，不能用提交门禁代替。
-- **分类就近维护**——普通 `*.test.ts` 属于快速回归，`*.integration.test.ts` 属于集成，`*.e2e.test.ts` 属于端到端；同文件混合层级按职责拆分。开发时先跑改动相关测试，涉及进程、协议或用户路径即补对应集成或端到端检查。
-- **规范正本**——Obsidian「Magic」的 `Magic Code/设计/技术/架构与边界.md`「代码治理」规定包内职责、拆分判据与测试价值；不按文件行数或测试数量机械拆删。
-- **覆盖范围＝入库目录**——仓库级守护在 `test/`，包级测试在 `packages/<pkg>/test/`；`playground/` 是试跑区，内容不参与（见 `bunfig.toml`）。
-- **仓库级守护**（`test/scaffold.test.ts`）按面分：
-  - **依赖纪律**——`src/**` 只许 `@magic/contracts`（＋许可外部库：模型域 → AI SDK · 外壳 → Ink / React）；**`test/**` 额外许可 `@magic/faux`**（`dependencies` 与 `peerDependencies` 同受生产面约束）。
-  - **fs 直触**——只许记录域与执行域；扫描面＝**域包** `src/`（外壳 · 装配根 · 测试层不在此列——装配根读配置是设计明写的事）。
-  - **blobs 落点唯一** · **契约包零运行时依赖** · **包表完备**（新包落地须登记）· **公开面只出 `.`**。
+- **规则入口**：提交、合并与版本线见 `rules/分支维护与研发流程.md`；测试分层、夹具与门禁细则见 `rules/TESTING.md`。
+- **提交门禁**：`.githooks/pre-commit` 执行 `check:commit`（typecheck + `check:imports` + test:fast），校验对象是暂存内容；经 `bun install` 的 prepare 装配 `core.hooksPath`。
+- **合并门禁**：`bun run check` 跑 typecheck、导入分层检查与全部 TS 测试；原生、协议或打包改动加 `bun run check:macos`；发布前 `bun run check:all`（发布仅在用户明确要求时）。
+- **层边界**：`bun run check:imports` 调用 `test/scaffold.test.ts`，检查包表、依赖方向、域包不 import 外壳／装配、fs 只触 `@magic/data`／`@magic/resources`、契约包零运行时依赖、公开面只出 `.`。
+- **覆盖范围**：仓库级守护在 `test/`，包级测试在 `packages/**/test/` 与 `apps/*/test/`；`playground/` 是试跑区，不参与（见 `bunfig.toml`）。
+- **规范正本**：包内职责、拆分判据与测试价值的设计正本在 Obsidian「Magic」的 `Magic Code/设计/技术/架构与边界.md`「代码治理」。
 
 > 建仓：2026-09-16（规划侧）。

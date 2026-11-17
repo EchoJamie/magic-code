@@ -34,7 +34,7 @@ bash scripts/macos/verify.sh
 - `magic-engine service status|start|stop|switch|remove` 提供查询和生命周期控制；改变生命周期的操作共用私有锁，App 与 CLI 直接调用此入口。`switch --parent <路径>` 修改 Engine 自有的默认目标；`remove` 完成安全停止并移除系统任务，保留组件和数据。
 - launchd 任务加载到 `gui/<uid>`，plist 位于用户私有 runtime 目录，不放入自动加载的 LaunchAgents。`KeepAlive.SuccessfulExit=false` 恢复异常退出；正常停止返回 0。任务参数固定包来源、所选父目录和生命周期身份，不保存 TUI 环境。
 - Engine 使用 `serve` 启动，持有发现发布、一个记录库连接、进程内 Agent 异步实例与工具归属。Agent 不对应独立 executor 进程。工具通过统一启动屏障，在 PID／启动时间和持久归属登记完成后执行。
-- Engine 自己发布 `~/Library/Application Support/Magic Code/runtime/host.json`。残留文件不能证明在线；状态需核对实际进程及握手。App 退出不删除发现、不关闭 Engine。`native.stop` 停具体工作，`native.engine.stop` 停整个 Engine，均核对目标身份。
+- Engine 自己发布 `~/Library/Application Support/Magic Code/runtime/host.json`。残留文件不等于在线；状态以实际进程与握手为准。App 退出不删除发现、不关闭 Engine。`native.stop` 停具体工作，`native.engine.stop` 停整个 Engine，均核对目标身份。
 - 正常工作入口自动启动未运行的 Engine；`magic --settings` 直接打开本地设置，不连接或启动 Engine，即使 Engine 未安装也可编辑。`magic engine status`、刷新、重连及设置专用入口只查询。公开 CLI 控制为 `magic engine status|start|stop`；明确停止命令直接执行，不再追加终端确认。
 - 全范围停止关闭准入、取消各 Agent 并收妥工具后才成功。失联时短控制先移除系统任务，再复用 TS 资源回收。停止发起者离开不挂断该操作。重启只核旧资源与中断状态，不自动续跑。
 - TUI 首次提交／明确继续携带其启动时继承的环境与 cwd。正在运行的工作及成员共享不可变环境与专属网络连接；接回不替换环境，完成后继续可用新环境，工作区与数据实例保持原归属。
@@ -64,7 +64,7 @@ python3 -B scripts/macos/verify.py '/path/to/Debug/Magic Code.app'
 
 `engine-system.py` 检查并发 CLI 启动、异常恢复、旧代请求、非默认实例与可识别启动错误；`verify.py` 检查 App 退出／强杀不停止 Engine、重开复用同代，以及明确停止。`idle-probe.py` 检查真实 App 与独立 Engine 的空闲活动。
 
-`system-test.py` 是使用受控工作事实的通知／登录集成装置，不能作为真实 Engine 托管证据；其系统写操作须有对应授权，步骤见 [SYSTEM_TEST_PLAN.md](SYSTEM_TEST_PLAN.md)。历史验收记录见 [VALIDATION.md](VALIDATION.md)，不代表当前分支已通过系统验收。
+`system-test.py` 是使用受控工作事实的通知／登录集成装置；真实 Engine 托管证据由独立装置取得。其系统写操作须有对应授权，步骤见 [SYSTEM_TEST_PLAN.md](SYSTEM_TEST_PLAN.md)。历史验收记录见 [VALIDATION.md](VALIDATION.md)，当前分支的系统验收状态以最新记录为准。
 
 ## Wire
 
