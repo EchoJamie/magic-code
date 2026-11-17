@@ -611,7 +611,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       const c = collaboration(id)
       if (c.state === 'closed') return { closed: true, blockers: [] }
       if (c.state === 'open') saveCollaboration({ ...c, state: 'closing' })
-      const blockers = delegations(id).filter(d => !['received', 'rejected', 'cancelled'].includes(d.state) || d.deliveryMessageId !== undefined && d.receivedAt === undefined).map(d => `delegation ${d.delegationId}: ${d.state}`)
+      const blockers = delegations(id).filter(blocksClose).map(d => `delegation ${d.delegationId}: ${d.state}`)
       blockers.push(...executions(id).filter(e => e.state !== 'finished').map(e => `execution ${e.operationId}: ${e.state}`))
       if (blockers.length) return { closed: false, blockers }
       saveCollaboration({ ...c, state: 'closed' })
@@ -624,6 +624,20 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     },
   }
   return api
+}
+/**
+ * 这条委派**还挡不挡整体收尾**。
+ *
+ * 三种终态（received / rejected / cancelled）都不挡。除此之外，**投递了、对方却没回执**的通常
+ * 还挡——结果可能还在路上。但**已取消的不挡**：取消就是「不会再有人处理它」，再等一个不会来的
+ * 回执，收尾会永远落不下去。
+ *
+ * ⚠️ 这条判据**只此一处**：宿主收尾（`engine/host/src/collaboration.ts` 的 `idle`）也用它，
+ * 不再各写一份——两处各写一版，迟早一处松一处紧。
+ */
+export function blocksClose(d: Delegation): boolean {
+  if (!['received', 'rejected', 'cancelled'].includes(d.state)) return true
+  return d.state !== 'cancelled' && d.deliveryMessageId !== undefined && d.receivedAt === undefined
 }
 function required<T>(value: T | undefined, reason: string): T { if (value === undefined) throw new Error(reason); return value }
 function nonempty(value: string, name: string): void { if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} required`) }

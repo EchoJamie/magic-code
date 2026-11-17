@@ -3,7 +3,7 @@ import type {
   CollaborationView, CollaborationUsage, MagicHome, ModelUsage, RunRow, StopResult, UserInput,
 } from '@magic/contracts'
 import { createCollaborationActions } from '@magic/host'
-import type { RecordsStore } from '@magic/data'
+import { blocksClose, type RecordsStore } from '@magic/data'
 import { managedModelChoices, resolveManagedModel } from '@magic/host'
 
 export type CollaborationHost = {
@@ -198,18 +198,23 @@ export function createManagedCollaboration(host: CollaborationHost) {
     async idle(session: string): Promise<boolean> {
       const work = records.collaborationForSession(session)
       if (work?.state !== 'closing' || work.originSessionId !== session || finishing.has(work.collaborationId)) return false
-      // 收齐结果且工作调用已结算后才释放空闲宿主资源；闭合事实要晚于资源确证。
-      const unresolved = records.listDelegations(work.collaborationId).some(d =>
-        !['received', 'rejected', 'cancelled'].includes(d.state) || (d.deliveryMessageId !== undefined && d.receivedAt === undefined))
-      if (unresolved || records.listExecutions(work.collaborationId).some(e => e.state !== 'finished')
-        || host.runs().some(run => records.agentForSession(run.session)?.collaborationId === work.collaborationId && (run.holds || (run.background ?? 0) > 0 || run.backgroundUnknown || run.backgroundWaiting))
-        || records.listMembers(work.collaborationId).some(member =>
-          host.store.serviceFor(member.sessionId).inputs.list().some(row => (row.state === 'pending' || row.state === 'consumed') && row.reason === undefined)
-          || records.inbox(member.agentId).some(item => (item.state === 'pending' || item.state === 'consumed') && item.includedAt === undefined && records.readMessage(member.agentId, item.messageId)?.purpose !== 'receipt'))) return false
+      // **收尾是发起会话的决定**，不是一次征询：不向协作者「告知」、不等它们的手头活干完、
+      // 也不等它们把收到的消息读完。这里只做两件——把它们的资源收掉，然后结账。
+      //
+      // 唯一的前置判据是「委派了结没有」（记录域那条 `blocksClose`）：已取消的不等回执，
+      // 否则等一个不会来的回执会把 closing 钉死。
+      if (records.listDelegations(work.collaborationId).some(blocksClose)) return false
       finishing.add(work.collaborationId)
       try {
+        // 先收资源、再结账：反过来的话，「成员还在跑」会让收尾永远等下去——
+        // 而成员此刻在跑什么、跑到哪一步，本来也不该由收尾来等。
         await host.cancel(records.listMembers(work.collaborationId).map(a => a.sessionId))
         if (closing || records.getCollaboration(work.collaborationId)?.state !== 'closing') return false
+        // 收的是**资源**，不是「协作者的态度」：资源没核销干净就说没干净，保留 closing 下一拍再来，
+        // 不冒称收尾。这一条查的是我们自己的进程/后台命令，不是谁还没把消息读完。
+        const leftover = host.runs().some(run => records.agentForSession(run.session)?.collaborationId === work.collaborationId
+          && (run.holds || (run.background ?? 0) > 0 || run.backgroundUnknown || run.backgroundWaiting))
+        if (leftover) return false
         const outcome = records.closeCollaboration(work.collaborationId, host.now())
         changed()
         return outcome.closed

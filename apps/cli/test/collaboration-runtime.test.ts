@@ -155,26 +155,46 @@ test('协作汇总实际模型用量：成员未报告的调用不补零、不�
   } finally { managed.shutdown('测试清理'); f.close() }
 })
 
-test('整体显式收尾要等资源确认；失败保留closing，可重试且不冒称交付', async () => {
+test('收尾是发起会话的决定：成员的话没读完也照样收掉；资源收不干净则保留closing可重试', async () => {
   const f = fixture()
   const child = f.spawn('closing-child')
   f.records.respondToDelegation(child.agent.agentId, { operationId: 'decline', at: 10, delegationId: child.delegation.delegationId, response: 'reject', reason: '不需要此部分' })
   f.records.beginClosing(f.collaboration.collaborationId, 11)
   let cancelled = 0
-  const managed = createManagedCollaboration({ environment: () => ({}), store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
+  const managed = createManagedCollaboration({ environment: () => ({}) , store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
     accepting: () => true, start: async () => undefined, wake: () => undefined,
     cancel: async () => { cancelled++; if (cancelled === 1) throw new Error('自有资源未确认') },
     input: () => undefined, configure: async () => undefined, runs: () => [], decisions: () => 0, changed: () => undefined,
   })
   try {
-    expect(await managed.idle('origin')).toBe(false)
-    expect(cancelled).toBe(0)
-    for (const member of f.records.listMembers(f.collaboration.collaborationId)) {
-      const inbox = f.records.consumeInbox(member.agentId, 12)
-      f.records.markIncluded(member.agentId, inbox.map(one => one.messageId), 13)
-    }
+    // ⚠️ 成员收件夹里还有没人消费的东西——**不等它读完**：收尾不该被协作者的手头活挡住
     await expect(managed.idle('origin')).rejects.toThrow('自有资源未确认')
+    expect(cancelled).toBe(1)
     expect(f.records.getCollaboration(f.collaboration.collaborationId)?.state).toBe('closing')
+    // 收不干净就保留 closing，下一拍再来；这一趟收掉了就闭合
+    expect(await managed.idle('origin')).toBe(true)
+    expect(cancelled).toBe(2)
+    expect(f.records.getCollaboration(f.collaboration.collaborationId)?.state).toBe('closed')
+  } finally { managed.shutdown('测试清理'); f.close() }
+})
+
+test('已取消的委派不等回执：成员休眠、投递过没回执，收尾照样走得下去', async () => {
+  // 实测事故：四条「已投递、无回执」的取消委派把协作钉死在 closing（没人会再来回执）。
+  const f = fixture()
+  const child = f.spawn('cancelled-child')
+  f.records.respondToDelegation(child.agent.agentId, { operationId: 'accept', at: 9, delegationId: child.delegation.delegationId, response: 'accept' })
+  f.records.stop({ kind: 'delegation', delegationId: child.delegation.delegationId }, '用户停止', 10)
+  f.records.deliver(child.agent.agentId, { operationId: 'late-delivery', at: 11, delegationId: child.delegation.delegationId, body: [{ kind: 'text', text: '晚到的结果' }] })
+  f.records.beginClosing(f.collaboration.collaborationId, 12)
+  const managed = createManagedCollaboration({ environment: () => ({}), store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
+    accepting: () => true, start: async () => undefined, wake: () => undefined, cancel: async () => undefined,
+    input: () => undefined, configure: async () => undefined, runs: () => [], decisions: () => 0, changed: () => undefined,
+  })
+  try {
+    for (const member of f.records.listMembers(f.collaboration.collaborationId)) {
+      const inbox = f.records.consumeInbox(member.agentId, 13)
+      f.records.markIncluded(member.agentId, inbox.map(one => one.messageId), 14)
+    }
     expect(await managed.idle('origin')).toBe(true)
     expect(f.records.getCollaboration(f.collaboration.collaborationId)?.state).toBe('closed')
   } finally { managed.shutdown('测试清理'); f.close() }
