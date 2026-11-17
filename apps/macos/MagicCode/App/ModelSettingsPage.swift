@@ -23,11 +23,14 @@ func providerDefaultProtocol(_ vendor: SettingsValue, models: [String]) -> Strin
     return (all ?? any ?? protocols.first)?["id"].text ?? "responses"
 }
 func modelProtocolName(provider: SettingsValue, model: String, vendors: [SettingsValue]) -> String {
-    if !provider["protocol"].text.isEmpty { return providerProtocolLabel(provider["protocol"].text) }
-    if provider["vendor"].text.isEmpty { return providerProtocolLabel("responses") }
-    guard let vendor = vendors.first(where: { $0["vendor"].text == provider["vendor"].text }),
-          let supported = providerProtocolOptions(vendor).first(where: { $0["models"] == .null || $0["models"].array.contains(.string(model)) }) else { return "未知 · 尚无此型号的协议资料" }
-    return supported["label"].text
+    let explicit = provider.object["protocol"]?.text ?? ""
+    if !explicit.isEmpty { return providerProtocolLabel(explicit) }
+    // 自定义连接没写协议＝还没选，不伪造一个默认值。
+    if provider["vendor"].text.isEmpty { return "请选择协议" }
+    guard let vendor = vendors.first(where: { $0["vendor"].text == provider["vendor"].text }) else { return "未知 · 尚无此型号的协议资料" }
+    // 与保存／请求使用同一个解析函数：显示的就是实际会用的协议，并标明兜底来源。
+    let resolution = resolveProtocol(vendor: vendor, explicit: "", model: model)
+    return providerProtocolLabel(resolution.id) + (resolution.fallback ? "（按优先级兜底）" : "")
 }
 func providerFormValue(id: String, snapshot: SettingsSnapshot) -> SettingsValue {
     let existing = snapshot.configuration["providers"][id]
@@ -78,6 +81,17 @@ func providerFormProblem(_ value: SettingsValue, snapshot: SettingsSnapshot) -> 
     // 官方供应商**不再做协议兼容判断**：协议与型号是否匹配由服务端最终裁定，
     // 这里只挡地址、必填与凭据这些形制问题。
     return nil
+}
+/// 官方提示只是提示：所选协议与已映射型号不匹配时说明事实，但**不阻止保存**。
+func providerProtocolAdvisory(_ value: SettingsValue, snapshot: SettingsSnapshot) -> String? {
+    guard !value["vendor"].text.isEmpty, !value["protocol"].text.isEmpty,
+          let vendor = snapshot.vendors.first(where: { $0["vendor"].text == value["vendor"].text }),
+          let entry = vendor["protocols"].array.first(where: { $0["id"].text == value["protocol"].text }),
+          entry["models"] != .null else { return nil }
+    let mappings = snapshot.configuration["models"].object.values.filter { $0["provider"].text == value["provider"].text }
+    let unsupported = Set(mappings.map { $0["model"].text }).subtracting(entry["models"].array.map(\.text)).sorted()
+    guard !unsupported.isEmpty else { return nil }
+    return "型号 \(unsupported.joined(separator: "、")) 不在 \(entry["label"].text) 的官方支持提示里；仍可保存，请求是否成功由服务端裁定。"
 }
 func modelInformationProblem(_ value: SettingsValue) -> String? {
     let fields = [(value["limits"], [("maxInputTokens", "输入上限"), ("maxOutputTokens", "输出上限"), ("maxContextTokens", "联合窗口")]),
@@ -519,8 +533,11 @@ struct ProviderEditor: View {
                                 ForEach(protocols, id: \.self) { value in Text(value["label"].text).tag(value["id"].text) }
                             }
                         }
-                        Text("协议按 Responses → Anthropic Messages → Chat Completions 排列，默认取供应商支持的最高优先级项；型号与协议是否匹配由服务端最终裁定。")
+                        Text("协议按 Responses → Anthropic Messages → Chat Completions 排列；型号不在官方支持提示里仍可保存，下方会标出实际使用的协议。")
                             .font(.caption).foregroundStyle(.secondary)
+                        if let advisory = providerProtocolAdvisory(draft.value, snapshot: snapshot) {
+                            Label(advisory, systemImage: "info.circle").foregroundStyle(.orange).font(.caption)
+                        }
                         ForEach(snapshot.configuration["models"].object.keys.sorted(), id: \.self) { choice in
                             let mapping = snapshot.configuration["models"][choice]
                             if mapping["provider"].text == id {

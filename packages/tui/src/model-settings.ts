@@ -13,9 +13,9 @@ import { tokenLabel } from './components/lines.ts'
 import type { ModelEditor } from './model-editor.ts'
 import {
   editorRows,
-  effectiveProtocol,
   modelEditor,
   modelOverride,
+  protocolDisplay,
   protocolLabel,
   providerEditor,
   providerRequest,
@@ -136,7 +136,7 @@ export function createModelSettings(ui: {
     const entry = ui.view.models.find((one) => one.provider === pick.provider)
     const info = infoOf(pick)
     const limits = info?.limits
-    const protocol = effectiveProtocol(entry, ui.view.vendors.find(one => one.vendor === entry?.vendor), pick.model)
+    const protocolText = protocolDisplay(entry, ui.view.vendors.find(one => one.vendor === entry?.vendor), pick.model)
     const spec =
       limits === undefined
         ? '规格：供应商没给'
@@ -153,7 +153,7 @@ export function createModelSettings(ui: {
       ...(info?.name === undefined ? [] : [`显示名 ${info.name}`]),
       ...(info?.description === undefined ? [] : [info.description]),
       spec,
-      `协议：${protocol === undefined ? '尚未核实此型号的支持范围' : protocolLabel(protocol)}`,
+      `协议：${protocolText}`,
       entry?.modelOverrides?.[pick.model] === undefined ? '信息来源：供应商信息；缺项未知' : '信息来源：用户填写优先于供应商信息',
       `缓存：${entry?.cache?.snapshot === undefined
         ? '还没取过这一条的模型列表'
@@ -264,14 +264,13 @@ export function createModelSettings(ui: {
   const connectionProtocolLabel = (entry: ModelCatalogRow): string => {
     if (entry.protocol !== undefined) return protocolLabel(entry.protocol)
     const vendor = ui.view.vendors.find((one) => one.vendor === entry.vendor)
-    if (vendor === undefined) return protocolLabel('responses')
+    // 自定义连接没写协议＝还没选；官方适配找不到资料才是「尚未核实」。
+    if (vendor === undefined) return entry.vendor === undefined ? '请选择协议' : '尚未核实此型号的支持范围'
     const models = Object.values(ui.view.configuredModels)
       .filter((mapping) => mapping.provider === entry.provider)
       .map((mapping) => mapping.model)
-    const ids = models.length === 0
-      ? [vendor.protocols[0]?.id]
-      : models.map((model) => effectiveProtocol(entry, vendor, model))
-    const labels = [...new Set(ids.filter((id): id is NonNullable<typeof id> => id !== undefined).map((id) => protocolLabel(id)))]
+    if (models.length === 0) return vendor.protocols[0] === undefined ? '尚未核实此型号的支持范围' : protocolLabel(vendor.protocols[0].id)
+    const labels = [...new Set(models.map((model) => protocolDisplay(entry, vendor, model)))]
     return labels.length === 0 ? '尚未核实此型号的支持范围' : labels.join(' / ')
   }
 
@@ -357,7 +356,7 @@ export function createModelSettings(ui: {
       rows,
       hint: [
         editor.kind === 'provider' ? `连接 ${editor.provider} · 确认后一次保存` : `连接 ${editor.provider} · 原始型号原样发送；信息可留空`,
-        editor.kind === 'model' ? `协议：${protocolLabel(effectiveProtocol(editor.original, editor.vendor, editor.values.model ?? '') ?? '')}；填写能力不代表调用已验证` : '',
+        editor.kind === 'model' ? `协议：${protocolDisplay(editor.original, editor.vendor, editor.values.model ?? '')}；填写能力不代表调用已验证` : '',
         editor.kind === 'provider' && !editor.vendor && editor.original && editor.values.baseURL !== editor.original.baseURL ? '地址已改变：请重新填服务凭据或选择无需认证' : '',
         editor.note ?? '',
       ].filter(Boolean).join('\n')

@@ -104,10 +104,13 @@ describe('三种 SDK 的受控多轮工具闭环', () => {
   })
 })
 
-test('精确官方支持范围、默认顺序及协议级地址', () => {
+test('官方提示决定默认协议，未收录型号按固定优先级兜底', () => {
   expect(resolveModelSource({ vendor: 'minimax' }, 'MiniMax-M3')).toEqual({ protocol: 'responses', endpoint: 'https://api.minimax.cn/v1' })
-  expect(resolveModelSource({ vendor: 'deepseek' }, 'deepseek-v4-pro')).toEqual({ protocol: 'responses', endpoint: 'https://api.deepseek.com' })
+  // DeepSeek 的官方提示只把 Responses 声明给 `deepseek-flash`；`deepseek-v4-pro` 的提示在 Messages / Chat。
+  expect(resolveModelSource({ vendor: 'deepseek' }, 'deepseek-v4-pro')).toEqual({ protocol: 'messages', endpoint: 'https://api.deepseek.com/anthropic/v1' })
+  // 显式协议不因型号提示而拒绝；地址仍按协议解析。
   expect(resolveModelSource({ vendor: 'deepseek', protocol: 'responses' }, 'deepseek-v4-pro')).toEqual({ protocol: 'responses', endpoint: 'https://api.deepseek.com' })
+  // 提示里没有的型号按固定优先级（Responses → Messages → Chat）兜底，不再拒绝。
   for (const model of ['deepseek-chat', 'deepseek-v4-flash', 'claude-opus-4']) expect(resolveModelSource({ vendor: 'deepseek' }, model)).toEqual({ protocol: 'responses', endpoint: 'https://api.deepseek.com' })
   expect(vendorCatalog()[0]?.protocols.map(p => p.id)).toEqual([...protocols])
 })
@@ -323,4 +326,11 @@ test('自定义 Responses 型号恰与 SDK 官方名相同，仍采用已声明�
 test('官方提示里没有的型号按显式或默认协议照发', () => {
   expect(resolveModelSource({ vendor: 'deepseek', protocol: 'messages' }, '尚未公布的型号')).toEqual({ protocol: 'messages', endpoint: 'https://api.deepseek.com/anthropic/v1' })
   expect(resolveModelSource({ vendor: 'deepseek' }, '尚未公布的型号')).toEqual({ protocol: 'responses', endpoint: 'https://api.deepseek.com' })
+})
+
+test('对话能力明确不支持时请求前说明，不发注定失败的请求', async () => {
+  const { gateway, requests } = harness('chat-completions', { modelOverrides: { exact: { capabilities: { chat: false } } } })
+  const { result } = await drainStream(gateway.stream({ messages: [{ role: 'user', content: 'hi' }] }))
+  expect(JSON.stringify(result.error)).toContain('不支持对话')
+  expect(requests).toHaveLength(0)
 })

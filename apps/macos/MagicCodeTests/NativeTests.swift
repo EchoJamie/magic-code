@@ -58,14 +58,49 @@ final class NativeTests: XCTestCase {
         let unset = snapshot.configuration["providers"]["official"]
         XCTAssertEqual(modelProtocolName(provider: unset, model: "exact-model", vendors: snapshot.vendors), "Responses")
         XCTAssertEqual(modelProtocolName(provider: unset, model: "other-model", vendors: snapshot.vendors), "Anthropic Messages")
-        XCTAssertTrue(modelProtocolName(provider: unset, model: "unknown-model", vendors: snapshot.vendors).hasPrefix("未知"))
+        // 官方提示里没有的型号不再显示「未知」：显示实际兜底协议并标明来源（D62）。
+        XCTAssertEqual(modelProtocolName(provider: unset, model: "unknown-model", vendors: snapshot.vendors), "Responses（按优先级兜底）")
+        // 自定义连接没写协议就是还没选，不伪造默认值。
+        XCTAssertEqual(modelProtocolName(provider: .object(["baseURL": .string("http://local/v1")]), model: "whatever", vendors: snapshot.vendors), "请选择协议")
         XCTAssertEqual(providerProtocolOptions(snapshot.vendors[0]).map { $0["id"].text }, ["responses", "messages", "chat-completions"])
         draft.put("protocol", .string("messages"))
-        XCTAssertTrue(providerFormProblem(draft.value, snapshot: snapshot)?.contains("exact-model") == true)
+        // 协议兼容不再在保存前拦截：型号与协议是否匹配由服务端最终裁定。
+        XCTAssertNil(providerFormProblem(draft.value, snapshot: snapshot))
         draft.put("protocol", .null, preserveNull: true)
         XCTAssertEqual(providerFormAction(draft.value).object["protocol"], .null)
         XCTAssertNil(providerFormProblem(draft.value, snapshot: snapshot))
         XCTAssertEqual(providerFormValue(id: "locked", snapshot: snapshot)["protocol"], .string("messages"))
+    }
+
+    /// 协议支持提示只是提示：型号不在官方清单里照用；地址与区域仍照旧校验。
+    func testProtocolHintIsNoLongerAHardGate() throws {
+        let metadata = SettingsValue.object(["vendors": .array([
+            .object([
+                "vendor": .string("fixture"), "label": .string("测试供应商"),
+                "regions": .array([.object(["id": .string("test"), "label": .string("测试区域"), "baseURL": .string("https://official.invalid")])]),
+                "protocols": .array([
+                    .object(["id": .string("responses"), "label": .string("Responses"), "models": .strings(["exact-model"])]),
+                    .object(["id": .string("messages"), "label": .string("Anthropic Messages"), "models": .strings(["other-model"])]),
+                    .object(["id": .string("chat-completions"), "label": .string("Chat Completions"), "models": .null]),
+                ]),
+                "endpoints": .object(["test": .object([
+                    "responses": .string("https://official.invalid/responses"),
+                    "messages": .string("https://official.invalid/messages"),
+                    "chat-completions": .string("https://official.invalid/chat/completions"),
+                ])]),
+            ])
+        ])])
+        let models = SettingsModels(metadata: metadata, base: "/fixture", configPath: "/fixture/config.json", environment: [:])
+        let official = SettingsValue.object(["vendor": .string("fixture"), "region": .string("test")])
+        // 显式写了协议就用它——型号不在官方提示里也不再抛「模型不支持所选官方协议或区域」。
+        XCTAssertEqual(try models.protocolID(SettingsValue.object(["vendor": .string("fixture"), "region": .string("test"), "protocol": .string("messages")]), model: "尚未公布的型号"), "messages")
+        // 没写协议：官方提示里有该型号取提示里第一个；没有则按固定优先级（Responses）兜底。
+        XCTAssertEqual(try models.protocolID(official, model: "exact-model"), "responses")
+        XCTAssertEqual(try models.protocolID(official, model: "尚未公布的型号"), "responses")
+        // 区域认不出 ⇒ 没有有效服务地址就报错（不猜、不回落）。
+        XCTAssertThrowsError(try models.protocolID(SettingsValue.object(["vendor": .string("fixture"), "region": .string("mars"), "protocol": .string("responses")]), model: "exact-model"))
+        // 界面显示与解析同源：兜底时标出来源。
+        XCTAssertEqual(modelProtocolName(provider: official, model: "尚未公布的型号", vendors: metadata["vendors"].array), "Responses（按优先级兜底）")
     }
 
     /// 角色保存只记录模板（D65）：状态在界面上说明清楚，不藏成保存失败。

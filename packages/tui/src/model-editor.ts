@@ -5,17 +5,40 @@ export const protocols: readonly { id: ModelProtocol; label: string }[] = [
   { id: 'responses', label: 'Responses' }, { id: 'messages', label: 'Anthropic Messages' }, { id: 'chat-completions', label: 'Chat Completions' },
 ]
 export const protocolLabel = (value: string): string => protocols.find(one => one.id === value)?.label ?? '未选择协议'
+export type ProtocolResolution = { readonly protocol: ModelProtocol; readonly fallback: boolean }
+
+/**
+ * 该型号实际会用的协议——**显示与请求共用这一个解析**（D62）。
+ *
+ * 显式协议 → 官方提示里第一个支持该型号的协议 → 固定优先级兜底。
+ * 自定义连接没写协议时返回 `undefined`（＝还没选，不伪造默认值）。
+ */
+export function effectiveProtocolResolution(entry: ModelCatalogRow | undefined, vendor: VendorInfo | undefined, model: string): ProtocolResolution | undefined {
+  if (entry?.protocol !== undefined) return { protocol: entry.protocol, fallback: false }
+  if (entry?.vendor === undefined || vendor === undefined) return undefined
+  const supported = vendor.protocols.find(one => one.models === undefined || one.models.includes(model))
+  if (supported !== undefined) return { protocol: supported.id, fallback: false }
+  // 官方提示里没有这个型号：按固定优先级兜底（与 model 包的 resolveModelSource 同序）。
+  const fallback = protocols.find(one => vendor.protocols.some(declared => declared.id === one.id))
+  return fallback === undefined ? undefined : { protocol: fallback.id, fallback: true }
+}
 export function effectiveProtocol(entry: ModelCatalogRow | undefined, vendor: VendorInfo | undefined, model: string): ModelProtocol | undefined {
-  if (entry?.protocol !== undefined) return entry.protocol
-  if (entry?.vendor === undefined) return 'responses'
-  return vendor?.protocols.find(one => one.models === undefined || one.models.includes(model))?.id
+  return effectiveProtocolResolution(entry, vendor, model)?.protocol
+}
+/** 界面显示：把「实际会用的协议」和来源一起说出来，不显示「未知」再偷偷兜底。 */
+export function protocolDisplay(entry: ModelCatalogRow | undefined, vendor: VendorInfo | undefined, model: string): string {
+  if (entry === undefined) return '尚未核实此型号的支持范围'
+  if (entry.protocol === undefined && entry.vendor === undefined) return '请选择协议'
+  const resolution = effectiveProtocolResolution(entry, vendor, model)
+  if (resolution === undefined) return '尚未核实此型号的支持范围'
+  return protocolLabel(resolution.protocol) + (resolution.fallback ? '（按优先级兜底）' : '')
 }
 
 /**
  * 这条连接**应当直接落下的官方协议**（U126 协议优先级：Responses → Messages → Chat）。
  *
  * - 已映射的型号全都支持某一协议 ⇒ 取优先级最高的那一项；
- * - 没有共同协议 ⇒ 取优先级最高、且至少支持一个已映射型号的那项（保存前仍会逐型号校验）；
+ * - 没有共同协议 ⇒ 取优先级最高、且至少支持一个已映射型号的那项（保存不再因兼容性拒绝，界面会标出兜底来源）；
  * - 还没映射任何型号 ⇒ 取供应商支持项里的第一项。
  *
  * 不再返回「自动」：界面与保存都落到一个具体协议。

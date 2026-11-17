@@ -384,8 +384,10 @@ export const MINIMAX_VENDOR: VendorAdapter = {
 export const DEEPSEEK_VENDOR: VendorAdapter = {
   id: 'deepseek',
   label: 'DeepSeek',
-  // 三种协议都给这两个型号（Responses 的支持提示里也有 `deepseek-v4-pro`）。
-  protocols: PROTOCOLS.map(p => ({ ...p, models: ['deepseek-flash', 'deepseek-v4-pro'] })),
+  // 官方提示只记录已经核实的映射：Responses 目前只声明 `deepseek-flash`；
+  // Messages / Chat Completions 覆盖两个型号。提示不是闸门——未在这里的型号仍可按
+  // 显式协议或固定优先级兜底尝试，界面必须显示实际兜底来源。
+  protocols: PROTOCOLS.map(p => ({ ...p, models: p.id === 'responses' ? ['deepseek-flash'] : ['deepseek-flash', 'deepseek-v4-pro'] })),
   regions: [{ id: 'official', label: '官方', baseURL: 'https://api.deepseek.com' }],
   // 思考模式的工具往返要求把历史轮的 `reasoning_content` 原样回传（官方文档明文）
   separatesReasoning: true,

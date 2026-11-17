@@ -276,12 +276,16 @@ describe('供应商读面', () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe('协议支持提示', () => {
-  test('DeepSeek 的 Responses 支持提示含 `deepseek-v4-pro` 与 `deepseek-flash`', () => {
+  test('DeepSeek 的官方提示：Responses 只含 `deepseek-flash`，Messages / Chat 含两个型号', () => {
     const responses = DEEPSEEK_VENDOR.protocols.find(one => one.id === 'responses')
-    expect(responses?.models).toEqual(expect.arrayContaining(['deepseek-flash', 'deepseek-v4-pro']))
+    expect(responses?.models).toEqual(['deepseek-flash'])
+    for (const id of ['messages', 'chat-completions']) {
+      expect(DEEPSEEK_VENDOR.protocols.find(one => one.id === id)?.models)
+        .toEqual(expect.arrayContaining(['deepseek-flash', 'deepseek-v4-pro']))
+    }
     // 读面（界面据此显示「协议（按型号）」）与适配同源，不用另维护一份表。
     const catalog = vendorCatalog().find(one => one.vendor === 'deepseek')
-    expect(catalog?.protocols.find(one => one.id === 'responses')?.models).toEqual(expect.arrayContaining(['deepseek-v4-pro']))
+    expect(catalog?.protocols.find(one => one.id === 'responses')?.models).toEqual(['deepseek-flash'])
   })
 
   test('型号不在提示里不拒绝：显式协议照用，缺省按固定优先级兜底', () => {
