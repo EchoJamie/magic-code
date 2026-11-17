@@ -168,7 +168,7 @@ import AppKit
         guard let page = memory?.page, let offset = page.next, memoryError == nil else { return }
         noteHistory.append((memory, noteQuery, "next-note")); canBackNote = true
         memoryFocus = nil
-        readMemory(query: NoteReadQuery(path: page.path, offset: offset, cursor: page.cursor))
+        readMemory(query: NoteReadQuery(path: page.path, from: offset, cursor: page.cursor))
     }
     func backNote() {
         guard let previous = noteHistory.popLast() else { return }
@@ -216,7 +216,7 @@ import AppKit
         switch memory.status {
         case "empty": return "尚无笔记"
         case "entry-missing": return "尚无入口笔记，可选择已有主题"
-        case "ready": return memory.page?.complete == true ? (memory.page?.offset == 0 ? "本文件已读完整" : "已读至文件末尾，当前显示节选") : "当前为节选，可继续阅读"
+        case "ready": return memory.page?.complete == true ? (memory.page?.from == 1 ? "本文件已读完整" : "已读至文件末尾，当前显示节选") : "当前为节选，可继续阅读"
         default: return ""
         }
     }
@@ -574,7 +574,7 @@ struct SessionWindow: View {
                         Text(page.path).font(.headline).textSelection(.enabled)
                         Text(page.absolute).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         Text(page.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                        Button(page.offset == 0 && page.complete ? "复制笔记正文" : "复制当前片段") { model.copyNote(page.text, label: page.offset == 0 && page.complete ? "笔记正文" : "当前笔记片段") }
+                        Button(page.from == 1 && page.complete ? "复制笔记正文" : "复制当前片段") { model.copyNote(page.text, label: page.from == 1 && page.complete ? "笔记正文" : "当前笔记片段") }
                         Button("复制文件位置") { model.copyNote(page.absolute, label: "文件位置") }
                         if page.next != nil { Button("继续阅读笔记") { model.nextNote() }.disabled(!model.online || model.memoryReading || model.memoryError != nil).id("memory:next-note") }
                         ForEach(Array(page.links.enumerated()), id: \.offset) { index, link in

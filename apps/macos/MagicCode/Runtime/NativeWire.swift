@@ -172,8 +172,8 @@ struct MemorySource: Codable, Equatable, Hashable {
 }
 struct NoteReadQuery: Codable, Equatable {
     var path: String? = nil
-    var offset: Int? = nil
-    var limit: Int? = nil
+    var from: Int? = nil
+    var lines: Int? = nil
     var cursor: String? = nil
 }
 struct NoteLink: Codable, Equatable {
@@ -190,8 +190,9 @@ struct NotePage: Codable, Equatable {
     let path: String
     let absolute: String
     let text: String
-    let offset: Int
-    let total: Int
+    let from: Int
+    let through: Int
+    let totalLines: Int
     let complete: Bool
     let next: Int?
     let cursor: String
