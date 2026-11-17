@@ -1,8 +1,10 @@
 import type { BackgroundChange, BackgroundFinish, BackgroundRuns, BackgroundStartOptions, BackgroundStop, BackgroundView } from '@magic/contracts'
+import type { AdoptedRun, AdoptRequest, BackgroundRegistry } from '@magic/resources'
 
 /** 应用层只绑定归属、等待和完成输入；进程运行与回收仍由执行层唯一持有。 */
 export function createBackgroundSession(input: {
-  runs: BackgroundRuns; session: string; execution: string
+  /** 执行域的后台登记——契约端口 ＋ 只给执行域用的 `adopt`（超时转后台那一格）。 */
+  runs: BackgroundRegistry; session: string; execution: string
   begin(): () => void
   deliver(finish: BackgroundChange, ref: string): boolean
   changed(view: BackgroundView): void
@@ -58,7 +60,7 @@ export function createBackgroundSession(input: {
       }
       return result.ok && completed.has(id) ? { ...result, finish: completed.get(id)! } : result
   }
-  const port: BackgroundRuns = {
+  const port: BackgroundRuns & { adopt(request: AdoptRequest): Promise<AdoptedRun> } = {
     async start(command: string, opts?: BackgroundStartOptions) {
       const release = input.begin()
       let ready = false
@@ -78,6 +80,32 @@ export function createBackgroundSession(input: {
     },
     running,
     stop: id => stop(id, 'model'),
+    /**
+     * **接管一条已经跑起来的命令**（超时转后台）——与 `start` 走同一套归属与通知：
+     * 从这里起它就是「本会话的一条后台命令」，`running()` 看得见、`stop` 停得掉、
+     * 结束时那一声照旧投给模型。
+     */
+    async adopt(request: AdoptRequest, opts?: { onFinish?: (finish: BackgroundFinish) => void }): Promise<AdoptedRun> {
+      const release = input.begin()
+      let ready = false
+      let early: BackgroundFinish | undefined
+      // 契约上 `onFinish` 是同一条腿（谁实现这一格都该能被告知结束）；本会话那一声照旧带上。
+      // 两种来源都认（走契约的 `opts`、旧一点直接塞在入参上的那一份）——别静默丢掉其中一份。
+      const callerFinish = opts?.onFinish ?? request.onFinish
+      try {
+        const result = await input.runs.adopt({ ...request, onFinish(done) {
+          if (callerFinish !== undefined) { try { callerFinish(done) } catch { /* 调用方自己的岔子 */ } }
+          if (!ready) early = done
+          else finish(done, release)
+        } })
+        if (result.ok) owned.add(result.id)
+        else release()
+        ready = true
+        if (early) finish(early, release)
+        changed()
+        return result
+      } catch (error) { release(); throw error }
+    },
     wait(ids) {
       if (input.stopped()) return { ok: false, reason: '执行范围已停止，不能登记等待' }
       const missing = ids.find(id => !owned.has(id))

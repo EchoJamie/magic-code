@@ -205,7 +205,7 @@ describe('执行域——单根＝启动目录（缺省）／多根＝配置接�
       const stage = makeStage({ config: { workspaceRoots: [second, first] } })
       try {
         const assembly = stage.assemble({
-          turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'pwd' } }] }, { text: '好' }],
+          turns: [{ toolCalls: [{ name: 'exec', args: { command: 'pwd' } }] }, { text: '好' }],
         })
         const shell = attachShell(assembly.shell)
 
@@ -214,8 +214,9 @@ describe('执行域——单根＝启动目录（缺省）／多根＝配置接�
         assembly.close()
 
         const result = eventsOfKind(shell.events, 'tool.result')[0]
-        const text = (result?.data.output as { text: string }).text.trim()
-        expect(text).toBe(realpathSync(second)) // 列表第一项——「默认根」那一位
+        const text = (result?.data.output as { text: string }).text
+        // 正文是 pwd 的输出，末尾另有事实行（退出状态 · 实际工作目录）
+        expect(text).toContain(`[退出 0 · ${realpathSync(second)}]\n${realpathSync(second)}`) // 列表第一项——「默认根」那一位
         expect(text).not.toBe(realpathSync(stage.workspace))
       } finally {
         stage.dispose()
@@ -230,7 +231,7 @@ describe('执行域——单根＝启动目录（缺省）／多根＝配置接�
     const stage = makeStage()
 
     try {
-      const assembly = stage.assemble({ turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'pwd' } }] }, { text: '好' }] })
+      const assembly = stage.assemble({ turns: [{ toolCalls: [{ name: 'exec', args: { command: 'pwd' } }] }, { text: '好' }] })
       const shell = attachShell(assembly.shell)
 
       await shell.submit('我在哪')
@@ -240,8 +241,8 @@ describe('执行域——单根＝启动目录（缺省）／多根＝配置接�
       const result = eventsOfKind(shell.events, 'tool.result')[0]
       expect(result?.data.ok).toBe(true)
       // 输出是**真路径**（工作区构造取 realpath——macOS 上 /tmp 实为 /private/tmp）
-      const text = (result?.data.output as { text: string }).text.trim()
-      expect(text).toBe(realpathSync(stage.workspace))
+      const text = (result?.data.output as { text: string }).text
+      expect(text).toContain(`[退出 0 · ${realpathSync(stage.workspace)}]\n${realpathSync(stage.workspace)}`)
     } finally {
       stage.dispose()
     }

@@ -198,7 +198,7 @@ describe('没配的那一趟：这一轮停住', () => {
         { kind: 'tool', name: 'web_fetch', args: { url: 'https://example.com/pricing', prompt: '多少钱？' } },
         // **反证用**：不拦的话，模型拿到「没配」这句多半接着来这一手——
         // 整件事（省上下文）就被绕过去了。它绝不该有机会跑。
-        { kind: 'tool', name: 'exec', args: { cmd: 'curl -s https://example.com/pricing' } },
+        { kind: 'tool', name: 'exec', args: { command: 'curl -s https://example.com/pricing' } },
         { kind: 'text', text: '抓到了原文。' },
       ],
     })

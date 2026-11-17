@@ -6,7 +6,7 @@ function open(stage:ReturnType<typeof makeStage>){const runtime=makeLoopRuntime(
 test('工具结束先带入当前补充，旧下一工具不执行；下一件不混当前请求',async()=>{
  let release:()=>void=()=>{}
  const latch=new Promise<void>(resolve=>{release=resolve})
- const stage=makeStage({turns:[{toolCalls:[{name:'exec',args:{cmd:'long'}},{name:'exec',args:{cmd:'old-next'}}]},{text:'rejudged'},{text:'next-work'}],handlers:{exec:async call=>{if(call.args.cmd==='long')await latch;return {ok:true,output:String(call.args.cmd)}}}})
+ const stage=makeStage({turns:[{toolCalls:[{name:'exec',args: { command:'long'}},{name:'exec',args: { command:'old-next'}}]},{text:'rejudged'},{text:'next-work'}],handlers:{exec:async call=>{if(call.args.command==='long')await latch;return {ok:true,output:String(call.args.command)}}}})
  const service=open(stage)
  service.submit({text:'first',ref:'first'})
  await waitFor(()=>stage.tools.calls.length===1?true:undefined,'长工具已经执行')
@@ -16,7 +16,7 @@ test('工具结束先带入当前补充，旧下一工具不执行；下一件�
  expect(stage.records.inputs.list()).toHaveLength(3)
  expect(stage.records.inputs.get('current')?.state).toBe('pending')
  release();await waitUntilIdle(stage.sink)
- expect(stage.tools.calls.map(call=>call.args.cmd)).toEqual(['long'])
+ expect(stage.tools.calls.map(call=>call.args.command)).toEqual(['long'])
  expect(stage.gateway.requests).toHaveLength(3)
  const bodies=stage.gateway.requests.map(request=>JSON.stringify(request.messages))
  expect(bodies[0]).not.toContain('current-change')

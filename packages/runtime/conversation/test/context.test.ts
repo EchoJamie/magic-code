@@ -77,7 +77,7 @@ function appendToolCall(records: FauxRecords, command: string): number {
   return records.appendEntry({
     kind: 'tool-call',
     content: { text: '' },
-    payload: { id: `call_00_ET_${command}`, name: 'exec', args: { cmd: command } },
+    payload: { id: `call_00_ET_${command}`, name: 'exec', args: { command: command } },
     at: AT,
   })
 }
@@ -147,7 +147,7 @@ describe('Context 装配 · 工具往返', () => {
     expect(assistant).toMatchObject({
       role: 'assistant',
       content: '我跑一下',
-      toolCalls: [{ name: 'exec', args: { cmd: 'ls' } }],
+      toolCalls: [{ name: 'exec', args: { command: 'ls' } }],
     })
 
     // 工具消息四件——`callId` 与助手侧的 `ToolCall.id` 必须**同一**（回填配对）
@@ -225,7 +225,7 @@ describe('Context 装配 · 工具往返', () => {
 
     const assistant = messages[1]
     const calls = assistant?.role === 'assistant' ? (assistant.toolCalls ?? []) : []
-    expect(calls.map((call) => call.args['cmd'])).toEqual(['a', 'b', 'c'])
+    expect(calls.map((call) => call.args['command'])).toEqual(['a', 'b', 'c'])
 
     // 配对键**两两不同**——同轮多调用共用一个键，供应商侧就分不清哪条回填配哪次调用
     const keys = calls.map((call) => call.id)

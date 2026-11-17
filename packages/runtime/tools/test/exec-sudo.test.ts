@@ -31,7 +31,7 @@ describe('exec 的 sudo 认证', () => {
     expect(fake.calls).toEqual([{ command: 'sudo ls /root', cwd: '/work/proj' }])
     expect(deps.sandbox.execs.map((one) => one.cmd)).toEqual(['sudo -n ls /root'])
     expect(outcome.ok).toBe(true)
-    expect(outcome.output).toBe('bin\n')
+    expect(outcome.output).toBe('[退出 0 · /work/proj]\nbin\n')
   })
 
   test('重定向保留到 sudo -n 执行行（shell 以当前用户执行，不改 sudo 目标）', async () => {

@@ -1214,7 +1214,9 @@ const isScalar = (value: unknown): value is string | number | boolean =>
  */
 const KEY_ARGS: Readonly<Record<string, readonly string[]>> = {
   '咨询 Arcane': ['question'],
-  exec: ['cmd'],
+  // `cmd` 是旧记录里的键（重放照旧读得出来）；`description` 是模型自己写的那句意图——
+  // 显示给用户看就靠这一格（记录里 `args` 原样留着，回看也读得到）
+  exec: ['command', 'cmd', 'description'],
   read: ['path'],
   write: ['path'],
   edit: ['path'],

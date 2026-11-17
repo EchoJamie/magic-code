@@ -5,7 +5,7 @@ import {createUiSession, REPO_ROOT } from '../../test/ui/driver.ts'
 const root=REPO_ROOT
 const probe='U114_LOCAL_'+'a'.repeat(112)
 const command='sleep 0.5; printf '+probe
-const ui=await createUiSession({columns:200,rows:40,label:'U114-后台回执与编辑器长错',artifacts:root+'/.ui-runs/receipt-width',env:{VISUAL:probe,EDITOR:probe},turns:[{kind:'tool',name:'exec',args:{cmd:command,background:true}},{kind:'text',text:'U114_BG_STARTED',chunks:1,chunkDelayMs:10},{kind:'text',text:'U114_BG_RECEIPT_DONE',chunks:1,chunkDelayMs:10}]})
+const ui=await createUiSession({columns:200,rows:40,label:'U114-后台回执与编辑器长错',artifacts:root+'/.ui-runs/receipt-width',env:{VISUAL:probe,EDITOR:probe},turns:[{kind:'tool',name:'exec',args: { command:command,background:true}},{kind:'text',text:'U114_BG_STARTED',chunks:1,chunkDelayMs:10},{kind:'text',text:'U114_BG_RECEIPT_DONE',chunks:1,chunkDelayMs:10}]})
 try {
  await ui.send('长后台回执与本地报错');await ui.key('enter');await ui.wait({text:'跑完了'},{timeoutMs:10000});await ui.wait({text:'○ 空闲'})
  for(const columns of [200,100]) {

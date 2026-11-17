@@ -59,7 +59,7 @@ describe('判据 3 · 不落库清单', () => {
       const persisted: KernelEvent[] = [
         stamp('model.call.start', { choice: 'default', model: 'MiniMax-M3' }),
         stamp('model.usage', { inputTokens: 10, outputTokens: 20 }),
-        stamp('tool.call', { name: 'exec', args: { cmd: 'ls' } }),
+        stamp('tool.call', { name: 'exec', args: { command: 'ls' } }),
         stamp('tool.result', { call: 1, ok: true, output: { text: 'ok' } }),
       ]
       const transient: KernelEvent[] = [

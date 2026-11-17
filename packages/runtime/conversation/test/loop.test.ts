@@ -48,7 +48,7 @@ describe('主循环 · Faux 全链', () => {
   test('一轮：调用 → 工具 → 回填 → 收束（事件序列与条目逐条对得上）', async () => {
     const stage = makeStage({
       turns: [
-        { toolCalls: [{ name: 'exec', args: { cmd: 'ls' } }] }, // 第一轮：模型要调工具
+        { toolCalls: [{ name: 'exec', args: { command: 'ls' } }] }, // 第一轮：模型要调工具
         { text: '跑完了' }, // 第二轮：收束
       ],
     })
@@ -110,7 +110,7 @@ describe('主循环 · Faux 全链', () => {
 
   test('多轮：两次交代各走一串轮，上下文接着长（条目是唯一真源）', async () => {
     const stage = makeStage({
-      turns: [{ text: '好' }, { toolCalls: [{ name: 'exec', args: { cmd: 'pwd' } }] }, { text: '完事了' }],
+      turns: [{ text: '好' }, { toolCalls: [{ name: 'exec', args: { command: 'pwd' } }] }, { text: '完事了' }],
     })
     const runtime = makeLoopRuntime(stage)
 
@@ -147,7 +147,7 @@ describe('主循环 · Faux 全链', () => {
 describe('主循环 · 工具结果的两样输出', () => {
   test('条目载荷与该次 `tool.result` 事件的 `output` **同物**；条目正文＝面向模型的那份', async () => {
     const stage = makeStage({
-      turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'ls' } }] }, { text: '完事了' }],
+      turns: [{ toolCalls: [{ name: 'exec', args: { command: 'ls' } }] }, { text: '完事了' }],
     })
 
     await run(makeLoopRuntime(stage), '看下目录')
@@ -165,7 +165,7 @@ describe('主循环 · 工具结果的两样输出', () => {
 
   test('大输出：记录侧落 blob（全量）· 面向模型侧取文本——条目与事件**不分叉**', async () => {
     const stage = makeStage({
-      turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'ls -R' } }] }, { text: '完事了' }],
+      turns: [{ toolCalls: [{ name: 'exec', args: { command: 'ls -R' } }] }, { text: '完事了' }],
       handlers: { exec: () => ({ ok: true, output: '目录太长，只给前几行' }) },
       // 工具域把输出转成记录形态——大则落 blob（真工具域的活；替身照此模拟）。
       // 回调要到循环跑起来才被调用，那时 `stage` 已赋好值，闭包取值没问题
@@ -221,16 +221,16 @@ describe('主循环 · 同轮多工具', () => {
       turns: [
         {
           toolCalls: [
-            { name: 'exec', args: { cmd: 'a' } },
-            { name: 'exec', args: { cmd: 'b' } },
-            { name: 'exec', args: { cmd: 'c' } },
+            { name: 'exec', args: { command: 'a' } },
+            { name: 'exec', args: { command: 'b' } },
+            { name: 'exec', args: { command: 'c' } },
           ],
         },
         { text: '都跑完了' },
       ],
       handlers: {
         exec: async (call) => {
-          const command = String(call.args.cmd)
+          const command = String(call.args.command)
           timeline.push(`开始 ${command}`)
           // 给「并发执行」留出插队的窗口——真并发的话这里会交错
           await new Promise((resolve) => setTimeout(resolve, 0))
@@ -252,7 +252,7 @@ describe('主循环 · 同轮多工具', () => {
     ])
 
     // 三次调用各铸一条 `tool.call`（同轮多次，按序）
-    expect(stage.sink.byKind('tool.call').map((e) => e.data.args['cmd'])).toEqual(['a', 'b', 'c'])
+    expect(stage.sink.byKind('tool.call').map((e) => e.data.args['command'])).toEqual(['a', 'b', 'c'])
 
     // 回填按序进上下文——三条工具消息，次序即调用序
     const tools = (stage.gateway.requests[1]?.messages ?? []).filter((m) => m.role === 'tool')
@@ -275,22 +275,22 @@ describe('主循环 · 同轮多工具', () => {
       turns: [
         {
           toolCalls: [
-            { name: 'exec', args: { cmd: 'a' } },
-            { name: 'exec', args: { cmd: 'b' } },
-            { name: 'exec', args: { cmd: 'c' } },
+            { name: 'exec', args: { command: 'a' } },
+            { name: 'exec', args: { command: 'b' } },
+            { name: 'exec', args: { command: 'c' } },
           ],
         },
         { text: '好' },
       ],
       // 扮闸门：只有中间那个拒绝
-      auto: (call) => (call.args['cmd'] === 'b' ? 'reject' : 'approve'),
+      auto: (call) => (call.args['command'] === 'b' ? 'reject' : 'approve'),
     })
 
     expect(await run(makeLoopRuntime(stage), '三件事')).toBe('settled')
 
     // 被拒者不执行；其余两个照常（阶段 1 全人工门：每个调用都问过）
-    expect(stage.gate.requests.map((r) => r.call.args['cmd'])).toEqual(['a', 'b', 'c'])
-    expect(stage.tools.calls.map((c) => c.args['cmd'])).toEqual(['a', 'c'])
+    expect(stage.gate.requests.map((r) => r.call.args['command'])).toEqual(['a', 'b', 'c'])
+    expect(stage.tools.calls.map((c) => c.args['command'])).toEqual(['a', 'c'])
 
     // 三条回填各归各位：拒绝以 `ok:false` 回填，不串位、不吞掉整轮
     const tools = (stage.gateway.requests[1]?.messages ?? []).filter((m) => m.role === 'tool')
@@ -337,7 +337,7 @@ describe('主循环 · 中断', () => {
 
   test('在途打断（执行中命令）：工具侧收 `signal` · 本轮以「中止」收束 · 结果照落账', async () => {
     const stage = makeStage({
-      turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'sleep 100' } }] }],
+      turns: [{ toolCalls: [{ name: 'exec', args: { command: 'sleep 100' } }] }],
       handlers: {
         // 长命令：一直等着被中止（真沙箱的 `signal` 语义——取消即返回，不抛）
         exec: (_call, opts) =>
@@ -408,7 +408,7 @@ describe('主循环 · 收场与兜底', () => {
 
   test('工具抛异常——以失败回填，不炸掉整轮（端口承诺「结果，不是异常」）', async () => {
     const stage = makeStage({
-      turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'x' } }] }, { text: '知道了' }],
+      turns: [{ toolCalls: [{ name: 'exec', args: { command: 'x' } }] }, { text: '知道了' }],
       handlers: {
         exec: () => {
           throw new Error('桩炸了')
@@ -482,7 +482,7 @@ describe('主循环 · D6（空 assistant 条目）', () => {
 
   test('**有工具调用时那条条目必须落**——它是上下文配对的锚', async () => {
     const stage = makeStage({
-      turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'ls' } }] }, { text: '好' }],
+      turns: [{ toolCalls: [{ name: 'exec', args: { command: 'ls' } }] }, { text: '好' }],
     })
 
     await run(makeLoopRuntime(stage), '跑一下 ls')

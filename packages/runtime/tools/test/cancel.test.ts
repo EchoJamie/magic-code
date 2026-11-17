@@ -71,7 +71,7 @@ describe('取消', () => {
 
     expect(deps.sandbox.execs[0]?.opts.signal).toBe(controller.signal) // 信号确实传到沙箱
     expect(outcome.ok).toBe(false)
-    expect(outcome.output).toBe('已取消——命令被中止\n半截')
+    expect(outcome.output).toBe('已取消——命令被中止\n半截\n[已取消 · /work/proj]')
     // 取消前已产出的输出照常带回（U05 口径）——增量也照发
     expect(deps.sink.byKind('tool.output.delta')).toHaveLength(1)
   })
@@ -82,7 +82,7 @@ describe('取消', () => {
     const outcome = await deps.runtime.invoke(execCall('x'), {})
 
     expect(outcome.ok).toBe(false)
-    expect(outcome.output).toBe('[exit 137]')
+    expect(outcome.output).toBe('[退出 137 · /work/proj]')
   })
 
   test('取消 ≠ 超时：超时照旧归 reason，**抬头不混进取消那一句**', async () => {
@@ -98,6 +98,6 @@ describe('取消', () => {
     // 不是「已取消」（同一次里不会两句都出现，见 `composeOutcome` 那一支的注）。
     const outcome = await deps.runtime.invoke(execCall('x'), { signal: controller.signal })
 
-    expect(outcome.output).toBe('已超时——命令跑过了、被掐断（200ms 到点）')
+    expect(outcome.output).toBe('已超时——命令跑过了、被掐断（200ms 到点）\n[超时，已按进程组收掉 · /work/proj]')
   })
 })

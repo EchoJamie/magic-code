@@ -8,7 +8,7 @@ const ctx: PermissionContext = {
   defaultRoot: '/work/proj',
 }
 
-const call = (cmd: string): ToolCall => ({ id: 'c1', name: 'exec', args: { cmd } })
+const call = (command: string): ToolCall => ({ id: 'c1', name: 'exec', args: { command } })
 
 function harness() {
   const events: KernelEvent[] = []

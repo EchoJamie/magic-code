@@ -81,7 +81,7 @@ describe('接回（真窗口）', () => {
     const runs = tempDir('magic-u49-decide-runs-')
     const fixture = startFixture({
       turns: [
-        { kind: 'tool', name: 'exec', args: { cmd: 'printf u49-只跑一次' } },
+        { kind: 'tool', name: 'exec', args: { command: 'printf u49-只跑一次' } },
         { kind: 'text', text: '收工收工' },
       ],
     })

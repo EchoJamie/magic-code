@@ -78,7 +78,7 @@ describe('定义与注册', () => {
     expect(runtime.definitions()[0]?.danger).toEqual({ level: 'by-call', note: '按命令解析' })
   })
 
-  test('参数模式＝可序列化的 JSON Schema，命令键锚定 cmd、超时那一项可省', () => {
+  test('参数模式＝可序列化的 JSON Schema，命令键锚定 command、超时那一项可省', () => {
     const { runtime } = makeToolDeps()
     const parameters = runtime.definitions()[0]?.parameters
     expect(parameters).toBeDefined()
@@ -87,19 +87,16 @@ describe('定义与注册', () => {
     expect(parameters).toEqual(JSON.parse(JSON.stringify(parameters)))
 
     expect(parameters?.type).toBe('object')
-    expect(parameters?.required).toEqual(['cmd'])
+    expect(parameters?.required).toEqual(['command'])
     const properties = parameters?.properties as
       | Record<string, { type?: string | readonly string[]; description?: string }>
       | undefined
-    expect(properties?.cmd?.type).toBe('string')
+    expect(properties?.command?.type).toBe('string')
 
-    // **三把键**——`cmd` · `timeoutMs`（U69 加）· `background`（U70 加）。不再有候选集
-    // （技术方案 · 工具：参数键部分锚定）。
-    //
-    // ⚠️ 两单各改过一次这条判据，改的都是**判据**、口径没动：原先「键只有一个」在新行为下
-    // 不再成立；收窄后的判据是「命令键仍是 `cmd`，另外两把逐个有名有型」。放宽的部分
-    // 如实写在这儿，没有偷偷松掉。
-    expect(Object.keys(properties ?? {})).toEqual(['cwd', 'cmd', 'timeoutMs', 'background'])
+    // **五把键**——`command`（唯一必填）· `description` · `cwd` · `timeoutMs` · `background`。
+    // 键名跟主流工具走（Claude Code / Codex / Gemini CLI 都叫 `command`）：模型被训练成写它，
+    // 而 `cmd` 是全表唯一的缩写。
+    expect(Object.keys(properties ?? {})).toEqual(['command', 'description', 'cwd', 'timeoutMs', 'background'])
     expect(properties?.background?.type).toBe('boolean')
 
     // 「不设上界」那个写法**得在模式里看得见**：`null` 是正当的一档，不是「忘了填」。

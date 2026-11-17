@@ -39,10 +39,12 @@ import { assertIdentity } from './workspace.ts'
  * `onFinish` 只由 `proc.exited` 触发，而那件事只发生在进程**真退出**时。
  */
 
-import { closeSync, mkdirSync, openSync, realpathSync } from 'node:fs'
+import { closeSync, mkdirSync, openSync, realpathSync, writeSync } from 'node:fs'
 import { join, resolve as resolvePath } from 'node:path'
 import type {
   BackgroundFinish,
+  HandoverResult,
+  HandoverRun,
   BackgroundRunning,
   BackgroundRuns,
   BackgroundStart,
@@ -96,6 +98,13 @@ export type BackgroundOptions = {
   readonly ledger?: ProcessLedger | undefined
 }
 
+/**
+ * 账上要的只是进程的「身份」与「什么时候没的」两件——**不收整个 Subprocess 类型**：
+ * 起它的那两处（本文件 `start` 用 fd 接输出、`exec.ts` 用管道）泛型不同，
+ * 收窄成这两格，两边都能交进来。
+ */
+type OwnedProcess = { readonly pid: number; readonly exited: Promise<number> }
+
 /** 一条后台运行在账上的样子。 */
 type Run = {
   readonly id: string
@@ -103,7 +112,7 @@ type Run = {
   readonly outputPath: string
   readonly pgid: number
   readonly startedAt: number | undefined
-  readonly proc: Bun.Subprocess<'pipe', number, number>
+  readonly proc: OwnedProcess
   /** 它已经落定了没有（落定之后这一条转进 `finished`，停它只会得到「本来就结束了」）。 */
   done: boolean
   /** **正在被停**（`stop` 动的手）——那个退出不是它自己跑完的，回执上要说得出来。 */
@@ -111,10 +120,33 @@ type Run = {
   failure?: string
   readonly at: number
   readonly onFinish: ((finish: BackgroundFinish) => void) | undefined
+  /** 转后台那一条**正在写的 fd**（`start` 起的那种由子进程自己持有，这里是 `undefined`）。 */
+  fd?: number
+  /** 两条输出流读干了（移交那一条才有）——关文件与通报都排在它之后。 */
+  readonly outputSettled?: Promise<unknown>
 }
 
+/** 收尾最多等「流读干」这么久（见 `settle`）——命令已退，这一刻之后不会再有它自己的输出。 */
+const SETTLE_DRAIN_GRACE_MS = 1000
+
+/** 移交的入参——契约的 `HandoverRun` ＋ 结束时那一声通知（由装配那一侧补上）。 */
+export type AdoptRequest = HandoverRun & { readonly onFinish?: (finish: BackgroundFinish) => void }
+
+/** 移交结果——就是契约的 `HandoverResult`。 */
+export type AdoptedRun = HandoverResult
+
 /** 造一个后台运行登记。 */
-export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns {
+/**
+ * 执行域自己的后台面——契约端口 ＋ 只给执行域用的「接管一条已经跑起来的命令」。
+ *
+ * 契约端口上 `adopt` 是可选的（不认识它的实现照旧能用）；**执行域的实现一定有**，
+ * 故这里收成必填：装配那一层据它判断「这个引擎支不支持超时转后台」。
+ */
+export type BackgroundRegistry = Omit<BackgroundRuns, 'adopt'> & {
+  adopt(request: AdoptRequest): Promise<AdoptedRun>
+}
+
+export function createBackgroundRuns(options: BackgroundOptions): BackgroundRegistry {
   const { workspace } = options
   const dir = resolvePath(options.dir)
 
@@ -150,19 +182,45 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
       finished.delete(oldest.value)
     }
 
-    if (run.onFinish === undefined) return
-    try {
-      run.onFinish({
-        id: run.id,
-        command: run.command,
-        outputPath: run.outputPath,
-        ok: exit === 0 && !run.stopping,
-        exit,
-        ...(run.stopping ? { stopped: true as const } : {}),
-      })
-    } catch {
-      // 通报那一侧的岔子（会话已经不在 / 屏已经关了一类）——收尾这一跳照旧走完
+    // **关文件与通报都排在「流读干」之后**：进程退出那一下，管道里还卡着最后一块字节，
+    // 此时关 fd 就等于把那一段丢掉（评审：时序偶然，取决于收进程组与 drain 谁先）。
+    // 没有这一格（`start` 那一支）就是进程退出即收尾——那边没有「外来写入」要等。
+    let closed = false
+    const closing = () => {
+      // **只收一次**：等流读干与宽限计时器是两条路，谁先到都从这里过一遍；
+      // 没有这个判据，「结束」会响两次（评审实测 1.2s 与 4.2s 各一次）。
+      if (closed) return
+      closed = true
+      if (run.fd !== undefined) { closeQuietly(run.fd); run.fd = undefined }
+      if (run.onFinish === undefined) return
+      try {
+        run.onFinish({
+          id: run.id,
+          command: run.command,
+          outputPath: run.outputPath,
+          ok: exit === 0 && !run.stopping,
+          exit,
+          ...(run.stopping ? { stopped: true as const } : {}),
+        })
+      } catch {
+        // 通报那一侧的岔子（会话已经不在 / 屏已经关了一类）——收尾这一跳照旧走完
+      }
     }
+    if (run.outputSettled === undefined) { closing(); return }
+    // 读那一侧出岔子也算「没有更多了」：不能因此永远不关文件、不报结束
+    //
+    // **但有上界**：命令自己退了、它起的孙进程还攥着管道时，两条流永远读不干——
+    // 那时若一直等，文件不关、「结束」也不说（模型永远等不到那一声）。故最多等一秒：
+    // 一秒之后还没读干，那就是「没有这一条进程的话可等了」，照旧收尾。
+    let linger: ReturnType<typeof setTimeout> | undefined
+    const stopWaiting = () => { if (linger !== undefined) clearTimeout(linger) }
+    linger = setTimeout(() => { stopWaiting(); closing() }, SETTLE_DRAIN_GRACE_MS)
+    // 这一秒是兜底，不是活儿：别为它把事件循环多留一会儿（测试与退出都受影响）
+    linger.unref?.()
+    void run.outputSettled.then(
+      () => { stopWaiting(); closing() },
+      () => { stopWaiting(); closing() },
+    )
   }
 
   return {
@@ -238,6 +296,66 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
       )
 
       return { ok: true, id, outputPath }
+    },
+
+    /**
+     * **接管一条已经跑起来的命令**——超时转后台用这一格。
+     *
+     * 与 `start` 的唯一区别是「进程是谁起的」：`start` 自己起，这里收一个现成的。
+     * 之后照旧记账（`live` / `running` / `stop` / `onFinish` 一套不换），故模型看到的
+     * 是同一个世界：编号、输出文件、结束那一声通知，与直接 `background:true` 起的没有分别。
+     *
+     * 输出文件**当场写进已读到的那一段**（`prefix`），之后每一块原文由调用方经 `write`
+     * 追加——两条流仍按到达顺序落进同一个文件（与 `start` 那一支同一个理由）。
+     */
+    async adopt(request: AdoptRequest): Promise<AdoptedRun> {
+      ensureDir()
+      const id = `bg-${(seq += 1)}`
+      const outputPath = join(dir, `${id}.log`)
+      let fd: number
+      try {
+        fd = openSync(outputPath, 'w', FILE_MODE)
+      } catch (error) {
+        return { ok: false, reason: `开不了输出文件（${outputPath}）：${reasonOf(error)}` }
+      }
+      try {
+        if (request.prefix !== '') writeSync(fd, request.prefix)
+      } catch (error) {
+        closeQuietly(fd)
+        return { ok: false, reason: `写不了输出文件（${outputPath}）：${reasonOf(error)}` }
+      }
+
+      const run: Run = {
+        id,
+        command: request.command,
+        outputPath,
+        pgid: request.proc.pid,
+        startedAt: request.startedAt,
+        proc: request.proc,
+        done: false,
+        stopping: false,
+        at: Date.now(),
+        onFinish: request.onFinish,
+        fd,
+        outputSettled: request.outputSettled,
+      }
+      live.set(id, run)
+
+      void request.proc.exited.then(
+        exit => settle(run, exit),
+        () => settle(run, null),
+      )
+
+      return {
+        ok: true,
+        id,
+        outputPath,
+        // 写不动了就不再写（进程还在跑；文件短一段比抛出去打断移交强）
+        write: (chunk: Uint8Array) => {
+          if (run.fd === undefined) return
+          try { writeSync(run.fd, chunk) } catch { /* 见上 */ }
+        },
+      }
     },
 
     /**

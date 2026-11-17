@@ -39,7 +39,8 @@ export function analyze(call: ToolCall, _ctx: PermissionContext): Analysis {
   if (call.name !== 'exec') return { material: `工具：${call.name}` }
   if (call.invalid === true) return { material: '参数解析不出——调用形态不可信（分发会先拒，不执行）' }
 
-  const cmd = call.args['cmd']
+  // 新调用写 `command`；旧记录里是 `cmd`——两把都认：认不出命令行，禁止清单就等于关掉了
+  const cmd = call.args['command'] ?? call.args['cmd']
   if (typeof cmd !== 'string') return { material: '参数里没有命令字段' }
 
   const segments = decompose(cmd)

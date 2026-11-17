@@ -90,8 +90,7 @@ function fourEntries(blobRef: string): NewEntry[] {
       content: { text: 'exec: ls -la playground' },
       payload: { id: 'call-fixture-1',
         name: 'exec',
-        args: {
-          cmd: 'ls -la playground',
+        args: { command: 'ls -la playground',
           cwd: '/tmp/work',
           options: { follow: true, depth: 3, filters: ['*.ts', '*.md'] },
           threshold: 1.5,
@@ -561,7 +560,7 @@ describe('判据 1 · 落取回环', () => {
       })
 
       // 载荷里带环——JSON 序列化在事务内抛，整笔回滚（会话行与条目行都不留）
-      const circular: Record<string, unknown> = { cmd: 'ls' }
+      const circular: Record<string, unknown> = { command: 'ls' }
       circular['self'] = circular
       expect(() =>
         records.appendEntry({

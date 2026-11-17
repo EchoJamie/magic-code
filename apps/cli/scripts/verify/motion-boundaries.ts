@@ -8,7 +8,7 @@ import { createUiSession, REPO_ROOT } from '../../test/ui/driver.ts'
 import { startResidentHost } from '../../test/resident-host-fixture.ts'
 
 for (const kind of ['stop', 'lost', 'no-color'] as const) {
-  const fixture = startFixture({turns:[{kind:'tool',name:'exec',args:{cmd:'sleep 10; printf BOUNDARY_TOOL_DONE'},reasoning:'BOUNDARY_THINKING',text:'执行受控边界',chunks:3,chunkDelayMs:800}]})
+  const fixture = startFixture({turns:[{kind:'tool',name:'exec',args: { command:'sleep 10; printf BOUNDARY_TOOL_DONE'},reasoning:'BOUNDARY_THINKING',text:'执行受控边界',chunks:3,chunkDelayMs:800}]})
   const sandbox = createSandbox({baseURL:fixture.baseURL, ...(kind==='no-color'?{forceColor:'0'}:{})})
   const host = await startResidentHost(sandbox, REPO_ROOT + '/.ui-runs/motion-boundaries/boundary-host-'+Date.now())
   const ui = await createUiSession({fixture,sandbox,columns:200,rows:40,label:`U114-motion-${kind}`,artifacts:REPO_ROOT + '/.ui-runs/motion-boundaries'})

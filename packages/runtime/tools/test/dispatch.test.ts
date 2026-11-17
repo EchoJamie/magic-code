@@ -29,7 +29,7 @@ describe('分发回环：请求 → 闸门 → 执行 → 结果', () => {
 
     // ② 回填给调用方（循环据以喂模型）
     expect(outcome.ok).toBe(true)
-    expect(outcome.output).toBe('a\nb\n')
+    expect(outcome.output).toBe('[退出 0 · /work/proj]\na\nb\n')
 
     // ③ 事件链——请求 → 结果，同一条链
     expect(deps.sink.events.map((e) => e.kind)).toEqual(['tool.call', 'tool.result'])
@@ -37,10 +37,10 @@ describe('分发回环：请求 → 闸门 → 执行 → 结果', () => {
     const result = deps.sink.byKind('tool.result')[0]
     if (call === undefined || result === undefined) throw new Error('请求 / 结果两个事件没发全')
 
-    expect(call.data).toEqual({ name: 'exec', args: { cmd: 'ls -a' } })
+    expect(call.data).toEqual({ name: 'exec', args: { command: 'ls -a' } })
     expect(result.data.call).toBe(call.id)
     expect(result.data.ok).toBe(true)
-    expect(result.data.output).toEqual({ text: 'a\nb\n' })
+    expect(result.data.output).toEqual({ text: '[退出 0 · /work/proj]\na\nb\n' })
 
     // ④ 信封照铸造器——会话 / 轮 / 时间由铸造器盖，本域**不自取时钟**
     //    （对的是铸造器桩的固定时钟：若本域自己 `Date.now()`，这一条当场红）
@@ -139,6 +139,27 @@ describe('分发回环：请求 → 闸门 → 执行 → 结果', () => {
     expect(deps.sink.byKind('tool.result')[0]?.data.call).toBe(outcome.callRef)
   })
 
+  test('命令写在别的键里：报「未声明字段」而不是「没给 cmd」', async () => {
+    // 实际见过的形：模型把命令写成 command。若先跑「cmd 须为非空字符串」，
+    // 它拿到的是「你没给命令」——而它明明给了，只是键名不对，于是重试同一个键。
+    const deps = makeToolDeps()
+
+    const outcome = await deps.runtime.invoke({ id: 'c1', name: 'exec', args: { cmd: 'ls' } }, {})
+
+    expect(outcome.ok).toBe(false)
+    expect(outcome.output).toBe('参数错误（exec）：未声明字段 cmd；可用字段：command、description、cwd、timeoutMs、background')
+    expect(deps.gate.requests).toHaveLength(0)
+    expect(deps.sandbox.execs).toHaveLength(0)
+  })
+
+  test('一个参数都没有 / 只给了别的键：把收到的键摆出来', async () => {
+    const empty = await makeToolDeps().runtime.invoke({ id: 'c1', name: 'exec', args: {} }, {})
+    expect(empty.output).toBe('参数错误：exec 要的是 command（命令写在 command 里）；本次没有收到任何参数；未执行')
+
+    const cwdOnly = await makeToolDeps().runtime.invoke({ id: 'c2', name: 'exec', args: { cwd: 'src' } }, {})
+    expect(cwdOnly.output).toBe('参数错误：command 须为非空字符串；本次收到的键：cwd；未执行')
+  })
+
   test('参数解析不出直接失败，不创建授权', async () => {
     const deps = makeToolDeps()
 
@@ -155,9 +176,9 @@ describe('分发回环：请求 → 闸门 → 执行 → 结果', () => {
 
   test('只有合法调用进入唯一权限闸门', async () => {
     const cases = [
-      { id: 'c1', name: 'exec', args: { cmd: 'ls' } },
+      { id: 'c1', name: 'exec', args: { command: 'ls' } },
       { id: 'c2', name: 'nope', args: {} },
-      { id: 'c3', name: 'exec', args: { cmd: 42 } },
+      { id: 'c3', name: 'exec', args: { command: 42 } },
       { id: 'c4', name: 'exec', args: {}, invalid: true },
     ]
 
@@ -197,7 +218,8 @@ describe('分发回环：请求 → 闸门 → 执行 → 结果', () => {
     const result: ToolResult = await port.invoke(execCall('ls'), {})
 
     expect(result.ok).toBe(true)
-    expect(result.output).toBe('')
+    // 事实行每次都带：退出状态 ＋ 实际工作目录（模型不必猜「我刚才在哪跑」）
+    expect(result.output).toBe('[退出 0 · /work/proj]')
 
     // 键集钉死：契约三件之外**不许再多**（谁再塞回一个自造补充字段，这一条当场红）
     expect(Object.keys(result).sort()).toEqual(['callRef', 'content', 'ok', 'output'])
@@ -322,10 +344,10 @@ describe('内核拒的那一笔：回执指路（用户拒的那一笔照旧）'
 describe('D58 · 无效调用不产生授权与执行', () => {
   test('错误字段、参数形态、类型和组合均直接回填失败，原始调用与结果配对', async () => {
     const cases = [
-      ['exec', { command: 'echo wrong' }], ['exec', {}], ['exec', { cmd: '  ' }], ['exec', { cmd: 1 }],
-      ...[0, -1, '5', false, Infinity].map(timeoutMs => ['exec', { cmd: 'echo test', timeoutMs }]),
-      ['exec', { cmd: 'echo test', cwd: '' }], ['exec', { cmd: 'echo test', cwd: 3 }],
-      ['exec', { cmd: 'echo test', background: 'true' }], ['exec', { cmd: 'echo test', background: true, timeoutMs: 3 }],
+      ['exec', { cmd: 'echo wrong' }], ['exec', {}], ['exec', { command: '  ' }], ['exec', { command: 1 }],
+      ...([0, -1, '5', false, Infinity] as const).map(timeoutMs => ['exec', { command: 'echo test', timeoutMs }]),
+      ['exec', { command: 'echo test', cwd: '' }], ['exec', { command: 'echo test', cwd: 3 }],
+      ['exec', { command: 'echo test', background: 'true' }], ['exec', { command: 'echo test', background: true, timeoutMs: 3 }],
       ['exec', null], ['exec', []], ['exec', 'bad'], ['missing', {}],
       ['read', {}], ['write', { path: 'file', content: 3 }], ['edit', { path: 'file', old: 'text', new: 3 }],
       ['grep', { pattern: '[' }], ['ls', { path: false }],
@@ -343,8 +365,8 @@ describe('D58 · 无效调用不产生授权与执行', () => {
   })
 
   test('审批期间外部修改原参数，执行仍消费已批准的命令', async () => {
-    const args = { cmd: 'echo approved' }
-    const deps = makeToolDeps({ decider: () => { args.cmd = 'echo changed'; return 'approve' } })
+    const args: Record<string, unknown> = { command: 'echo approved' }
+    const deps = makeToolDeps({ decider: () => { args.command = 'echo changed'; return 'approve' } })
     const outcome = await deps.runtime.invoke({ id: 'one', name: 'exec', args }, {})
     expect(outcome.ok).toBe(true)
     expect(deps.sandbox.execs[0]?.cmd).toBe('echo approved')

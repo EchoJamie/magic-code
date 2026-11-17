@@ -450,8 +450,7 @@ export async function executedFailureFrame(out: string): Promise<void> {
   try {
     const call = {
       name: 'exec',
-      args: {
-        cmd: 'echo SIDE_EFFECT > side-effect.txt; echo "未执行后续步骤：前一步已经写入，但校验失败"; exit 1',
+      args: { command: 'echo SIDE_EFFECT > side-effect.txt; echo "未执行后续步骤：前一步已经写入，但校验失败"; exit 1',
       },
     }
     const assembly = stage.assemble({

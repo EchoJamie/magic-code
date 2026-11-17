@@ -14,12 +14,12 @@ function boundary(overrides: Partial<CollaborationBoundary> = {}): Collaboration
 test('批次中补充：在途调用如实完成，下一件旧工具暂停并重新请求模型', async () => {
   let fresh = false
   const stage = makeStage({ turns: [
-    { toolCalls: [{ name: 'exec', args: { cmd: 'first' } }, { name: 'exec', args: { cmd: 'stale' } }] },
+    { toolCalls: [{ name: 'exec', args: { command: 'first' } }, { name: 'exec', args: { command: 'stale' } }] },
     { text: '已按新约束重新判断' },
   ], handlers: { exec: () => { fresh = true; return { ok: true, output: 'first finished' } } } })
   const port = boundary({ consume: async () => { const value = fresh; fresh = false; return value } })
   expect(await agentLoop(makeLoopRuntime(stage, { collaboration: port }), { text: '工作' }, new AbortController().signal)).toBe('settled')
-  expect(stage.tools.calls.map(call => call.args.cmd)).toEqual(['first'])
+  expect(stage.tools.calls.map(call => call.args.command)).toEqual(['first'])
   expect(stage.gateway.requests).toHaveLength(2)
   expect(stage.sink.byKind('tool.result').map(event => event.data.notExecuted === true)).toEqual([false, true])
   expect(JSON.stringify(stage.gateway.requests[1])).toContain('重新判断')
@@ -27,7 +27,7 @@ test('批次中补充：在途调用如实完成，下一件旧工具暂停并�
 
 test('停止准入挡住下一工具和下一模型请求，不声称撤销已执行动作', async () => {
   let stopped = false
-  const stage = makeStage({ turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'first' } }, { name: 'exec', args: { cmd: 'second' } }] }],
+  const stage = makeStage({ turns: [{ toolCalls: [{ name: 'exec', args: { command: 'first' } }, { name: 'exec', args: { command: 'second' } }] }],
     handlers: { exec: () => { stopped = true; return { ok: true, output: '已发生' } } } })
   await agentLoop(makeLoopRuntime(stage, { collaboration: boundary({ admit: () => stopped ? '已停止' : undefined }) }), { text: '工作' }, new AbortController().signal)
   expect(stage.tools.calls).toHaveLength(1)
@@ -36,7 +36,7 @@ test('停止准入挡住下一工具和下一模型请求，不声称撤销已�
 })
 
 test('持久等待让出推进，不执行同批次后续动作或忙轮询', async () => {
-  const stage = makeStage({ turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'register wait' } }, { name: 'exec', args: { cmd: 'later' } }] }],
+  const stage = makeStage({ turns: [{ toolCalls: [{ name: 'exec', args: { command: 'register wait' } }, { name: 'exec', args: { command: 'later' } }] }],
     handlers: { exec: () => ({ ok: true, output: '已登记等待', halt: true }) } })
   await agentLoop(makeLoopRuntime(stage, { collaboration: boundary() }), { text: '工作' }, new AbortController().signal)
   expect(stage.tools.calls).toHaveLength(1)

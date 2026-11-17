@@ -60,11 +60,11 @@ function startCall(
   const entry = records.appendEntry({
     kind: 'tool-call',
     content: { text: '' },
-    payload: { id: 'call-fixture-1', name: 'exec', args: { cmd: input.cmd } },
+    payload: { id: 'call-fixture-1', name: 'exec', args: { command: input.cmd } },
     at: T0,
   })
 
-  const event = stamp('tool.call', { name: 'exec', args: { cmd: input.cmd } }, input.turn ?? 1)
+  const event = stamp('tool.call', { name: 'exec', args: { command: input.cmd } }, input.turn ?? 1)
   records.appendEvent(event)
 
   return { callRef: event.id, entry }
@@ -92,7 +92,7 @@ describe('判据 ① · 在途识别（真库）', () => {
       expect(call?.call).toBe(started.callRef) // 链引用＝该次 tool.call 事件的 id
       expect(call?.entry).toBe(started.entry) // 条目配对键＝该次 tool-call 条目的 id
       expect(call?.name).toBe('exec')
-      expect(call?.args).toEqual({ cmd: 'mkdir -p src/new' })
+      expect(call?.args).toEqual({ command: 'mkdir -p src/new' })
       expect(call?.turn).toBe(1)
       expect(call?.requested).toBe(false) // 没问过闸门
       expect(call?.decision).toBe(null) // 无从谈「未答复」——压根没问
@@ -161,7 +161,7 @@ describe('判据 ① · 在途识别（真库）', () => {
 
       expect(scan.calls).toHaveLength(1)
       expect(scan.calls[0]?.call).toBe(pending.callRef)
-      expect(scan.calls[0]?.args).toEqual({ cmd: 'pwd' })
+      expect(scan.calls[0]?.args).toEqual({ command: 'pwd' })
 
       store.close()
     } finally {
@@ -182,7 +182,7 @@ describe('判据 ① · 在途识别（真库）', () => {
 
       const scan = await store.recoveryScan(SESSION)
 
-      expect(scan.calls.map((call) => call.args['cmd'])).toEqual(['ls', 'pwd'])
+      expect(scan.calls.map((call) => call.args['command'])).toEqual(['ls', 'pwd'])
       expect(scan.calls[1]?.call).toBe(second.callRef)
 
       store.close()
@@ -222,7 +222,7 @@ describe('判据 ② · 裁决轨迹（真库）', () => {
 
       const scan = await store.recoveryScan(SESSION)
 
-      expect(scan.calls.map((call) => [call.args['cmd'], call.requested, call.decision, call.decider])).toEqual([
+      expect(scan.calls.map((call) => [call.args['command'], call.requested, call.decision, call.decider])).toEqual([
         ['mkdir src', false, 'approve', 'user'],
         ['rm -rf build', false, 'reject', 'user'],
       ])
@@ -343,27 +343,27 @@ describe('判据 ③ · 两侧配对与半笔（纯函数）', () => {
     const onlyEntry = scanForRecovery({
       session: SESSION,
       events: [],
-      entries: [entryOf(2, { cmd: 'ls' })],
+      entries: [entryOf(2, { command: 'ls' })],
     })
     expect(onlyEntry.calls).toEqual([
-      { call: null, entry: 2, name: 'exec', args: { cmd: 'ls' }, turn: null, requested: false, decision: null, decider: null },
+      { call: null, entry: 2, name: 'exec', args: { command: 'ls' }, turn: null, requested: false, decision: null, decider: null },
     ])
 
     const onlyEvent = scanForRecovery({
       session: SESSION,
-      events: [eventOf(3, { cmd: 'pwd' })],
+      events: [eventOf(3, { command: 'pwd' })],
       entries: [],
     })
     expect(onlyEvent.calls).toEqual([
-      { call: 3, entry: null, name: 'exec', args: { cmd: 'pwd' }, turn: 1, requested: false, decision: null, decider: null },
+      { call: 3, entry: null, name: 'exec', args: { command: 'pwd' }, turn: 1, requested: false, decision: null, decider: null },
     ])
   })
 
   test('两笔同名同参各自成行（按出现序，不并成一条）', () => {
     const scan = scanForRecovery({
       session: SESSION,
-      events: [eventOf(3, { cmd: 'ls' }), eventOf(5, { cmd: 'ls' })],
-      entries: [entryOf(2, { cmd: 'ls' }), entryOf(4, { cmd: 'ls' })],
+      events: [eventOf(3, { command: 'ls' }), eventOf(5, { command: 'ls' })],
+      entries: [entryOf(2, { command: 'ls' }), entryOf(4, { command: 'ls' })],
     })
 
     expect(scan.calls.map((call) => [call.entry, call.call])).toEqual([
@@ -386,20 +386,20 @@ describe('判据 ③ · 两侧配对与半笔（纯函数）', () => {
     const balanced = scanForRecovery({
       session: SESSION,
       events: [],
-      entries: [entryOf(2, { cmd: 'ls' }), user(3), result(4)],
+      entries: [entryOf(2, { command: 'ls' }), user(3), result(4)],
     })
     expect(balanced.calls).toEqual([])
 
     // 欠账（只有调用）——落单
-    const owed = scanForRecovery({ session: SESSION, events: [], entries: [entryOf(2, { cmd: 'ls' }), user(3)] })
+    const owed = scanForRecovery({ session: SESSION, events: [], entries: [entryOf(2, { command: 'ls' }), user(3)] })
     expect(owed.calls.map((call) => call.entry)).toEqual([2])
   })
 
   test('两笔落单同时存在时，恢复补记后账即平（顺序配对的意义所在）', () => {
     // 恢复的结果条目**只能追加**在尾部——两笔落单时第 1 笔永远等不到紧邻的结果
     const recovered: Entry[] = [
-      entryOf(2, { cmd: 'ls' }),
-      entryOf(3, { cmd: 'pwd' }),
+      entryOf(2, { command: 'ls' }),
+      entryOf(3, { command: 'pwd' }),
       { id: 4, kind: 'tool-result', content: { text: 'a' }, payload: { ok: true, output: { text: 'a' } }, at: T0 },
       { id: 5, kind: 'tool-result', content: { text: 'b' }, payload: { ok: true, output: { text: 'b' } }, at: T0 },
     ]

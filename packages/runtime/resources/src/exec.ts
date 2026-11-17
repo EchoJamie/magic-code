@@ -2,7 +2,21 @@ import { spawnOwned } from './process.ts'
 import { reapOwned } from './groups.ts'
 /** 前台命令完成须同时取得业务退出码与双流 EOF；超时和取消覆盖整个等待。 */
 
-import type { ExecResult, OutputDelta, ProcessLedger } from '@magic/contracts'
+import type { ExecResult, HandoverRun, OutputDelta, ProcessLedger } from '@magic/contracts'
+import type { AdoptedRun } from './background.ts'
+
+/**
+ * 转后台那一条的两本账：
+ * - `current`——移交之后，读到的原文往哪儿追加（先进来的那一段由 `prefix` 带过去）；
+ * - `total`——**每个通道读到的原始字节数**（含移交前那一段）。回执里那份 `seen` 只含头部
+ *   一半（尾巴要等流结束才吐），移交发生在流还在跑的时候，靠它判断「有没有丢一段」。
+ */
+export type DrainTee = {
+  current?: (chunk: Uint8Array) => void
+  total?: (channel: OutputDelta['channel'], chunk: Uint8Array) => void
+  /** 已经把**多少字节**变成正文吐给回执（含尾巴那一份；后半段的正文不是 byte 数能反推的）。 */
+  emitted?: (channel: OutputDelta['channel'], bytes: number) => void
+}
 
 /** 输出上限缺省——字节；**每道流各自计**（见 `sandbox.ts` 头注的取舍说明）。 */
 export const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024
@@ -35,6 +49,13 @@ export type CommandOptions = {
   readonly maxOutputBytes: number
   readonly onOutput?: (delta: OutputDelta) => void
   readonly signal?: AbortSignal
+  /**
+   * 到点还没结束怎么办——`kill`（缺省，按进程组收掉）或 `background`（交出去接着跑）。
+   * `background` 需要 `adopt` 在场；不在时按 `kill` 处置（不静默改变语义，见下面的分支）。
+   */
+  readonly onTimeout?: 'kill' | 'background'
+  /** 把一条已经跑起来的命令交出去（工具把上下文里的后台端口接在这一格上）。 */
+  readonly adopt?: (run: HandoverRun) => Promise<AdoptedRun>
   /**
    * **归属账**（U50）——起来的这一组记它一笔。
    *
@@ -85,6 +106,7 @@ async function drain(
   cap: number,
   signal: AbortSignal,
   failed: (error: unknown) => void,
+  tee?: DrainTee,
 ): Promise<StreamDrain> {
   const reader = stream.getReader()
   const decoder = new TextDecoder()
@@ -105,9 +127,10 @@ async function drain(
   let tailLen = 0 // 尾巴缓冲里现有几个字节（≤ tailCap）
   let headDone = 0 // 头部已经吐出去几个字节
 
-  const emit = (chunk: string): void => {
+  const emit = (chunk: string, bytes = 0): void => {
     if (chunk.length === 0) return
     text += chunk
+    if (bytes > 0) tee?.emitted?.(channel, bytes)
     try { output?.({ channel, text: chunk }) } catch (error) { output = undefined; failed(error) }
   }
 
@@ -134,6 +157,9 @@ async function drain(
     for (;;) {
       const { done, value } = await Promise.race([reader.read(), canceled.promise])
       if (done) break
+      // 原文照抄给「接出去的那一头」（转后台之后续写文件）；读到的每一块都算
+      tee?.current?.(value)
+      tee?.total?.(channel, value)
 
       // 上限**按字节**记（`maxOutputBytes` 是字节）——超出部分不留，但**照读不辍**：
       // 停手会让管道写满，命令卡在写不动上，那就不是「截断」而是「挂死」了。
@@ -144,7 +170,7 @@ async function drain(
         const room = headCap - headDone
         const part = value.length <= room ? value : value.subarray(0, room)
         headDone += part.length
-        if (part.length > 0) emit(decoder.decode(part, { stream: true }))
+        if (part.length > 0) emit(decoder.decode(part, { stream: true }), part.length)
         rest = value.subarray(part.length)
       }
       keepTail(rest)
@@ -162,14 +188,14 @@ async function drain(
   if (seen <= cap) {
     // 没越过上限：整条流一个字节都不少——头之后的续文接着喂同一个解码器，
     // 末尾照常冲（跨块字符的最后一片就在这儿接上）。
-    if (afterHead.length > 0) emit(decoder.decode(afterHead, { stream: true }))
+    if (afterHead.length > 0) emit(decoder.decode(afterHead, { stream: true }), afterHead.length)
     emit(decoder.decode())
 
     return { text, truncated: false, incomplete }
   }
 
   emit(`${text.endsWith('\n') ? '' : '\n'}${truncationNote(seen - cap, seen, headCap, tailCap)}\n`)
-  emit(decodeFromCharStart(afterHead))
+  emit(decodeFromCharStart(afterHead), afterHead.length)
 
   return { text, truncated: true, incomplete }
 }
@@ -237,9 +263,45 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
   const readFailure = Promise.withResolvers<{ kind: 'cleanup'; error: unknown }>()
   const readers = new AbortController()
   const failed = (error: unknown) => readFailure.resolve({ kind: 'cleanup', error })
+  // 转后台时要用「交出之前已经读到的正文」——从同一个出口另攒一份
+  const seen = { stdout: '', stderr: '' }
+  // **吐给回执的字节数**（不是字符数）——移交时据它判断「回执里那段是不是只带了一截」
+  const emitted = { stdout: 0, stderr: 0 }
+  const sink = (delta: OutputDelta): void => {
+    seen[delta.channel] += delta.text
+    options.onOutput?.(delta)
+  }
+  // 移交时写进后台文件的**原始字节**（不是回执里那份掐过头的正文）：drain 先吐头部那一半，
+  // 尾巴要等流结束才补，而移交恰好发生在流还在跑的时候——光拿 `seen` 会把「头之后」整段丢掉
+  // （评审实测：100 KB 输出只剩 32 KB，中间 67 KB 无声蒸发）。上限有界，防一条话多的命令吃内存。
+  //
+  // 只在这条命令**可能走到移交**时才挂这一层：前台 exec 全程白攒一份没人读的副本很亏。
+  const handover: Handover = { chunks: [], size: 0, dropped: 0, totals: { stdout: 0, stderr: 0 } }
+  const handedOver = { value: false }
+  const tee: DrainTee | undefined = options.onTimeout === 'background' && options.adopt !== undefined
+    ? {
+        emitted: (channel, bytes) => { emitted[channel] += bytes },
+        total: (channel, chunk) => {
+          handover.totals[channel] += chunk.length
+          // 移交之后没人再读这份缓冲（文件由 `current` 接着写）：别白拷
+          if (handedOver.value) return
+          // 超了上限就**从头砍**（留最近的一段：卡住之前那几行正是要看的那几行），
+          // 砍掉多少记在 `dropped` 上，prefix 里如实说一句
+          while (handover.size + chunk.length > HANDOVER_BUFFER_BYTES && handover.chunks.length > 0) {
+            const oldest = handover.chunks.shift()
+            if (oldest === undefined) break
+            handover.size -= oldest.length
+            handover.dropped += oldest.length
+          }
+          if (chunk.length > HANDOVER_BUFFER_BYTES) { handover.dropped += chunk.length; return }
+          handover.chunks.push(chunk.slice()) // 读缓冲会被复用，必须留自己的一份
+          handover.size += chunk.length
+        },
+      }
+    : undefined
   const drained = Promise.all([
-    drain(proc.stdout, 'stdout', options.onOutput, options.maxOutputBytes, readers.signal, failed),
-    drain(proc.stderr, 'stderr', options.onOutput, options.maxOutputBytes, readers.signal, failed),
+    drain(proc.stdout, 'stdout', sink, options.maxOutputBytes, readers.signal, failed, tee),
+    drain(proc.stderr, 'stderr', sink, options.maxOutputBytes, readers.signal, failed, tee),
   ])
   let timer: ReturnType<typeof setTimeout> | undefined
   const bound = options.timeoutMs
@@ -249,6 +311,9 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
   const completed = started.commandExited.then(async exit => exit === null
     ? { kind: 'cleanup' as const, error: new Error('命令退出码控制通道提前关闭') }
     : { kind: 'finished' as const, exit, output: await drained })
+  // 移交没成（抛了 / 拒了）时的原委——落回「按进程组收掉」那一路要把它说出来：
+  // 「本来要转后台、没交出去，为什么」不能丢，否则读的人以为这条命令压根没这待遇。
+  let handoverFailure: string | undefined
   try {
     const outcome = await Promise.race([completed, deadline, canceled.promise, readFailure.promise])
     if (outcome.kind === 'finished' && outcome.exit !== null) {
@@ -256,6 +321,51 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
       return { ok: true, exit: outcome.exit, stdout: stdout.text, stderr: stderr.text,
         ...(stdout.truncated || stderr.truncated ? { truncated: true } : {}) }
     }
+
+    // **到点没跑完 ≠ 该被删掉**：交出去接着跑，这一轮只把「它还在跑」说清楚。
+    // 交不出去（没接后台 / 开不了文件）就退回老路——按进程组收掉，绝不静默改语义。
+    if (outcome.kind === 'timeout' && options.onTimeout === 'background' && options.adopt !== undefined) {
+      // 交出去这一下自己也可能失败（开不出文件一类）。抛出来也算「交不出去」：
+      // 落回下面按进程组收掉，绝不把一条没人认领的进程留在机器上（它还跑着，却没有 id、
+      // 不在 running()、stop 够不着）。
+      let adopted: AdoptedRun | { ok: false }
+      try {
+        adopted = await options.adopt({
+          command: cmd,
+          cwd: options.cwd,
+          proc,
+          startedAt: started.startedAt ?? began,
+          prefix: handoverPrefix(handover),
+          outputSettled: drained.then(() => {}),
+        })
+      } catch (error) {
+        // 抛出来（同步抛也算）＝交不出去：落回下面按进程组收掉，绝不留一条没人认领的进程
+        adopted = { ok: false }
+        handoverFailure = error instanceof Error ? error.message : String(error)
+      }
+      if (!adopted.ok && handoverFailure === undefined) handoverFailure = 'reason' in adopted ? adopted.reason : '接管方拒绝了'
+      if (adopted.ok) {
+        // 从这里起，两条流读到的原文一路写进那个输出文件（同时照旧吐增量给屏）
+        handedOver.value = true
+        if (tee !== undefined) tee.current = adopted.write
+        // 回执里那份只有头部：明说后面不在这一份里，别让它读成「就这么点输出」。
+        // ⚠️ 比的是**字节对字节**（`totals` 是原始字节、`emitted` 是吐出去的字节）：
+        // 拿字节去比 `seen.stdout.length`（UTF-16 码元数）会把中文输出一律判成「缺了一段」。
+        const cutOut = handover.totals.stdout > emitted.stdout
+        const cutErr = handover.totals.stderr > emitted.stderr
+        return {
+          ok: false,
+          reason: 'timeout',
+          timeoutMs: bound!,
+          message: `命令超过 ${bound}ms 未结束，已转后台（${adopted.id}）`,
+          stdout: appendCut(seen.stdout, cutOut),
+          stderr: appendCut(seen.stderr, cutErr),
+          ...(cutOut || cutErr ? { truncated: true as const } : {}),
+          background: { id: adopted.id, outputPath: adopted.outputPath },
+        }
+      }
+    }
+
     const reaped = await reapOwned({ pgid: proc.pid, startedAt: started.startedAt, what: 'exec' })
     const confirmed = reaped.kind === 'reaped' || reaped.kind === 'gone'
     const cleanup = { confirmed, ...('note' in reaped ? { note: reaped.note } : {}) }
@@ -269,11 +379,48 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
       ...(stdout.truncated || stderr.truncated ? { truncated: true } : {}),
       ...(stdout.incomplete || stderr.incomplete ? { outputIncomplete: true } : {}) }
     const ending = confirmed ? '自有进程组已退出' : `资源未核销：${cleanup.note}`
-    if (outcome.kind === 'timeout') return { ok: false, reason: 'timeout', timeoutMs: bound!, message: `命令超时（${bound}ms）；${ending}`, ...output }
+    const handoverNote = handoverFailure === undefined ? '' : `（本可转后台，但没交出去：${handoverFailure}）`
+    if (outcome.kind === 'timeout') return { ok: false, reason: 'timeout', timeoutMs: bound!, message: `命令超时（${bound}ms）；${ending}${handoverNote}`, ...output }
     if (outcome.kind === 'canceled') return { ok: false, reason: 'canceled', message: `命令已取消；${ending}`, ...output }
     return { ok: false, reason: 'cleanup', message: `命令输出或控制通道异常${outcome.kind === 'cleanup' ? `：${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}` : ''}；${ending}`, ...output }
   } finally {
     clearTimeout(timer)
     options.signal?.removeEventListener('abort', onAbort)
   }
+}
+
+/** 移交前那份原文的缓冲上限——有界，防一条话多的命令把内存吃掉。 */
+const HANDOVER_BUFFER_BYTES = 512 * 1024
+
+type Handover = {
+  chunks: Uint8Array[]
+  size: number
+  /** 从头砍掉、没进缓冲的字节数（超上限时越砍越多）——prefix 里如实交代。 */
+  dropped: number
+  totals: { stdout: number; stderr: number }
+}
+
+/**
+ * 交给后台的那一段正文。
+ *
+ * 用**原始字节**而不是回执里那份 `seen`：`seen` 只含头部一半（尾巴要等流结束才吐），
+ * 而移交发生在流还在跑的时候，拿它会把「头之后」整段丢掉。超出缓冲上限时如实写一句
+ * 「中间省略了多少」，不留一段没有交代的空白。
+ */
+function handoverPrefix(handover: Handover): string {
+  const joined = new Uint8Array(handover.size)
+  let at = 0
+  for (const chunk of handover.chunks) { joined.set(chunk, at); at += chunk.length }
+  // 从头砍时第一块很可能停在半个多字节字符上：跳过续字节，别在文件开头留个替换符
+  let from = 0
+  while (from < joined.length && (joined[from]! & 0xC0) === 0x80) from += 1
+  const text = new TextDecoder().decode(joined.subarray(from))
+  if (handover.dropped === 0) return text
+  return `…（交到后台之前已产出 ${handover.totals.stdout + handover.totals.stderr} 字节，开头 ${handover.dropped} 字节已省略，这里接着 ${handover.size} 字节之后）\n${text}`
+}
+
+/** 回执里那一段只有头部时，明说一句：后面不在这一份里。 */
+function appendCut(text: string, cut: boolean): string {
+  if (!cut) return text
+  return `${text}${text === '' || text.endsWith('\n') ? '' : '\n'}…（交出去之前的输出只带回这一段，此后的写进后台的输出文件）\n`
 }

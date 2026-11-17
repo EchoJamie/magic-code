@@ -49,7 +49,7 @@ describe('工具行 · 状态位在身份记号右边（2026-10-01 裁定）', (
   test('败：`▸ × exec(…)`——同一个位置，形状换成叉', async () => {
     const stage = createStage()
     stage.feed([
-      event('tool.call', { name: 'exec', args: { cmd: 'make test' } }, { id: 71 }),
+      event('tool.call', { name: 'exec', args: { command: 'make test' } }, { id: 71 }),
       event('tool.result', { call: 71, ok: false, output: { text: '没有这个目标' } }, { id: 72 }),
     ])
 

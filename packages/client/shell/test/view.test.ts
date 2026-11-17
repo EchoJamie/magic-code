@@ -147,7 +147,7 @@ describe('工具链（call → 询问 → 裁决 → 结果）', () => {
     // 真写下了文件、真 `exit 1`，只是它的输出第一行恰好是「未执行后续步骤：…」。
     // 旧判据（首行以「未执行」起头）把这一笔画成了「没跑」——耗时被抹掉、叉也换了。
     const view = viewed([
-      event('tool.call', { name: 'exec', args: { cmd: 'run.sh' } }, { id: 81 }),
+      event('tool.call', { name: 'exec', args: { command: 'run.sh' } }, { id: 81 }),
       event(
         'tool.result',
         { call: 81, ok: false, output: { text: '未执行后续步骤：前一步已经写入，但校验失败\n\n[exit 1]' } },
@@ -180,7 +180,7 @@ describe('工具链（call → 询问 → 裁决 → 结果）', () => {
     expect(rowAt(called, 0)).toMatchObject({ name: 'fake / echo', call: 71 })
 
     // 内置工具名照旧（`exec` 就写 `exec`）
-    const builtin = viewed([event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 72 })])
+    const builtin = viewed([event('tool.call', { name: 'exec', args: { command: 'ls' } }, { id: 72 })])
     expect(rowAt(builtin, 0)).toMatchObject({ name: 'exec' })
   })
 
@@ -381,7 +381,7 @@ describe('会话与重建', () => {
         payload: { ok: false, notExecuted: true, output: { text: '扣住了 · 换个说法也行' } },
         at: 2,
       },
-      { id: 4, kind: 'tool-call', content: { text: '' }, payload: { id: 'call-fixture-3', name: 'exec', args: { cmd: 'run.sh' } }, at: 3 },
+      { id: 4, kind: 'tool-call', content: { text: '' }, payload: { id: 'call-fixture-3', name: 'exec', args: { command: 'run.sh' } }, at: 3 },
       {
         id: 5,
         kind: 'tool-result',

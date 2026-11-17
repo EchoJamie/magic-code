@@ -173,15 +173,15 @@ async function sceneRefuseAndTrash(): Promise<void> {
   const scene = await openScene({
     label: 'irreversible-commands-拒与指路',
     turns: [
-      { kind: 'tool', name: 'exec', args: { cmd: 'rm -f u77-keep.txt' } },
+      { kind: 'tool', name: 'exec', args: { command: 'rm -f u77-keep.txt' } },
       { kind: 'text', text: '那我改用 trash。' },
-      { kind: 'tool', name: 'exec', args: { cmd: 'trash u77-fresh.txt' } },
+      { kind: 'tool', name: 'exec', args: { command: 'trash u77-fresh.txt' } },
       { kind: 'text', text: '挪进去了。' },
-      { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf u77-build' } },
+      { kind: 'tool', name: 'exec', args: { command: 'rm -rf u77-build' } },
       { kind: 'text', text: '目录那条也被拒了。' },
-      { kind: 'tool', name: 'exec', args: { cmd: 'cd x && rm -rf u77-y' } },
+      { kind: 'tool', name: 'exec', args: { command: 'cd x && rm -rf u77-y' } },
       { kind: 'text', text: '复合命令里那段也拒了。' },
-      { kind: 'tool', name: 'exec', args: { cmd: 'shred -u u77-secret.key' } },
+      { kind: 'tool', name: 'exec', args: { command: 'shred -u u77-secret.key' } },
       { kind: 'text', text: '碾不了就算了。' },
     ],
   })
@@ -260,7 +260,7 @@ async function sceneWithoutTrash(): Promise<void> {
     label: 'irreversible-commands-没有trash',
     withoutTrash: true,
     turns: [
-      { kind: 'tool', name: 'exec', args: { cmd: 'rm -f u77-keep.txt' } },
+      { kind: 'tool', name: 'exec', args: { command: 'rm -f u77-keep.txt' } },
       { kind: 'text', text: '那我不删了。' },
     ],
   })
@@ -289,9 +289,9 @@ async function sceneAllowAll(): Promise<void> {
   const scene = await openScene({
     label: 'irreversible-commands-默认放行',
     turns: [
-      { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf u77-build' } },
+      { kind: 'tool', name: 'exec', args: { command: 'rm -rf u77-build' } },
       { kind: 'text', text: '那我改用 trash。' },
-      { kind: 'tool', name: 'exec', args: { cmd: 'git status' } },
+      { kind: 'tool', name: 'exec', args: { command: 'git status' } },
       { kind: 'text', text: '状态看过了。' },
     ],
   })
@@ -329,7 +329,7 @@ async function sceneUntouched(): Promise<void> {
   const scene = await openScene({
     label: 'irreversible-commands-反面',
     turns: [
-      { kind: 'tool', name: 'exec', args: { cmd: 'echo "a && rm -f u77-x && b"' } },
+      { kind: 'tool', name: 'exec', args: { command: 'echo "a && rm -f u77-x && b"' } },
       { kind: 'text', text: '念了一遍。' },
     ],
   })

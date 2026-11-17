@@ -24,7 +24,7 @@ import { magicAt, removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 /** 一段「交代一件事、它跑一条命令」的 Faux 脚本——冒烟的标准剧本。 */
 export const SMOKE_TURNS: readonly FauxTurn[] = [
   {
-    toolCalls: [{ name: 'exec', args: { cmd: 'echo hello-magic' } }],
+    toolCalls: [{ name: 'exec', args: { command: 'echo hello-magic' } }],
     usage: { inputTokens: 11, outputTokens: 3 },
   },
   { text: '跑完了', usage: { inputTokens: 21, outputTokens: 7 } },

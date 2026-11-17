@@ -41,10 +41,11 @@ import {
   backgroundStartFailed,
   OUTPUT_BACKGROUND_UNSUPPORTED,
   OUTPUT_CANCELED_RUNNING,
+  execMovedToBackground,
   execTimedOutOutput,
   OUTPUT_EXEC_BACKGROUND_WITH_TIMEOUT,
   OUTPUT_EXEC_BAD_TIMEOUT,
-  OUTPUT_EXEC_NO_CMD,
+  execNoCommandOutput,
   OUTPUT_SUDO_CANCELED,
   OUTPUT_SUDO_NO_CHANNEL,
   sudoAuthFailedOutput,
@@ -69,28 +70,46 @@ export const EXEC_MAX_OUTPUT_BYTES = 64 * 1024
 /**
  * 参数模式——`JsonSchema` 在契约里是「可序列化的不透明模式」（承载形态未定），
  * 故这里写一份朴素的 JSON Schema：送得出去、也读得懂，不赌任何库。
- * 键名照契约「参数键」锚定：`cmd` 是**收窄为单一键**的那把（不再有候选集），
- * `timeoutMs` 是 U69 按设计（工具执行与权限 · 超时）新立的一把。
+ * 键名照契约「参数键」锚定：`command` 是**唯一必填**的那把（命令写在哪儿只有一处），
+ * 其余三把都可省。
  *
- * ⚠️ **本表归 U69 拥有**——U70（`exec` 的后台那一形）之后集成时**在这一处加它自己那一项**，
- * 别两单各改一遍（两个都改＝两个都以为自己是对的，合成时谁也说不清哪份是准的）。
+ * **为什么是 `command` 而不是 `cmd`**：主流 shell 工具都用 `command`（Claude Code、Codex、
+ * Gemini CLI、SWE-agent），模型被训练成写它；而 `cmd` 是全表唯一的缩写，工具集里其余键
+ * 全是直白名词（path / pattern / content / old / new）。一次错键的代价是一整轮
+ * （重写调用 ＋ 错误进上下文 ＋ 重新规划），远比键名本身那一个 token 贵。
+ *
+ * `description` 是给人看的：审批时屏上显示它、记录里也留一行——模型顺手把意图写成一句话，
+ * 替审批者省掉「这串命令要干什么」的推断。
  */
 export const EXEC_PARAMETERS = {
   type: 'object',
   properties: {
-    cwd: { type: 'string', minLength: 1, pattern: '\\S', description: '工作目录；缺省为工作区默认根，工作区外须授权。' },
-    cmd: {
+    command: {
       type: 'string',
       minLength: 1,
       pattern: '\\S',
-      description: '要执行的命令（经 shell 解释；工作目录＝工作区默认根）',
+      description:
+        '要执行的命令（经 shell 解释）。每次调用都是一个新 shell：工作目录＝cwd（缺省＝系统提示词里的' +
+        '「工作目录」），环境变量与上一条命令里的 cd 都不保留——要换目录填 cwd，命令里不必再 cd。',
+    },
+    description: {
+      type: 'string',
+      maxLength: 160,
+      description: '这条命令要做什么，一句话（工具行上显示给用户看，也进执行记录）；不参与执行。',
+    },
+    cwd: {
+      type: 'string',
+      minLength: 1,
+      pattern: '\\S',
+      description: '只在要换目录时给：相对系统提示词里的「工作目录」（绝对路径须落在工作区内）。不填就在该目录下跑。',
     },
     /**
      * 超时——**管的是「等它多久」**，不是「它能跑多久」：到点命令已跑出的输出照样带回。
      *
      * `['number', 'null']` 是**有意的**：`null` 就是「不设上界」那个写法，写进模式里，
      * 模型才看得见「一直等」是一条**正当的**选择，而不是「忘了填」。`required` 不含它
-     * ——不填与 `null` 同义（见 `readTimeout`）。不用 `0`：读起来像「立刻超时」。
+     * ——**不填就是默认上界 120000**（见 `readTimeout`），`null` 才是「一直等」。
+     * 不用 `0`：读起来像「立刻超时」。
      */
     timeoutMs: {
       type: ['number', 'null'],
@@ -98,13 +117,13 @@ export const EXEC_PARAMETERS = {
       // 描述是**给模型读的说明书**（同 `file-tools.ts` 那一节的口径：它就是「这个键怎么用」），
       // 故与其余七件的描述同一副行文——**不夹 Markdown 记号**（星号会原样落到模型那边）。
       description:
-        '最多等这条命令多久（毫秒）。到点就按进程组掐断：命令跑过了，已产出的输出照样带回，' +
-        '不是「没执行」。不填＝一直等（不设上界）；要显式表达「一直等」就写 null。' +
-        '长活（构建、装依赖、下载）别填或填大些；短命令（ls / git status 这类）填个几千毫秒，' +
-        '免得一条挂死的命令把这一轮永远拖住。给 0 或负数不算「不设」，是参数错误。',
+        '最多等这条命令多久（毫秒）。不填＝120000（两分钟）：到点命令还没结束，就把它转成后台运行' +
+        '（回执给你后台编号与输出文件，结束后会通知你），不是「没执行」，也不是「杀掉了」。' +
+        '要它一直等到自己结束就写 null。长活（构建、装依赖、下载）填大一些，或用 background:true。' +
+        '给 0 或负数不算「不设」，是参数错误。',
     },
   },
-  required: ['cmd'],
+  required: ['command'],
   additionalProperties: false,
 } as const
 
@@ -114,8 +133,8 @@ export const EXEC_PARAMETERS = {
  * ## 为什么是**叠加**，不是往 `EXEC_PARAMETERS` 里添一笔
  *
  * `EXEC_PARAMETERS` 这一个对象**归 U69 拥有**（它在那儿添超时那一项）——两单各改一遍
- * 同一个对象，迟早在那处撞车。故本单元只**在自己这一层叠上自己那一项**：`cmd` 仍是
- * 契约锚定的那个键（技术方案 · 工具 · 参数键），`background` 是这一形自己的开关。
+ * 同一个对象，迟早在那处撞车。故本单元只**在自己这一层叠上自己那一项**：命令那个键
+ * 仍是 `EXEC_PARAMETERS` 里的 `command`（这一轮已从 `cmd` 改名），`background` 是这一形自己的开关。
  *
  * ## 描述里要说清的三件
  *
@@ -158,18 +177,38 @@ const EXEC_PARAMETERS_WITH_BACKGROUND = {
  * 它**不区分**「跑了但没成」与「压根没跑」——那件事由 `reason` 说，措辞遂分两支
  * （见下面的注释）。把两者合成一句话，就是 D39 那个坑。
  */
-function composeOutcome(result: ExecResult): ToolRunResult {
+function composeOutcome(result: ExecResult, cwd: string | undefined): ToolRunResult {
   if (!result.ok && result.reason === 'spawn') return refused(`exec 未能执行（spawn）：${result.message}`)
   const blocks: string[] = []
-  if (!result.ok) {
-    blocks.push(result.reason === 'timeout' && result.cleanup?.confirmed !== false ? execTimedOutOutput(result.timeoutMs)
-      : result.reason === 'canceled' && result.cleanup.confirmed ? OUTPUT_CANCELED_RUNNING : result.message)
-    if (result.outputIncomplete) blocks.push('输出未收全；以下仅为已读取内容')
+  let status: string
+  if (result.ok) status = `退出 ${result.exit}`
+  else if (result.reason === 'timeout' && result.background !== undefined) {
+    // 到点没跑完 ≠ 这条命令该被删掉：它接着跑，模型拿到编号与输出文件
+    status = `未结束，已转后台 ${result.background.id}`
+    blocks.push(execMovedToBackground(result.background.id, result.background.outputPath, result.timeoutMs))
+  } else if (result.reason === 'timeout') {
+    status = '超时，已按进程组收掉'
+    blocks.push(result.cleanup?.confirmed !== false ? execTimedOutOutput(result.timeoutMs) : result.message)
+  } else if (result.reason === 'canceled' && result.cleanup.confirmed) {
+    status = '已取消'
+    blocks.push(OUTPUT_CANCELED_RUNNING)
+  } else {
+    status = '未完成'
+    blocks.push(result.message)
   }
+  if (!result.ok && result.outputIncomplete) blocks.push('输出未收全；以下仅为已读取内容')
   if (result.stdout !== '') blocks.push(result.stdout)
   if (result.stderr !== '') blocks.push(`[stderr]\n${result.stderr}`)
-  if (result.ok && result.exit !== 0) blocks.push(`[exit ${result.exit}]`)
-  return { ok: result.ok && result.exit === 0, output: blocks.join('\n') }
+  // 事实行（每次都有）：退出状态 ＋ 实际工作目录——模型不必猜「我刚才在哪跑」。
+  //
+  // **跑完的放最前面**（像终端的提示符）：正文一行不少地跟在后面，屏上那行摘要取的也是
+  // 正文的末行。**没跑完的放最后**：那一趟首先要看的是「为什么」（超时 / 被拒 / 被取消），
+  // 事实行是补充。
+  const fact = cwd === undefined ? `[${status}]` : `[${status} · ${cwd}]`
+  const body = blocks.join('\n')
+  const done = result.ok && result.exit === 0
+  if (done) return { ok: true, output: body === '' ? fact : `${fact}\n${body}` }
+  return { ok: false, output: body === '' ? fact : `${body}${body.endsWith('\n') ? '' : '\n'}${fact}` }
 }
 
 /**
@@ -203,11 +242,15 @@ async function startBackground(cmd: string, ctx: ToolRunContext, cwd: string | u
  * 这一侧**不宽容**是对的：模型写错了，它应当收到一句能照着改的话，
  * 而不是让它以为「反正沙箱会兜住」——兜出来的那一种语义（无上界）也不是它想要的那个。
  */
-function readTimeout(value: unknown): { readonly ms: number | null } | { readonly bad: true } {
-  if (value === undefined || value === null) return { ms: null }
+function readTimeout(value: unknown): { readonly ms: number | null; readonly given: boolean } | { readonly bad: true } {
+  if (value === undefined) return { ms: DEFAULT_TIMEOUT_MS, given: false }
+  if (value === null) return { ms: null, given: true }
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return { bad: true }
-  return { ms: value }
+  return { ms: value, given: true }
 }
+
+/** 缺省上界——两分钟（与 Claude Code 的 Bash 同一个数）。 */
+const DEFAULT_TIMEOUT_MS = 120_000
 
 /**
  * **sudo 专用认证**（U129）——密码只交给认证端口，工具域从不持有它。
@@ -240,16 +283,19 @@ export function defineExecTool(): ToolDefinition {
   return defineTool({
     spec: { name: row.name, summary: row.summary, parameters: EXEC_PARAMETERS_WITH_BACKGROUND, danger: row.danger },
     prepare(args) {
-      const cmd = args.cmd
-      if (typeof cmd !== 'string' || cmd.trim() === '') throw new Error(OUTPUT_EXEC_NO_CMD)
+      const command = args.command
+      if (typeof command !== 'string' || command.trim() === '') throw new Error(execNoCommandOutput(Object.keys(args)))
+      const description = args.description
+      if (description !== undefined && typeof description !== 'string') throw new Error('参数错误：description 须为字符串')
       const timeout = readTimeout(args.timeoutMs)
       if ('bad' in timeout) throw new Error(OUTPUT_EXEC_BAD_TIMEOUT)
       const cwd = args.cwd
       if (cwd !== undefined && (typeof cwd !== 'string' || cwd.trim() === '')) throw new Error('参数错误：cwd 须为非空字符串')
       const background = args.background
       if (background !== undefined && typeof background !== 'boolean') throw new Error('参数错误：background 须为布尔值')
-      if (background === true && timeout.ms !== null) throw new Error(OUTPUT_EXEC_BACKGROUND_WITH_TIMEOUT)
-      return { cmd, cwd, background, timeoutMs: timeout.ms }
+      // 只拦**显式**给了上界又要求后台的一对；不填超时现在有缺省值，不该因此判错
+      if (background === true && timeout.given && timeout.ms !== null) throw new Error(OUTPUT_EXEC_BACKGROUND_WITH_TIMEOUT)
+      return { command, description, cwd, background, timeoutMs: background === true ? null : timeout.ms }
     },
     async run(args, ctx): Promise<ToolRunResult> {
       // sudo 先认证、再执行；认证没通过时原命令一个字节都不碰（U129）。
@@ -259,14 +305,20 @@ export function defineExecTool(): ToolDefinition {
         const authenticated = await authenticateSudo(plan, ctx, args.cwd)
         if (authenticated !== 'ok') return authenticated
       }
-      const command = plan === undefined ? args.cmd : plan.run
+      const command = plan === undefined ? args.command : plan.run
 
       if (args.background === true) return startBackground(command, ctx, args.cwd)
+      // 契约上 `adopt` 是**可选**的一格：宿主只实现了 `start` 时不带它，超时照旧按进程组收掉
+      // （不能凭「有 background 对象」就假定它会接管——那是宿主侧才看得见的能力）。
+      const adopter = typeof ctx.background?.adopt === 'function' ? ctx.background : undefined
       const result = await ctx.sandbox.exec(command, {
         cwd: args.cwd, timeoutMs: args.timeoutMs, maxOutputBytes: EXEC_MAX_OUTPUT_BYTES,
+        // 到点还没跑完 ⇒ 交出去接着跑（没接后台能力时沙箱按 kill 处置，行为与旧版一致）
+        onTimeout: adopter === undefined ? 'kill' : 'background',
+        ...(adopter === undefined ? {} : { adopt: run => adopter.adopt!(run) }),
         onOutput: ctx.onOutput, signal: ctx.signal,
       })
-      return composeOutcome(result)
+      return composeOutcome(result, args.cwd)
     },
   })
 }

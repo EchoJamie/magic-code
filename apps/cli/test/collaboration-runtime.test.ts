@@ -51,7 +51,7 @@ for (const response of ['clarify', 'reject'] as const) test(`入口已让出且�
     cancel: async () => undefined, input: () => undefined, configure: async () => undefined, runs: () => [], decisions: () => 0, changed: () => undefined,
   })
   const stage = makeStage({ turns: [
-    { toolCalls: [{ name: 'exec', args: { cmd: 'wait' } }] }, { text: `处理成员${response}` },
+    { toolCalls: [{ name: 'exec', args: { command: 'wait' } }] }, { text: `处理成员${response}` },
   ], handlers: { exec: async () => {
     const result = await managed.request('origin', { action: 'wait', operationId: 'wait', agents: [child.agent.agentId],
       message: child.delegation.delegationId, expectation: '成员响应', deadline: Date.now() + 3600000 })

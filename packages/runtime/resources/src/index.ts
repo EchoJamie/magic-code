@@ -29,7 +29,7 @@ export { createBunProcessPort } from './process-port.ts'
  * 与沙箱并列的第五件：沙箱管「在轮内跑一条」，它管「交出去、按 id 停」。
  */
 export { createBackgroundRuns } from './background.ts'
-export type { BackgroundOptions } from './background.ts'
+export type { AdoptedRun, AdoptRequest, BackgroundOptions, BackgroundRegistry } from './background.ts'
 
 /**
  * **自有进程组的归属与收尾**（U50）——不是端口，是这一域给出去的两件本事：

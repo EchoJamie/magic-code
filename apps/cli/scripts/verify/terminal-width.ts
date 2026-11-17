@@ -24,9 +24,9 @@ const mixed = '中文🙂é\t' + 'LONG_TOKEN_'.repeat(27)
 const content = `相同原始正文\n${mixed}\n\n\`\`\`ts\n\tconst value = '${mixed}'\n\`\`\`\n\n\`\`\`diff\n- old ${mixed}\n+ new ${mixed}\n\`\`\``
 const ui = await createUiSession({ columns: 200, rows: 40, label: 'terminal-width-标准尺寸宽度与详情翻页', artifacts: REPO_ROOT + '/.ui-runs/terminal-width', turns: [
  { kind: 'text', reasoning: probe, text: content, chunks: 1, chunkDelayMs: 1500 },
- { kind: 'tool', name: 'exec', args: { cmd: `printf '${probe}'` } },
- { kind: 'tool', name: 'exec', args: { cmd: `printf '${probe}' >&2; exit 1` } },
- { kind: 'tool', name: 'exec', args: { cmd: 'chmod 700 approved.sh' } },
+ { kind: 'tool', name: 'exec', args: { command: `printf '${probe}'` } },
+ { kind: 'tool', name: 'exec', args: { command: `printf '${probe}' >&2; exit 1` } },
+ { kind: 'tool', name: 'exec', args: { command: 'chmod 700 approved.sh' } },
  { kind: 'text', text: 'WIDTH_ALL_DONE', chunks: 1, chunkDelayMs: 10 },
 ] })
 const frame = async (label: string) => { await Bun.sleep(120); return ui.capture({ label }) }

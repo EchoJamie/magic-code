@@ -69,7 +69,7 @@ async function session(turns: NonNullable<Parameters<typeof createUiSession>[0]>
 describe('sudo 专用认证（真 PTY）', () => {
   test('密码不回显；认证通过后命令执行；密码不进模型、记录与数据目录', async () => {
     const ui = await session([
-      { kind: 'tool', name: 'exec', args: { cmd: 'sudo touch sudo-made.txt' } },
+      { kind: 'tool', name: 'exec', args: { command: 'sudo touch sudo-made.txt' } },
       { kind: 'text', text: '文件建好了' },
     ])
 
@@ -109,7 +109,7 @@ describe('sudo 专用认证（真 PTY）', () => {
 
   test('密码错误：命令不执行，回执说可重试', async () => {
     const ui = await session([
-      { kind: 'tool', name: 'exec', args: { cmd: 'sudo touch should-not-exist.txt' } },
+      { kind: 'tool', name: 'exec', args: { command: 'sudo touch should-not-exist.txt' } },
       { kind: 'text', text: '这次没成' },
     ])
 

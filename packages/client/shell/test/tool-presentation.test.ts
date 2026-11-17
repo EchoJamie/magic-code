@@ -172,7 +172,7 @@ describe('差距 2 · 工具输出渲染——就近渲染已知形态', () => {
   test('失败——结果行**报首行缘由**（不必展开就知道为什么没成）', async () => {
     const stage = live()
     stage.feed([
-      event('tool.call', { name: 'exec', args: { cmd: 'bun test' } }, { id: 71 }),
+      event('tool.call', { name: 'exec', args: { command: 'bun test' } }, { id: 71 }),
       event(
         'tool.result',
         { call: 71, ok: false, output: { text: 'exec 未能执行（信号收掉）：子进程被杀\n第二行别的东西' } },
@@ -191,7 +191,7 @@ describe('差距 2 · 工具输出渲染——就近渲染已知形态', () => {
     const diff = ['@@ -1,2 +1,2 @@', ' keep', '-old', '+new'].join('\n')
 
     stage.feed([
-      event('tool.call', { name: 'exec', args: { cmd: 'git diff' } }, { id: 71 }),
+      event('tool.call', { name: 'exec', args: { command: 'git diff' } }, { id: 71 }),
       event('tool.result', { call: 71, ok: true, output: { text: diff } }, { id: 72 }),
     ])
 
@@ -214,7 +214,7 @@ describe('差距 2 · 工具输出渲染——就近渲染已知形态', () => {
 
     const table = createStage()
     table.feed([
-      event('tool.call', { name: 'exec', args: { cmd: 'cat t.md' } }, { id: 72 }),
+      event('tool.call', { name: 'exec', args: { command: 'cat t.md' } }, { id: 72 }),
       event('tool.result', { call: 72, ok: true, output: { text: '| a | b |\n| --- | --- |\n| 1 | 2 |' } }, { id: 73 }),
     ])
     // ⚠️ U110：正文那一形去**查看那一屏**量（内联恒折）
@@ -245,7 +245,7 @@ describe('差距 3 · 进度感——工具跑动 / 等待模型 / 退避重试�
     const stage = live()
     stage.feed([
       event('turn.start', {}),
-      event('tool.call', { name: 'exec', args: { cmd: 'sleep 9' } }, { id: 71 }),
+      event('tool.call', { name: 'exec', args: { command: 'sleep 9' } }, { id: 71 }),
     ])
 
     stage.at(TEST_AT + 71 + 1400) // 发起（`tool.call` 的 at）之后 1400ms
@@ -257,7 +257,7 @@ describe('差距 3 · 进度感——工具跑动 / 等待模型 / 退避重试�
 
   test('**没有钟就不报秒数**——那一条读数整条不画（拿不到的不编）', async () => {
     const stage = live()
-    stage.feed([event('tool.call', { name: 'exec', args: { cmd: 'sleep 9' } }, { id: 71 })])
+    stage.feed([event('tool.call', { name: 'exec', args: { command: 'sleep 9' } }, { id: 71 })])
 
     const frame = await stage.screen(WIDE)
 
@@ -276,7 +276,7 @@ describe('差距 3 · 进度感——工具跑动 / 等待模型 / 退避重试�
     const running = live()
     running.feed([
       event('turn.start', {}),
-      event('tool.call', { name: 'exec', args: { cmd: 'bun test' } }, { id: 71 }),
+      event('tool.call', { name: 'exec', args: { command: 'bun test' } }, { id: 71 }),
     ])
     const frame = await running.screen(WIDE)
 

@@ -301,7 +301,7 @@ describe('接回的那一份「此刻」', () => {
     const view = applyResume(createView(), {
       ...snapshot,
       text: undefined,
-      tools: [{ call: 7, name: 'bash', args: { cmd: 'pytest' }, at: 1_000, output: ['running…'] }],
+      tools: [{ call: 7, name: 'bash', args: { command: 'pytest' }, at: 1_000, output: ['running…'] }],
     })
 
     const tool = view.rows.find((row) => row.kind === 'tool')

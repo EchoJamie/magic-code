@@ -19,7 +19,7 @@ function fixture(background = false) {
     const index = requests.length
     requests.push(wire)
     const tool = !background ? undefined : index === 0
-      ? { name: 'exec', args: { cmd: `while [ ! -f '${releasePath}' ]; do sleep 0.02; done; printf A_BACKGROUND_DONE`, background: true } }
+      ? { name: 'exec', args: { command: `while [ ! -f '${releasePath}' ]; do sleep 0.02; done; printf A_BACKGROUND_DONE`, background: true } }
       : index === 1 ? { name: 'background_wait', args: { ids: ['bg-1'] } } : undefined
     const delta = tool ? { tool_calls: [{ index: 0, id: `call-${index}`, type: 'function', function: { name: tool.name, arguments: JSON.stringify(tool.args) } }] }
       : { content: `reply:${wire.path}:${wire.model}` }
