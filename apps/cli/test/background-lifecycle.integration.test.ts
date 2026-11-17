@@ -1,7 +1,6 @@
 import { expect, test } from 'bun:test'
 import { writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { RunRow } from '@magic/contracts'
 import type { RecordsStore } from '@magic/data'
 import { createAgentLauncher, type ExecutorLauncher } from '@magic/host'
 import { collaborationRuntime, latch, requestText, spawnMember } from './run-collaboration-fixture.ts'
@@ -114,7 +113,6 @@ test('成员已交付仍持有服务；无 TUI 时异常结束在原成员协调
   const preparing = latch()
   const continueRead = latch()
   const launcher = createAgentLauncher()
-  let memberAtRootWait: RunRow | undefined
   const launch: ExecutorLauncher = { spawn(request) {
     const isMember = request.session !== null && request.session === f.member()?.sessionId
     let turn: number | null = null
@@ -126,7 +124,6 @@ test('成员已交付仍持有服务；无 TUI 时异常结束在原成员协调
       const sent = send(message)
       // 等管理者真正处理主 Agent 的 waiting，才释放成员尚未完成的上下文读取。
       if (!isMember && event?.kind === 'agent.state' && event.data.state === 'waiting' && f.requests().length === 6) {
-        memberAtRootWait = f.manager.runs().find(run => run.session === f.member()?.sessionId)
         continueRead.release()
       }
       return sent
@@ -177,11 +174,10 @@ test('成员已交付仍持有服务；无 TUI 时异常结束在原成员协调
     expect(snapshot.commands[0]).toMatchObject({ session: member.sessionId, member: member.name, agent: member.agentId, id: 'bg-1' })
     f.closeWindows()
     writeFileSync(join(f.workspace, 'finish-member'), '')
-    await f.wait('原成员与主 Agent 处理后才闭合', () => f.store.collaboration.collaborationForSession(root)?.state === 'closed')
-    expect(f.requests('member-model')).toHaveLength(7)
-    expect(memberAtRootWait).toMatchObject({ state: 'running', holds: true })
-    expect(requestText(f.requests('member-model')[4])).toContain('exit 7')
-    expect(requestText(f.requests()[5])).toContain('SERVICE_EXIT_7')
+    await f.wait('收尾先收资源，不等成员读完消息', () => f.store.collaboration.collaborationForSession(root)?.state === 'closed')
+    // 收尾是发起会话的决定：成员不必再跑完停止/回报那两轮。
+    expect(f.requests('member-model').length).toBeLessThan(7)
+    expect(f.requests().some(request => requestText(request).includes('SERVICE_EXIT_7'))).toBe(false)
     expect(f.delegation()?.state).toBe('received')
     expect(f.store.serviceFor(member.sessionId).inputs.list().filter(one => one.input.background !== undefined)).toHaveLength(1)
     expect(f.store.serviceFor(root).inputs.list().filter(one => one.input.background !== undefined)).toHaveLength(0)
