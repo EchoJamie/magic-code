@@ -102,8 +102,9 @@ final class NativeSettings {
             }
             if type == "provider.save" || type == "model.configure" {
                 let provider = action["provider"].text, config = next["providers"][provider]
-                for mapping in next["models"].object.values where mapping["provider"].text == provider { try models.checkSelection(config, model: mapping["model"].text) }
-                if type == "provider.save" { for model in config["modelOverrides"].object.keys { try models.checkSelection(config, model: model) } }
+                // 保存前只校验**地址与协议解析**（官方提示缺这一位、型号明确不支持对话都不再拦）。
+                for mapping in next["models"].object.values where mapping["provider"].text == provider { _ = try models.protocolID(config, model: mapping["model"].text) }
+                if type == "provider.save" { for model in config["modelOverrides"].object.keys { _ = try models.protocolID(config, model: model) } }
             }
             if type == "role.save", let model = action["role"].object["model"] { try validateRole(model, raw: next, stamp: stamp) }
             return next
@@ -217,7 +218,8 @@ final class NativeSettings {
         let mapping = raw["models"][choice]
         guard mapping.isObject else { throw WireError.invalid("角色模型设置：所选档位尚未配置") }
         let id = mapping["provider"].text, model = mapping["model"].text, config = raw["providers"][id]
-        try models.checkSelection(config, model: model)
+        // 角色模型的地址与协议解析照旧校验；**协议兼容不再拦**（角色模型明确不支持对话这一条按原样保留）。
+        _ = try models.protocolID(config, model: model)
         let known = models.modelInfo(config, model: model, supplied: models.snapshot(id, config: config, stamp: stamp)?["models"].array.first { $0["id"].text == model }, resource: models.modelsDevSnapshot())
         try SettingsValidation.require((config["modelOverrides"][model]["capabilities"].object["chat"] ?? known?["capabilities"].object["chat"]) != .bool(false), "角色模型对话能力")
         guard let setting = role.object["reasoning"], setting["mode"].text != "default" else { return }

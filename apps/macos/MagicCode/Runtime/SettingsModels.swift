@@ -37,19 +37,26 @@ final class SettingsModels {
         if (normalized.scheme == "http" && normalized.port == 80) || (normalized.scheme == "https" && normalized.port == 443) { normalized.port = nil }
         return (normalized.string ?? address).replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
     }
+    /// 官方适配的协议固定优先级（官方还没给出该型号的提示时按它兜底）。
+    private static let protocolPriority = ["responses", "messages", "chat-completions"]
+    /// 该型号的协议——**协议兼容不是硬闸门**：型号不在官方支持提示里也照用。
+    ///
+    /// 显式写了协议就用它；没写时取官方提示里第一个支持该型号的协议；官方还没有该型号的
+    /// 提示时按固定优先级（Responses → Anthropic Messages → Chat Completions）兜底。
+    /// 地址与区域照旧解析——**没有地址就报错**（不猜）。
     func protocolID(_ config: SettingsValue, model: String) throws -> String {
         if config.object["vendor"] == nil { _ = try endpoint(config); return config.object["protocol"]?.text ?? "responses" }
         guard let vendor = vendor(config) else { throw WireError.invalid("未知供应商适配，请检查 vendor") }
-        let supported = vendor["protocols"].array.filter { $0.object["models"] == nil || $0["models"].array.contains(.string(model)) }
-        let selected = config.object["protocol"]?.text ?? supported.first?["id"].text ?? ""
-        guard supported.contains(where: { $0["id"].text == selected }), try !endpoint(config, protocolID: selected).isEmpty else {
-            throw WireError.invalid("模型不支持所选官方协议或区域，请核对精确型号")
+        let protocols = vendor["protocols"].array
+        let supported = protocols.filter { $0.object["models"] == nil || $0["models"].array.contains(.string(model)) }
+        let selected = config.object["protocol"]?.text
+            ?? supported.first?["id"].text
+            ?? Self.protocolPriority.first { id in protocols.contains { $0["id"].text == id } }
+            ?? protocols.first?["id"].text ?? "responses"
+        guard try !endpoint(config, protocolID: selected).isEmpty else {
+            throw WireError.invalid("连接没有有效服务地址或官方区域")
         }
         return selected
-    }
-    func checkSelection(_ config: SettingsValue, model: String) throws {
-        _ = try protocolID(config, model: model)
-        guard config["modelOverrides"][model]["capabilities"]["chat"] != .bool(false) else { throw WireError.invalid("模型不支持对话") }
     }
     private func scope(_ config: SettingsValue) throws -> String { config["vendor"].text + "@" + (try endpoint(config)) + "#" + (config.object["protocol"]?.text ?? "auto") }
     private func cachePath(_ id: String, config: SettingsValue, stamp: String?) -> String? {

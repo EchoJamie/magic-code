@@ -74,13 +74,9 @@ func providerFormProblem(_ value: SettingsValue, snapshot: SettingsSnapshot) -> 
         }
         if !providerProtocols.contains(value["protocol"].text) { return "请选择接入协议。" }
         if !["none", "bearer", "api-key"].contains(value["auth"].text) { return "请选择认证方式。" }
-    } else if value["protocol"] != .null {
-        let vendor = snapshot.vendors.first { $0["vendor"].text == value["vendor"].text } ?? .null
-        guard let entry = vendor["protocols"].array.first(where: { $0["id"].text == value["protocol"].text }) else { return "供应商不支持所选协议。" }
-        let mappings = snapshot.configuration["models"].object.values.filter { $0["provider"].text == value["provider"].text }
-        let unsupported = Set(mappings.map { $0["model"].text }).subtracting(entry["models"].array.map(\.text)).sorted()
-        if !unsupported.isEmpty { return "型号 \(unsupported.joined(separator: "、")) 不支持 \(entry["label"].text)，请调整协议或模型映射。" }
     }
+    // 官方供应商**不再做协议兼容判断**：协议与型号是否匹配由服务端最终裁定，
+    // 这里只挡地址、必填与凭据这些形制问题。
     return nil
 }
 func modelInformationProblem(_ value: SettingsValue) -> String? {
@@ -523,7 +519,7 @@ struct ProviderEditor: View {
                                 ForEach(protocols, id: \.self) { value in Text(value["label"].text).tag(value["id"].text) }
                             }
                         }
-                        Text("协议按 Responses → Anthropic Messages → Chat Completions 排列，默认取供应商支持的最高优先级项；手动选择不支持的型号会在保存前提示。")
+                        Text("协议按 Responses → Anthropic Messages → Chat Completions 排列，默认取供应商支持的最高优先级项；型号与协议是否匹配由服务端最终裁定。")
                             .font(.caption).foregroundStyle(.secondary)
                         ForEach(snapshot.configuration["models"].object.keys.sorted(), id: \.self) { choice in
                             let mapping = snapshot.configuration["models"][choice]

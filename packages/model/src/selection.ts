@@ -82,8 +82,6 @@ export function selectModel(options: {
   if (selected.protocol !== undefined && (selected.protocol !== source.protocol || selected.endpoint !== source.endpoint)) return { ok: false, reason: '已保存的服务地址与当前连接不同；请明确重新选择模型' }
   if ((selected.protocol === undefined) !== (selected.endpoint === undefined)) return { ok: false, reason: '模型历史的协议或服务来源缺项；请明确重新选择' }
   const known = modelInfoOf?.(provider, model)
-  const chat = ownOf(config.modelOverrides ?? {}, model)?.capabilities?.chat ?? (known?.id === model ? known.capabilities?.chat : undefined)
-  if (chat === false) return { ok: false, reason: `模型「${model}」不支持对话` }
   const failure = reasoningFailure(config, model, reasoning, known)
   if (failure !== undefined) return { ok: false, reason: failure }
   const selection: ModelSelection = Object.freeze({ choice, provider, model, ...source,

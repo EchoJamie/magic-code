@@ -94,6 +94,22 @@ describe('完整选择的校验与原子提交', () => {
   })
 })
 
+test('对话能力与协议兼容都不再是硬闸门：选择照旧成立', () => {
+  // 明确 `chat == false`（模型资料里说的）不再阻断选择。
+  const known = selectModel({ providers, modelInfoOf: () => ({ id: 'deepseek-v4-pro', capabilities: { chat: false } }) },
+    { choice: 'default', provider: 'ds', model: 'deepseek-v4-pro', reasoning: { mode: 'default' } })
+  expect(known.ok).toBe(true)
+  // 用户覆盖里写死 `chat == false` 同样不再阻断。
+  const overridden = selectModel({ providers: { ds: { ...providers.ds, modelOverrides: { 'deepseek-v4-pro': { capabilities: { chat: false } } } } } },
+    { choice: 'default', provider: 'ds', model: 'deepseek-v4-pro', reasoning: { mode: 'default' } })
+  expect(overridden.ok).toBe(true)
+  // 官方提示里没有的型号照旧可选（协议兼容不拦），协议按显式设置走。
+  const unlisted = selectModel({ providers: { ds: { vendor: 'deepseek', protocol: 'messages', apiKey: 'k' } } },
+    { choice: 'default', provider: 'ds', model: '尚未公布的型号' })
+  expect(unlisted.ok).toBe(true)
+  if (unlisted.ok) expect(unlisted.selection.protocol).toBe('messages')
+})
+
 test('有效思考支持与实际映射同源，协议不能表达的用户声明不开放', async () => {
   const { effectiveReasoningSupportOf } = await import('../src/index.ts')
   const info = { exact: { reasoningSupport: { disable: true, levels: ['low', 'xhigh', 'made-up'], budget: { minTokens: 1024 } } } }

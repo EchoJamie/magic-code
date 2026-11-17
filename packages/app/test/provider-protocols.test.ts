@@ -44,15 +44,28 @@ test('自定义无认证无需列表，手填长型号与覆盖离线保存，�
   expect(g.requests()).toBe(0)
 })
 
-test('官方显式不支持协议在落盘前拒绝，改名不锁定自动选择', async () => {
+test('官方协议不再按型号拦：照旧落盘；改名不锁定自动选择', async () => {
   const g = setup()
   await g.apply({ type: 'provider.save', provider: 'ds', vendor: 'deepseek' })
   await g.apply({ type: 'model.configure', choice: 'default', provider: 'ds', model: 'deepseek-v4-pro' })
-  const before = readFileSync(g.path, 'utf8')
-  await expect(g.apply({ type: 'provider.save', provider: 'ds', protocol: 'responses' })).rejects.toThrow(/deepseek-v4-pro/)
-  expect(readFileSync(g.path, 'utf8')).toBe(before)
+  // 改名不动协议（不锁定自动选择）。
   await g.apply({ type: 'provider.save', provider: 'ds', name: '更名' })
   expect(g.raw().providers.ds.protocol).toBeUndefined()
+  // 协议兼容不再是硬闸门：官方提示里没有该型号的协议也照落盘，不回滚配置。
+  await g.apply({ type: 'provider.save', provider: 'ds', protocol: 'responses' })
+  expect(g.raw().providers.ds.protocol).toBe('responses')
+  expect(g.raw().models.default).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
+  expect(g.requests()).toBe(0)
+})
+
+test('对话能力明确不支持也不拦保存与映射', async () => {
+  const g = setup(), model = '只做嵌入的型号'
+  await g.apply({ type: 'provider.save', provider: 'local', baseURL: 'http://127.0.0.1:9000/v1', auth: 'none', protocol: 'chat-completions' })
+  await g.apply({ type: 'model.override', provider: 'local', model, override: { capabilities: { chat: false } } })
+  // 保存前的预检不再因 `chat` 能力拒绝——映射照旧落盘。
+  await g.apply({ type: 'model.configure', choice: 'default', provider: 'local', model })
+  expect(g.raw().models.default).toEqual({ provider: 'local', model })
+  expect(g.raw().providers.local.modelOverrides[model].capabilities).toEqual({ chat: false })
   expect(g.requests()).toBe(0)
 })
 

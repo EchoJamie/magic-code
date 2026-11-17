@@ -141,6 +141,30 @@ function ground() {
   return { home, base, configPath, request: crypto.randomUUID(), close: () => rmSync(home, { recursive: true, force: true }) }
 }
 
+test('原生保存不再因协议兼容或对话能力拒绝：官方提示外的型号照旧落盘', async () => {
+  const g = ground()
+  const native = (action: SettingsAction) => runNativeSettings({ ...g, action, stamp: configStamp(g.configPath) }, {})
+  try {
+    // 官方 DeepSeek 连接（Responses 在官方支持提示里）。
+    const saved = await native({ type: 'provider.save', provider: 'ds', vendor: 'deepseek', region: 'official', protocol: 'responses' })
+    expect(saved.error).toBeUndefined(); expect(saved.saved).toBe(true)
+    // 型号不在官方提示里也不再抛「模型不支持所选官方协议或区域」——映射照旧落盘。
+    const mapped = await native({ type: 'model.configure', provider: 'ds', model: 'deepseek-v4-pro', choice: 'default' })
+    expect(mapped.error).toBeUndefined(); expect(mapped.saved).toBe(true)
+    // 型号明确不支持对话也不再拦保存。
+    const overridden = await native({ type: 'model.override', provider: 'ds', model: 'deepseek-v4-pro', override: { capabilities: { chat: false } } })
+    expect(overridden.error).toBeUndefined(); expect(overridden.saved).toBe(true)
+    const raw = JSON.parse(readFileSync(g.configPath, 'utf8'))
+    expect(raw.models.default).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
+    expect(raw.providers.ds.protocol).toBe('responses')
+    expect(raw.providers.ds.modelOverrides['deepseek-v4-pro'].capabilities).toEqual({ chat: false })
+    // 改回别的协议同样照旧落盘（协议兼容不是闸门）。
+    const switched = await native({ type: 'provider.save', provider: 'ds', protocol: 'chat-completions' })
+    expect(switched.error).toBeUndefined(); expect(switched.saved).toBe(true)
+    expect(JSON.parse(readFileSync(g.configPath, 'utf8')).providers.ds.protocol).toBe('chat-completions')
+  } finally { g.close() }
+}, 60000)
+
 test('配置目标与指纹分别核对，坏 JSON 不覆盖，Engine 状态不是保存前提', async () => {
   const g = ground()
   try {
