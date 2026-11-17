@@ -3,6 +3,7 @@ import type {
   CollaborationView, CollaborationUsage, MagicHome, ModelUsage, RunRow, StopResult, UserInput,
 } from '@magic/contracts'
 import { createCollaborationActions } from '@magic/actions'
+import { blocksClose } from '@magic/records'
 import type { RecordsStore } from '@magic/records'
 import { managedModelChoices, resolveManagedModel } from '../agent-models.ts'
 
@@ -199,8 +200,9 @@ export function createManagedCollaboration(host: CollaborationHost) {
       const work = records.collaborationForSession(session)
       if (work?.state !== 'closing' || work.originSessionId !== session || finishing.has(work.collaborationId)) return false
       // 收齐结果且工作调用已结算后才释放空闲宿主资源；闭合事实要晚于资源确证。
-      const unresolved = records.listDelegations(work.collaborationId).some(d =>
-        !['received', 'rejected', 'cancelled'].includes(d.state) || (d.deliveryMessageId !== undefined && d.receivedAt === undefined))
+      // 「委派收没收齐」用记录域那一条判据（`blocksClose`）——两处各写一版迟早对不上；
+      // 尤其是**已取消的委派不等回执**：成员早已休眠，等一个不会来的回执会把 closing 钉死。
+      const unresolved = records.listDelegations(work.collaborationId).some(blocksClose)
       if (unresolved || records.listExecutions(work.collaborationId).some(e => e.state !== 'finished')
         || host.runs().some(run => records.agentForSession(run.session)?.collaborationId === work.collaborationId && (run.holds || (run.background ?? 0) > 0 || run.backgroundUnknown || run.backgroundWaiting))
         || records.listMembers(work.collaborationId).some(member =>

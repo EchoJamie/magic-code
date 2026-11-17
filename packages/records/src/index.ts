@@ -19,7 +19,9 @@
  * ③ **形态补足**——`isToolCallEntry` / `isToolResultEntry`（契约占位 9「kind ↔ 载荷强对应」
  *    的读取侧收窄；只增不改，见 `entries.ts` 头注）；
  * ④ **恢复查询面**——`scanForRecovery` ＋ `InFlightCall` / `RecoveryScan`（阶段 2 · U15
- *    「在途识别由记录域提供」；经 `RecordsStore.recoveryScan` 取用，见 `recovery.ts`）。
+ *    「在途识别由记录域提供」；经 `RecordsStore.recoveryScan` 取用，见 `recovery.ts`）；
+ * ⑤ **收尾判据**——`blocksClose`（「这条委派还挡不挡整体收尾」；`closeCollaboration` 与
+ *    装配层的空闲收尾**同用这一条**，不给两处各写一版的机会）。
  *
  * 不出去的：库表形态 · SQL · id 预留水位 · 引用格式（`BlobRef` 对消费者不透明）。
  */
@@ -28,6 +30,7 @@ export { createRecordsStore, readSessionSummary, DATABASE_FILE } from './store.t
 export type { RecordsStore, RecordsStoreOptions } from './store.ts'
 export type { AttentionStore } from './attention.ts'
 
+export { blocksClose } from './collaboration.ts'
 export { isToolCallEntry, isToolResultEntry } from './entries.ts'
 export type { ToolCallEntry, ToolResultEntry } from './entries.ts'
 

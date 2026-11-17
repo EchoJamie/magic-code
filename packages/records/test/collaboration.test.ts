@@ -302,6 +302,23 @@ describe('协作记录 · 委派责任与等待', () => {
     } finally { f.close() }
   })
 
+  test('已取消的委派不等回执：投递过、从没回过执，也照样能收尾', () => {
+    // 实测事故：四条「已投递、无回执」的取消委派把协作钉死在 closing——成员早已休眠，
+    // 不会再来回执，于是收尾永远落不下去。取消＝不会再有人处理它，不该再等这一声。
+    const f = fixture()
+    try {
+      const a = f.spawn('a'); f.accept(a.delegation.delegationId)
+      const id = f.collaboration.collaborationId
+      f.records.stop({ kind: 'delegation', delegationId: a.delegation.delegationId }, 'withdrawn', 15)
+      f.records.deliver(a.agent.agentId, { operationId: 'late', delegationId: a.delegation.delegationId, body: body('late result'), at: 16 })
+      const late = f.records.getDelegation(a.delegation.delegationId)
+      expect(late?.state).toBe('cancelled')
+      expect(late?.deliveryMessageId).toBeDefined()   // 结果确实投递过
+      expect(late?.receivedAt).toBeUndefined()        // 但协调者从没回执
+      expect(f.records.closeCollaboration(id, 17)).toEqual({ closed: true, blockers: [] })
+    } finally { f.close() }
+  })
+
   test('整体收尾先关派生，未收下结果与在途执行明确阻塞收尾', () => {
     const f = fixture()
     try {
