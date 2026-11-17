@@ -82,8 +82,9 @@ final class NativeSettings {
             }
             if type == "provider.save" || type == "model.configure" {
                 let provider = action["provider"].text, config = next["providers"][provider]
-                for mapping in next["models"].object.values where mapping["provider"].text == provider { try models.checkSelection(config, model: mapping["model"].text) }
-                if type == "provider.save" { for model in config["modelOverrides"].object.keys { try models.checkSelection(config, model: model) } }
+                // 保存前只校验**地址与协议解析**（官方提示缺这一位、型号明确不支持对话都不再拦）。
+                for mapping in next["models"].object.values where mapping["provider"].text == provider { _ = try models.protocolID(config, model: mapping["model"].text) }
+                if type == "provider.save" { for model in config["modelOverrides"].object.keys { _ = try models.protocolID(config, model: model) } }
             }
             if type == "role.save" { try validateRole(action["role"]) }
             return next

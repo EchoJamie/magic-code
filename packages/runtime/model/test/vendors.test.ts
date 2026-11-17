@@ -14,6 +14,7 @@ import {
   MINIMAX_VENDOR,
   collectPages,
   listModelsOfProtocol,
+  resolveModelSource,
   vendorCatalog,
   vendorIds,
   vendorOf,
@@ -267,6 +268,31 @@ describe('供应商读面', () => {
     expect(minimax?.regions.some((region) => region.baseURL === 'https://api.minimax.cn/v1')).toBe(true)
     const deepseek = vendors.find((one) => one.vendor === 'deepseek')
     expect(deepseek?.regions[0]?.baseURL).toBe('https://api.deepseek.com')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// 四 · 协议支持提示（**只是提示，不是硬闸门**）
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('协议支持提示', () => {
+  test('DeepSeek 的 Responses 支持提示含 `deepseek-v4-pro` 与 `deepseek-flash`', () => {
+    const responses = DEEPSEEK_VENDOR.protocols.find(one => one.id === 'responses')
+    expect(responses?.models).toEqual(expect.arrayContaining(['deepseek-flash', 'deepseek-v4-pro']))
+    // 读面（界面据此显示「协议（按型号）」）与适配同源，不用另维护一份表。
+    const catalog = vendorCatalog().find(one => one.vendor === 'deepseek')
+    expect(catalog?.protocols.find(one => one.id === 'responses')?.models).toEqual(expect.arrayContaining(['deepseek-v4-pro']))
+  })
+
+  test('型号不在提示里不拒绝：显式协议照用，缺省按固定优先级兜底', () => {
+    // 显式写了协议就用它（官方提示缺这一位也不拦）。
+    expect(resolveModelSource({ vendor: 'deepseek', protocol: 'messages' }, '尚未公布的型号'))
+      .toEqual({ protocol: 'messages', endpoint: 'https://api.deepseek.com/anthropic/v1' })
+    // 没写协议 ⇒ 按 Responses → Messages → Chat Completions 的固定次序兜底。
+    expect(resolveModelSource({ vendor: 'deepseek' }, '尚未公布的型号'))
+      .toEqual({ protocol: 'responses', endpoint: 'https://api.deepseek.com' })
+    // 端点仍照旧解析：没有地址就报错（不猜、不回落）。
+    expect(() => resolveModelSource({ vendor: 'deepseek', region: 'mars' }, '尚未公布的型号')).toThrow('服务地址')
   })
 })
 

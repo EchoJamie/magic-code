@@ -61,7 +61,8 @@ final class NativeTests: XCTestCase {
         XCTAssertTrue(modelProtocolName(provider: unset, model: "unknown-model", vendors: snapshot.vendors).hasPrefix("未知"))
         XCTAssertEqual(providerProtocolOptions(snapshot.vendors[0]).map { $0["id"].text }, ["responses", "messages", "chat-completions"])
         draft.put("protocol", .string("messages"))
-        XCTAssertTrue(providerFormProblem(draft.value, snapshot: snapshot)?.contains("exact-model") == true)
+        // 协议兼容不再在保存前拦截：型号与协议是否匹配由服务端最终裁定。
+        XCTAssertNil(providerFormProblem(draft.value, snapshot: snapshot))
         draft.put("protocol", .null, preserveNull: true)
         XCTAssertEqual(providerFormAction(draft.value).object["protocol"], .null)
         XCTAssertNil(providerFormProblem(draft.value, snapshot: snapshot))
@@ -105,6 +106,35 @@ final class NativeTests: XCTestCase {
         XCTAssertTrue(region.contains { $0.contains("官方区域") && $0.contains("mars") })
         // 没有显式默认时说明继承关系。
         XCTAssertTrue(roleModelNotes(.null, snapshot: snapshot).first?.contains("创建入口") == true)
+    }
+
+    /// 协议支持提示只是提示：型号不在官方清单里照用；地址与区域仍照旧校验。
+    func testProtocolHintIsNoLongerAHardGate() throws {
+        let metadata = SettingsValue.object(["vendors": .array([
+            .object([
+                "vendor": .string("fixture"), "label": .string("测试供应商"),
+                "regions": .array([.object(["id": .string("test"), "label": .string("测试区域"), "baseURL": .string("https://official.invalid")])]),
+                "protocols": .array([
+                    .object(["id": .string("responses"), "label": .string("Responses"), "models": .strings(["exact-model"])]),
+                    .object(["id": .string("messages"), "label": .string("Anthropic Messages"), "models": .strings(["other-model"])]),
+                    .object(["id": .string("chat-completions"), "label": .string("Chat Completions"), "models": .null]),
+                ]),
+                "endpoints": .object(["test": .object([
+                    "responses": .string("https://official.invalid/responses"),
+                    "messages": .string("https://official.invalid/messages"),
+                    "chat-completions": .string("https://official.invalid/chat/completions"),
+                ])]),
+            ])
+        ])])
+        let models = SettingsModels(metadata: metadata, base: "/fixture", configPath: "/fixture/config.json", environment: [:])
+        let official = SettingsValue.object(["vendor": .string("fixture"), "region": .string("test")])
+        // 显式写了协议就用它——型号不在官方提示里也不再抛「模型不支持所选官方协议或区域」。
+        XCTAssertEqual(try models.protocolID(SettingsValue.object(["vendor": .string("fixture"), "region": .string("test"), "protocol": .string("messages")]), model: "尚未公布的型号"), "messages")
+        // 没写协议：官方提示里有该型号取提示里第一个；没有则按固定优先级（Responses）兜底。
+        XCTAssertEqual(try models.protocolID(official, model: "exact-model"), "responses")
+        XCTAssertEqual(try models.protocolID(official, model: "尚未公布的型号"), "responses")
+        // 区域认不出 ⇒ 没有有效服务地址就报错（不猜、不回落）。
+        XCTAssertThrowsError(try models.protocolID(SettingsValue.object(["vendor": .string("fixture"), "region": .string("mars"), "protocol": .string("responses")]), model: "exact-model"))
     }
 
     @MainActor func testU126CustomAuthenticationAddressAndWireValidation() {
