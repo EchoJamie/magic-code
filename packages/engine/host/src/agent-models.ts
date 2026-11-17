@@ -98,7 +98,7 @@ async function managedModelContext(magic: MagicHome, environment: Readonly<Recor
   const info = createModelInfoService({
     connections: () => Object.entries(loaded.config.providers).map(([providerId, config]) => ({
       ...resolveConnection({ providerId, config, env: environment }),
-      access: cacheAccessFor({ provider: providerId, configPath: loaded.path, apiKey: config.apiKey, processToken }),
+      access: cacheAccessFor({ provider: providerId, configPath: loaded.path, apiKey: config.apiKey, auth: config.auth, processToken }),
     })),
     cache: createFileModelInfoCache(magic.base), now: Date.now,
     metadata: createModelsDevResource(magic.base, async () => { throw new Error('配置预检不允许联网') }),

@@ -181,6 +181,37 @@ function ground() {
   return { home, base, configPath, request: crypto.randomUUID(), close: () => rmSync(home, { recursive: true, force: true }) }
 }
 
+test('Models.dev 检索：App 与 TS 对同一份资料给出同样的候选，且不改配置', async () => {
+  const g = ground()
+  const catalog = {
+    alibaba: { api: 'https://dashscope.example/v1', models: {
+      'qwen-flash': { id: 'qwen-flash', name: 'Qwen Flash', limit: { context: 128_000, output: 8_192 }, modalities: { input: ['text'], output: ['text'] }, tool_call: true, last_updated: '2026-09-01' },
+      'qwen-max': { id: 'qwen-max' },
+    } },
+    zhipu: { models: { 'glm-4': { id: 'glm-4', name: '智谱四' }, 'GLM-4-Air': { id: 'GLM-4-Air', name: '空气' } } },
+  }
+  mkdirSync(join(g.base, 'cache'), { recursive: true })
+  writeFileSync(join(g.base, 'cache', 'models.dev.json'), JSON.stringify({ fetchedAt: 1_700_000_000_000, data: catalog }))
+  writeFileSync(g.configPath, JSON.stringify({ providers: { relay: { baseURL: 'https://relay.test/api', protocol: 'responses', auth: 'bearer', apiKey: 'SYNTHETIC' } } }))
+  const settings = createSettings({ magic: g, environment: {}, fetch: async () => { throw new Error('检索不得联网') } })
+  const before = readFileSync(g.configPath, 'utf8')
+  try {
+    for (const query of ['glm', 'flash', 'qwen', 'nothing-here']) {
+      const native = await runNativeSettings({ ...g, modelsDevSearch: { query } })
+      expect(native.error).toBeUndefined()
+      const ts = await settings.searchModelsDev(query)
+      expect(native.modelsDev?.matches, query).toEqual(ts.matches)
+      expect(native.modelsDev?.note ?? undefined).toBe(ts.note)
+    }
+    expect(readFileSync(g.configPath, 'utf8')).toBe(before)
+    // 资料不在：两边都说「先刷新一次」，不拿空列表冒充「没有这个型号」
+    rmSync(join(g.base, 'cache', 'models.dev.json'))
+    const missing = await runNativeSettings({ ...g, modelsDevSearch: { query: 'glm' } })
+    expect(missing.modelsDev?.matches).toEqual([])
+    expect(missing.modelsDev?.note).toContain('尚未获取 Models.dev 资料')
+  } finally { g.close() }
+}, 60000)
+
 test('配置目标与指纹分别核对，坏 JSON 不覆盖，Engine 状态不是保存前提', async () => {
   const g = ground()
   try {
@@ -233,6 +264,28 @@ test('原生模型列表与 TS 缓存互通，非认证编辑沿用；换凭据�
     expect(requests).toEqual(['Bearer FIRST_SECRET', 'Bearer FIRST_SECRET', 'Bearer SECOND_SECRET'])
     expect(JSON.stringify(await native())).not.toMatch(/FIRST_SECRET|SECOND_SECRET/)
   } finally { release?.(); await server.stop(true); g.close() }
+}, 60000)
+
+test('自定义连接按协议取列表：原生与 TS 写同一份缓存，认证走 Bearer', async () => {
+  const g = ground(), seen: (string | null)[] = []
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(request) {
+    seen.push(request.headers.get('authorization'))
+    return Response.json({ data: [{ id: 'Qwen-Flash', name: '快' }] })
+  } })
+  const settings = createSettings({ magic: g, environment: {}, fetch: (input, init) =>
+    String(input) === 'https://models.dev/api.json' ? Promise.resolve(Response.json(nativeModelsDevCatalog)) : fetch(input, init) })
+  const row = (snapshot: Pick<SettingsSnapshot, 'catalog'>) => snapshot.catalog[0] as ModelCatalogRow
+  try {
+    writeFileSync(g.configPath, JSON.stringify({ providers: { relay: { baseURL: `http://127.0.0.1:${server.port}/api`, protocol: 'responses', auth: 'bearer', apiKey: 'RELAY_SECRET' } } }))
+    const refreshed = await runNativeSettings({ ...g, stamp: configStamp(g.configPath), action: { type: 'model.refresh', provider: 'relay' } })
+    expect(refreshed.error, JSON.stringify(refreshed)).toBeUndefined()
+    expect(seen).toEqual(['Bearer RELAY_SECRET'])
+    const nativeRow = row(refreshed.snapshot!)
+    expect(nativeRow.cache?.snapshot?.models[0]).toEqual({ id: 'Qwen-Flash', name: '快' })
+    expect(nativeRow.cache?.snapshot?.scope).toBe(`@http://127.0.0.1:${server.port}/api#responses`)
+    expect(row(await settings.read()).cache).toEqual(nativeRow.cache)
+    expect(JSON.stringify(await settings.read())).not.toContain('RELAY_SECRET')
+  } finally { await server.stop(true); g.close() }
 }, 60000)
 
 test('App 原生模型刷新保留显式代理与 NO_PROXY，不因客户端拆分改变出站路径', async () => {
@@ -304,10 +357,11 @@ test('App 与 TS 动态解析同一 Models.dev 缓存；精确渠道与型号匹
     const reread = await runNativeSettings(g)
     expect((reread.snapshot!.catalog[0] as ModelCatalogRow).modelInfo?.[id]?.limits?.maxOutputTokens).toBe(500_000)
     expect(((await settings.read()).catalog[0] as ModelCatalogRow).modelInfo?.[id]?.limits?.maxOutputTokens).toBe(500_000)
-    // 自定义连接不依赖模型列表接口，也可以手动刷新公共资料。
+    // 自定义连接也按协议取列表：这条没有凭据，刷新如实报「缺认证」，公共资料照旧刷新落盘。
     const refreshed = await runNativeSettings({ ...g, stamp: reread.snapshot!.stamp, action: { type: 'model.refresh', provider: 'private' } })
-    expect(refreshed.error).toBeUndefined()
-    expect((refreshed.snapshot!.catalog[0] as ModelCatalogRow).modelInfo?.[id]?.limits?.maxOutputTokens).toBe(512_000)
+    expect(refreshed.error).toContain('认证')
+    const afterRefresh = await runNativeSettings(g)
+    expect((afterRefresh.snapshot!.catalog[0] as ModelCatalogRow).modelInfo?.[id]?.limits?.maxOutputTokens).toBe(512_000)
     expect(statSync(file).mode & 0o777).toBe(0o600)
   } finally { g.close() }
 }, 60000)

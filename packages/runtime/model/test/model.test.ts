@@ -250,14 +250,14 @@ describe('归一 · 思考与工具调用', () => {
         reasoningDelta('让我想想'),
         textDelta('我来执行'),
         { type: 'tool-input-start', id: 'call-1', toolName: 'exec' },
-        { type: 'tool-input-delta', id: 'call-1', delta: '{"cmd"' },
+        { type: 'tool-input-delta', id: 'call-1', delta: '{"command"' },
         { type: 'tool-input-delta', id: 'call-1', delta: ':"ls"}' },
         { type: 'tool-input-end', id: 'call-1' },
         {
           type: 'tool-call',
           toolCallId: 'call-1',
           toolName: 'exec',
-          input: { cmd: 'ls' },
+          input: { command: 'ls' },
         },
         finishPart('tool-calls', usageOf(30, 10)),
       ]),
@@ -271,7 +271,7 @@ describe('归一 · 思考与工具调用', () => {
         modelDelta(stamper, 'text', '我来执行'),
         // 工具名先于参数出现——零参工具在流里也有名可示
         modelDelta(stamper, 'toolcall', '', 'exec', 'call-1'),
-        modelDelta(stamper, 'toolcall', '{"cmd"', 'exec', 'call-1'),
+        modelDelta(stamper, 'toolcall', '{"command"', 'exec', 'call-1'),
         modelDelta(stamper, 'toolcall', ':"ls"}', 'exec', 'call-1'),
         modelUsage(stamper, { inputTokens: 30, outputTokens: 10, totalTokens: 40 }),
         modelCallEnd(stamper),
@@ -279,7 +279,7 @@ describe('归一 · 思考与工具调用', () => {
     )
     expect(result.thinking).toBe('让我想想')
     expect(result.text).toBe('我来执行')
-    expect(result.toolCalls).toEqual([{ id: 'call-1', name: 'exec', args: { cmd: 'ls' } }])
+    expect(result.toolCalls).toEqual([{ id: 'call-1', name: 'exec', args: { command: 'ls' } }])
     expect(result.finishReason).toBe('tool-calls')
   })
 
@@ -301,14 +301,14 @@ describe('归一 · 思考与工具调用', () => {
       normalize([
         { type: 'start' },
         { type: 'tool-input-start', id: 'call-x', toolName: 'exec' },
-        { type: 'tool-input-delta', id: 'call-x', delta: '{"cmd": ' },
+        { type: 'tool-input-delta', id: 'call-x', delta: '{"command": ' },
         finishPart('tool-calls'),
       ]),
     )
 
     // `rawArgs` 是 U84 加的（缺陷 D42）：判据一并**收紧**——坏在哪一串要拿得出来
     expect(result.toolCalls).toEqual([
-      { id: 'call-x', name: 'exec', args: {}, invalid: true, rawArgs: '{"cmd": ' },
+      { id: 'call-x', name: 'exec', args: {}, invalid: true, rawArgs: '{"command": ' },
     ])
   })
 
@@ -320,7 +320,7 @@ describe('归一 · 思考与工具调用', () => {
         { type: 'tool-input-start', id: 'call-none', toolName: 'ls' },
         // 给了：片段攒下了，JSON 断在半路
         { type: 'tool-input-start', id: 'call-bad', toolName: 'exec' },
-        { type: 'tool-input-delta', id: 'call-bad', delta: '{"cmd": "ls ' },
+        { type: 'tool-input-delta', id: 'call-bad', delta: '{"command": "ls ' },
         finishPart('tool-calls'),
       ]),
     )
@@ -328,7 +328,7 @@ describe('归一 · 思考与工具调用', () => {
     // 没给 ⇒ 不是坏参数、没有原文；给了但不成形 ⇒ 坏参数 ＋ 原文在
     expect(result.toolCalls).toEqual([
       { id: 'call-none', name: 'ls', args: {}, invalid: true },
-      { id: 'call-bad', name: 'exec', args: {}, invalid: true, rawArgs: '{"cmd": "ls ' },
+      { id: 'call-bad', name: 'exec', args: {}, invalid: true, rawArgs: '{"command": "ls ' },
     ])
   })
 
@@ -348,7 +348,7 @@ describe('归一 · 思考与工具调用', () => {
   })
 
   test('原文按上限截断，且截断处**写明还有多长**（别让人以为到那儿就完了）', async () => {
-    const long = `{"cmd": "${'x'.repeat(3000)}"}`
+    const long = `{"command": "${'x'.repeat(3000)}"}`
     const { result } = await drain(
       normalize([
         { type: 'start' },
@@ -359,7 +359,7 @@ describe('归一 · 思考与工具调用', () => {
     )
 
     const raw = result.toolCalls?.[0]?.rawArgs ?? ''
-    expect(raw.startsWith('{"cmd": "xxx')).toBe(true)
+    expect(raw.startsWith('{"command": "xxx')).toBe(true)
     expect(raw.endsWith('…（原文共 2501 字，已截断）')).toBe(true)
     expect(raw.length).toBe(2000 + '…（原文共 2501 字，已截断）'.length)
   })
@@ -1443,7 +1443,7 @@ describe('假端点回环 · 流式事件序列', () => {
           {
             role: 'assistant',
             content: '',
-            toolCalls: [{ id: 'call_1', name: 'exec', args: { cmd: 'ls' } }],
+            toolCalls: [{ id: 'call_1', name: 'exec', args: { command: 'ls' } }],
           },
           // 共享语言的工具消息：`callId` 是**供应商侧**调用 id；工具名由上文的 assistant 消息推出
           { role: 'tool', callId: 'call_1', name: 'exec', ok: true, output: 'a.ts\nb.ts' },
@@ -1460,7 +1460,7 @@ describe('假端点回环 · 流式事件序列', () => {
           {
             id: 'call_1',
             type: 'function',
-            function: { name: 'exec', arguments: '{"cmd":"ls"}' },
+            function: { name: 'exec', arguments: '{"command":"ls"}' },
           },
         ],
       },
@@ -1490,7 +1490,7 @@ describe('假端点回环 · 流式事件序列', () => {
           {
             role: 'assistant',
             content: '',
-            toolCalls: [{ id: 'call_9', name: 'exec', args: { cmd: 'nope' } }],
+            toolCalls: [{ id: 'call_9', name: 'exec', args: { command: 'nope' } }],
           },
           { role: 'tool', callId: 'call_9', name: 'exec', ok: false, output: 'command not found' },
         ],
@@ -1503,7 +1503,7 @@ describe('假端点回环 · 流式事件序列', () => {
         role: 'assistant',
         content: null,
         tool_calls: [
-          { id: 'call_9', type: 'function', function: { name: 'exec', arguments: '{"cmd":"nope"}' } },
+          { id: 'call_9', type: 'function', function: { name: 'exec', arguments: '{"command":"nope"}' } },
         ],
       },
       { role: 'tool', content: 'command not found', tool_call_id: 'call_9' },
@@ -1520,7 +1520,7 @@ describe('假端点回环 · 流式事件序列', () => {
               delta: {
                 role: 'assistant',
                 tool_calls: [
-                  { index: 0, id: 'call_1', function: { name: 'exec', arguments: '{"cmd":' } },
+                  { index: 0, id: 'call_1', function: { name: 'exec', arguments: '{"command":' } },
                 ],
               },
             },
@@ -1552,7 +1552,7 @@ describe('假端点回环 · 流式事件序列', () => {
       {
         name: 'exec',
         summary: '在工作目录里执行命令',
-        parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] },
+        parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
         danger: { level: 'by-call', note: '按命令解析' },
       },
     ]
@@ -1581,7 +1581,7 @@ describe('假端点回环 · 流式事件序列', () => {
     // toolcall 增量一律带**供应商侧调用 id**（渲染侧据以按调用分组）
     expect([...toolcallIds]).toEqual(['call_1'])
 
-    expect(result.toolCalls).toEqual([{ id: 'call_1', name: 'exec', args: { cmd: 'ls' } }])
+    expect(result.toolCalls).toEqual([{ id: 'call_1', name: 'exec', args: { command: 'ls' } }])
     expect(result.finishReason).toBe('tool-calls')
     expect(events.at(-1)?.kind).toBe('model.call.end')
 

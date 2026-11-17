@@ -8,12 +8,25 @@ struct SettingsCallResult: Codable {
     let note: String?
     let snapshot: SettingsSnapshot?
     let error: String?
+    /// Models.dev 检索的答复（`{ matches, note? }`）——只有检索请求才带。
+    var modelsDev: SettingsValue? = nil
 }
 
 enum SettingsCall {
     static func run(metadataURL: URL, request: SettingsValue, environment: [String: String]) async throws -> SettingsCallResult {
         let metadata = try SettingsFile.read(metadataURL.path)
         let settings = try NativeSettings(request: request, metadata: metadata, environment: environment)
+        // 检索 Models.dev（手动对位）——**只读本地资料**：不改配置、不联网兜底。
+        if let search = request.object["modelsDevSearch"] {
+            let query = search["query"].text
+            let matches = settings.models.searchModelsDev(query: query, limit: Int(search["limit"].number ?? 20))
+            let note = settings.models.modelsDevSnapshot() == nil
+                ? "尚未获取 Models.dev 资料；请先在任一连接上刷新模型列表与资料"
+                : matches.isEmpty ? "没有匹配「\(query.trimmingCharacters(in: .whitespacesAndNewlines))」的型号" : nil
+            return SettingsCallResult(request: request["request"].text, base: request["base"].text, configPath: request["configPath"].text,
+                saved: false, note: nil, snapshot: nil, error: nil,
+                modelsDev: .object(["matches": .array(matches), "note": note.map(SettingsValue.string) ?? .null]))
+        }
         return await perform(request: request, apply: settings.apply, read: {
             if let raw = try? SettingsFile.read(settings.path) { _ = await settings.models.refreshMetadata(Array(raw["providers"].object.values)) }
             return try settings.read(preview: request.object["preview"])

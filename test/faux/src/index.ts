@@ -18,7 +18,7 @@
  * const stamper = makeTestStamper()
  * const gateway = createFauxGateway({
  *   stamper,
- *   turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'ls' } }] }, { text: '跑完了' }],
+ *   turns: [{ toolCalls: [{ name: 'exec', args: { command: 'ls' } }] }, { text: '跑完了' }],
  * })
  * const { events, result } = await drainStream(gateway.stream(request))
  * ```

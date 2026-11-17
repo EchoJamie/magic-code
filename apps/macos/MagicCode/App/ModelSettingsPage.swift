@@ -270,7 +270,7 @@ private struct ModelCatalogStatus: View {
         let metadata = entry["metadata"]
         VStack(alignment: .leading, spacing: 6) {
             if cache["snapshot"] == .null {
-                Text(snapshot.configuration["providers"][provider]["vendor"].text.isEmpty ? "自定义连接可直接手动填写模型，无需模型列表接口。" : "尚未获取模型列表；可刷新列表或手动填写精确型号。")
+                Text("尚未获取模型列表；可刷新列表或手动填写精确型号。")
             } else {
                 Text("已缓存 \(cache["snapshot"]["models"].array.count) 个型号 · \(cache["stale"].flag ? "已过期" : "未过期")")
                 if let ms = cache["snapshot"]["fetchedAt"].number {
@@ -656,6 +656,7 @@ struct OverrideForm: View {
     @State private var clear = false
     @State private var informationExpanded = false
     @State private var validation: String?
+    @State private var modelsDevQuery = ""
     private var key: String { "override-\(provider)-\(selected)" }
     var body: some View {
         SettingsSheet(title: "型号规格与覆盖", subtitle: providerName(provider, in: snapshot) + " · " + provider, icon: "slider.horizontal.3") {
@@ -663,7 +664,10 @@ struct OverrideForm: View {
         } footer: {
             footer
         }
-        .onAppear { informationExpanded = !draft.value.object.isEmpty }
+        .onAppear {
+            informationExpanded = !draft.value.object.isEmpty
+            model.clearModelsDevSearch()
+        }
     }
     private var content: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -677,6 +681,40 @@ struct OverrideForm: View {
                     "供应商模型列表 · " + Date(timeIntervalSince1970: $0 / 1000).formatted(date: .abbreviated, time: .shortened) + (cache["stale"].flag ? " · 缓存已过期" : "")
                 } ?? "尚未获取供应商模型列表") + (info["metadata"] == .null ? "" : "；Models.dev（\(info["metadata"]["provider"].text)）· 资料更新 \(info["metadata"]["updatedAt"].text)"))
                 ModelCatalogStatus(model: model, snapshot: snapshot, provider: provider)
+                SettingsCard(title: "从 Models.dev 载入资料") {
+                    Text("自定义渠道的型号名常和公共目录对不上：按名字找一条，把它给出的规格与能力填进下面的用户覆盖。型号名不改，保存前仍可逐项修改。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        TextField("型号名或供应商，如 qwen-flash", text: $modelsDevQuery)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { model.searchModelsDev(modelsDevQuery) }
+                            .accessibilityIdentifier("settings-models-dev-search")
+                        Button("检索") { model.searchModelsDev(modelsDevQuery) }
+                            .disabled(modelsDevQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.settingsBusy || model.modelsDevBusy)
+                    }
+                    if model.modelsDevBusy {
+                        HStack(spacing: 6) { ProgressView().controlSize(.small); Text("正在检索…") }
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if let note = model.modelsDevNote {
+                        Text(note).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                    ForEach(Array(model.modelsDevMatches.enumerated()), id: \.offset) { _, match in
+                        Button { applyModelsDev(match) } label: {
+                            HStack(spacing: 10) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(match["name"].text.isEmpty ? match["model"].text : match["name"].text).font(.callout.weight(.medium))
+                                    Text("\(match["provider"].text) · \(match["model"].text)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                }
+                                Spacer()
+                                Text(modelsDevSpecText(match)).font(.caption2).foregroundStyle(.secondary)
+                                Image(systemName: "arrow.down.circle").foregroundStyle(MagicStyle.accent)
+                            }
+                            .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(MagicStyle.canvas, in: RoundedRectangle(cornerRadius: 8))
+                            .contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                    }
+                }.disabled(model.settingsBusy)
                 SettingsCard(title: "用户覆盖 · 上下文与能力") {
                     Text("令牌上限逐项覆盖；留空继承原始资料。数值须为正整数。").font(.caption).foregroundStyle(.secondary)
                     ForEach([("maxInputTokens", "输入上限"), ("maxOutputTokens", "输出上限"), ("maxContextTokens", "联合窗口")], id: \.0) { key, label in
@@ -760,6 +798,25 @@ struct OverrideForm: View {
         .onChange(of: model.settingsSavedKey) { _, saved in if saved == key { self.saved?(); cancel() } }
     }
     private func cancel() { drafts.discard(key); close() }
+    /// 把一条 Models.dev 候选的资料填进草稿：**整组替换**那三块（型号名与外层资料不动），
+    /// 保存前用户仍可逐项改。
+    private func applyModelsDev(_ match: SettingsValue) {
+        let limits = match["limits"].object.filter { ["maxInputTokens", "maxOutputTokens", "maxContextTokens"].contains($0.key) }
+        draft.put("limits", limits.isEmpty ? .null : .object(limits))
+        let capabilities = match["capabilities"].object.filter { ["chat", "image", "tools"].contains($0.key) }
+        draft.put("capabilities", capabilities.isEmpty ? .null : .object(capabilities))
+        let reasoning = match["reasoning"].object
+        draft.put("reasoningSupport", reasoning.isEmpty ? .null : .object(reasoning))
+        informationExpanded = true
+    }
+    /// 候选那一行右边那句：窗口 / 上限 / 思考档位——手上有才报。
+    private func modelsDevSpecText(_ match: SettingsValue) -> String {
+        let limits = match["limits"]
+        let numbers = [("maxContextTokens", "窗口"), ("maxOutputTokens", "输出"), ("maxInputTokens", "输入")]
+        return numbers.compactMap { key, label in
+            limits[key].number.map { value in "\(label) \(value.formatted(.number.grouping(.never).precision(.fractionLength(0))))" }
+        }.joined(separator: " · ")
+    }
     private func nestedNumber(_ group: String, _ key: String) -> Binding<String> {
         Binding(get: {
             let value = group == "reasoningSupport.budget" ? draft.value["reasoningSupport"]["budget"][key] : draft.value[group][key]

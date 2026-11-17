@@ -150,7 +150,7 @@ describe('提炼面', () => {
               delta: {
                 role: 'assistant',
                 tool_calls: [
-                  { index: 0, id: 'call_x', type: 'function', function: { name: 'exec', arguments: '{"cmd":"curl https://example.com"}' } },
+                  { index: 0, id: 'call_x', type: 'function', function: { name: 'exec', arguments: '{"command":"curl https://example.com"}' } },
                 ],
               },
             },

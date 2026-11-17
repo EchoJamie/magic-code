@@ -27,7 +27,7 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
     const event = { id: 0, turn: null, at: Date.now(), session, kind, data } as KernelEvent
     for (const listener of listeners) listener(event)
   }
-  const local = new Set<Command['type']>(['model.list', 'provider.list', 'provider.save', 'provider.remove', 'model.configure', 'model.override', 'model.refresh', 'prefs.set', 'web.list', 'web.configure'])
+  const local = new Set<Command['type']>(['model.list', 'provider.list', 'provider.save', 'provider.remove', 'model.configure', 'model.override', 'model.refresh', 'models.search', 'prefs.set', 'web.list', 'web.configure'])
   if (settingsOnly) local.add('mcp.list')
   async function handle(command: Command) {
     // 读的是盘上配置——**不建网络环境**（浏览不发起网页或模型调用）。
@@ -44,6 +44,18 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
       const config = loadConfig({ magic }).config
       emit('mcp.catalog', { servers: Object.entries(config.mcp?.servers ?? {}).map(([server, config]) => ({ server,
         transport: 'url' in config ? 'http' : 'stdio', state: { status: 'idle' }, tools: [], rejected: [] })), note: '本地配置；未连接 Engine 或外部服务器' })
+      return
+    }
+    if (command.type === 'models.search') {
+      // 检索 Models.dev 的型号（手动对位）——**只读本地资料**；一份都没有时才按 TTL 取一次。
+      // 不改配置：挑中的那条抄进用户覆盖，仍走 `model.override`。
+      const network = createWorkEnvironment(environment)
+      try {
+        const settings = createSettings({ magic, environment: network.env, fetch: network.fetch })
+        emit('models.search', { query: command.query, ...(await settings.searchModelsDev(command.query)) })
+      } catch (error) {
+        emit('models.search', { query: command.query, matches: [], note: error instanceof Error ? error.message : String(error) })
+      } finally { await network.close() }
       return
     }
     const network = createWorkEnvironment(environment)

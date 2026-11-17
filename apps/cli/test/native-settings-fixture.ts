@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { SettingsAction, SettingsPreview, SettingsSnapshot } from '@magic/contracts'
 
-type Request = { request: string; home: string; base: string; configPath: string; stamp?: string | null; action?: SettingsAction; preview?: SettingsPreview }
-type Result = { request: string; base: string; configPath: string; saved: boolean; note?: string; snapshot?: SettingsSnapshot; error?: string }
+type Request = { request: string; home: string; base: string; configPath: string; stamp?: string | null; action?: SettingsAction; preview?: SettingsPreview; modelsDevSearch?: { query: string; limit?: number } }
+type Result = { request: string; base: string; configPath: string; saved: boolean; note?: string; snapshot?: SettingsSnapshot; error?: string; modelsDev?: { matches: readonly Record<string, unknown>[]; note?: string } }
 export const nativeModelsDevCatalog = {
   deepseek: { api: 'https://api.deepseek.com', models: { 'deepseek-flash': { id: 'deepseek-flash', reasoning_options: [{ type: 'toggle' }, { type: 'effort', values: ['low', 'high', 'max'] }] } } },
   'minimax-cn': { api: 'https://api.minimax.cn/anthropic/v1', models: { 'MiniMax-M3.1-Flash': { id: 'MiniMax-M3.1-Flash', limit: { context: 1_000_000, output: 512_000 }, modalities: { input: ['text', 'image'], output: ['text'] }, tool_call: true, reasoning_options: [{ type: 'effort', values: ['low', 'medium', 'high', 'xhigh', 'max'] }] } } },

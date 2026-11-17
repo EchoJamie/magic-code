@@ -28,7 +28,7 @@
  */
 
 import { configFingerprintOf, type ConfigFingerprint } from '@magic/state'
-import type { ModelCacheAccess, ProviderConfig } from '@magic/contracts'
+import type { ModelCacheAccess, ProviderAuth, ProviderConfig } from '@magic/contracts'
 
 /**
  * 算一条连接的**接入身份**。
@@ -57,11 +57,16 @@ export function cacheAccessFor(input: {
   readonly configPath: string
   /** 该连接写在配置里的 `apiKey`（**不落盘、不进身份**，只用来判「从哪来」）。 */
   readonly apiKey?: string | undefined
+  /**
+   * 该连接的认证方式——**无需认证**的连接没有凭据可随行，配置指纹就够当身份
+   * （本地 / 局域网服务也能跨进程记住列表；文件名里仍然只有指纹，没有凭据）。
+   */
+  readonly auth?: ProviderAuth | undefined
   /** 本进程的唯一值（环境变量来源用）。 */
   readonly processToken: string
 }): ModelCacheAccess {
   const fromFile =
-    input.apiKey !== undefined && input.apiKey.trim().length > 0
+    (input.apiKey !== undefined && input.apiKey.trim().length > 0) || input.auth === 'none'
       ? configFingerprintOf(input.configPath)
       : undefined
 

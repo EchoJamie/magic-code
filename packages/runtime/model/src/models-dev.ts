@@ -1,4 +1,4 @@
-import type { ModelInfo, ProviderConfig, ReasoningSupport } from '@magic/contracts'
+import type { ModelInfo, ModelsDevMatch, ProviderConfig, ReasoningSupport } from '@magic/contracts'
 import { vendorOf } from './vendors.ts'
 
 export const MODELS_DEV_URL = 'https://models.dev/api.json'
@@ -79,8 +79,64 @@ export function parseModelsDev(data: unknown): ModelsDevCatalog {
   return providers
 }
 
-/** 官方适配的区域别名只用于资料归属，不改写连接或精确型号。自定义服务须匹配完整地址。 */
-export function modelsDevProvider(config: ProviderConfig, catalog: ModelsDevCatalog): string | undefined {
+/**
+ * **按名字检索 Models.dev 的型号**——用户手动对位自己那条连接（自定义渠道常改型号写法）。
+ *
+ * 判的是**名字**，不是「它就是同一个型号」：命中只说明这一条可以抄过来看看，抄进
+ * 用户覆盖的是**我们这条连接的原始型号**（调用方自己填），不是这里给的那一串。
+ *
+ * 排序（稳定、不猜语义）：型号 id 完全相同 → id 前缀 → id 含查询 → 名称含查询 →
+ * 供应商名含查询；同档按供应商、型号 id 排，最后截到 `limit`。
+ * 空查询不返回任何东西（不做「列全部」——那是一张几千行的表，不是检索结果）。
+ */
+export function searchModelsDev(
+  catalog: ModelsDevCatalog,
+  query: string,
+  limit = 20,
+): readonly ModelsDevMatch[] {
+  const wanted = query.trim().toLowerCase()
+  if (wanted.length === 0 || limit <= 0) return []
+
+  const ranked: { readonly rank: number; readonly provider: string; readonly model: ModelInfo }[] = []
+  for (const [provider, entry] of Object.entries(catalog)) {
+    const providerHit = provider.toLowerCase().includes(wanted)
+    for (const model of Object.values(entry.models)) {
+      const id = model.id.toLowerCase()
+      const name = model.name?.toLowerCase() ?? ''
+      const rank = id === wanted ? 0 : id.startsWith(wanted) ? 1 : id.includes(wanted) ? 2 : name.includes(wanted) ? 3 : providerHit ? 4 : undefined
+      if (rank === undefined) continue
+      ranked.push({ rank, provider, model })
+    }
+  }
+
+  return ranked
+    .sort((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank
+      const providerA = a.provider.toLowerCase(), providerB = b.provider.toLowerCase()
+      if (providerA !== providerB) return providerA < providerB ? -1 : 1
+      const idA = a.model.id.toLowerCase(), idB = b.model.id.toLowerCase()
+      return idA === idB ? 0 : idA < idB ? -1 : 1
+    })
+    .slice(0, limit)
+    .map(modelsDevMatchOf)
+}
+
+/** 检索结果 → **能直接填进用户覆盖**的那一形（只带消费的几格，不带目录里的地址之类）。 */
+export function modelsDevMatchOf(entry: { readonly provider: string; readonly model: ModelInfo }): ModelsDevMatch {
+  const model = entry.model
+  return {
+    provider: entry.provider,
+    model: model.id,
+    ...(model.name === undefined ? {} : { name: model.name }),
+    ...(model.description === undefined ? {} : { description: model.description }),
+    ...(model.limits === undefined ? {} : { limits: model.limits }),
+    ...(model.capabilities === undefined ? {} : { capabilities: model.capabilities }),
+    ...(model.reasoning === undefined ? {} : { reasoning: model.reasoning }),
+    ...(model.metadata?.updatedAt === undefined ? {} : { updatedAt: model.metadata.updatedAt }),
+  }
+}
+
+/** 官方适配的区域别名只用于资料归属，不改写连接或精确型号。自定义服务须匹配完整地址。 */export function modelsDevProvider(config: ProviderConfig, catalog: ModelsDevCatalog): string | undefined {
   const base = config.vendor === undefined ? config.baseURL : vendorOf(config.vendor)?.baseURLOf(config, 'chat-completions')
   if (!base) return undefined
   const normalized = base.replace(/\/+$/, '')

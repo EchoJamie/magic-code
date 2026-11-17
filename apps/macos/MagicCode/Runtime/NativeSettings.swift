@@ -63,7 +63,7 @@ final class NativeSettings {
             do { try await models.refresh(action["provider"].text, config: config, stamp: stamp) } catch { listFailure = error.localizedDescription }
             let failures = await [listFailure, metadataFailure].compactMap { $0 }
             if !failures.isEmpty { throw WireError.invalid(failures.joined(separator: "；")) }
-            return models.vendor(config) == nil ? "Models.dev 资料已刷新；未发起模型调用" : "模型列表与 Models.dev 资料已刷新；未发起模型调用"
+            return "模型列表与 Models.dev 资料已刷新；未发起模型调用"
         }
         let snapshots = raw["providers"].object.compactMap { id, config in models.snapshot(id, config: config, stamp: stamp).map { (id, config, $0) } }
         try SettingsFile.edit(path, expected: stamp) { current in

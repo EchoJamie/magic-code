@@ -139,6 +139,8 @@ export type EventKind =
   | 'plan.changed'
   // 控制 · 模型——**读侧命令（`model.list`）的答复**：连接与模型信息缓存的一屏；**不落库**
   | 'model.catalog'
+  // 控制 · 模型——**Models.dev 检索的答复**（手动对位用）；**不落库**
+  | 'models.search'
   // 控制 · 供应商——**管理面的读侧答复**（U41）：`provider.list` / 保存 / 移除的回话；**不落库**
   | 'provider.catalog'
   // session——会话面（阶段 2 · U16）：此刻有哪些会话、当前在哪条；**不落库**
@@ -764,6 +766,16 @@ export type EventDataOf = {
     /** 一句话说明——只在有事要说时给（如「本次装配没有供应商注册表」）。不给＝表自明。 */
     readonly note?: string
   }
+  // 控制 · 模型——**Models.dev 检索的答复**（`models.search`）。
+  // **不落库**：与 `model.catalog` 同一条理由——它是**读出来的**（资料就在盘上），
+  // 且是边问边看的动作（每改一个字问一次），留痕只会把观测淹掉。
+  'models.search': {
+    readonly query: string
+    /** 候选（按名字对得上的那些）。空表 ＋ `note` ＝ 没有资料或没对上。 */
+    readonly matches: readonly import('../shared/model.ts').ModelsDevMatch[]
+    /** 一句话说明——资料从哪来 / 为什么空（缺缓存、刷新失败、模型没匹配上）。 */
+    readonly note?: string
+  }
   // 控制 · 供应商——**管理面的读侧答复**（U41）：`provider.list` 的答复，以及
   // `provider.save` / `provider.remove` 之后的回话（照 `mcp.reconnect` 之于 `mcp.catalog`
   // 的姿势——动作的**结果**就是那一屏的新状态，不另立一条「保存成功」）。
@@ -1085,6 +1097,8 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // 是**反复看**的动作（原型里就是拿它当选择器），每次按一下往库里留一笔「问过」
   // 只会污染观测。重放要的是「换过什么模型」（`model.switched` 落着），不是「看过几眼」。
   'model.catalog',
+  // Models.dev 检索同列的理由：同上——资料在盘上，检索是边问边看的动作。
+  'models.search',
   // 技能目录同列的理由（U33 · 终端入口）：与 `model.catalog` 同一条——它是**读出来的**
   // （技能目录本来就在盘上），落库＝把同一张表存 N 遍；且 `/skills` 是**反复看**的动作
   // （选择器），每按一下留一笔「问过」只会污染观测。当时到底用了哪一份材料**另有痕**

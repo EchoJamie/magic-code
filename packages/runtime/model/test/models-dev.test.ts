@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { mergeModelInfo, modelsDevProvider, parseModelsDev } from '../src/models-dev.ts'
+import { mergeModelInfo, modelsDevProvider, parseModelsDev, searchModelsDev } from '../src/models-dev.ts'
 import { createModelInfoService, modelSpecOf } from '../src/model-info.ts'
 import { selectModel } from '../src/selection.ts'
 
@@ -58,4 +58,31 @@ test('读取时补充精确型号，原始列表不增加条目；供应商逐�
 test('接口明确给出的思考字段优先，其余字段保留目录值', () => {
   expect(mergeModelInfo(id, { id, reasoning: { levels: ['high'], disable: false } }, { id, reasoning: { levels: ['low', 'high'], disable: true, budget: { minTokens: 10 } } })?.reasoning)
     .toEqual({ levels: ['high'], disable: false, budget: { minTokens: 10 } })
+})
+
+test('手动检索：按名字排序取候选，只带能填进用户覆盖的那几格', () => {
+  const catalog = parseModelsDev({
+    alibaba: { api: 'https://dashscope.example/v1', models: {
+      'qwen-flash': { id: 'qwen-flash', name: 'Qwen Flash', limit: { context: 128_000, output: 8_192 }, modalities: { input: ['text'], output: ['text'] }, tool_call: true, last_updated: '2026-09-01' },
+      'qwen-max': { id: 'qwen-max' },
+      'glm-4': { id: 'glm-4' },
+    } },
+    zhipu: { models: { 'GLM-4-Air': { id: 'GLM-4-Air', name: '空气' } } },
+  })
+
+  // 大小写不敏感；同档按供应商、型号 id 排（前缀命中优先于名称 / 供应商名命中）
+  expect(searchModelsDev(catalog, 'glm').map(one => `${one.provider}/${one.model}`)).toEqual(['alibaba/glm-4', 'zhipu/GLM-4-Air'])
+  expect(searchModelsDev(catalog, 'air').map(one => `${one.provider}/${one.model}`)).toEqual(['zhipu/GLM-4-Air'])
+  // 显示名也能找到；结果带规格与更新时间
+  const flash = searchModelsDev(catalog, 'flash')[0]!
+  expect(flash).toEqual({
+    provider: 'alibaba', model: 'qwen-flash', name: 'Qwen Flash',
+    limits: { maxContextTokens: 128_000, maxOutputTokens: 8_192 },
+    capabilities: { chat: true, image: false, tools: true },
+    updatedAt: '2026-09-01',
+  })
+  // 空查询 / 取不到都不拿「全部型号」顶上
+  expect(searchModelsDev(catalog, '   ')).toEqual([])
+  expect(searchModelsDev(catalog, 'nothing-here')).toEqual([])
+  expect(searchModelsDev(catalog, 'qwen', 1)).toHaveLength(1)
 })

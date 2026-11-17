@@ -1838,7 +1838,7 @@ extension NativeTests {
         guard case .memory(let request, let session, _) = messages.requests.last else { return XCTFail("缺少真实读取命令") }
         let source = MemorySource(session: "one", entry: 1)
         let path = "主题/中文笔记.md"
-        let snapshot = NoteState(directory: "/isolated/notes", path: path, status: "ready", files: [path], page: NotePage(session: session, path: path, absolute: "/isolated/notes/" + path, text: "完整正文 👩🏽‍💻 é", from: 1, through: 1, totalLines: 1, complete: true, next: nil, cursor: "opaque", links: []))
+        let snapshot = NoteState(directory: "/isolated/notes", path: path, status: "ready", files: [path], page: NotePage(session: session, path: path, absolute: "/isolated/notes/" + path, text: "完整正文 👩🏽‍💻 é", from: 1, through: 3, totalLines: 3, complete: true, next: nil, cursor: "opaque", links: []))
         model.receive(.memoryResult(request: request, serviceInstance: testIdentity.serviceInstance, session: session, notes: snapshot, material: nil, error: nil))
         XCTAssertEqual(model.memory, snapshot)
         model.readSource(source, path: path)
@@ -1863,13 +1863,13 @@ extension NativeTests {
         try catalog(model, messages, [sessionRow()])
         model.selection = ["one"]; model.choose(); model.memoryExpanded = true; model.readMemory()
         guard case .memory(let request, let session, _) = messages.requests.last else { return XCTFail("缺少笔记读取命令") }
-        let page = NotePage(session: session, path: "MEMORY.md", absolute: "/isolated/notes/MEMORY.md", text: "旧片段 👩🏽‍💻 é", from: 1, through: 11, totalLines: 100, complete: false, next: 12, cursor: "host-cursor", links: [])
+        let page = NotePage(session: session, path: "MEMORY.md", absolute: "/isolated/notes/MEMORY.md", text: "旧片段 👩🏽‍💻 é", from: 1, through: 4, totalLines: 30, complete: false, next: 5, cursor: "host-cursor", links: [])
         let notes = NoteState(directory: "/isolated/notes", path: page.path, status: "ready", files: [page.path], page: page)
         model.receive(.memoryResult(request: request, serviceInstance: testIdentity.serviceInstance, session: session, notes: notes, material: nil, error: nil))
         XCTAssertFalse(messages.requests.contains { if case .knowledge = $0 { return true }; return false })
         model.nextNote()
         guard case .memory(let continuation, _, let query) = messages.requests.last else { return XCTFail("缺少笔记续读命令") }
-        XCTAssertEqual(query, NoteReadQuery(path: "MEMORY.md", from: 12, cursor: "host-cursor"))
+        XCTAssertEqual(query, NoteReadQuery(path: "MEMORY.md", from: 5, cursor: "host-cursor"))
         model.receive(.memoryResult(request: continuation, serviceInstance: testIdentity.serviceInstance, session: session,
             notes: NoteState(directory: notes.directory, path: page.path, status: "changed", files: notes.files, page: nil), material: nil, error: nil))
         XCTAssertEqual(model.memory?.page?.text, page.text)
@@ -1929,7 +1929,7 @@ extension NativeTests {
         model.selection = ["one"]; model.choose(); model.showDetail(); model.memoryExpanded = true; model.readMemory()
         guard case .memory(let request, let session, _) = messages.requests.last else { return XCTFail("缺少读取命令") }
         let path = "主题/长中文工作笔记 👩🏽‍💻 é.md"
-        let page = NotePage(session: session, path: path, absolute: "/isolated/notes/" + path, text: String(repeating: "已验证的结果与尚未确认的边界。", count: 20), from: 1, through: 1, totalLines: 1, complete: true, next: nil, cursor: "opaque", links: [NoteLink(kind: "source", label: "原始交代", source: MemorySource(session: "one", entry: 1))])
+        let page = NotePage(session: session, path: path, absolute: "/isolated/notes/" + path, text: String(repeating: "已验证的结果与尚未确认的边界。", count: 20), from: 1, through: 6, totalLines: 6, complete: true, next: nil, cursor: "opaque", links: [NoteLink(kind: "source", label: "原始交代", source: MemorySource(session: "one", entry: 1))])
         model.receive(.memoryResult(request: request, serviceInstance: testIdentity.serviceInstance, session: session, notes: NoteState(directory: "/isolated/notes", path: path, status: "ready", files: [path], page: page), material: nil, error: nil))
         model.memoryFocus = "link:0"
         for (width, appearance) in [(980.0, NSAppearance.Name.aqua), (460.0, .darkAqua)] {

@@ -179,7 +179,7 @@ export async function readModelCatalog(loaded: LoadedConfig, magic: MagicHome, s
   const info = providedInfo ?? createModelInfoService({
     connections: () => Object.entries(providers).map(([providerId, config]) => ({
       ...resolveConnection({ providerId, config }),
-      access: cacheAccessFor({ provider: providerId, configPath: loaded.path, apiKey: config.apiKey, processToken }),
+      access: cacheAccessFor({ provider: providerId, configPath: loaded.path, apiKey: config.apiKey, auth: config.auth, processToken }),
     })),
     cache: createFileModelInfoCache(magic.base), now, fetch: globalThis.fetch,
     metadata: createModelsDevResource(magic.base, globalThis.fetch, now),

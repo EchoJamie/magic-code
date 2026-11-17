@@ -31,7 +31,7 @@ import {
 } from '../src/index.ts'
 
 /** 一个合法的工具调用——桩大多不关心内容，给个可读的。 */
-const CALL: ToolCall = { id: 'call_1', name: 'exec', args: { cmd: 'ls' } }
+const CALL: ToolCall = { id: 'call_1', name: 'exec', args: { command: 'ls' } }
 
 // ═══════════════════════════════════════════════════════════════════════
 // 记录域
@@ -273,7 +273,7 @@ describe('makeFauxToolRuntime', () => {
   test('invoke 走注册的处理器——按工具名分派', async () => {
     const tools = makeFauxToolRuntime({
       definitions: [EXEC_SPEC],
-      handlers: { exec: (call) => ({ ok: true, output: `跑了 ${String(call.args.cmd)}` }) },
+      handlers: { exec: (call) => ({ ok: true, output: `跑了 ${String(call.args.command)}` }) },
     })
 
     const result = await tools.invoke(CALL, {})

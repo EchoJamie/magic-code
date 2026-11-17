@@ -1160,7 +1160,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       }
     }
 
-    if (event.kind === 'model.catalog' || event.kind === 'provider.catalog') {
+    if (event.kind === 'model.catalog' || event.kind === 'provider.catalog' || event.kind === 'models.search') {
       models.receive(event)
     }
     // 连接表后到也得把网页选择器的候选补齐（`/web` 同时问了 `model.list` 与 `web.list`）。
