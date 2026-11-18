@@ -30,6 +30,8 @@ import { assertIdentity } from './workspace.ts'
 /** 装配期构造入参（技术方案 · 领域划分 · 装配视图 2：执行域——工作区根注册）。 */
 export type SandboxOptions = {
   readonly env?: Readonly<Record<string, string>>
+  /** 执行命令的 shell——用户的 shell（`$SHELL`）；缺省 `sh`。前台与后台同一路。 */
+  readonly shell?: string
 
   /** 工作区端口提供路径事实与默认根。 */
   readonly workspace: WorkspaceService
@@ -127,6 +129,7 @@ export function createSandbox(options: SandboxOptions): Sandbox {
           }
           const result = await runCommand(cmd, {
             env: options.env,
+            shell: options.shell,
             cwd,
             cwdFile: join(tmpdir(), `magic-cwd-${randomUUID()}`),
             timeoutMs: timeoutBoundOf(opts.timeoutMs),

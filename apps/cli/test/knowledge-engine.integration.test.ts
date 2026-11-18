@@ -91,7 +91,7 @@ test('真实Engine查询/证据/遗忘/重连回查不启动Agent，停止发现
     const events: KernelEvent[] = []
     const service = createConversationSession({ session: 'original', records: resumedRecords, knowledge: store.knowledge,
       stamper, gateway, tools: makeFauxToolRuntime(), sink: { emit(event) { events.push(event) } },
-      prompt: { cwd: workspace, platform: 'darwin', date: '2026-10-26' },
+      prompt: { cwd: workspace, shell: '/bin/sh', platform: 'darwin', date: '2026-10-26' },
     })
     try {
       service.submit({ text: '明确继续核对当前工作' })

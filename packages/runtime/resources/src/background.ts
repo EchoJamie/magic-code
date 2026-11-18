@@ -82,6 +82,8 @@ const KEPT_FINISHED = 32
 /** 装配期构造入参（技术方案 · 领域划分 · 装配视图 2：执行域——工作区根注册）。 */
 export type BackgroundOptions = {
   readonly env?: Readonly<Record<string, string>>
+  /** 执行命令的 shell——与前台同一路（见 `CommandOptions.shell`）。缺省 `sh`。 */
+  readonly shell?: string
   readonly signal?: AbortSignal
 
   /**
@@ -254,7 +256,7 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRegi
       let commandExited: Promise<number | null>
       let proc: Bun.Subprocess<'pipe', number, number>
       try {
-        const started = await spawnOwned([SHELL, '-c', cmd], {
+        const started = await spawnOwned([options.shell ?? SHELL, '-c', cmd], {
           cwd, env: options.env, signal: options.signal, ledger: options.ledger,
           stdout: fd, stderr: fd, kind: 'background',
           what: `exec(bg):${cmd.split('\n', 1)[0]?.trim().slice(0, LEDGER_WHAT_CHARS) ?? ''}`,

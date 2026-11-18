@@ -63,7 +63,7 @@ describe('ConversationService · 公开面', () => {
 
     let thrown: unknown
     try {
-      createConversationSession(depsOf(stage, { prompt: { cwd: '  ', platform: 'darwin', date: '2026-09-18' } }))
+      createConversationSession(depsOf(stage, { prompt: { cwd: '  ', shell: '/bin/sh', platform: 'darwin', date: '2026-09-18' } }))
     } catch (error) {
       thrown = error
     }

@@ -33,7 +33,7 @@ test('分离思考经真实记录库、工具回填和会话重建后逐字段�
       },
     })
     const session = createConversationSession({ session: 's1',
-      prompt: { cwd: dir, platform: 'test', date: '2026-10-07' },
+      prompt: { cwd: dir, shell: '/bin/sh', platform: 'test', date: '2026-10-07' },
       gateway, stamper, sink, records: store.serviceFor('s1'),
       tools: makeFauxToolRuntime({ handlers: { read: async () => ({ ok: true, output: '文件内容' }) },
         definitions: [{ name: 'read', summary: '读取测试材料', parameters: { type: 'object', properties: {} }, danger: { level: 'light' } }],

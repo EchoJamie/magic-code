@@ -38,7 +38,7 @@ import type { Stage } from './support/harness.ts'
 
 // —— 夹具 ——
 
-const PROMPT: PromptVars = { cwd: '/w', platform: 'darwin', date: '2026-09-18' }
+const PROMPT: PromptVars = { cwd: '/w', shell: '/bin/sh', platform: 'darwin', date: '2026-09-18' }
 
 /** 写文件工具——受约束的那个目标就是它的 `path`。 */
 const WRITE_SPEC: ToolSpec = {

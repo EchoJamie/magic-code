@@ -22,7 +22,7 @@ export type DrainTee = {
 /** 输出上限缺省——字节；**每道流各自计**（见 `sandbox.ts` 头注的取舍说明）。 */
 export const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024
 
-/** 跑命令的宿主 shell——`-c` 取一条命令行。 */
+/** 跑命令的宿主 shell——`-c` 取一条命令行。缺省 `sh`；真实宿主要求用用户的 shell（`CommandOptions.shell`）。 */
 const SHELL = 'sh'
 
 /**
@@ -66,6 +66,13 @@ type OutputSink = (delta: OutputDelta) => void
 /** 一次执行的进程侧入参——cwd 已是绝对路径（路径问题归 `sandbox.ts`）。 */
 export type CommandOptions = {
   readonly env?: Readonly<Record<string, string>>
+  /**
+   * **执行命令的 shell**——用户是谁的 shell，就用谁的（路径）。缺省 `sh`。
+   *
+   * 换 shell 不是换「隔离级别」，是换**语法与启动文件**：`zsh -c` 会读 `~/.zshenv`，
+   * `bash -c` 读 `~/.bashrc`（非交互时行为不同）——这是用户环境的一部分。
+   */
+  readonly shell?: string
 
   readonly cwd: string
   /**
@@ -283,7 +290,7 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
   let started: Awaited<ReturnType<typeof spawnOwned<'pipe', 'pipe'>>>
   try {
     const script = options.cwdFile === undefined ? cmd : withCwdReport(cmd, options.cwdFile)
-    started = await spawnOwned([SHELL, '-c', script], {
+    started = await spawnOwned([options.shell ?? SHELL, '-c', script], {
       cwd: options.cwd, env: options.env, signal: options.signal, ledger: options.ledger,
       stdout: 'pipe', stderr: 'pipe', kind: 'exec',
       what: `exec:${cmd.split('\n', 1)[0]?.trim().slice(0, LEDGER_WHAT_CHARS) ?? ''}`,

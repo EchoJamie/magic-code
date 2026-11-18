@@ -27,7 +27,7 @@ function sessionOf(stage: Stage) {
   return createConversationSession({
     session: SESSION,
 
-    prompt: { cwd: '/w', platform: 'darwin', date: '2026-09-18' },
+    prompt: { cwd: '/w', shell: '/bin/sh', platform: 'darwin', date: '2026-09-18' },
     gateway: stage.gateway,
     tools: stage.toolDomain,
     records: stage.records,

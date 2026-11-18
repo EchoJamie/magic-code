@@ -185,6 +185,8 @@ function childEnv(options: { home: string; forceColor: string }): Record<string,
 
   env['HOME'] = options.home
   env['FORCE_COLOR'] = options.forceColor
+  // 沙地不读真实用户的登录启动文件：环境由测试给的那一份说了算（`readLoginEnvironment` 的关闭位）
+  env['MAGIC_SHELL_ENV'] = 'inherited'
   // 终端名照真终端的来（Ink / chalk 按它判色档）——沙地不是「没有终端」，是「另一个终端」
   env['TERM'] = 'xterm-256color'
   // 真彩那一档要看它（见上注：光有 FORCE_COLOR 会被 TERM 降到 256 色）

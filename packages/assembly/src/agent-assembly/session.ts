@@ -58,6 +58,8 @@ export type EnvironmentVars = {
   readonly platform?: string
   /** 日期（注入项 `date`）——缺省取 `now()` 的本地日期（`YYYY-MM-DD`）。 */
   readonly date?: string
+  /** 执行命令的 shell（注入项 `shell`）——装配入口从登录 shell 采集后传入；缺省 `sh`。 */
+  readonly shell?: string
 }
 
 /** 每个会话独占可变模型选择、闸门、工具、对话与后台收件。 */
@@ -450,6 +452,7 @@ function promptVarsOf(
 ): PromptVars {
   return {
     cwd: workspaceLineOf(workspace),
+    shell: prompt?.shell ?? 'sh',
     platform: prompt?.platform ?? process.platform,
     date: prompt?.date ?? localDate(now()),
   }

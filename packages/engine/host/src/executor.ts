@@ -12,6 +12,7 @@ import type {
   RunSnapshot,
 } from '@magic/contracts'
 import { createSudoAuth } from '@magic/host'
+import { readLoginEnvironment } from '@magic/host'
 import { assemble } from '@magic/assembly'
 import type { Assembly } from '@magic/assembly'
 import { loadConfig } from '@magic/state'
@@ -89,9 +90,13 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   const lifetime = new AbortController()
   const signal = AbortSignal.any([lifetime.signal, options.signal])
   const link = options.link
+  // **用户环境采一次**：GUI 起的执行者只有 launchd 的最小 PATH，用户 `.zshrc` /
+  // `.bash_profile` 里的 PATH 与工具链不在其中。采集失败就回落并标源（不抛、不拖住启动）。
+  const login = readLoginEnvironment(options.environment)
+  const environment = login.env
   const disconnected = new Promise<void>(resolve => link.onClose(() => resolve()))
   const requests = new Map<string, (reply: CollaborationReply) => void>()
-  const sudo = createSudoAuth({ link, cwd: options.cwd, env: options.environment })
+  const sudo = createSudoAuth({ link, cwd: options.cwd, env: environment })
   link.onMessage(message => {
     if (message.t === 'collaboration.reply') {
       const done = requests.get(message.requestId)
@@ -129,7 +134,8 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     }
     assembly = assemble({
       executionId: options.executionId,
-      records: options.records, ledger: options.ledger, environment: options.environment, network: options.network, signal,
+      records: options.records, ledger: options.ledger, environment, network: { ...options.network, env: environment }, signal,
+      prompt: { shell: login.shell },
       collaborationChanged: () => { link.send({ t: 'collaboration.changed' }) },
       collaboration: (_session, request) => new Promise(resolve => {
         const requestId = crypto.randomUUID()

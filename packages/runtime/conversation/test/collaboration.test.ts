@@ -60,7 +60,7 @@ test('收件唤起不伪造用户消息，重复无新信息的唤起不请求�
 })
 
 test('单会话只给一句提示，真正展开才注完整协作指导', async () => {
-  const base = buildSystemPrompt({ cwd: '/w', platform: 'test', date: '2026-09-26' })
+  const base = buildSystemPrompt({ cwd: '/w', shell: '/bin/sh', platform: 'test', date: '2026-09-26' })
   const plain = await collaborationPrompt(base)
   expect(plain).toBe(base)
   expect(plain).toContain(COLLABORATION_HINT)
