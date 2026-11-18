@@ -65,6 +65,13 @@ describe('整轮时间投影', () => {
     expect(roundLineText({ ...base, rows: [running({ command: 'bun test --watch', description: '跑测试' })] }, TEST_AT + 12_001)).toBe('● 跑测试 · 12s')
     expect(roundLineText({ ...base, rows: [running({ command: 'bun test --watch\nls' })] }, TEST_AT + 12_001)).toBe('● bun test --watch · 12s')
     expect(roundLineText({ ...base, rows: [running({}), running({}, 't2')] }, TEST_AT + 12_001)).toBe('● 2 条命令在跑 · 12s')
+    // **流式阶段参数还没成形**：从片段里认 description；认不出就报工具名，不摆半截 JSON
+    const streaming = (argsText: string) => ({
+      kind: 'tool' as const, key: 't1', call: null, name: 'exec', argsText, args: null,
+      state: 'running' as const, elapsedMs: null, startedAt: TEST_AT, output: [],
+    })
+    expect(roundLineText({ ...base, rows: [streaming('{"command":"bun test --watch","description":"跑测试"}')] }, TEST_AT + 12_001)).toBe('● 跑测试 · 12s')
+    expect(roundLineText({ ...base, rows: [streaming('{"command":"bun test --watch')] }, TEST_AT + 12_001)).toBe('● exec · 12s')
     expect(roundLineText({ ...base, rows: [] }, TEST_AT + 12_001)).toBe('● thinking... 12s')
   })
 

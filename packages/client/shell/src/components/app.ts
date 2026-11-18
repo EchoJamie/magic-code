@@ -498,18 +498,32 @@ export function liveLayoutOf(
   return { plan, rest, roundHeight, planGap, dockRows }
 }
 
+/** 流式片段里还没成形的 `description`——引号闭合了才认，认不出给 `undefined`。 */
+function descriptionInFragment(text: string): string | undefined {
+  const match = /"description"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(text)
+  if (match === null) return undefined
+  try {
+    const decoded = JSON.parse(`"${match[1]}"`)
+    return typeof decoded === 'string' && decoded.trim() !== '' ? decoded.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** 正在跑的那一条「在做什么」——意图（`description`）优先，命令首行兜底。 */
 function actionOf(row: Extract<LogRow, { kind: 'tool' }>): string {
   const args = row.args
-  const description = args?.['description']
+  // **流式阶段参数还没成形**：从片段里认 description，认不出就报工具名——
+  // 绝不把半截 JSON（`{"command":"…`）摆到输入区上方
+  if (args === null) return descriptionInFragment(row.argsText) ?? row.name
+  const description = args['description']
   if (typeof description === 'string' && description.trim() !== '') return description.trim()
-  const command = args?.['command'] ?? args?.['cmd']
+  const command = args['command'] ?? args['cmd']
   if (typeof command === 'string') {
     const first = command.split('\n', 1)[0]?.trim() ?? ''
     if (first !== '') return first
   }
-  const first = row.argsText.split('\n', 1)[0]?.trim() ?? ''
-  return first === '' ? row.name : first
+  return row.name
 }
 
 export function roundLineText(view: ShellView, now: number | null): string | null {
