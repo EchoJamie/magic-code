@@ -205,6 +205,8 @@ export function isToolResultPayload(payload: unknown): payload is ToolResultPayl
   if (payload['background'] !== undefined && !isBackgroundResult(payload['background'])) return false
   // 会话目录那一位（可选）：给了就必须是一条非空路径，不给照旧
   if (payload['cwd'] !== undefined && (typeof payload['cwd'] !== 'string' || payload['cwd'] === '')) return false
+  // 模型调用引用（可选）：并发后按它配对，给了就得是非空字符串
+  if (payload['call'] !== undefined && (typeof payload['call'] !== 'string' || payload['call'] === '')) return false
   const plan = payload['plan']
   return plan === undefined || plan === null || isPlanNote(plan)
 }

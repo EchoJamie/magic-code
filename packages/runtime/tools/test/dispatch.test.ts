@@ -221,8 +221,8 @@ describe('分发回环：请求 → 闸门 → 执行 → 结果', () => {
     // 事实行每次都带：退出状态 ＋ 实际工作目录（模型不必猜「我刚才在哪跑」）
     expect(result.output).toBe('[退出 0 · /work/proj]')
 
-    // 键集钉死：契约三件之外**不许再多**（谁再塞回一个自造补充字段，这一条当场红）
-    expect(Object.keys(result).sort()).toEqual(['callRef', 'content', 'ok', 'output'])
+    // 键集钉死：契约四件之外**不许再多**（`call` 是 2026-11-17 契约补的模型调用引用）
+    expect(Object.keys(result).sort()).toEqual(['call', 'callRef', 'content', 'ok', 'output'])
 
     // 定义面照端口出（默认集＝工具集 v1 七件——U13 到站后；阶段 1 的「仅 exec」作废）
     expect(port.definitions().map((d) => d.name)).toEqual([

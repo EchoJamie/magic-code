@@ -1,10 +1,28 @@
 import { expect, test } from 'bun:test'
 import { existsSync, realpathSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import type { KernelEvent } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
 import { createFauxGateway, type FauxTurn } from '@magic/faux'
 import { attachShell } from '../src/index.ts'
 import { makeStage } from './support.ts'
+
+/** 按调用（名 ＋ 路径）取结果——并发与「扣下」都会让事件顺序不再等于调用顺序。 */
+function outcomesOf(events: readonly KernelEvent[]): Map<string, boolean> {
+  const calls = new Map<number, { name: string; args: Readonly<Record<string, unknown>> }>()
+  for (const event of events) {
+    if (event.kind === 'tool.call') calls.set(event.id, { name: event.data.name, args: event.data.args })
+  }
+  const out = new Map<string, boolean>()
+  for (const event of events) {
+    if (event.kind !== 'tool.result') continue
+    const call = calls.get(event.data.call)
+    if (call === undefined) continue
+    const path = typeof call.args['path'] === 'string' ? `:${call.args['path']}` : ''
+    out.set(`${call.name}${path}`, event.data.ok)
+  }
+  return out
+}
 
 for (const limited of [false, true]) test(`可信用途优先于普通全工具角色，原许可交集 ${limited}，完整协作执行链允许知识读取且禁止实际写入`, async () => {
   const stage = makeStage({ config: { agentRoles: { all: { name: '普通全工具角色', instructions: '可以修改', tools: ['read', 'write', 'exec', 'plan_update'] },
@@ -43,7 +61,17 @@ for (const limited of [false, true]) test(`可信用途优先于普通全工具�
     await shell.submit('查证')
     expect(readFileSync(join(stage.workspace, 'probe.txt'), 'utf8')).toBe('原值')
     const outputs = shell.events.filter(event => event.kind === 'tool.result')
-    expect(outputs.map(event => event.data.ok)).toEqual([true, true, true, false, false, true, true, false])
+    expect(outputs).toHaveLength(8)
+    const outcomes = outcomesOf(shell.events)
+    expect(outcomes.size).toBe(8)
+    expect(outcomes.get('knowledge_search')).toBe(true)
+    expect(outcomes.get('knowledge_read')).toBe(true)
+    expect(outcomes.get('knowledge_source')).toBe(true)
+    expect(outcomes.get('knowledge_update')).toBe(false)
+    expect(outcomes.get('write:probe.txt')).toBe(false)
+    expect(outcomes.get('read:probe.txt')).toBe(true)
+    expect(outcomes.get(`write:${join(stage.dataDir, 'notes', 'advisor', 'MEMORY.md')}`)).toBe(true)
+    expect(outcomes.get(`write:${join(stage.dataDir, 'notes', 'origin', 'MEMORY.md')}`)).toBe(false)
     expect(readFileSync(join(stage.dataDir, 'notes', 'advisor', 'MEMORY.md'), 'utf8')).toBe('只读核对')
     expect(existsSync(join(stage.dataDir, 'notes', 'origin', 'MEMORY.md'))).toBe(false)
     expect(JSON.stringify(gateway!.requests)).toContain('原值')
@@ -78,7 +106,11 @@ test('普通角色仅开放read时仍可实际维护自身记忆，业务写入�
   const shell = attachShell(app.shell)
   try {
     await shell.submit('继续只读检查')
-    expect(shell.events.filter(event => event.kind === 'tool.result').map(event => event.data.ok)).toEqual([true, false])
+    expect(shell.events.filter(event => event.kind === 'tool.result')).toHaveLength(2)
+    const outcomes = outcomesOf(shell.events)
+    expect(outcomes.size).toBe(2)
+    expect(outcomes.get(`write:${join(stage.dataDir, 'notes', 'reader', 'MEMORY.md')}`)).toBe(true)
+    expect(outcomes.get('write:probe.txt')).toBe(false)
     expect(readFileSync(join(stage.dataDir, 'notes', 'reader', 'MEMORY.md'), 'utf8')).toBe('只读要求')
     expect(readFileSync(join(stage.workspace, 'probe.txt'), 'utf8')).toBe('原值')
   } finally { shell.dispose(); app.close(); stage.dispose() }

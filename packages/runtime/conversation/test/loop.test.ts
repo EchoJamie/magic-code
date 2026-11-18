@@ -215,7 +215,7 @@ describe('主循环 · 提示词装配', () => {
 })
 
 describe('主循环 · 同轮多工具', () => {
-  test('按序逐个——前一个跑完才起下一个（不是并发）', async () => {
+  test('并发发起——三条命令同时在跑；回填按调用序', async () => {
     const timeline: string[] = []
     const stage = makeStage({
       turns: [
@@ -232,7 +232,7 @@ describe('主循环 · 同轮多工具', () => {
         exec: async (call) => {
           const command = String(call.args.command)
           timeline.push(`开始 ${command}`)
-          // 给「并发执行」留出插队的窗口——真并发的话这里会交错
+          // 真并发的话这里会交错：三条都开始，再按注册序结束
           await new Promise((resolve) => setTimeout(resolve, 0))
           timeline.push(`结束 ${command}`)
           return { ok: true, output: `跑了 ${command}` }
@@ -244,10 +244,10 @@ describe('主循环 · 同轮多工具', () => {
 
     expect(timeline).toEqual([
       '开始 a',
-      '结束 a',
       '开始 b',
-      '结束 b',
       '开始 c',
+      '结束 a',
+      '结束 b',
       '结束 c',
     ])
 

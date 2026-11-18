@@ -142,41 +142,58 @@ export async function assembleContext(
 
       // 助手消息带上它请求的那些调用——写入侧按「调用 → 结果」成对落账、同轮按序逐个，
       // 故此处照序配对：`tool-call` 条目 ＋ 紧随的 `tool-result` 条目 ＝ 一次调用。
+      // **并发之后条目不再紧邻**：先收齐这一段里的调用与结果，按模型调用 id 配对；
+      // 旧记录没有 `call` 引用 ⇒ 按出现顺序串位（与旧行为等价）。无结果的调用＝在途，不进上下文。
       let cursor = index + 1
+      const callsInRound: { readonly entry: Entry; readonly call: NonNullable<ReturnType<typeof toolCallPayloadOf>> }[] = []
+      const resultsInRound: { readonly entry: Entry; readonly result: ToolResultPayload }[] = []
       for (;;) {
-        const callEntry = entries[cursor]
-        const resultEntry = entries[cursor + 1]
-        if (callEntry?.kind !== 'tool-call') break
-        // 无结果＝在途调用——不进上下文（见文件头注 2），并就此打住本轮的配对
-        if (resultEntry?.kind !== 'tool-result') break
-
-        const call = toolCallPayloadOf(callEntry.payload)
-        const result = toolResultPayloadOf(resultEntry.payload)
-        if (call === undefined || result === undefined) break
-
-        const payload = callEntry.payload
-        if (payload === undefined || !('id' in payload) || typeof payload.id !== 'string' || payload.id.length === 0) {
-          throw new Error(`工具调用记录 #${callEntry.id} 缺少模型原始调用 ID，无法重建工具往返`)
+        const probe = entries[cursor]
+        if (probe?.kind === 'tool-call') {
+          const call = toolCallPayloadOf(probe.payload)
+          if (call !== undefined) callsInRound.push({ entry: probe, call })
+          cursor += 1
+          continue
         }
-        toolCalls.push({ id: payload.id, name: call.name, args: call.args })
-        provided(entryKnowledgeReferences(callEntry))
+        if (probe?.kind === 'tool-result') {
+          const result = toolResultPayloadOf(probe.payload)
+          if (result !== undefined) resultsInRound.push({ entry: probe, result })
+          cursor += 1
+          continue
+        }
+        break
+      }
+      const byCall = new Map<string, { readonly entry: Entry; readonly result: ToolResultPayload }>()
+      const unkeyed: { readonly entry: Entry; readonly result: ToolResultPayload }[] = []
+      for (const hit of resultsInRound) {
+        const key = hit.result.call
+        if (typeof key === 'string' && key !== '') byCall.set(key, hit)
+        else unkeyed.push(hit)
+      }
+      for (const item of callsInRound) {
+        const payload = item.entry.payload
+        if (payload === undefined || !('id' in payload) || typeof payload.id !== 'string' || payload.id.length === 0) {
+          throw new Error(`工具调用记录 #${item.entry.id} 缺少模型原始调用 ID，无法重建工具往返`)
+        }
+        const hit = byCall.get(payload.id) ?? unkeyed.shift()
+        if (hit === undefined) continue
+        byCall.delete(payload.id)
+        toolCalls.push({ id: payload.id, name: item.call.name, args: item.call.args })
+        provided(entryKnowledgeReferences(item.entry))
 
         // 正文取**条目正文**（面向模型的文本，工具域按上限截断的那份）——
         // **不是**载荷里的记录形态：那是全量（可能是 blob），送模型的是这份截断文本。
-        // 重放时因此逐字复原模型当时看到的那一份。
-        //
-        const content = { text: await rawTextOf(resultEntry.content, input.records), complete: true }
+        const content = { text: await rawTextOf(hit.entry.content, input.records), complete: true }
 
         toolMessages.push({
           role: 'tool',
           callId: payload.id,
           // 工具名**取自发起它的调用条目**，不从助手消息反查——压缩（阶段 3）来时反查会静默退化
-          name: call.name,
-          ok: result.ok,
+          name: item.call.name,
+          ok: hit.result.ok,
           output: content.text,
         })
-        provided(entryKnowledgeReferences(resultEntry))
-        cursor += 2
+        provided(entryKnowledgeReferences(hit.entry))
       }
 
       if (entry.payload !== undefined && 'knowledge' in entry.payload) provided(entry.payload.knowledge)

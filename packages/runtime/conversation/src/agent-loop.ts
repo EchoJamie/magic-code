@@ -103,18 +103,6 @@ import type { CollaborationBoundary } from './collaboration.ts'
 export type InputOutcome = TurnEndReason | 'rejected'
 
 /**
- * **这一轮已停住**（U72）——本批余下的调用**一件都不跑**，回填这一句。
- *
- * 与 `needsReviewText` / `overflowText` 同族（都是「扣下一次调用、说清为什么」的那句话），
- * 只是缘由在这一件：它前头那件工具**交了 `halt`**（例如登记等待），这一轮到此为止。
- * 措辞按那两句的老口径——**没执行 · 为什么 · 下一步怎么办**，且不宣称任何副作用发生过。
- */
-const STOPPED_TEXT =
-  '这一轮已停住——本次调用没有执行。\n' +
-  '原因：同一轮里前一件工具要求让出推进。\n' +
-  '下一步：按该工具回报的原因处理，再继续。'
-
-/**
  * 循环的构造入参（**域内形态**）——端口实现（`./service.ts`）按它装配。
  * 每个字段都是一件「不知道自己是谁的」依赖：模型 / 工具 / 记录皆经端口，实现在别处。
  */
@@ -927,11 +915,17 @@ async function runTurn(
           ? overflowText()
           : undefined
 
-    // 同轮多工具——**按序逐个**（并行执行留后评估）；一个被拒只影响该调用
+    // 同轮多工具——**并发执行、按发起序落账**。
     //
-    // ⚠️ **有一件交了 `halt` ⇒ 这一轮就地收束**（U72）——见下面那两行与 `stopped`。
+    // 为什么不是「按序逐个」：一个 `bun test` 跑十秒、后面还有三条独立命令，串行等于让用户
+    // 干等四遍。并发的**边界**只在执行这一跳：**条目仍按调用序成对落账**
+    // （`context.ts` 的配对与回放都靠这条次序），被拒/被扣下的调用照旧在批量发起前判掉。
+    //
+    // ⚠️ **`halt` 只决定还开不开下一轮**——批里已经发起的命令撤不回来（并发之后「尚未执行
+    // 的暂停」这句话就不成立了）。
     let stopped = false
     let rejudging = false
+    const begun: StartedCall[] = []
 
     for (const call of calls) {
       if (signal.aborted) return close(runtime, 'aborted', false)
@@ -943,21 +937,33 @@ async function runTurn(
         continue
       }
 
-      if (stopped) {
-        // 本批余下的**一件都不跑**——理由与「材料超限整批停批」同一条（`preflight` 那一段）：
-        // 半批执行过的状态最难解释。且这一轮**本就不会再开下一轮**，让它们跑完也没人看
-        // （结果要等下一次交代才会进模型眼前）——白做，还多留下几笔动过手脚的痕迹。
-        withholds(runtime, call, STOPPED_TEXT, providedKnowledge)
-        continue
-      }
-
       if (heldText !== undefined) {
         withholds(runtime, call, heldText, providedKnowledge)
         continue
       }
 
-      const outcome = await runToolCall(runtime, call, signal, announce, watch, providedKnowledge)
-      if (outcome.halt === true) stopped = true
+      // 调用条目**按发起序**先落（与结果条目成对，回放/在途识别都靠它）
+      begun.push(beginToolCall(runtime, call, providedKnowledge))
+    }
+
+    // 执行互不影响；落账按发起序串起来（结果条目、计划通报都在这之后）
+    //
+    // **只对整批都是 `exec` 的并发**：命令互不影响，等四遍才是浪费；而业务工具
+    // （写文件、改知识、计划）之间**有先后语义**（读后写、按序改），并发会把它们的意思改掉。
+    const parallel = begun.length > 1 && begun.every(one => one.call.name === 'exec')
+    if (parallel) {
+      const outcomes = await Promise.all(begun.map(one => executeToolCall(runtime, one, signal, announce, watch)))
+      for (const [index, one] of begun.entries()) {
+        const outcome = outcomes[index]!
+        await settleToolCall(runtime, one, outcome)
+        if (outcome.halt === true) stopped = true
+      }
+    } else {
+      for (const one of begun) {
+        const outcome = await executeToolCall(runtime, one, signal, announce, watch)
+        await settleToolCall(runtime, one, outcome)
+        if (outcome.halt === true) stopped = true
+      }
     }
 
     // `continues` 为假 ⇒ 回到等待输入（工单第 5 条：这一轮就地收束）
@@ -977,53 +983,59 @@ async function runTurn(
 }
 
 /**
- * 一次工具调用——调用条目落账 → `invoke`（闸门在路径内）→ 结果条目落账。
+ * 一次调用在发起阶段落的账——调用条目 id（结果条目按它成对）。
  *
- * 对话域**不经手闸门、不经手沙箱**：`ToolRuntime.invoke` 内部才是「请求 → 闸门 →
- * 执行 → 回填」（技术方案 · 工具域）——本域只把结果回填给模型。
- *
- * 结果的两样输出（第 2 轮 · 契约补锚）由 `toolOutcomeOf` 各归其位：面向模型的文本进条目
- * 正文、记录侧形态进载荷（见 `./entries.ts`）。
+ * 三阶段分开是**并发**与**按序落账**能同时成立的原因：条目对必须按调用序进记录
+ * （`context.ts` 的配对、回放、在途识别都靠这条次序），而执行本身可以同时跑。
  */
-async function runToolCall(
+type StartedCall = {
+  readonly call: ToolCall
+  readonly entry: RecordId
+}
+
+/** 发起阶段（按序）：调用条目先落账——「有调用无结果」＝在途（恢复按它找）。 */
+function beginToolCall(
   runtime: LoopRuntime,
   call: ToolCall,
+  knowledge: readonly import('@magic/contracts').KnowledgeReference[],
+): StartedCall {
+  return { call, entry: appendToolCallEntry(entryLogOf(runtime), call, knowledge) }
+}
+
+/**
+ * 执行阶段（并发）：只跑工具并回填，**不落结果条目**。
+ *
+ * `opts.onOutput` 留空：`tool.output.delta` 是**工具域**的产出（事件产出表）——本域不越俎。
+ * 工具域违约（抛）时以失败结果回填，不炸整轮。
+ */
+async function executeToolCall(
+  runtime: LoopRuntime,
+  started: StartedCall,
   signal: AbortSignal,
   announce: Announcer,
   watch: MaterialWatch,
-  knowledge: readonly import('@magic/contracts').KnowledgeReference[],
 ): Promise<ToolOutcome> {
-  const log = entryLogOf(runtime)
-
-  // 调用条目先落账——它与结果条目成对，「有调用无结果」＝在途（阶段 2 恢复按它找）
-  const entry = appendToolCallEntry(log, call, knowledge)
-
-  let outcome: ToolOutcome
   try {
-    // `opts.onOutput` 留空：`tool.output.delta` 是**工具域**的产出（事件产出表）——
-    // 本域不越俎；该位留给将来的消费方（如外壳侧的实时视图）。
-    outcome = toolOutcomeOf(await runtime.tools.invoke(call, { signal, entry: { sessionId: runtime.session, entryId: entry } }))
+    const outcome = toolOutcomeOf(await runtime.tools.invoke(started.call, { signal, entry: { sessionId: runtime.session, entryId: started.entry } }))
     // **模型自主取到一份技能主文**（U33）——记进回执账，等它进了下一趟请求再报
-    // （身份由工具结构化给出，不从回填正文里认；取引用那一趟不带这一位）
     if (outcome.skill !== undefined) announce.deliver(outcome.skill)
     // **这一趟读到了哪些材料**（U63）——记进那份账，收束时据此说「哪几份没读」
     watch.see(outcome)
+    return outcome
   } catch (error) {
     // 端口承诺「结果，不是异常」（与沙箱同法）；抛了＝工具域违约。
-    // 不炸掉整轮：以失败回填——模型与用户都看得到「这次没成」。
     // 违约路径**编不出** `ToolResult`（链引用无从取得），故就地造落账形态：两样都内联
     const text = `工具调用异常：${describeError(error)}`
-    outcome = { ok: false, text, content: { text } }
+    return { ok: false, text, content: { text } }
   }
+}
 
-  const resultKnowledge = outcome.knowledge ?? (KNOWLEDGE_MATERIAL_TOOLS.has(call.name)
-    ? knowledgeOutputReferences(call.name, await rawTextOf(outcome.content, runtime.records)) : [])
-  const resultId = appendToolResultEntry(log, outcome, resultKnowledge)
+/** 收账阶段（按发起序）：结果条目 ＋ 计划通报（条目成功追加之后才发）。 */
+async function settleToolCall(runtime: LoopRuntime, started: StartedCall, outcome: ToolOutcome): Promise<void> {
+  const resultKnowledge = outcome.knowledge ?? (KNOWLEDGE_MATERIAL_TOOLS.has(started.call.name)
+    ? knowledgeOutputReferences(started.call.name, await rawTextOf(outcome.content, runtime.records)) : [])
+  const resultId = appendToolResultEntry(entryLogOf(runtime), outcome, resultKnowledge)
   announcePlan(runtime, outcome, resultId)
-
-
-  // **交回结果**（U72）——调用方据 `halt` 决定还开不开下一轮；别的字段它一个字都不读
-  return outcome
 }
 
 /**

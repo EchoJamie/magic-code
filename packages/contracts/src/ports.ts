@@ -1513,6 +1513,11 @@ export type ToolResult = {
   /** 该次 `tool.call` 事件的 id（链引用）。 */
   readonly callRef: RecordId
   /**
+   * **它对应哪一条模型调用**（`ToolCall.id`）——并发后条目不再相邻，重建上下文按它配对。
+   * 与 `callRef`（事件 id）是两件事：这一位写在记录里，跨回放稳定。
+   */
+  readonly call?: string
+  /**
    * **这一笔之后执行会话所在的目录**——`exec` 跑出来的真实位置（`ExecResult.cwd`）。
    *
    * 给外壳更新状态区那一格用；不从回执正文里认（那是给人看的文案，改个措辞就断）。

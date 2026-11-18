@@ -3,20 +3,21 @@ import {createConversationSession} from '../src/service.ts'
 import {makeStage,makeLoopRuntime,waitFor,waitUntilIdle} from './support/harness.ts'
 
 function open(stage:ReturnType<typeof makeStage>){const runtime=makeLoopRuntime(stage);return createConversationSession({session:runtime.session,prompt:stage.promptVars,gateway:stage.gateway,tools:stage.toolDomain,records:stage.records,sink:stage.sink,stamper:stage.stamper,now:runtime.now})}
-test('工具结束先带入当前补充，旧下一工具不执行；下一件不混当前请求',async()=>{
+test('工具结束先带入当前补充；同批已发起的工具如实完成',async()=>{
  let release:()=>void=()=>{}
  const latch=new Promise<void>(resolve=>{release=resolve})
  const stage=makeStage({turns:[{toolCalls:[{name:'exec',args: { command:'long'}},{name:'exec',args: { command:'old-next'}}]},{text:'rejudged'},{text:'next-work'}],handlers:{exec:async call=>{if(call.args.command==='long')await latch;return {ok:true,output:String(call.args.command)}}}})
  const service=open(stage)
  service.submit({text:'first',ref:'first'})
- await waitFor(()=>stage.tools.calls.length===1?true:undefined,'长工具已经执行')
+ await waitFor(()=>stage.tools.calls.length>=1?true:undefined,'长工具已经执行')
  service.submit({text:'current-change',ref:'current'})
  service.submit({text:'next-only',purpose:'next',ref:'next'})
  service.submit({text:'retransmit',purpose:'next',ref:'next'})
  expect(stage.records.inputs.list()).toHaveLength(3)
  expect(stage.records.inputs.get('current')?.state).toBe('pending')
  release();await waitUntilIdle(stage.sink)
- expect(stage.tools.calls.map(call=>call.args.command)).toEqual(['long'])
+ // **并发发起**：同批两件都已在跑，补充撤不回已发起的动作
+ expect(stage.tools.calls.map(call=>call.args.command)).toEqual(['long','old-next'])
  expect(stage.gateway.requests).toHaveLength(3)
  const bodies=stage.gateway.requests.map(request=>JSON.stringify(request.messages))
  expect(bodies[0]).not.toContain('current-change')

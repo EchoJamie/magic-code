@@ -308,6 +308,8 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
         ...(outcome.background === undefined ? {} : { background: outcome.background }),
         // **这一笔之后在哪**（给外壳状态区）——有就带、没有就不带
         ...(outcome.cwd === undefined ? {} : { cwd: outcome.cwd }),
+        // **对应哪条模型调用**（并发后按它配对上下文）
+        ...(call.id === '' ? {} : { call: call.id }),
       }
     },
   }
