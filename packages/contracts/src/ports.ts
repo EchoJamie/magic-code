@@ -367,6 +367,14 @@ export type RecoveryScan = {
 export interface Sandbox {
   /** 绑定本次已解析目标；只核对身份，不作权限决断。文件读改写共用句柄，调用结束须释放。 */
   bindTarget?(target: ResolvedPath, tool: string): { sandbox: Sandbox; release(): Promise<void> }
+  /**
+   * **会话当前目录**——沙箱这一层的状态，不是调用方的参数。
+   *
+   * `exec` 不传 `cwd` 时用它；命令结束时跑出来的真实目录再写回这里（见 `ExecResult.cwd`），
+   * 于是模型不必每条命令都自己重建「我在哪」。缺省实现（没有这一格）＝没有会话目录，
+   * 调用方仍可按老径给 `cwd`。
+   */
+  sessionCwd?(): string
   exec(cmd: string, opts: ExecOptions): Promise<ExecResult>
   /**
    * 读文件——**按行分段**：`opts.from`（1 起）＋ `opts.lines`（最多多少行），
@@ -1620,6 +1628,14 @@ export type ExecResult =
       readonly stderr: string
       /** 超限截断（到 `maxOutputBytes` 为止）；大块转存归调用方。 */
       readonly truncated?: boolean
+      /**
+       * **命令结束时真正所在的目录**——沙箱从 shell 的退出钩子取回，不是调用方给的那个。
+       *
+       * 为什么要有它：`cd` 的结果若只活在这一条命令里，模型下一条就无法知道「我在哪」，
+       * 只能每条重新 `cd` 一遍。有这一格，会话目录才能被沙箱记住、回执才能报真实位置。
+       * 取不到（`exec` 换了 shell、目录已删一类）时缺席——不编一个值出来。
+       */
+      readonly cwd?: string
     }
   | {
       readonly ok: false
@@ -2096,7 +2112,7 @@ export const TOOLSET_V1 = [
   {
     name: 'exec',
     summary:
-      '命令执行：在「工作目录」下起一个新 shell（要换目录填 cwd，命令里不必 cd）。' +
+      '命令执行：在当前会话目录下执行（命令里的 cd 会更新会话目录）。' +
       '等满两分钟还没结束就转后台；dev server/watch 直接用 background:true，命令不加 nohup 或末尾 &。',
     danger: { level: 'by-call', note: '按命令解析' },
   },

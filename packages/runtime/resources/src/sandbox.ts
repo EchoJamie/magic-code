@@ -6,6 +6,9 @@
  */
 
 import { resolve as resolvePath } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type {
   ExecOptions,
   ExecResult,
@@ -83,6 +86,14 @@ export function timeoutBoundOf(value: number | null | undefined): number | null 
 /** 执行原语：权限已由工具入口裁决；这里只执行并保护本次目标身份。 */
 export function createSandbox(options: SandboxOptions): Sandbox {
   const { workspace } = options
+  /**
+   * **会话当前目录**——沙箱这一层的状态，不是调用方的参数。
+   *
+   * 命令不传 `cwd` 时用它；命令结束时跑出来的真实目录再写回（`ExecResult.cwd`）。
+   * 放在 `build()` 外面是因为它是**整个沙箱**的状态：`bindTarget` 每次换的是目标绑定，
+   * 换不掉「我在哪」。
+   */
+  let sessionCwd = workspace.defaultRoot()
 
   const build = (bound?: ResolvedPath, tool?: string): { sandbox: Sandbox; release(): Promise<void> } => {
     let opened: ReturnType<typeof openTarget> | undefined
@@ -104,18 +115,20 @@ export function createSandbox(options: SandboxOptions): Sandbox {
       },
       sandbox: {
         bindTarget: (target, name) => build(target, name),
+        sessionCwd: () => sessionCwd,
         async exec(cmd: string, opts: ExecOptions): Promise<ExecResult> {
           let cwd: string
           try {
-            const target = targetOf(opts.cwd ?? '.')
+            const target = targetOf(opts.cwd ?? sessionCwd)
             assertIdentity(target)
             cwd = target.absolute
           } catch (error) {
             return { ok: false, reason: 'spawn', message: error instanceof Error ? error.message : String(error) }
           }
-          return runCommand(cmd, {
+          const result = await runCommand(cmd, {
             env: options.env,
             cwd,
+            cwdFile: join(tmpdir(), `magic-cwd-${randomUUID()}`),
             timeoutMs: timeoutBoundOf(opts.timeoutMs),
             maxOutputBytes: positiveOr(opts.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES),
             onOutput: opts.onOutput,
@@ -124,6 +137,10 @@ export function createSandbox(options: SandboxOptions): Sandbox {
             ...(opts.adopt === undefined ? {} : { adopt: opts.adopt }),
             ...(options.ledger === undefined ? {} : { ledger: options.ledger }),
           })
+          // 命令跑出来的真实目录写回会话——下一条不传 cwd 就从这里起。
+          // 显式给了 cwd 的那一条是一次性覆盖：它跑完往哪儿去，都不改会话目录。
+          if (opts.cwd === undefined && result.ok && result.cwd !== undefined) sessionCwd = result.cwd
+          return result
         },
         async read(path: string, opts?: { maxBytes?: number; from?: number; lines?: number }): Promise<ReadResult> {
           const target = targetOf(path)

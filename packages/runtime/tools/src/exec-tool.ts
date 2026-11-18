@@ -89,8 +89,8 @@ export const EXEC_PARAMETERS = {
       minLength: 1,
       pattern: '\\S',
       description:
-        '要执行的命令（经 shell 解释）。每次调用都是一个新 shell：工作目录＝cwd（缺省＝系统提示词里的' +
-        '「工作目录」），环境变量与上一条命令里的 cd 都不保留——要换目录填 cwd，命令里不必再 cd。',
+        '要执行的命令（经 shell 解释）。默认在当前会话目录下执行；命令里的 cd 会更新会话目录，' +
+        '下一条命令接着在那里跑。命令里的 export 只影响本条。',
     },
     description: {
       type: 'string',
@@ -101,7 +101,7 @@ export const EXEC_PARAMETERS = {
       type: 'string',
       minLength: 1,
       pattern: '\\S',
-      description: '只在要换目录时给：相对系统提示词里的「工作目录」（绝对路径须落在工作区内）。不填就在该目录下跑。',
+      description: '只在这一条要换目录时给：相对默认目录，绝对路径也可。不填就在会话目录下跑。',
     },
     /**
      * 超时——**管的是「等它多久」**，不是「它能跑多久」：到点命令已跑出的输出照样带回。
@@ -199,12 +199,13 @@ function composeOutcome(result: ExecResult, cwd: string | undefined): ToolRunRes
   if (!result.ok && result.outputIncomplete) blocks.push('输出未收全；以下仅为已读取内容')
   if (result.stdout !== '') blocks.push(result.stdout)
   if (result.stderr !== '') blocks.push(`[stderr]\n${result.stderr}`)
-  // 事实行（每次都有）：退出状态 ＋ 实际工作目录——模型不必猜「我刚才在哪跑」。
-  //
+  // 事实行（每次都有）：退出状态 ＋ **命令结束时真正所在的目录**——不必猜「我刚才在哪跑」。
   // **跑完的放最前面**（像终端的提示符）：正文一行不少地跟在后面，屏上那行摘要取的也是
   // 正文的末行。**没跑完的放最后**：那一趟首先要看的是「为什么」（超时 / 被拒 / 被取消），
   // 事实行是补充。
-  const fact = cwd === undefined ? `[${status}]` : `[${status} · ${cwd}]`
+  // 目录取沙箱从 shell 退出钩子报回的那一个（`result.cwd`）；取不到才退回调用方给的。
+  const actual = result.ok && result.cwd !== undefined ? result.cwd : cwd
+  const fact = actual === undefined ? `[${status}]` : `[${status} · ${actual}]`
   const body = blocks.join('\n')
   const done = result.ok && result.exit === 0
   if (done) return { ok: true, output: body === '' ? fact : `${fact}\n${body}` }
@@ -298,16 +299,19 @@ export function defineExecTool(): ToolDefinition {
       return { command, description, cwd, background, timeoutMs: background === true ? null : timeout.ms }
     },
     async run(args, ctx): Promise<ToolRunResult> {
+      // **会话目录**——模型没给 cwd 就用沙箱记着的那个（命令里的 cd 会更新它）。
+      // 于是「我在哪」不是每条都要模型判断的参数，而是执行环境自己的状态。
+      const cwd = args.cwd ?? ctx.sandbox.sessionCwd?.()
       // sudo 先认证、再执行；认证没通过时原命令一个字节都不碰（U129）。
       // 实际交给沙箱的是 `plan.run`（`sudo` 后已插入 `-n`），不是模型原句。
       const plan = ctx.sudo
       if (plan !== undefined) {
-        const authenticated = await authenticateSudo(plan, ctx, args.cwd)
+        const authenticated = await authenticateSudo(plan, ctx, cwd)
         if (authenticated !== 'ok') return authenticated
       }
       const command = plan === undefined ? args.command : plan.run
 
-      if (args.background === true) return startBackground(command, ctx, args.cwd)
+      if (args.background === true) return startBackground(command, ctx, cwd)
       // 契约上 `adopt` 是**可选**的一格：宿主只实现了 `start` 时不带它，超时照旧按进程组收掉
       // （不能凭「有 background 对象」就假定它会接管——那是宿主侧才看得见的能力）。
       const adopter = typeof ctx.background?.adopt === 'function' ? ctx.background : undefined
@@ -318,7 +322,7 @@ export function defineExecTool(): ToolDefinition {
         ...(adopter === undefined ? {} : { adopt: run => adopter.adopt!(run) }),
         onOutput: ctx.onOutput, signal: ctx.signal,
       })
-      return composeOutcome(result, args.cwd)
+      return composeOutcome(result, cwd)
     },
   })
 }

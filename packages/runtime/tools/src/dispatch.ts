@@ -208,12 +208,18 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
       const key = call.name === 'exec' ? 'cwd'
         : ['read', 'write', 'edit', 'ls', 'grep', 'glob'].includes(call.name) ? 'path' : undefined
       if (key !== undefined) {
-        const path = (call.args[key] as string | undefined) ?? '.'
-        const noteTarget = key === 'path' ? options.notes?.resolve(path) : undefined
-        ownNote = noteTarget !== undefined
-        target = noteTarget ?? options.workspace.resolve(path)
-        call = { ...call, args: { ...call.args, [key]: target.absolute } }
-        resolvedTarget(target)
+        const given = call.args[key]
+        // `exec` 的 cwd 缺省由**沙箱的会话目录**决定（不解析、不绑定，让执行体自己取）。
+        // 旧实现/替身没有 `sessionCwd` 时退回老径：解析默认根并固定目标。
+        const sessionless = key === 'cwd' && given === undefined && typeof options.sandbox.sessionCwd === 'function'
+        if (!sessionless) {
+          const path = (given as string | undefined) ?? '.'
+          const noteTarget = key === 'path' ? options.notes?.resolve(path) : undefined
+          ownNote = noteTarget !== undefined
+          target = noteTarget ?? options.workspace.resolve(path)
+          call = { ...call, args: { ...call.args, [key]: target.absolute } }
+          resolvedTarget(target)
+        }
       }
     }
 
