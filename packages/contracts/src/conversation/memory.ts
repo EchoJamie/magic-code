@@ -8,6 +8,8 @@ export type SummaryPayload = {
   readonly from: RecordId
   /** 新接续覆盖的提交标记；旧摘要不代表笔记已保存。 */
   readonly notesSaved?: boolean
+  /** 本条摘要正文是接续简报；旧摘要不参与重注。 */
+  readonly brief?: boolean
   readonly memoryRevision?: number
   readonly previousSummary: RecordId | null
   readonly sources: readonly MemorySource[]

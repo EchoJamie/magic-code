@@ -92,6 +92,7 @@ import type { SkillsDelivery } from './skills.ts'
 import type { SubmitRefusal } from './service.ts'
 import { collaborationPrompt } from './collaboration.ts'
 import type { CollaborationBoundary } from './collaboration.ts'
+import { readPlanOf } from './plan.ts'
 
 /**
  * 一次交代的收场——三种**轮次收场**（`TurnEndReason`，会写进 `turn.end`）
@@ -543,6 +544,16 @@ function withBackground(runtime: LoopRuntime, base: string): string {
   return runtime.background === undefined ? base : withBackgroundRuns(base, runtime.background())
 }
 
+/** 计划属于常驻材料：旧段被压缩后，目标、步骤与下一步仍每请求在场。 */
+function withPlan(runtime: LoopRuntime, base: string): string {
+  const { plan } = readPlanOf(runtime.records, runtime.session)
+  if (plan === null) return base
+  const goal = plan.goal === undefined || plan.goal.trim() === '' ? '' : `目标：${plan.goal}\n`
+  const steps = plan.steps.length === 0 ? '步骤：无\n' : `步骤：\n${plan.steps.map(step => `- [${step.status}] ${step.text}`).join('\n')}\n`
+  const notes = plan.notes.trim() === '' ? '' : `备注：${plan.notes}\n`
+  return `${base}\n\n【当前计划】\n${goal}${steps}${notes}`.trimEnd()
+}
+
 /**
  * **一次交代的技能回执账**（U33）——只记 `skill.used`，**每个身份只报一次**：
  *
@@ -779,7 +790,7 @@ async function runTurn(
         // 都现取现接：改过的、跑完的，下一趟就是新的。次序＝环境块 → 规约块 → 技能目录块
         // → 后台命令块（见 `prompt/skills.ts` / `prompt/background.ts`）；
         // 规约那一趟还顺带记账「这一趟送出去哪几版」（预查据它判「拦不拦」）
-        systemPrompt: await collaborationPrompt(withBackground(runtime, (await withSkills(runtime, (await withRules(runtime, signal)), signal))), runtime.collaboration, provided),
+        systemPrompt: withPlan(runtime, await collaborationPrompt(withBackground(runtime, (await withSkills(runtime, (await withRules(runtime, signal)), signal))), runtime.collaboration, provided)),
       })
 
       if (signal.aborted || runtime.collaboration?.admit() !== undefined) return close(runtime, 'aborted', false)

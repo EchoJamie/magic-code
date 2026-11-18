@@ -6,6 +6,7 @@ export async function callMemoryModel(input: {
   readonly gateway: ModelGateway
   readonly request: ModelRequest
   readonly signal?: AbortSignal
+  readonly maxOutputTokens?: number
   readonly sink: EventSink
   readonly stamper: EventStamper
   readonly now: () => number
@@ -18,7 +19,10 @@ export async function callMemoryModel(input: {
   let failure: { tier: ModelErrorTier; message: string } | undefined
   let text = ''; let reasoning = ''
   try {
-    const stream = input.gateway.stream(input.request, input.signal === undefined ? {} : { signal: input.signal })
+    const stream = input.gateway.stream(input.request, {
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+      ...(input.maxOutputTokens === undefined ? {} : { maxOutputTokens: input.maxOutputTokens }),
+    })
     // 事件读取中断时也接住结果通道的拒绝，避免另一出口成为未处理异常。
     void stream.result.catch(() => {})
     for await (const event of stream.events) {

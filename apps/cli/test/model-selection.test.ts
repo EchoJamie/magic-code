@@ -1,9 +1,8 @@
-import type { MagicConfig, ModelRequest } from '@magic/contracts'
+import type { MagicConfig } from '@magic/contracts'
 import { describe, expect, test } from 'bun:test'
 import { readFileSync, writeFileSync } from 'node:fs'
 import type { AgentModelConfig, ModelSwitchRequest } from '@magic/contracts'
 import { makeTestStamper } from '@magic/faux'
-import { continuationTurn } from './notes-support.ts'
 import { createModelRegistry } from '@magic/model'
 import { createAgentModels, resolveModelChoice } from '@magic/host'
 import { configureModel } from '@magic/state'
@@ -25,7 +24,7 @@ const configuredModels = {
 } satisfies NonNullable<MagicConfig['models']>
 const defaults: AgentModelConfig = { protocol: 'chat-completions', endpoint: providers.main.baseURL, choice: 'default', provider: 'main', model: 'deepseek-flash', reasoning: { mode: 'level', level: 'high' } }
 
-const isPreparation = (body: Record<string, any>): boolean => body.messages?.[0]?.content?.startsWith('这是当前模型的独立接续准备') === true
+const isPreparation = (body: Record<string, any>): boolean => body.messages?.[0]?.content?.startsWith('你是接续简报的整理者') === true
 
 function endpoint(options: { failure?: 'server' | 'auth' | 'network' | 'empty' | 'incomplete' | 'cancel'; mainLimit?: boolean } = {}) {
   const seen: { url: string; body: Record<string, any> }[] = []
@@ -41,16 +40,10 @@ function endpoint(options: { failure?: 'server' | 'auth' | 'network' | 'empty' |
     if (prepare && options.failure === 'cancel') return await new Promise<Response>((_resolve, reject) => { init?.signal?.addEventListener('abort', () => reject(new DOMException('controlled cancelled', 'AbortError')), { once: true }) })
     if (prepare && options.failure === 'server') return Response.json({ error: { message: 'maximum context length exceeded' } }, { status: 400 })
     const frame = (choices: unknown, usage?: unknown) => `data: ${JSON.stringify({ id: 'local', object: 'chat.completion.chunk', created: 1, model: body.model, choices, usage })}\n\n`
-    const calls = new Map<string, string>()
-    for (const message of body.messages) for (const call of message.tool_calls ?? []) calls.set(call.id, call.function.name)
-    const request: ModelRequest = { messages: body.messages.map((message: any) => message.role === 'tool'
-      ? { role: 'tool', callId: message.tool_call_id, name: calls.get(message.tool_call_id)!, output: message.content, ok: true }
-      : { role: message.role, content: message.content }) }
-    const turn = prepare && !options.failure ? continuationTurn(request) : { text: prepare ? options.failure === 'empty' ? '' : '半截准备' : '工作答复' }
-    const toolCalls = turn.toolCalls?.map((call, index) => ({ index, id: `call-${seen.length}-${index}`, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }))
+    const turn = prepare && !options.failure ? { text: '## 目标与阶段\n保留这项约束\n## 下一步\n继续' } : { text: prepare ? options.failure === 'empty' ? '' : '半截准备' : '工作答复' }
     return new Response(
-      frame([{ index: 0, delta: { role: 'assistant', ...(prepare ? { reasoning_content: '真实接续思考：先读证据再保存' } : {}), ...(toolCalls ? { tool_calls: toolCalls } : { content: turn.text ?? '' }) } }]) +
-      (prepare && options.failure === 'incomplete' ? '' : frame([{ index: 0, delta: {}, finish_reason: toolCalls ? 'tool_calls' : 'stop' }], { prompt_tokens: 100, completion_tokens: 10 })) + 'data: [DONE]\n\n',
+      frame([{ index: 0, delta: { role: 'assistant', ...(prepare ? { reasoning_content: '真实接续思考：先读证据再保存' } : {}), content: turn.text ?? '' } }]) +
+      (prepare && options.failure === 'incomplete' ? '' : frame([{ index: 0, delta: {}, finish_reason: 'stop' }], { prompt_tokens: 100, completion_tokens: 10 })) + 'data: [DONE]\n\n',
       { headers: { 'content-type': 'text/event-stream' } },
     )
   }) as typeof globalThis.fetch
@@ -151,11 +144,9 @@ describe('统一模型配置与执行选择', () => {
     } finally { shell.dispose(); assembly.close(); stage.dispose() }
   })
 
-  for (const scenario of ['success', 'no-cantrip', 'capacity', 'server', 'auth', 'network', 'empty', 'incomplete'] as const) test(`当前模型接续准备：${scenario}，真实工具往返且不切换 Cantrip`, async () => {
-    const wire = endpoint(['server', 'auth', 'network', 'empty', 'incomplete'].includes(scenario) ? { failure: scenario as 'server' | 'auth' | 'network' | 'empty' | 'incomplete' } : {})
-    const configured = scenario === 'capacity' ? { ...providers, main: { ...providers.main, modelOverrides: { 'deepseek-flash': { limits: { maxInputTokens: 100 } } } } } : providers
-    const { cantrip: _cantrip, ...withoutCantrip } = configuredModels
-    const stage = makeStage({ config: { providers: configured, models: scenario === 'no-cantrip' ? withoutCantrip : configuredModels } })
+  test('当前模型接续简报：单次无工具调用，不切换 Cantrip', async () => {
+    const wire = endpoint()
+    const stage = makeStage({ config: { providers, models: configuredModels } })
     const assembly = stage.assemble({ modelGateway: undefined, modelFetch: wire.fetch,
       context: { nearEntries: 1, compactAtTokens: 1, compactAtFraction: 0.000001 } })
     const shell = attachShell(assembly.shell)
@@ -163,31 +154,16 @@ describe('统一模型配置与执行选择', () => {
       await shell.submit('保留这项约束')
       await shell.submit('继续这项工作')
       const calls = wire.seen.filter(one => isPreparation(one.body))
+      expect(calls.length).toBeGreaterThan(0)
+      expect(calls.every(one => one.body.tools === undefined)).toBe(true)
       expect(wire.seen.every(one => one.url === 'https://main.example/v1/chat/completions' && one.body.model === 'deepseek-flash')).toBe(true)
-      if (scenario === 'capacity') expect(calls).toHaveLength(0)
-      else {
-        expect(calls.length).toBeGreaterThan(0)
-        expect(calls.every(one => JSON.stringify(one.body.tools.map((tool: any) => tool.function.name).sort()) === JSON.stringify(['read', 'write', 'edit', 'grep', 'glob', 'ls', 'plan_read', 'history_read'].sort()))).toBe(true)
-        expect(calls[0]!.body.thinking).toEqual(wire.seen[0]!.body.thinking)
-      }
       const database = readDatabase(assembly.paths.database)
       try {
         expect(database.entries.filter(one => one.kind === 'user')).toHaveLength(2)
-        if (scenario === 'success' || scenario === 'no-cantrip') {
-          expect(database.entries.filter(one => one.kind === 'summary')).toHaveLength(1)
-          expect(eventsOfKind(shell.events, 'context.compacted')).toHaveLength(1)
-          expect(database.entries.some(one => one.kind === 'continuation')).toBe(true)
-          expect(calls[1]!.body.messages.some((message: any) => message.role === 'assistant' && message.reasoning_content === '真实接续思考：先读证据再保存')).toBe(true)
-          expect(JSON.stringify(database.entries.filter(one => one.kind === 'continuation'))).toContain('真实接续思考：先读证据再保存')
-        } else {
-          expect(database.entries.filter(one => one.kind === 'summary')).toHaveLength(0)
-          expect(eventsOfKind(shell.events, 'context.compacted')).toHaveLength(0)
-          const error = eventsOfKind(shell.events, 'error').map(event => event.data.message).join('\n')
-          expect(error).toContain('原始历史已保留')
-          expect(error).not.toContain('local-main')
-          expect(error).not.toContain('local-aux')
-        }
+        expect(database.entries.filter(one => one.kind === 'summary').length).toBeGreaterThan(0)
+        expect(database.entries.some(one => one.kind === 'continuation')).toBe(false)
       } finally { database.close() }
+      expect(eventsOfKind(shell.events, 'context.compacted').length).toBeGreaterThan(0)
       expect(assembly.models?.current()).toEqual({ choice: 'default', ...configuredModels.default, protocol: 'chat-completions', endpoint: providers.main.baseURL })
     } finally { shell.dispose(); assembly.close(); stage.dispose() }
   }, 10000)

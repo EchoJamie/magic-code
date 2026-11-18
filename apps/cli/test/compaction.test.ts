@@ -1,18 +1,16 @@
-/** 真配置、记录、工具与对话循环；受控模型验证自动整理及连续压缩接线。 */
+/** 真配置、记录、工具与对话循环；受控模型验证一次简报、重注与连续压缩接线。 */
 import { expect, test } from 'bun:test'
 import type { ModelRequest } from '@magic/contracts'
-import { realpathSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { continuationTurn, continuationCounts } from './notes-support.ts'
+import { realpathSync } from 'node:fs'
 import { createRecordsStore } from '@magic/data'
 import { createMaterialReader } from '@magic/conversation'
-import { createFauxGateway, type FauxTurn } from '@magic/faux'
+import { createFauxGateway } from '@magic/faux'
 import { attachShell, type Assembly } from '../src/index.ts'
 import { eventsOfKind, makeStage, readDatabase } from './support.ts'
 
 const textOf = (request: ModelRequest) => request.messages.map(message => message.role === 'tool' ? message.output : message.content).join('\n')
 
-test('39KB协作正文与27未决点经过真实工作循环、连续两次自动压缩，约束/来源可接续', async () => {
+test('39KB协作正文与27未决点经过真实工作循环：一次简报、重注、连续两次压缩', async () => {
   const stage = makeStage()
   const seeded = createRecordsStore({ dataDir: stage.dataDir, workspace: [realpathSync(stage.workspace)] })
   const origin = { sessionId: 'origin', entryId: seeded.serviceFor('origin').appendEntry({ kind: 'user', content: { text: '始终只读检查，禁止写入' }, at: 1 }) }
@@ -30,67 +28,49 @@ test('39KB协作正文与27未决点经过真实工作循环、连续两次自�
   seeded.collaboration.consumeInbox(coordinator.agentId, 5)
   const source = { session: 'origin', entry: seeded.collaboration.inbox(coordinator.agentId).find(item => item.messageId === sent.messageId)!.entryId! }
   seeded.close()
+
+  const brief = `## 目标与阶段\n始终只读检查，禁止写入\n## 未决问题与分歧\n${questions.join('\n')}\n## 下一步\n继续`
   const main: ModelRequest[] = [], preparations: ModelRequest[] = []
-  let app!: Assembly, replies = 0, readCoverage: number | null = null
+  let app!: Assembly, replies = 0
   app = stage.assemble({ session: 'origin', context: { compactAtTokens: 100, nearEntries: 1 }, modelGateway: stamper => ({ stream(request, options) {
     const system = request.messages[0]
-    const auxiliary = system?.role === 'system' && typeof system.content === 'string' && system.content.startsWith('这是当前模型的独立接续准备')
-    let turn: FauxTurn
+    const auxiliary = system?.role === 'system' && typeof system.content === 'string' && system.content.startsWith('你是接续简报的整理者')
     if (auxiliary) {
       preparations.push(request)
-      turn = continuationTurn(request, (text, speaker) => speaker === 'tool-result' ? '已读取笔记与计划，原内容保留' : text.replace(/x/g, ''))
-    } else {
-      main.push(request)
-      const covered = app.records.serviceFor('origin').coverage.read().summary
-      if (covered !== null && covered !== readCoverage) {
-        readCoverage = covered
-        turn = { toolCalls: [{ name: 'read', args: { path: join(stage.dataDir, 'notes', 'origin', 'MEMORY.md') } }, { name: 'plan_read', args: {} }] }
-      } else turn = { text: `答复 ${++replies}`, usage: { inputTokens: replies >= 6 ? 400 : 10, outputTokens: 5 } }
+      return createFauxGateway({ stamper, turns: [{ text: brief }] }).stream(request, options)
     }
-    return createFauxGateway({ stamper, turns: [turn] }).stream(request, options)
+    main.push(request)
+    return createFauxGateway({ stamper, turns: [{ text: `答复 ${++replies}`, usage: { inputTokens: replies >= 6 ? 400 : 10, outputTokens: 5 } }] }).stream(request, options)
   } }) })
   const shell = attachShell(app.shell)
   try {
     for (const input of ['始终只读检查，禁止写入', '第二件事', '第三件事', '第四件事', '第五件事', '第六件事', '第七件事', '第八件事']) await shell.submit(input)
     expect(replies).toBe(8)
     expect(textOf(main[0]!)).toContain(body)
-    expect(preparations.every(request => request.messages[0]?.role === 'system')).toBe(true)
-    expect(JSON.stringify(preparations)).toContain(`agent:${member.agent.agentId}`)
     expect(textOf(main.at(-1)!)).toContain('第八件事')
-    const note = readFileSync(join(stage.dataDir, 'notes', 'origin', 'MEMORY.md'), 'utf8')
-    expect(note).toContain('始终只读检查，禁止写入')
-    for (const question of questions) expect(note).toContain(question)
-    expect(note).toContain(`origin#${source.entry}`)
-    expect(main.at(-1)!.messages.some(message => message.role === 'tool' && message.name === 'read' && message.output.includes('未决点 27'))).toBe(true)
+
+    // 一次压缩只发一次简报请求；简报直接进请求，不读历史、不带工具。
+    expect(preparations).toHaveLength(2)
+    for (const request of preparations) expect(request.tools).toBeUndefined()
+    expect(preparations.some(request => textOf(request).includes('未决点 27'))).toBe(true)
+
+    // 下一次主请求带上了重注的简报；原文仍可回查。
+    expect(main.some(request => textOf(request).includes('【较早历史的接续简报】') && textOf(request).includes('未决点 27'))).toBe(true)
     const reader = createMaterialReader({ records: app.records.serviceFor('origin'), session: 'origin' })
     let restored = ''; let offset = 0
     for (;;) { const page = await reader({ ...source, offset, limit: 8000 }); restored += page.text; if (page.next === undefined) break; offset = page.next }
     expect(restored).toContain(body)
-    for (const request of preparations) expect(request.tools!.map(tool => tool.name).sort()).toEqual(['edit', 'glob', 'grep', 'history_read', 'ls', 'plan_read', 'read', 'write'])
+
     expect(eventsOfKind(shell.events, 'error')).toEqual([])
     expect(eventsOfKind(shell.events, 'context.compacted')).toHaveLength(2)
     expect(eventsOfKind(shell.events, 'memory.model').every(event => event.data.purpose === 'compact')).toBe(true)
     const db = readDatabase(app.paths.database)
     try {
       expect(db.entries.filter(entry => entry.kind === 'summary')).toHaveLength(2)
+      expect(db.entries.filter(entry => entry.kind === 'summary').every(entry => entry.content_text?.includes('未决点 27') === true)).toBe(true)
       expect(db.entries.filter(entry => entry.kind === 'user')).toHaveLength(9)
-      // 并发之后条目不再相邻（调用先落、结果按序落）——成对性按 `call` 引用核，不按相邻核
-      const callEntries = db.entries.filter(entry => entry.kind === 'tool-call')
-      const resultEntries = db.entries.filter(entry => entry.kind === 'tool-result')
-      expect(resultEntries).toHaveLength(callEntries.length)
-      for (const result of resultEntries) {
-        const call = (result.payload as { call?: string } | undefined)?.call
-        expect(callEntries.some(entry => (entry.payload as { id?: string } | undefined)?.id === call)).toBe(true)
-      }
-      expect(db.events.filter(event => event.kind === 'context.compacted')).toHaveLength(2)
-      const finalSummary = db.entries.filter(entry => entry.kind === 'summary').at(-1)!
-      expect(app.records.serviceFor(app.session!).coverage.read().summary).toBe(finalSummary.id)
+      expect(app.records.serviceFor(app.session!).coverage.read().summary).toBe(db.entries.filter(entry => entry.kind === 'summary').at(-1)!.id)
     } finally { db.close() }
-    const counts = continuationCounts(await Array.fromAsync(app.records.serviceFor('origin').readEntries('origin', { auxiliary: true })), preparations)
-    // 这几个数是**这份夹具**的轮数快照：接续按「记录 + 字符区间」切块，所以任何一次
-    // 工具回执的**文字长度**变化都会挪动切块边界（`read` 回执改成行范围之后就是如此），
-    // 多/少一块就多/少一轮。判据本身是上面那几条（正文、来源、两次压缩、无错误）。
-    expect(counts).toEqual({ contexts: 9, requests: 35, saves: 9, coverages: 2 })
     expect(eventsOfKind(shell.events, 'turn.end').every(event => event.data.reason === 'settled')).toBe(true)
   } finally { shell.dispose(); app.close(); stage.dispose() }
 }, 30000)

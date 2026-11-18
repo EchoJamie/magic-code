@@ -1,5 +1,6 @@
 import type { Entry, EventSink, EventStamper, ModelGateway, RecordId, RecordsService, SessionId, ToolRuntime, WorkingNotes } from '@magic/contracts'
-import { noteSignature, preparationReserve, prepareContinuation, PreparationFailure, substantiveEntries, type PreparationCapacity } from './organize.ts'
+import { BriefFailure, prepareBrief, type BriefCapacity } from './brief.ts'
+import { PreparationFailure, preparationReserve, substantiveEntries } from './organize.ts'
 import { readPlanOf } from './plan.ts'
 
 export type CompactTrigger = 'threshold' | 'context-limit'
@@ -17,9 +18,10 @@ export type Compactor = {
 export type CompactorDeps = {
   readonly records: RecordsService; readonly session: SessionId
   readonly gateway: ModelGateway
+  /** 旧接续装配的依赖；简报路径不再使用，保留字段以免装配面同时改两处。 */
   readonly notes?: WorkingNotes
   readonly noteTools?: (notes: WorkingNotes) => ToolRuntime
-  readonly capacity?: () => PreparationCapacity
+  readonly capacity?: () => BriefCapacity
   readonly inputVersion?: () => number
   readonly sink: EventSink; readonly stamper: EventStamper; readonly now: () => number
   readonly nearEntries: number; readonly compactAtFraction: number; readonly compactAtTokens: number
@@ -60,7 +62,7 @@ export function createCompactor(deps: CompactorDeps): Compactor {
       return usage >= (budget === undefined ? threshold : Math.min(threshold, Math.max(0, budget - preparationReserve(budget))))
     },
     async run({ trigger, signal, compact }) {
-      let notesSaved = false, basisKey: string | undefined
+      let basisKey: string | undefined
       try {
         signal?.throwIfAborted()
         const before = deps.records.coverage.read()
@@ -70,12 +72,11 @@ export function createCompactor(deps: CompactorDeps): Compactor {
         const plan = readPlanOf(deps.records, deps.session)
         const capacity = deps.capacity?.() ?? { inputBudget: contextWindow }
         const all = substantiveEntries(await Array.fromAsync(deps.records.readEntries(deps.session, { from: (before.coveredThrough ?? 0) + 1 })))
-        const old = frozenSegment(all, deps.nearEntries), through = old.at(-1)?.id
-        if (through === undefined) return { ok: false, kind: 'no-material', reason: '近段之外没有可整理的完整交互', canContinue: true, notesSaved }
-        if (!deps.notes || !deps.noteTools) return { ok: false, kind: 'configuration', reason: '本会话没有装配工作笔记接续能力', canContinue: trigger === 'threshold', notesSaved }
-        const files = await deps.notes.snapshot()
-        basisKey = JSON.stringify([before, through, version, inputBasis, plan.entry, capacity, files])
-        if (compact === undefined && basisKey === failedBasis) return { ok: false, kind: 'transient', reason: '相同接续条件已失败，等待材料或条件变化后再整理', canContinue: trigger === 'threshold', notesSaved }
+        const old = frozenSegment(all, deps.nearEntries)
+        const last = old.at(-1)?.id
+        if (last === undefined) return { ok: false, kind: 'no-material', reason: '近段之外没有可整理的完整交互', canContinue: true, notesSaved: false }
+        basisKey = JSON.stringify([before, last, version, inputBasis, plan.entry, capacity])
+        if (compact === undefined && basisKey === failedBasis) return { ok: false, kind: 'transient', reason: '相同接续条件已失败，等待材料或条件变化后再整理', canContinue: trigger === 'threshold', notesSaved: false }
         const checkBasis = () => {
           if (deps.records.coverage.read().summary !== before.summary || deps.inputVersion?.() !== version || inputs() !== inputBasis
             || JSON.stringify(deps.capacity?.() ?? capacity) !== JSON.stringify(capacity) || readPlanOf(deps.records, deps.session).entry !== plan.entry) throw new PreparationFailure('changed', '新交代、模型能力或覆盖依据已改变，先处理新内容后重新准备')
@@ -89,30 +90,26 @@ export function createCompactor(deps: CompactorDeps): Compactor {
             cursor = recent[0]!.id
           }
         }
-        const expected = await prepareContinuation({ records: deps.records, session: deps.session, gateway: deps.gateway, capacity,
-          notes: deps.notes, tools: deps.noteTools, sink: deps.sink, stamper: deps.stamper, now: deps.now, checkBasis,
-          saved: () => {
-            if (notesSaved) return
-            notesSaved = true
-            if (compact) deps.sink.emit(deps.stamper.stamp('compact.state', { ...compact, accepted: true, state: 'running', notesSaved: true }))
-          },
-        }, old, signal, compact?.focus)
-        if (noteSignature(await deps.notes.snapshot()) !== noteSignature(expected)) throw new PreparationFailure('changed', '笔记依据已改变，未提交覆盖')
-        // 最后一次异步 I/O 之后，同步复核全部可变依据并提交；不能再让出执行权。
+        const brief = await prepareBrief({ records: deps.records, session: deps.session, gateway: deps.gateway, capacity,
+          sink: deps.sink, stamper: deps.stamper, now: deps.now, ...(signal === undefined ? {} : { signal }), ...(compact?.focus === undefined ? {} : { focus: compact.focus }) }, old)
+        // 最后一次异步 I/O 之后，同步复核全部可变依据并提交。
         checkBasis()
         signal?.throwIfAborted()
-        const summary = deps.records.coverage.publish({ previousSummary: before.summary, from: old[0]!.id, through, at: deps.now(), notesSaved, ...(compact ? { compact } : {}) })
+        const summary = deps.records.coverage.publish({ previousSummary: before.summary, from: old[0]!.id, through: brief.through, at: deps.now(), notesSaved: true, text: brief.text, ...(compact ? { compact } : {}) })
         failedBasis = undefined; usage = undefined
         deps.sink.emit(deps.stamper.stamp('context.compacted', { summary }))
-        return { ok: true, summary, summarized: old.length, kept: all.length - old.length, notesSaved }
+        return { ok: true, summary, summarized: brief.summarized, kept: all.length - brief.summarized, notesSaved: true }
       } catch (error) {
-        const kind: CompactFailureKind = signal?.aborted ? 'canceled' : error instanceof PreparationFailure ? error.kind === 'capacity' ? 'local-capacity' : error.kind === 'changed' ? 'changed' : 'transient' : 'transient'
+        const kind: CompactFailureKind = signal?.aborted ? 'canceled'
+          : error instanceof BriefFailure ? error.kind === 'capacity' ? 'local-capacity' : 'transient'
+          : error instanceof PreparationFailure ? error.kind === 'capacity' ? 'local-capacity' : error.kind === 'changed' ? 'changed' : 'transient'
+          : 'transient'
         const reason = error instanceof Error ? error.message : String(error)
         if (kind !== 'changed' && kind !== 'canceled') {
           failedBasis = basisKey
           deps.sink.emit(deps.stamper.stamp('error', { message: `上下文整理未完成：${reason}。原始历史已保留，没有切换模型。` }))
         }
-        return { ok: false, kind, reason, canContinue: trigger === 'threshold' && kind !== 'canceled', notesSaved }
+        return { ok: false, kind, reason, canContinue: trigger === 'threshold' && kind !== 'canceled', notesSaved: false }
       }
     },
   }

@@ -103,8 +103,8 @@ export function makeFauxRecords(options: FauxRecordsOptions = {}): FauxRecords {
         const current = this.read()
         if (current.summary !== input.previousSummary) throw new Error('coverage conflict')
         const id = next++
-        entries.push({ id, kind: 'summary', at: input.at, content: { text: '接续材料已保存于本会话工作笔记' }, payload: {
-          from: input.from, coveredThrough: input.through, previousSummary: input.previousSummary, notesSaved: true, sources: [],
+        entries.push({ id, kind: 'summary', at: input.at, content: { text: input.text ?? '接续材料已保存于本会话工作笔记' }, payload: {
+          from: input.from, coveredThrough: input.through, previousSummary: input.previousSummary, notesSaved: true, brief: input.text !== undefined, sources: [],
         } })
         return id
       },

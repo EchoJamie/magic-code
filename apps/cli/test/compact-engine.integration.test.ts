@@ -1,8 +1,8 @@
 /** 主动压缩走真实 Unix socket、执行器桥及本地 HTTP，客户端不持有执行责任。 */
 import { expect, test } from 'bun:test'
-import { existsSync, readFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { CompactCommand, KernelEvent, ModelRequest } from '@magic/contracts'
+import type { CompactCommand, KernelEvent } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
 import { connectManager, type ManagerClient } from '@magic/host'
 import { createAgentLauncher } from '@magic/host'
@@ -10,7 +10,6 @@ import { startManager, type Manager } from '@magic/host'
 import { runPathsOf } from '@magic/host'
 import { startFixture, type Fixture, type FixtureTurn } from './ui/fixture.ts'
 import { FAKE_API_KEY } from './ui/sandbox.ts'
-import { continuationTurn } from './notes-support.ts'
 
 async function waitFor(label: string, check: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 5_000
@@ -20,68 +19,6 @@ async function waitFor(label: string, check: () => boolean | Promise<boolean>): 
   }
 }
 
-test('真实Engine准备中收到新纠正，普通输入保存后沿原compact请求重新准备并只提交一次', async () => {
-  const { collaborationRuntime, latch } = await import('./run-collaboration-fixture.ts')
-  const gate = latch()
-  let waiting = false, released = false, note = ''
-  const correction = '新增纠正：先核实再继续，不能使用旧结论'
-  const f = await collaborationRuntime('compact-original-request', async call => {
-    const messages = call.body['messages'] as { role: string; content: string; tool_call_id?: string; tool_calls?: { id: string; function: { name: string } }[] }[]
-    if (call.kind === 'agent') {
-      if (call.index === 0) return { text: '新工作已建立' }
-      if (call.index === 1) return { tool: 'read', args: { path: note } }
-      if (call.index === 2) {
-        const content = messages.findLast(message => message.role === 'tool')!.content
-        return { tool: 'write', args: { path: note, content: content.slice(content.indexOf('\n') + 1) + '\n' + correction } }
-      }
-      return { text: '已通过真实工具保存新纠正' }
-    }
-    const calls = new Map(messages.flatMap(message => (message.tool_calls ?? []).map(tool => [tool.id, tool.function.name] as const)))
-    const request: ModelRequest = { messages: messages.map(message => message.role === 'tool'
-      ? { role: 'tool', callId: message.tool_call_id!, name: calls.get(message.tool_call_id!)!, output: message.content, ok: true }
-      : { role: message.role as 'system' | 'user' | 'assistant', content: message.content }) }
-    if (!released && request.messages.some(message => message.role === 'tool' && message.name === 'write')) {
-      waiting = true
-      await gate.promise
-      released = true
-    }
-    const turn = continuationTurn(request)
-    return turn.toolCalls ? { tools: turn.toolCalls.map(tool => ({ tool: tool.name, args: tool.args ?? {} })) } : { text: typeof turn.text === 'string' ? turn.text : turn.text?.join('') ?? '' }
-  })
-  try {
-    f.client.send({ type: 'input.submit', ref: 'initial', text: '新建后准备接续' })
-    await f.wait('初始工作空闲', () => f.calls.length === 1 && f.manager.runs().some(run => run.session === f.session() && run.state === 'idle'))
-    const session = f.session()!, records = f.store.serviceFor(session)
-    const generation = f.manager.executors()[0]!.gen
-    for (let n = 0; n < 24; n++) records.appendEntry({ kind: n % 2 ? 'assistant' : 'user', content: { text: `历史要求 ${n}` }, at: n + 1 })
-    note = join(f.magic.base, 'notes', session, 'MEMORY.md')
-    const requestId = 'one-compact-request'
-    f.client.send({ type: 'compact.request', session, requestId })
-    await f.wait('第一批已保存但尚未完成', () => waiting)
-    f.client.send({ type: 'input.submit', ref: 'final-correction', text: correction })
-    await f.wait('新纠正持久受理', () => records.inputs.get('final-correction') !== undefined)
-    expect(f.manager.executors()).toEqual([{ session, gen: generation }])
-    expect(records.coverage.read().summary).toBeNull()
-    gate.release()
-    await f.wait('原请求完成', () => f.events.some(event => event.kind === 'compact.state' && event.data.requestId === requestId && event.data.state === 'completed'))
-    expect(records.inputs.get('final-correction')?.state).toBe('included')
-    expect(readFileSync(note, 'utf8')).toContain(correction)
-    const lastOrdinary = f.calls.findLastIndex(call => call.kind === 'agent')
-    expect(lastOrdinary).toBeGreaterThan(1)
-    expect(f.calls.slice(lastOrdinary + 1).every(call => call.kind === 'internal')).toBe(true)
-    expect(f.calls.slice(lastOrdinary + 1).length).toBeGreaterThan(0)
-    const states = (await Array.fromAsync(records.readEvents(session))).filter(event => event.kind === 'compact.state')
-    expect(new Set(states.map(event => event.data.requestId))).toEqual(new Set([requestId]))
-    expect(states.filter(event => event.data.state === 'completed')).toHaveLength(1)
-    expect((await Array.fromAsync(records.readEntries(session))).filter(entry => entry.kind === 'summary')).toHaveLength(1)
-    const count = f.calls.length, offset = f.events.length
-    f.client.send({ type: 'compact.query', session, requestId })
-    await f.wait('同请求查询已提交结果', () => f.events.slice(offset).some(event => event.kind === 'compact.state' && event.data.requestId === requestId && event.data.state === 'completed'))
-    expect(f.calls).toHaveLength(count)
-    expect(f.errors).toEqual([])
-  } finally { gate.release(); await f.close() }
-}, 30000)
-
 test('空闲会话主动压缩：断开继续，重连同请求不重放，摘要原子落库并释放执行责任', async () => {
   const root = realpathSync(mkdtempSync('/tmp/magic-c-'))
   const home = join(root, 'home'), base = join(root, 'data'), workspace = join(root, 'project')
@@ -90,7 +27,6 @@ test('空闲会话主动压缩：断开继续，重连同请求不重放，摘�
   const paths = runPathsOf(magic, '/tmp')
   const session = 'stored-idle-session', requestId = 'compact-without-client'
   const model = 'deepseek-flash'
-  const note = join(base, 'notes', session, 'MEMORY.md')
   const environment = { HOME: home, PATH: '/usr/bin:/bin', LANG: 'en_US.UTF-8', NO_PROXY: '127.0.0.1,localhost' }
   let releaseSummary!: () => void
   const summaryGate = new Promise<void>(resolve => { releaseSummary = resolve })
@@ -117,12 +53,8 @@ test('空闲会话主动压缩：断开继续，重连同请求不重放，摘�
       originalIds.push(records.appendEntry({ kind: 'user', content: { text: `阶段 ${index} 的用户要求` }, at: index * 2 + 1 }))
       originalIds.push(records.appendEntry({ kind: 'assistant', content: { text: `阶段 ${index} 已完成` }, at: index * 2 + 2 }))
     }
-    turns.push({ kind: 'tool', name: 'history_read', args: { entry: originalIds[0] }, following: [
-      ...originalIds.slice(1, 4).map(entry => ({ name: 'history_read', args: { entry } })),
-      { name: 'plan_read', args: {} }, { name: 'ls', args: { path: join(base, 'notes', session) } },
-    ], text: '开始实际接续准备', chunks: 1, chunkDelayMs: 0, beforeChunk: async () => { summaryReached = true; await summaryGate } },
-    { kind: 'tool', name: 'write', args: { path: note, content: originalIds.slice(0, 4).map(id => `已读取原文 [来源](${session}#${id})`).join('\n') } },
-    { kind: 'text', text: '本批已保存', chunks: 1, chunkDelayMs: 0 })
+    const brief = `## 目标与阶段\n继续已存工作\n## 证据位置\n${originalIds.slice(0, 4).map(id => `${session}#${id}`).join('\n')}`
+    turns.push({ kind: 'text', text: brief, chunks: 1, chunkDelayMs: 0, beforeChunk: async () => { summaryReached = true; await summaryGate } })
     store.collaboration.registerAgent({ operationId: 'seed-agent', sessionId: session, name: '已存工作', role: '',
       model: { protocol: 'chat-completions', endpoint: fixture.baseURL, choice: 'default', provider: 'local', model }, at: 1,
     })
@@ -155,8 +87,8 @@ test('空闲会话主动压缩：断开继续，重连同请求不重放，摘�
     expect(manager.executors()).toEqual([{ session, gen: starts[0]! }])
     expect(records.coverage.read().summary).toBeNull()
     expect(chats()).toHaveLength(1)
-    expect(JSON.stringify(chats()[0]!.body['messages'])).toContain('这是当前模型的独立接续准备')
-    expect(chats()[0]!.tools).toBe(8)
+    expect(JSON.stringify(chats()[0]!.body['messages'])).toContain('你是接续简报的整理者')
+    expect(chats()[0]!.tools).toBe(0)
 
     client.close(); client = undefined
     await waitFor('客户端断开', () => manager!.clients() === 0)
@@ -177,11 +109,10 @@ test('空闲会话主动压缩：断开继续，重连同请求不重放，摘�
     expect(memory.summary).toBe(completed.summary)
     expect(memory.coveredThrough).toBe(summary.payload.coveredThrough)
     expect(memory.coveredThrough).toBeGreaterThan(0)
-    expect(readFileSync(note, 'utf8')).toContain(`${session}#${originalIds[3]}`)
-    expect(summary.content.text).not.toContain('已读取原文')
+    expect(summary.content.text).toContain(`${session}#${originalIds[3]}`)
     expect(completed.notesSaved).toBe(true)
     expect(entries.filter(entry => entry.kind !== 'summary').map(entry => entry.id)).toEqual(originalIds)
-    expect((await states()).map(event => event.data.state)).toEqual(['pending', 'running', 'running', 'completed'])
+    expect((await states()).map(event => event.data.state)).toEqual(['pending', 'running', 'completed'])
     await waitFor('执行责任正常释放', () => manager!.executors().length === 0 && manager!.runs().every(run => !run.holds) && exits.length === 1)
     expect(exits).toEqual([{ gen: starts[0]!, reason: '执行实例已释放' }])
 
@@ -201,11 +132,11 @@ test('空闲会话主动压缩：断开继续，重连同请求不重放，摘�
     }
     expect(await requestState({ type: 'compact.query', session, requestId })).toEqual(completed)
     expect(await requestState({ type: 'compact.request', session, requestId })).toEqual(completed)
-    expect(chats()).toHaveLength(3)
+    expect(chats()).toHaveLength(1)
     expect(starts).toHaveLength(1)
     expect(manager.executors()).toEqual([])
     expect(manager.runs().every(run => !run.holds)).toBe(true)
-    expect(await states()).toHaveLength(4)
+    expect(await states()).toHaveLength(3)
     expect(records.coverage.read()).toEqual(memory)
     expect((await Array.fromAsync(records.readEntries(session))).map(entry => entry.id)).toEqual(entries.map(entry => entry.id))
     expect(events.filter(event => event.kind === 'error')).toEqual([])
@@ -282,43 +213,5 @@ test('成员忙时主动压缩固定提交目标，切回整体后查询和取�
     expect(f.shell.getView().sessionId).toBe('origin')
     expect(f.shell.getView().draft).toBe('整体新草稿')
     expect(f.errors).toEqual([])
-  } finally { gate.release(); await f.close() }
-}, 30_000)
-
-test('新建工作复用当前执行器压缩，真实SDK发辅助请求；部分保存取消保留文件与原覆盖', async () => {
-  const { collaborationRuntime, latch } = await import('./run-collaboration-fixture.ts')
-  const gate = latch()
-  let note = ''
-  const f = await collaborationRuntime('compact-new-session', async call => {
-    if (call.kind === 'agent') return { text: '新工作已建立' }
-    if (call.index === 0) return { tool: 'write', args: { path: note, content: '实际部分保存；原历史仍保留' } }
-    await gate.promise
-    return { text: '尚未完整准备' }
-  })
-  try {
-    expect(f.session()).toBeNull()
-    f.client.send({ type: 'input.submit', ref: 'new-work', text: '新建工作后压缩' })
-    await f.wait('新工作空闲', () => f.calls.length === 1 && f.manager.runs().some(run => run.session === f.session() && run.state === 'idle'))
-    const session = f.session()!, records = f.store.serviceFor(session)
-    const generation = f.manager.executors()[0]?.gen
-    expect(generation).toBeDefined()
-    for (let n = 0; n < 24; n++) records.appendEntry({ kind: n % 2 ? 'assistant' : 'user', content: { text: `接续材料 ${n}` }, at: n + 1 })
-    note = join(f.magic.base, 'notes', session, 'MEMORY.md')
-    const requestId = 'new-work-compact'
-    f.client.send({ type: 'compact.request', session, requestId })
-    await f.wait('部分保存持久事实', () => f.events.some(event => event.kind === 'compact.state' && event.data.requestId === requestId && event.data.notesSaved === true))
-    expect(f.manager.executors()).toEqual([{ session, gen: generation! }])
-    const prepare = f.calls.find(call => call.kind === 'internal')!
-    expect(prepare.model).toBe('entry-model')
-    const messages = prepare.body['messages'] as { role: string; content: string }[]
-    expect(messages.some(message => message.role === 'user')).toBe(true)
-    expect((prepare.body['tools'] as { function: { name: string } }[]).map(tool => tool.function.name).sort()).toEqual(['edit', 'glob', 'grep', 'history_read', 'ls', 'plan_read', 'read', 'write'])
-    f.client.send({ type: 'compact.cancel', session, requestId })
-    await f.wait('同请求取消', () => f.events.some(event => event.kind === 'compact.state' && event.data.requestId === requestId && event.data.state === 'cancelled'))
-    expect(readFileSync(note, 'utf8')).toBe('实际部分保存；原历史仍保留')
-    expect(records.coverage.read()).toEqual({ summary: null, coveredThrough: null })
-    const states = (await Array.fromAsync(records.readEvents(session))).filter(event => event.kind === 'compact.state')
-    expect(new Set(states.map(event => event.data.requestId))).toEqual(new Set([requestId]))
-    expect(states.at(-1)?.data).toMatchObject({ state: 'cancelled', notesSaved: true })
   } finally { gate.release(); await f.close() }
 }, 30_000)

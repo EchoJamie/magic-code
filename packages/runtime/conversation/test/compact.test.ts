@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import type { Entry } from '@magic/contracts'
 import { createCompactor, frozenSegment } from '../src/compact.ts'
+import { DEFAULT_TEST_SESSION } from '@magic/faux'
 import { makeCompactor, makeStage } from './support/harness.ts'
 
 test('压缩触发依据实际用量，未报告用量不触发', () => {
@@ -21,13 +22,18 @@ test('冻结只经过完整assistant/tool-call/tool-result边界，穿插成员�
   expect(frozenSegment(incomplete, 1).map(entry => entry.id)).toEqual([1])
 })
 
-test('没有可覆盖完整旧段或没有接续装配时保留覆盖与原记录', async () => {
-  const stage = makeStage(), compact = makeCompactor(stage, { policy: { nearEntries: 1 } })
+test('没有旧段时保留覆盖；有旧段时一次调用生成简报并提交', async () => {
+  const stage = makeStage({ turns: [{ text: '## 目标与阶段\n保留原文\n## 下一步\n继续' }] })
+  const compact = makeCompactor(stage, { policy: { nearEntries: 1 } })
   expect(await compact.run({ trigger: 'threshold' })).toMatchObject({ ok: false, kind: 'no-material' })
   for (let n = 0; n < 3; n++) stage.records.appendEntry({ kind: 'user', content: { text: '保留原文' }, at: n })
-  expect(await compact.run({ trigger: 'threshold' })).toMatchObject({ ok: false, kind: 'configuration' })
-  expect(stage.records.coverage.read()).toEqual({ summary: null, coveredThrough: null })
-  expect(stage.gateway.requests).toEqual([])
+  expect(await compact.run({ trigger: 'threshold' })).toMatchObject({ ok: true, summarized: 2 })
+  expect(stage.gateway.requests).toHaveLength(1)
+  expect(stage.records.coverage.read()).toMatchObject({ coveredThrough: 2 })
+  const summary = stage.records.coverage.read().summary
+  expect(summary).not.toBeNull()
+  const entries = await Array.fromAsync(stage.records.readEntries(DEFAULT_TEST_SESSION, { auxiliary: true, from: summary!, to: summary! }))
+  expect(entries[0]?.content).toEqual({ text: '## 目标与阶段\n保留原文\n## 下一步\n继续' })
 })
 
 test('当前模型有效输入预算比上下文窗口小，自动触发仍保留接续往返余量', () => {

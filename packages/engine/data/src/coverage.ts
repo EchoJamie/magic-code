@@ -19,8 +19,8 @@ export function createCoverageRecords(db: Database, session: SessionId, append: 
     if (!row || row.archived) throw new Error('会话不存在或已归档，未提交覆盖')
     if (!Number.isSafeInteger(input.through) || input.through <= (current.coveredThrough ?? 0) || input.from > input.through
       || !db.query('SELECT 1 FROM entries WHERE session=? AND id=? AND kind NOT IN (\'continuation\',\'summary\')').get(session, input.through)) throw new Error('接续覆盖范围无效')
-    const summary = append({ kind: 'summary', content: { text: '接续材料已保存于本会话工作笔记；通过真实工具读取后继续。' }, at: input.at,
-      payload: { from: input.from, coveredThrough: input.through, previousSummary: current.summary, notesSaved: true, sources: [] } })
+    const summary = append({ kind: 'summary', content: { text: input.text ?? '接续材料已保存于本会话工作笔记；通过真实工具读取后继续。' }, at: input.at,
+      payload: { from: input.from, coveredThrough: input.through, previousSummary: current.summary, notesSaved: true, brief: input.text !== undefined, sources: [] } })
     if (input.compact) events.appendEvent({ id: events.nextId(), session, turn: null, at: input.at, kind: 'compact.state',
       data: { ...input.compact, accepted: true, state: 'completed', summary, notesSaved: input.notesSaved } })
     return summary

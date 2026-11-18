@@ -21,7 +21,33 @@
 import { describe, expect, test } from 'bun:test'
 import type { KernelEvent } from '@magic/contracts'
 import { attachShell } from '../src/index.ts'
-import { eventsOfKind, makeStage } from './support.ts'
+import { eventsOfKind, lastModel, makeStage } from './support.ts'
+
+describe('计划是常驻材料', () => {
+  test('更新计划后的下一请求带着当前目标与步骤', async () => {
+    const stage = makeStage()
+    try {
+      const assembly = stage.assemble({ turns: [
+        { toolCalls: [{ name: 'plan_update', args: { goal: '完成 X', steps: [{ text: '第一步', status: 'pending' }], notes: '备注' } }] },
+        { text: '已更新' },
+        { text: '继续' },
+      ] })
+      const shell = attachShell(assembly.shell)
+      await shell.submit('更新计划')
+      await shell.submit('继续')
+      const request = lastModel(stage).requests.at(-1)!
+      const system = request.messages[0]
+      if (system?.role !== 'system' || typeof system.content !== 'string') throw new Error('首个消息不是系统提示')
+      expect(system.content).toContain('【当前计划】')
+      expect(system.content).toContain('完成 X')
+      expect(system.content).toContain('第一步')
+      shell.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
 
 describe('权限是窄的', () => {
   test('判轻的一件都不问（`plan_read` / `read` 都在内）；**禁止清单里的照拒**', async () => {

@@ -61,7 +61,17 @@ export type AssembleContextInput = {
 export async function assembleContext(
   input: AssembleContextInput,
 ): Promise<readonly ModelMessage[]> {
-  const messages: ModelMessage[] = [{ role: 'system', content: input.systemPrompt }]
+  // 接续简报随系统材料重注：它只说明旧段留下了什么、下一步从哪继续；原文仍可回查。
+  const coverage = input.records.coverage.read()
+  let brief = ''
+  if (coverage.summary !== null) {
+    for await (const entry of input.records.readEntries(input.session, { from: coverage.summary, to: coverage.summary })) {
+      if (entry.kind === 'summary' && entry.payload !== undefined && 'brief' in entry.payload && entry.payload.brief === true) {
+        brief = await rawTextOf(entry.content, input.records)
+      }
+    }
+  }
+  const messages: ModelMessage[] = [{ role: 'system', content: brief === '' ? input.systemPrompt : `${input.systemPrompt}\n\n【较早历史的接续简报】\n${brief}` }]
   const supplied = new Map<string, import('@magic/contracts').KnowledgeReference>()
   const provided = (references: readonly import('@magic/contracts').KnowledgeReference[] = []) => {
     for (const reference of references) supplied.set(`${reference.id}\0${reference.revision}`, reference)
@@ -69,7 +79,6 @@ export async function assembleContext(
 
   // 条目一次取尽——`assistant` 消息的 `toolCalls` 来自**紧随其后**的调用条目（需前瞻一拍），
   // 故先缓冲再走。上下文本就整条送模型，缓冲不增峰值（压缩也只多读一遍，见 `./compact.ts`）。
-  const coverage = input.records.coverage.read()
   const all: Entry[] = []
   const range = coverage.coveredThrough === null ? undefined : { from: coverage.coveredThrough + 1 }
   for await (const entry of input.records.readEntries(input.session, range)) {

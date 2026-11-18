@@ -78,6 +78,8 @@ export type ModelStreamOptions = {
    * （`ai-sdk.ts` × `vendors.ts` 的 `reasoningOf`）；本域之外谁也不解释它。
    */
   readonly reasoning?: ReasoningSetting
+  /** 这一次请求的输出上限；缺省用模型规格。用于内务调用，不改变主请求。 */
+  readonly maxOutputTokens?: number
 }
 
 /**

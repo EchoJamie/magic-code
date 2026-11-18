@@ -25,7 +25,7 @@ function fixture() {
   const f = notesFixture({ near: 1, gateway(base) {
     const main = held(base), preparation = held(base)
     gates.main = main; gates.preparation = preparation
-    return { stream(request, options) { return (JSON.stringify(request.messages[0]).includes('独立接续准备') ? preparation : main).gateway.stream(request, options) } }
+    return { stream(request, options) { return ((request.messages[0]?.role === 'system' && typeof request.messages[0].content === 'string' && request.messages[0].content.startsWith('你是接续简报的整理者')) ? preparation : main).gateway.stream(request, options) } }
   } })
   const published: KernelEvent[] = []
   const controller = createCompactController({ store: f.store, now: Date.now, publish: event => published.push(event) })
@@ -48,7 +48,7 @@ test('空闲主动压缩共用真实服务与摘要事务，不启动业务；�
     const result = await f.controller.cancel('work', 'request')
     expect(result.state).toBe('completed')
     expect(result.summary).toBe(f.records.coverage.read().summary!)
-    expect(f.preparation.calls).toBeGreaterThan(1)
+    expect(f.preparation.calls).toBe(1)
     expect(JSON.stringify(f.preparation.requests[0]?.messages)).toContain(f.request.focus)
     expect(f.service.busy()).toBe(false)
     const persisted: KernelEvent[] = []

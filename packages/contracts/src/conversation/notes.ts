@@ -65,5 +65,7 @@ export interface CoverageRecords {
     readonly at: number
     readonly compact?: { readonly requestId: string; readonly focus?: string }
     readonly notesSaved: boolean
+    /** 本次压缩生成的接续简报；缺省保留旧摘要文本。 */
+    readonly text?: string
   }): number
 }

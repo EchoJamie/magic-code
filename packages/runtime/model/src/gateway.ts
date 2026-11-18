@@ -328,8 +328,9 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
       const streamRetrying = withTransientRetry(streamVendor, {
         policy: retryPolicy, sleep: options.sleep, onAttempt: attempt => { attempts = attempt },
       })
+      const maxOutputTokens = streamOptions?.maxOutputTokens === undefined ? spec.maxOutputTokens : Math.min(spec.maxOutputTokens, streamOptions.maxOutputTokens)
       const parts = failure === undefined
-        ? streamRetrying({ ...effective, model }, { ...streamOptions, reasoning }, spec.maxOutputTokens)
+        ? streamRetrying({ ...effective, model }, { ...streamOptions, reasoning }, maxOutputTokens)
         : (async function* () { throw new Error(failure) })()
 
       const { events, result } = toKernelEvents(
