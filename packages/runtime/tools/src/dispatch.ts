@@ -284,7 +284,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
 
       // ④ 回填——终值定形（大块转存经记录域），先落事件、再交调用方
       const content = await toContent(outcome.output, options.blobs)
-      options.sink.emit(toolResultEvent(options.stamper, callRef, outcome.ok, content))
+      options.sink.emit(toolResultEvent(options.stamper, callRef, outcome.ok, content, outcome.cwd))
 
       // **读到哪儿了**（U63）——只读那三件**成了**才报（没成＝没读到，报它会把
       // 「读失败」说成「读过」）。落点归位在这一层做（见 `readPlaceOf`）：沙箱就在这儿。
@@ -305,6 +305,8 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
         // **这一轮停在这儿**（U72）——原样过手（本域不认识「哪一轮」，收束归对话域）
         ...(outcome.halt === true ? { halt: true as const } : {}),
         ...(outcome.background === undefined ? {} : { background: outcome.background }),
+        // **这一笔之后在哪**（给外壳状态区）——有就带、没有就不带
+        ...(outcome.cwd === undefined ? {} : { cwd: outcome.cwd }),
       }
     },
   }

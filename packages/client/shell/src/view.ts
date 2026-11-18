@@ -1142,7 +1142,20 @@ function addToolOutput(view: ShellView, call: RecordId, text: string): ShellView
 
 type ToolResultData = Extract<KernelEvent, { kind: 'tool.result' }>['data']
 
+/** 会话目录的显示串——相对工作区根；根本身取目录名；根外给整条路径（渲染层按宽度裁）。 */
+function dirLabelOf(cwd: string, root: string | undefined): string {
+  if (root === undefined || root === '') return cwd
+  if (cwd === root) return root.split('/').filter((piece) => piece !== '').pop() ?? '/'
+  return cwd.startsWith(`${root}/`) ? cwd.slice(root.length + 1) : cwd
+}
+
 function reduceToolResult(view: ShellView, data: ToolResultData, at: number): ShellView {
+  // **状态区那一格**：这一笔之后会话在哪（`exec` 才带）——目录是会话状态，不是每条命令的附注
+  if (typeof data.cwd === 'string' && data.cwd !== '') {
+    const root = view.catalog.find((one) => one.id === view.sessionId)?.workspace?.[0]
+    view = { ...view, workspace: dirLabelOf(data.cwd, root) }
+  }
+
   const target = indexOfCall(view, data.call)
   if (target === -1) return view
 
@@ -1337,9 +1350,18 @@ export function rebuild(view: ShellView, entries: readonly Entry[], options: { r
   for (const row of [...view.settled, ...view.rows]) {
     if (row.kind === 'round' && !rounds.some(one => one.key === row.key)) rounds.push(row.timing)
   }
+  // **回放时状态区那一格**——最后一条带目录的工具结果说了「会话现在在哪」
+  let workspace = view.workspace
+  const root = view.catalog.find((one) => one.id === view.sessionId)?.workspace?.[0]
+  for (const entry of entries) {
+    if (entry.kind !== 'tool-result') continue
+    const cwd = (entry.payload as { readonly cwd?: unknown } | undefined)?.cwd
+    if (typeof cwd === 'string' && cwd !== '') workspace = dirLabelOf(cwd, root)
+  }
   return {
     ...view,
     ...(options.messages === undefined ? {} : { messages: options.messages }),
+    workspace,
     settled: [...pageHeaderOf(view), ...rebuildRows(entries, options.collapseTools, rounds, options.messages ?? view.messages, view.collaboration)],
     round,
     rows: [],

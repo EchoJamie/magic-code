@@ -69,6 +69,11 @@ export type ToolRunResult = {
   readonly ok: boolean
   readonly output: string
   /**
+   * **这一笔之后执行会话所在的目录**（`exec` 才填）——给外壳更新状态区那一格。
+   * 只在这一笔**改到了会话目录**（没显式给 cwd）且取回成功时带；其余不带。
+   */
+  readonly cwd?: string
+  /**
    * **这一次调用交付了一份技能主文**（U33）——只有读技能的那件工具会填（见契约 `ToolResult.skill`）。
    *
    * 「机制在内、工具集在外」的落点：分发**不认识技能**，它只是把执行体给的这一位原样带上去

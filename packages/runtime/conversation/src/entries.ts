@@ -108,6 +108,11 @@ export type ToolOutcome = {
    */
   readonly halt?: true
   readonly background?: import('@magic/contracts').BackgroundWait | import('@magic/contracts').BackgroundFinish
+  /**
+   * **这一笔之后执行会话所在的目录**（`exec` 才带）——进条目载荷，回放与状态区看同一份。
+   * 缺省 ＝ 这一笔没改目录 / 不是 `exec` / 取不到。
+   */
+  readonly cwd?: string
 }
 
 /** 端口结果 → 落账形态——两样输出各取各的，改名不改义。 */
@@ -126,6 +131,8 @@ export function toolOutcomeOf(result: ToolResult): ToolOutcome {
     // 这一轮停在这儿（U72）——同一条（判 `true`：这一位是**声明**，不是可假的值）
     ...(result.halt === true ? { halt: true as const } : {}),
     ...(result.background === undefined ? {} : { background: result.background }),
+    // 这一笔之后在哪——有就带（状态区与回放看同一份）
+    ...(result.cwd === undefined ? {} : { cwd: result.cwd }),
   }
 }
 
@@ -246,6 +253,7 @@ export function appendToolResultEntry(log: EntryLog, outcome: ToolOutcome, knowl
       ...(outcome.plan === undefined ? {} : { plan: outcome.plan }),
       ...(outcome.background === undefined ? {} : { background: outcome.background }),
       ...(outcome.notExecuted === undefined ? {} : { notExecuted: outcome.notExecuted }),
+      ...(outcome.cwd === undefined ? {} : { cwd: outcome.cwd }),
     },
     ...turnField(log),
     at: log.now(),

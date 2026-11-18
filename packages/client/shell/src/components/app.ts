@@ -498,6 +498,20 @@ export function liveLayoutOf(
   return { plan, rest, roundHeight, planGap, dockRows }
 }
 
+/** 正在跑的那一条「在做什么」——意图（`description`）优先，命令首行兜底。 */
+function actionOf(row: Extract<LogRow, { kind: 'tool' }>): string {
+  const args = row.args
+  const description = args?.['description']
+  if (typeof description === 'string' && description.trim() !== '') return description.trim()
+  const command = args?.['command'] ?? args?.['cmd']
+  if (typeof command === 'string') {
+    const first = command.split('\n', 1)[0]?.trim() ?? ''
+    if (first !== '') return first
+  }
+  const first = row.argsText.split('\n', 1)[0]?.trim() ?? ''
+  return first === '' ? row.name : first
+}
+
 export function roundLineText(view: ShellView, now: number | null): string | null {
   const round = view.round
   if (round === null || round.end !== null) return null
@@ -507,6 +521,11 @@ export function roundLineText(view: ShellView, now: number | null): string | nul
   const clock = elapsed === null ? '' : ` · ${durationText(elapsed)}${view.turnDuration === 'active' ? '（不含等待）' : ''}`
   if (run?.state === 'stopping') return `■ 正在停止${clock}`
   if (round.waiting.length > 0) return `◊ 等待你${clock}`
+  // **在跑什么**——工具在跑时这一行说「当前动作」，不是空转的 thinking...
+  const running = view.rows.filter((row): row is Extract<LogRow, { kind: 'tool' }> => row.kind === 'tool' && row.state === 'running')
+  if (running.length > 1) return `● ${running.length} 条命令在跑${clock}`
+  const current = running[0]
+  if (current !== undefined) return `● ${actionOf(current)}${clock}`
   return `● thinking...${elapsed === null ? '' : ` ${Math.floor(elapsed / 1000)}s${view.turnDuration === 'active' ? '（不含等待）' : ''}`}`
 }
 

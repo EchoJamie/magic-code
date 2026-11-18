@@ -203,6 +203,8 @@ export function isToolResultPayload(payload: unknown): payload is ToolResultPayl
   // 没给照旧什么都不多。与 `user` 条目那条硬闸同一个姿势：**放行两种形状，不是放行一切形状**
   // （计划笔记是模型据以接着干活的那份，形状坏了读侧就只能猜）。
   if (payload['background'] !== undefined && !isBackgroundResult(payload['background'])) return false
+  // 会话目录那一位（可选）：给了就必须是一条非空路径，不给照旧
+  if (payload['cwd'] !== undefined && (typeof payload['cwd'] !== 'string' || payload['cwd'] === '')) return false
   const plan = payload['plan']
   return plan === undefined || plan === null || isPlanNote(plan)
 }

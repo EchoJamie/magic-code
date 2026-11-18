@@ -322,7 +322,11 @@ export function defineExecTool(): ToolDefinition {
         ...(adopter === undefined ? {} : { adopt: run => adopter.adopt!(run) }),
         onOutput: ctx.onOutput, signal: ctx.signal,
       })
-      return composeOutcome(result, cwd)
+      const outcome = composeOutcome(result, cwd)
+      // **会话目录变了**才报给外壳（显式 cwd 是一次性覆盖，不改会话目录）
+      return args.cwd === undefined && result.ok && result.cwd !== undefined
+        ? { ...outcome, cwd: result.cwd }
+        : outcome
     },
   })
 }

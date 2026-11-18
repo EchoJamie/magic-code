@@ -4,6 +4,7 @@ import { roundLineText } from '../src/components/app.ts'
 import { rowLines } from '../src/components/log.ts'
 import { foldRound, roundDuration, roundSummary } from '../src/boards/conversation/round.ts'
 import { createView, rebuild, reduce } from '../src/view.ts'
+import type { ShellView } from '../src/view.ts'
 import { event, TEST_AT, TEST_SESSION } from './events.ts'
 import { createStage } from './screen.ts'
 
@@ -55,6 +56,26 @@ describe('整轮时间投影', () => {
     expect(rowLines(thought, { columns: 100, expanded: true, now: 10000 })).toEqual(rowLines(thought, { columns: 100, expanded: true, now: 20000 }))
     expect(rowLines(thought, { columns: 100, expanded: true }).map(line => line.segments.map(s => s.text).join(''))).toEqual(['│ 第一行', '│ 第二行'])
   })
+  test('工具在跑时，输入区上方那行说「在做什么」——意图优先，命令首行兜底', () => {
+    const base = rebuild({ ...createView(), sessionId: TEST_SESSION }, [], { timing: timing.slice(0, 3) })
+    const running = (args: Record<string, unknown>, key = 't1') => ({
+      kind: 'tool' as const, key, call: null, name: 'exec', argsText: '', args,
+      state: 'running' as const, elapsedMs: null, startedAt: TEST_AT, output: [],
+    })
+    expect(roundLineText({ ...base, rows: [running({ command: 'bun test --watch', description: '跑测试' })] }, TEST_AT + 12_001)).toBe('● 跑测试 · 12s')
+    expect(roundLineText({ ...base, rows: [running({ command: 'bun test --watch\nls' })] }, TEST_AT + 12_001)).toBe('● bun test --watch · 12s')
+    expect(roundLineText({ ...base, rows: [running({}), running({}, 't2')] }, TEST_AT + 12_001)).toBe('● 2 条命令在跑 · 12s')
+    expect(roundLineText({ ...base, rows: [] }, TEST_AT + 12_001)).toBe('● thinking... 12s')
+  })
+
+  test('工具结果带来的目录写进状态区那一格', () => {
+    let view: ShellView = { ...createView(), sessionId: TEST_SESSION }
+    const call = event('tool.call', { name: 'exec', args: { command: 'cd sub' } }, { id: 300 })
+    view = reduce(view, call)
+    view = reduce(view, event('tool.result', { call: call.id, ok: true, output: { text: '' }, cwd: '/w/sub' }, { id: 301 }))
+    expect(view.workspace).toBe('/w/sub')
+  })
+
   test('200×40、100×40 与矮窗：一条 loading，两条分隔线，临时层在 dock，计划不进入 scrollback', async () => {
     const stage = createStage()
     stage.feed([timing[0]!])
