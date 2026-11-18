@@ -98,6 +98,7 @@ export function createCompactor(deps: CompactorDeps): Compactor {
         const summary = deps.records.coverage.publish({ previousSummary: before.summary, from: old[0]!.id, through: brief.through, at: deps.now(), notesSaved: true, text: brief.text, ...(compact ? { compact } : {}) })
         failedBasis = undefined; usage = undefined
         deps.sink.emit(deps.stamper.stamp('context.compacted', { summary }))
+        if (compact === undefined) deps.sink.emit(deps.stamper.stamp('compact.state', { requestId: `auto:${summary}`, accepted: true, state: 'completed', summary, notesSaved: true }))
         return { ok: true, summary, summarized: brief.summarized, kept: all.length - brief.summarized, notesSaved: true }
       } catch (error) {
         const kind: CompactFailureKind = signal?.aborted ? 'canceled'
@@ -108,6 +109,7 @@ export function createCompactor(deps: CompactorDeps): Compactor {
         if (kind !== 'changed' && kind !== 'canceled') {
           failedBasis = basisKey
           deps.sink.emit(deps.stamper.stamp('error', { message: `上下文整理未完成：${reason}。原始历史已保留，没有切换模型。` }))
+          if (compact === undefined) deps.sink.emit(deps.stamper.stamp('compact.state', { requestId: `auto:${deps.now()}`, accepted: true, state: 'failed', reason, notesSaved: false }))
         }
         return { ok: false, kind, reason, canContinue: trigger === 'threshold' && kind !== 'canceled', notesSaved: false }
       }
