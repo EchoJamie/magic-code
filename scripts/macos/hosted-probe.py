@@ -38,7 +38,7 @@ def probe(app):
                     return
                 cmd = f'echo $$ > {shlex.quote(str(marker))}; echo native-hosted-tool-started; /bin/sleep 30'
                 delta = {'tool_calls': [{'index': 0, 'id': 'hosted-call', 'type': 'function',
-                         'function': {'name': 'exec', 'arguments': json.dumps({'cmd': cmd, 'background': True})}}]}
+                         'function': {'name': 'exec', 'arguments': json.dumps({'command': cmd, 'background': True})}}]}
                 frames = [{'id': 'hosted', 'object': 'chat.completion.chunk', 'created': 1, 'model': 'probe',
                            'choices': [{'index': 0, 'delta': delta}]},
                           {'id': 'hosted', 'object': 'chat.completion.chunk', 'created': 1, 'model': 'probe',
