@@ -1,4 +1,5 @@
 import type { Entry, EventSink, EventStamper, ModelGateway, RecordsService, SessionId } from '@magic/contracts'
+import { rawTextOf } from './context.ts'
 import { materialTextOf } from './material.ts'
 import { callMemoryModel } from './memory-model.ts'
 
@@ -57,8 +58,8 @@ export async function prepareBrief(deps: BriefDeps, entries: readonly Entry[]): 
   const previous = deps.records.coverage.read().summary
   if (previous !== null) {
     for await (const entry of deps.records.readEntries(deps.session, { from: previous, to: previous })) {
-      if (entry.kind === 'summary' && entry.payload !== undefined && 'brief' in entry.payload && entry.payload.brief === true && 'text' in entry.content) {
-        const block = `[此前接续简报 · 会话#${previous}]\n${entry.content.text}`
+      if (entry.kind === 'summary' && entry.payload !== undefined && 'brief' in entry.payload && entry.payload.brief === true) {
+        const block = `[此前接续简报 · 会话#${previous}]\n${await rawTextOf(entry.content, deps.records)}`
         blocks.push(block)
         used += estimateTokens(block)
       }
