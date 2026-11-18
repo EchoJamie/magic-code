@@ -40,12 +40,12 @@ export function collaborationSummary(snapshot: CollaborationView | undefined): s
   const label = consultationOnly ? '咨询 Arcane' : '协作'
   const state = snapshot.collaboration.state
   if (state === 'closed') return `${label} · 已收尾，结果可查看`
-  const members = snapshot.members.filter(one => !consultationEnded(one))
+  const members = snapshot.members.filter(one => !consultationEnded(one) && one.agent.reachability !== 'historical')
   const running = members.filter((one) => one.runtime?.state === 'running' && !one.runtime.backgroundWaiting && (!one.runtime.background || one.runtime.action !== undefined)).length
   const needs = members.filter((one) => one.pendingDecisions > 0 || one.delegation?.state === 'clarification')
   const waiting = members.filter((one) => one.waiting?.state === 'waiting' || one.runtime?.backgroundWaiting).length
   const stopping = members.some((one) => one.runtime?.state === 'stopping')
-  const blocked = members.filter((one) => one.agent.reachability === 'suspended' || one.waiting?.state === 'expired' || one.runtime?.state === 'unknown' || one.runtime?.lastTurn === 'error' || one.delegation?.state === 'rejected')
+  const blocked = members.filter((one) => (one.agent.reachability === 'suspended' && one.delegation?.state !== 'cancelled') || one.waiting?.state === 'expired' || one.runtime?.state === 'unknown' || one.runtime?.lastTurn === 'error' || one.delegation?.state === 'rejected')
   const coordinator = members.find((one) => one.agent.agentId === snapshot.collaboration?.coordinatorId)
   const interrupted = coordinator === undefined || coordinator.agent.reachability !== 'active' || coordinator.runtime?.state === 'stopped' || coordinator.runtime?.state === 'unknown' || coordinator.runtime?.lastTurn === 'error'
   const facts = [
@@ -83,10 +83,7 @@ export function collaborationHeader(view: ShellView): readonly string[] {
       clean(`输入给：${member.agent.name}（由 ${parent ?? '主会话'} 派生）${tabHint}`),
     ]
   }
-  const delivered = snapshot.members.filter((one) =>
-    one.agent.agentId !== snapshot.collaboration?.coordinatorId && one.agent.purpose !== 'consultation'
-    && one.agent.reachability === 'active').length
-  return [...background, summary, clean(`输入给：整件工作（共同补充）${delivered > 0 ? ` · 将送达 ${delivered} 位成员` : ''}${tabHint}`)]
+  return [...background, summary, clean(`输入给：当前会话${tabHint}`)]
 }
 
 /** 仅投影屏上的整体状态；控制范围仍由明确命令决定。 */

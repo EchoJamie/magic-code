@@ -393,13 +393,13 @@ export function installCommands(ctx: ManagerContext): void {
       conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session, kind: 'input.pending', data: { inputs: inputs.list(), ...(note === undefined ? {} : { note }) } } })
       return
     }
-    // 当前会话是子会话时，输入只发给这条子会话；入口会话仍是整件工作的共同补充。
+    // 当前会话是子会话时，输入只发给这条子会话；入口会话默认只给入口自己（不再广播给成员）。
     const currentAgent = originSession == null ? undefined : store.collaboration.agentForSession(originSession)
     const subSession = activeCollaboration === undefined || currentAgent === undefined
       || currentAgent.agentId === activeCollaboration.coordinatorId ? undefined : currentAgent
     if (activeCollaboration !== undefined && command.type === 'input.submit') {
       if (subSession !== undefined) await collaborationCommand(conn, { type: 'collaboration.input', member: subSession.agentId, input: command })
-      else await collaborationCommand(conn, { type: 'collaboration.input', input: command, shared: true })
+      else await collaborationCommand(conn, { type: 'collaboration.input', input: command })
       return
     }
     if (activeCollaboration !== undefined && command.type === 'turn.interrupt') {

@@ -930,7 +930,7 @@ export function reduce(
     case 'input.pending':
       return event.data.note === undefined ? {...view,pendingInputs:event.data.inputs} : appendReceipt({...view,pendingInputs:event.data.inputs},event.data.note)
     case 'input.settled':
-      { const inputState = event.data.ok ? (event.data.stage === 'included' ? undefined : view.pendingInputs.find(one=>one.ref===event.data.ref)?.purpose==='next'?'下一件排队中':'待带入') : `失败：${event.data.reason ?? '未说缘由'}`
+      { const inputState = event.data.ok ? (event.data.stage === 'included' ? undefined : view.pendingInputs.find(one=>one.ref===event.data.ref)?.purpose==='next'?'下一件排队中':'待带入') : undefined
         if(event.data.ref!==undefined){const update=(row:LogRow)=>row.kind==='user'&&row.inputRef===event.data.ref?{...row,inputState}:row;view={...view,rows:view.rows.map(update),settled:view.settled.map(update)}} }
       return event.data.ok ? view : appendReceipt(view, `没送出：${event.data.reason ?? '未说缘由'}`)
 

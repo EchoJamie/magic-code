@@ -114,7 +114,9 @@ test('延迟受理与拒绝如实还稿，已受理也保留配对身份且不�
  s.feed([event('input.settled',{ref:submit.ref,ok:false,reason:'受控拒绝'})])
  expect(s.shell.getView().draft).toBe('delayed')
  const rejected=await s.screen({columns:100,rows:40})
- expect(rejected.has('失败：受控拒绝')).toBe(true)
+ // 失败回执只进记录区（瞬时回执），不在输入区报错。
+ expect([...s.shell.getView().settled,...s.shell.getView().rows].some(r=>r.kind==='receipt'&&r.text.includes('没送出：受控拒绝'))).toBe(true)
+ expect(rejected.has('失败：受控拒绝')).toBe(false)
  expect(rejected.has('提交中：')).toBe(false)
  s.press(enter);const second=s.commands().filter(c=>c.type==='input.submit').at(-1)
  if(second?.type!=='input.submit')throw Error('没有第二次提交')

@@ -1985,7 +1985,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     const member = currentMember(view)
     const rows = [
       ...(snapshot?.collaboration ? memberRows(snapshot, view.sessionId) : []),
-      ...(snapshot?.collaboration ? [collaborationRow('whole', '向整件工作补充', '恢复整体草稿；共同要求送达相关成员'),
+      ...(snapshot?.collaboration ? [collaborationRow('whole', '回到主会话', '恢复入口草稿；输入只发给入口自己'),
+        collaborationRow('broadcast', '向所有成员补充', '共同要求送达相关成员'),
       collaborationRow('constraints', '共同补充的带入情况'),
       collaborationRow('default-model', '后续派生的默认模型', '按需配置'),
       collaborationRow('stop-work', '停止整件工作', '覆盖全部成员及继续委派'),
@@ -2154,11 +2155,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     const echoed = view.inputMember === undefined ? appendEcho(cleared,text,userImages(refs)) : cleared
     draft({...echoed,rows:echoed.rows.map((row,index)=>row.kind==='user'&&index===echoed.rows.length-1?{...row,inputRef:ref,inputState:'提交中'}:row)})
     const input = { text, ref, purpose, ...(refs.length === 0 ? {} : { refs: wire(refs) }) }
-    // 子会话里输入只发给这一条子会话；入口会话里是整件工作的共同补充。
+    // 子会话里输入只发给这一条子会话；入口会话默认只给自己（不再广播给成员）。
     const sub = currentMember(view)
     send(view.collaboration?.collaboration === undefined ? { type: 'input.submit', ...input }
       : sub !== undefined ? { type: 'collaboration.input', member: sub.agent.agentId, input }
-        : { type: 'collaboration.input', input, ...(view.inputMember === undefined ? { shared: true } : { member: view.inputMember }) })
+        : { type: 'collaboration.input', input, ...(view.inputMember === undefined ? {} : { member: view.inputMember }) })
 
     return NONE
   }

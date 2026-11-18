@@ -63,7 +63,7 @@ test('未展开不显示摘要；入口显示共同补充将送达的成员数�
   const idle: CollaborationView = { ...collaborationFixture, members: collaborationFixture.members.map((one) => ({ ...one, runtime: undefined })) }
   expect(collaborationSummary(idle)).toContain('结果待整合')
   const app = collaborationStage()
-  expect(app.screen()).toContain('输入给：整件工作（共同补充） · 将送达 1 位成员')
+  expect(app.screen()).toContain('输入给：当前会话')
   expect(app.screen()).toContain('● 工作中')
 
   app.enter()
@@ -256,7 +256,7 @@ test('子会话打开协作视图：当前子会话不在列表里，主会话�
   expect(app.view().collaboration?.originSession).toBe('origin')
 })
 
-test('子会话输入只发给该子会话；共同补充仍回到入口', () => {
+test('子会话输入只发给该子会话；入口输入只回到入口，不广播', () => {
   const app = collaborationStage()
   app.enter()
   app.text('子会话里的一句')
@@ -265,9 +265,11 @@ test('子会话输入只发给该子会话；共同补充仍回到入口', () =>
   expect(app.spy.commands.at(-1)).not.toHaveProperty('shared')
   app.key('tab'); app.pick('whole')
   expect(app.view().sessionId).toBe('origin')
-  app.text('整件补充')
+  app.text('入口的一句')
   app.key('enter')
-  expect(app.spy.commands.at(-1)).toMatchObject({ type: 'collaboration.input', shared: true, input: { text: '整件补充' } })
+  expect(app.spy.commands.at(-1)).toMatchObject({ type: 'collaboration.input', input: { text: '入口的一句' } })
+  expect(app.spy.commands.at(-1)).not.toHaveProperty('shared')
+  expect(app.spy.commands.at(-1)).not.toHaveProperty('member')
 })
 
 test('咨询子会话只读：正文可看，输入不发出', () => {

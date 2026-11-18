@@ -202,7 +202,7 @@ test('接受与撤回并发后责任只能是已取消，不能从迟到接受�
     expect(result[1]?.ok).toBe(true)
     expect(f.records.getDelegation(a.delegation.delegationId)?.state).toBe('cancelled')
     expect(f.records.checkAdmission(a.agent.agentId, a.delegation.delegationId).allowed).toBe(false)
-    expect(() => f.records.respondToDelegation(a.agent.agentId, { operationId: 'late-accept', delegationId: a.delegation.delegationId, response: 'accept', at: 16 })).toThrow('not awaiting')
+    expect(() => f.records.respondToDelegation(a.agent.agentId, { operationId: 'late-accept', delegationId: a.delegation.delegationId, response: 'accept', at: 16 })).toThrow(/not awaiting|agent admission closed/)
   } finally { f.close() }
 }, 30000)
 

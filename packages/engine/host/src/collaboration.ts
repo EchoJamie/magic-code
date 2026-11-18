@@ -240,8 +240,8 @@ export function createManagedCollaboration(host: CollaborationHost) {
           if (target === undefined) throw new Error('成员不属于当前工作')
           if (target.purpose === 'consultation') throw new Error('咨询详情只供查看；相关纠正请补充给原工作')
           if (!admission(target)) throw new Error('这份工作已停止；请先明确继续')
-          const shared = command.shared === true || command.member === undefined
-          const receiver = shared ? records.getAgent(collaboration.coordinatorId)! : target
+          const shared = command.shared === true
+          const receiver = shared ? records.getAgent(collaboration.coordinatorId)! : target ?? records.getAgent(collaboration.coordinatorId)!
           await host.start(receiver)
           if (!admission(receiver)) throw new Error('这份工作已停止；原稿保留')
           host.input(receiver.sessionId, command.input, shared)
@@ -299,7 +299,9 @@ export function createManagedCollaboration(host: CollaborationHost) {
       const agent = records.agentForSession(session)
       if (agent?.collaborationId === undefined) return
       if (abnormal) {
-        records.setReachability(agent.agentId, 'suspended')
+        // 委派已全部结束（取消/完成）时，退出即释放；仍有已接受委派才挂起待核实。
+        const accepted = records.listDelegations(agent.collaborationId).some(d => d.assigneeId === agent.agentId && d.state === 'accepted')
+        records.setReachability(agent.agentId, accepted ? 'suspended' : 'historical')
         for (const wait of records.interruptWaits(agent.agentId, reason)) if (wait.agentId !== agent.agentId) wake(wait.agentId)
       }
       for (const execution of records.listExecutions(agent.collaborationId)) {

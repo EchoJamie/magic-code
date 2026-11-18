@@ -571,14 +571,20 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       ).map(e => ({ ...e, state: 'cancel-requested' as const, cancelledAt: e.cancelledAt ?? at, reason, reasonFrom: generatedFrom }))
       // 只撤回 queued B 时，A 的成员和执行者均不属于取消目标；此判据与接受共事务。
       const affected = new Set(scope.kind === 'delegation'
-        ? [...ds.filter(d => d.state === 'accepted').map(d => d.assigneeId), ...es.map(e => e.agentId)]
+        ? [...ds.map(d => d.assigneeId), ...es.map(e => e.agentId)]
           .filter(id => !acceptedElsewhere.has(id))
         : cs.flatMap(c => members(c.collaborationId).map(a => a.agentId)))
       for (const c of cs) if (scope.kind !== 'delegation' && c.state !== 'closed') saveCollaboration({ ...c, state: 'stopped', reason, reasonFrom: generatedFrom })
       for (const d of ds) if (!['received', 'rejected', 'cancelled'].includes(d.state)) saveDelegation({ ...d, state: 'cancelled', reason, reasonFrom: generatedFrom })
       es.forEach(saveExecution)
+      // 停止成员即结束：成员级停止且没有其他排队责任时直接置 historical（不再挂起等"明确继续"）；
+      // 仍有排队责任则保持可接；整件停止先挂起等恢复。
       for (const id of affected) {
-        if (scope.kind !== 'delegation' && agent(id).reachability !== 'historical') saveAgent({ ...agent(id), reachability: 'suspended' })
+        const a = agent(id)
+        if (a.reachability === 'historical') continue
+        if (scope.kind !== 'delegation') { saveAgent({ ...a, reachability: 'suspended' }); continue }
+        const holds = a.collaborationId !== undefined && delegations(a.collaborationId).some(d => d.assigneeId === id && !['cancelled', 'rejected', 'completed'].includes(d.state))
+        if (!holds) saveAgent({ ...a, reachability: 'historical' })
       }
       for (const c of cs) for (const w of waits(c.collaborationId)) {
         if (w.state === 'waiting' && (scope.kind !== 'delegation' || (w.delegationId !== undefined && ids.has(w.delegationId)) || (w.forMessageId !== undefined && ids.has(w.forMessageId)))) saveWait({ ...w, state: 'interrupted', reason, reasonFrom: generatedFrom })
