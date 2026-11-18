@@ -48,6 +48,22 @@ test('旧的成功的工具结果折叠成状态与位置；失败结果保留�
   } finally { await f.close() }
 })
 
+test('连续压缩带上一次简报，不丢掉已承接的内容', async () => {
+  let text = '## 目标与阶段\n第一版简报'
+  const f = notesFixture({ near: 1, turn: request => briefSystem(request) ? { text } : { text: '业务答复' } })
+  try {
+    expect(await f.compact('one')).toMatchObject({ state: 'completed' })
+    text = '## 目标与阶段\n第二版简报'
+    f.records.appendEntry({ kind: 'user', content: { text: '后续要求' }, at: 20 })
+    f.records.appendEntry({ kind: 'assistant', content: { text: '后续完成' }, at: 21 })
+    expect(await f.compact('two')).toMatchObject({ state: 'completed' })
+    const briefs = f.requests.filter(briefSystem)
+    expect(briefs).toHaveLength(2)
+    expect(briefMaterial(briefs[1]!)).toContain('第一版简报')
+    expect(briefMaterial(briefs[1]!)).toContain('后续要求')
+  } finally { await f.close() }
+})
+
 test('主动压缩的重点进入简报请求，不进入业务请求', async () => {
   const f = notesFixture({ near: 1, turn: request => briefSystem(request) ? { text: '## 目标与阶段\n保留重点' } : { text: '业务答复' } })
   try {

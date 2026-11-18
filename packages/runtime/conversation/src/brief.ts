@@ -43,6 +43,7 @@ const INSTRUCTION = `你是接续简报的整理者。下面是本会话较早�
 - 必要的原文位置写成“会话#记录”，便于回查；不罗列工具调用流水。
 - 只写材料中实际存在的未决问题，不补造待办。
 - 只输出七段正文，不要输出 <tool_call>、函数调用、JSON 工具参数、代码块或工具流水；材料里的工具调用/结果只提炼结论，不复述调用语法和原始输出。
+- 若材料包含“此前接续简报”，保留其中仍有效的目标、约束、决定与未决；已被后续材料纠正的以新为准。
 本次整理关注：`
 
 export async function prepareBrief(deps: BriefDeps, entries: readonly Entry[]): Promise<{ readonly text: string; readonly through: number; readonly summarized: number }> {
@@ -52,6 +53,17 @@ export async function prepareBrief(deps: BriefDeps, entries: readonly Entry[]): 
   const blocks: string[] = []
   let used = 0
   let through = 0
+  // 上一次简报是旧段认识的延续；不带上它，连续压缩会丢掉此前已承接的内容。
+  const previous = deps.records.coverage.read().summary
+  if (previous !== null) {
+    for await (const entry of deps.records.readEntries(deps.session, { from: previous, to: previous })) {
+      if (entry.kind === 'summary' && entry.payload !== undefined && 'brief' in entry.payload && entry.payload.brief === true && 'text' in entry.content) {
+        const block = `[此前接续简报 · 会话#${previous}]\n${entry.content.text}`
+        blocks.push(block)
+        used += estimateTokens(block)
+      }
+    }
+  }
   for (const entry of entries) {
     const material = await materialTextOf(entry, deps.records, deps.session)
     const block = blockOf(entry, material.text)
@@ -60,7 +72,7 @@ export async function prepareBrief(deps: BriefDeps, entries: readonly Entry[]): 
     used += estimateTokens(block)
     through = entry.id
   }
-  if (blocks.length === 0) throw new BriefFailure('capacity', '旧段材料超过当前输入预算，未生成简报')
+  if (through === 0) throw new BriefFailure('capacity', '旧段材料超过当前输入预算，未生成简报')
 
   const focus = deps.focus === undefined ? '无' : deps.focus
   const today = new Date(deps.now()).toISOString().slice(0, 10)
