@@ -2,7 +2,7 @@ import { spawnOwned } from './process.ts'
 import { reapOwned } from './groups.ts'
 /** 前台命令完成须同时取得业务退出码与双流 EOF；超时和取消覆盖整个等待。 */
 
-import { readFileSync, rmSync } from 'node:fs'
+import { accessSync, constants, readFileSync, rmSync } from 'node:fs'
 import type { ExecResult, HandoverRun, OutputDelta, ProcessLedger } from '@magic/contracts'
 import type { AdoptedRun } from './background.ts'
 
@@ -25,6 +25,29 @@ export const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024
 /** 跑命令的宿主 shell——`-c` 取一条命令行。缺省 `sh`；真实宿主要求用用户的 shell（`CommandOptions.shell`）。 */
 const SHELL = 'sh'
 
+/** 认得出「能用 POSIX 的 `VAR=…` / `trap … 0` 包装」的 shell 家族。 */
+const POSIX_SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
+
+/**
+ * 定这一条用哪只 shell、要不要加目录钩子。
+ *
+ * - 用户 shell 是 POSIX 家族（且可执行）⇒ 用它，加钩子；
+ * - 别的 shell（csh / tcsh / fish）⇒ 照用它跑命令，但**不加钩子**——那层包装的语法它们不认，
+ *   加了只会让命令报「Command not found」，反倒把真正的失败盖住；
+ * - 指了一个跑不起来的 shell ⇒ 退回 `sh`（每条命令都报「找不到可执行文件」比回落更坏）。
+ */
+function resolveShell(requested: string | undefined): { readonly path: string; readonly hook: boolean } {
+  const path = requested ?? SHELL
+  // 跑不起来的 shell ⇒ 退回 `sh`（每条命令都报「找不到可执行文件」比回落更坏）
+  try {
+    accessSync(path, constants.X_OK)
+  } catch {
+    return { path: SHELL, hook: true }
+  }
+  const base = path.split('/').pop() ?? path
+  return { path, hook: POSIX_SHELLS.has(base) }
+}
+
 /**
  * 命令外层的**会话目录钩子**（`trap … 0`）——shell 退出时把真实 `PWD` 写进那个文件。
  *
@@ -35,9 +58,12 @@ const SHELL = 'sh'
  * 变量名带下划线与前缀，避免与命令自己用到的名字撞车；`2>/dev/null || :` 让取不到目录
  * （目录已被删一类）不往 stderr 里添噪声。
  */
-function withCwdReport(cmd: string, file: string): string {
+function withCwdReport(cmd: string, file: string, oldCwd: string | undefined): string {
   const quoted = `'${file.replaceAll("'", `'\\''`)}'`
-  return `_MAGIC_CWD_FILE_=${quoted}\ntrap 'pwd -P > "$_MAGIC_CWD_FILE_" 2>/dev/null || :' 0\n${cmd}\n`
+  // `OLDPWD` 要在**这个 shell 里**设置：`sh -c` 启动时会把外部注入的 OLDPWD 当没设
+  // （实测 `cd: OLDPWD not set`），只有 shell 自己 `export` 的那份才让 `cd -` 生效。
+  const old = oldCwd === undefined ? '' : `OLDPWD='${oldCwd.replaceAll("'", `'\\''`)}'; export OLDPWD\n`
+  return `_MAGIC_CWD_FILE_=${quoted}\n${old}trap 'pwd -P > "$_MAGIC_CWD_FILE_" 2>/dev/null || :' 0\n${cmd}\n`
 }
 
 /** 取回钩子写下的目录；文件不存在或为空都给 `undefined`（不编值）。 */
@@ -91,13 +117,15 @@ export type CommandOptions = {
   /** 把一条已经跑起来的命令交出去（工具把上下文里的后台端口接在这一格上）。 */
   readonly adopt?: (run: HandoverRun) => Promise<AdoptedRun>
   /**
-   * **会话目录的报回口**——给了就在命令外面加一层 `trap … 0`，shell 退出时把真实
-   * `PWD` 写进这个文件；命令跑完由本文件读回，进 `ExecResult.cwd`。
-   *
-   * 不给＝不包装（老径），`ExecResult.cwd` 缺席。文件由调用方给（本文件不碰临时目录策略）。
-   * 读不到就不报——「不知道」比编一个目录好。
+   * 会话目录的报回口——见 `cwdFile`。给了只在 **POSIX 家族 shell** 下加分目录钩子。
    */
   readonly cwdFile?: string
+  /**
+   * **上一条命令开始时所在目录**（`OLDPWD`）——`cd -` 才有意义。
+   *
+   * 本文件不自己算这个：它是沙箱的会话状态（见 `sandbox.ts` 的 `previousCwd`）。
+   */
+  readonly oldCwd?: string
   /**
    * **归属账**（U50）——起来的这一组记它一笔。
    *
@@ -288,9 +316,10 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
   const began = Date.now()
   if (options.signal?.aborted) return { ok: false, reason: 'spawn', message: '命令已取消，未执行' }
   let started: Awaited<ReturnType<typeof spawnOwned<'pipe', 'pipe'>>>
+  const shell = resolveShell(options.shell)
   try {
-    const script = options.cwdFile === undefined ? cmd : withCwdReport(cmd, options.cwdFile)
-    started = await spawnOwned([options.shell ?? SHELL, '-c', script], {
+    const script = options.cwdFile === undefined || !shell.hook ? cmd : withCwdReport(cmd, options.cwdFile, options.oldCwd)
+    started = await spawnOwned([shell.path, '-c', script], {
       cwd: options.cwd, env: options.env, signal: options.signal, ledger: options.ledger,
       stdout: 'pipe', stderr: 'pipe', kind: 'exec',
       what: `exec:${cmd.split('\n', 1)[0]?.trim().slice(0, LEDGER_WHAT_CHARS) ?? ''}`,

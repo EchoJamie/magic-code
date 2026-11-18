@@ -209,10 +209,11 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
         : ['read', 'write', 'edit', 'ls', 'grep', 'glob'].includes(call.name) ? 'path' : undefined
       if (key !== undefined) {
         const given = call.args[key]
-        // `exec` 的 cwd 缺省由**沙箱的会话目录**决定（不解析、不绑定，让执行体自己取）。
-        // 旧实现/替身没有 `sessionCwd` 时退回老径：解析默认根并固定目标。
-        const sessionless = key === 'cwd' && given === undefined && typeof options.sandbox.sessionCwd === 'function'
-        if (!sessionless) {
+        // `exec` 的 cwd 在**沙箱有会话目录**时不在这里解析：相对基准是会话目录（不是默认根），
+        // 解析与目标绑定都交给执行体（`Sandbox.sessionCwd`）。没有会话目录的旧实现/替身走老径：
+        // 解析默认根并注入，行为不变。
+        const sessionAware = key === 'cwd' && typeof options.sandbox.sessionCwd === 'function'
+        if (!sessionAware) {
           const path = (given as string | undefined) ?? '.'
           const noteTarget = key === 'path' ? options.notes?.resolve(path) : undefined
           ownNote = noteTarget !== undefined

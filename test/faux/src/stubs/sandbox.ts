@@ -40,6 +40,13 @@ export type FauxSandboxOptions = {
   readonly dirs?: Readonly<Record<string, readonly ListEntry[]>>
   /** `match` 的命中——固定一份（桩不做真匹配）。 */
   readonly hits?: readonly MatchHit[]
+  /**
+   * **会话当前目录**——给了才有这一格（与真沙箱同名同义）。
+   *
+   * 不给＝旧替身（没有会话目录），调用方仍按老径给 `cwd`；要测「不传 cwd 时走会话目录」
+   * 的用例显式给这一个。
+   */
+  readonly sessionCwd?: string
 }
 
 /** `read` 的入参——路径 ＋ 选项（`opts` 可省，故**原样记**，不改写成缺省值）。 */
@@ -67,8 +74,10 @@ export function makeFauxSandbox(options: FauxSandboxOptions = {}): FauxSandbox {
   const writes: { path: string; data: WriteData }[] = []
   const lists: string[] = []
   const matches: { pattern: string; opts: MatchOptions }[] = []
+  let currentCwd = options.sessionCwd
 
   return {
+    ...(options.sessionCwd === undefined ? {} : { sessionCwd: () => currentCwd ?? '' }),
     get execs(): readonly { readonly cmd: string; readonly opts: ExecOptions }[] {
       return execs
     },
@@ -89,9 +98,12 @@ export function makeFauxSandbox(options: FauxSandboxOptions = {}): FauxSandbox {
       execs.push({ cmd, opts })
 
       const script = options.exec
-      if (script === undefined) return OK_EMPTY
-      if (typeof script === 'function') return script(cmd, opts)
-      return script[cmd] ?? OK_EMPTY
+      const result = script === undefined
+        ? OK_EMPTY
+        : typeof script === 'function' ? await script(cmd, opts) : script[cmd] ?? OK_EMPTY
+      // 结果带回目录就跟着走——与真沙箱「会话目录随命令移动」同一观察面
+      if (result.ok && result.cwd !== undefined) currentCwd = result.cwd
+      return result
     },
 
     async read(path: string, opts?: { maxBytes?: number; from?: number; lines?: number }): Promise<ReadResult> {

@@ -36,6 +36,7 @@
  */
 
 import type { ExecResult, SudoPlan } from '@magic/contracts'
+import { isAbsolute, join } from 'node:path'
 import {
   backgroundStarted,
   backgroundStartFailed,
@@ -278,6 +279,17 @@ async function authenticateSudo(
   }
 }
 
+/**
+ * 后台起始目录——相对 `cwd` 以**会话目录**为基准（与前台同一条尺子）。
+ *
+ * 后台的 `start` 拿不到会话状态（它不属于沙箱实例），故在这里先化成绝对路径。
+ */
+function startCwdOf(cwd: string | undefined, ctx: ToolRunContext): string | undefined {
+  if (cwd === undefined || isAbsolute(cwd)) return cwd
+  const session = ctx.sandbox.sessionCwd?.()
+  return session === undefined ? cwd : join(session, cwd)
+}
+
 /** 造 `exec` 的工具定义。 */
 export function defineExecTool(): ToolDefinition {
   const row = rowOf('exec')
@@ -311,7 +323,7 @@ export function defineExecTool(): ToolDefinition {
       }
       const command = plan === undefined ? args.command : plan.run
 
-      if (args.background === true) return startBackground(command, ctx, cwd)
+      if (args.background === true) return startBackground(command, ctx, startCwdOf(cwd, ctx))
       // 契约上 `adopt` 是**可选**的一格：宿主只实现了 `start` 时不带它，超时照旧按进程组收掉
       // （不能凭「有 background 对象」就假定它会接管——那是宿主侧才看得见的能力）。
       const adopter = typeof ctx.background?.adopt === 'function' ? ctx.background : undefined

@@ -5,7 +5,8 @@
  * 目录枚举、文件创建和进程 cwd 的检查与 OS 调用尚非原子操作，不宣称 OS 沙箱保证。
  */
 
-import { resolve as resolvePath } from 'node:path'
+import { statSync } from 'node:fs'
+import { isAbsolute, resolve as resolvePath } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -85,6 +86,15 @@ export function timeoutBoundOf(value: number | null | undefined): number | null 
   return Number.isFinite(value) && value > 0 ? value : null
 }
 
+/** 会话目录还能不能进——被删 / 不是目录 ⇒ 不能（`exec` 会回默认根）。 */
+function usableDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 /** 执行原语：权限已由工具入口裁决；这里只执行并保护本次目标身份。 */
 export function createSandbox(options: SandboxOptions): Sandbox {
   const { workspace } = options
@@ -96,6 +106,8 @@ export function createSandbox(options: SandboxOptions): Sandbox {
    * 换不掉「我在哪」。
    */
   let sessionCwd = workspace.defaultRoot()
+  /** 上一条命令开始时所在目录——`cd -` 的依据（`OLDPWD`）。 */
+  let previousCwd = workspace.defaultRoot()
 
   const build = (bound?: ResolvedPath, tool?: string): { sandbox: Sandbox; release(): Promise<void> } => {
     let opened: ReturnType<typeof openTarget> | undefined
@@ -121,16 +133,22 @@ export function createSandbox(options: SandboxOptions): Sandbox {
         async exec(cmd: string, opts: ExecOptions): Promise<ExecResult> {
           let cwd: string
           try {
-            const target = targetOf(opts.cwd ?? sessionCwd)
+            // **会话目录失效**（被删 / 进不去）⇒ 回默认根并重置：不能把会话永久钉在一个进不去的目录上
+            if (!usableDirectory(sessionCwd)) sessionCwd = workspace.defaultRoot()
+            const base = opts.cwd ?? sessionCwd
+            // **相对基准＝会话目录**（与命令里的 `cd` 同一个基准，不是默认根）
+            const target = targetOf(isAbsolute(base) ? base : join(sessionCwd, base))
             assertIdentity(target)
             cwd = target.absolute
           } catch (error) {
             return { ok: false, reason: 'spawn', message: error instanceof Error ? error.message : String(error) }
           }
+          const oldCwd = previousCwd
           const result = await runCommand(cmd, {
             env: options.env,
             shell: options.shell,
             cwd,
+            oldCwd,
             cwdFile: join(tmpdir(), `magic-cwd-${randomUUID()}`),
             timeoutMs: timeoutBoundOf(opts.timeoutMs),
             maxOutputBytes: positiveOr(opts.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES),
@@ -142,6 +160,7 @@ export function createSandbox(options: SandboxOptions): Sandbox {
           })
           // 命令跑出来的真实目录写回会话——下一条不传 cwd 就从这里起。
           // 显式给了 cwd 的那一条是一次性覆盖：它跑完往哪儿去，都不改会话目录。
+          previousCwd = cwd
           if (opts.cwd === undefined && result.ok && result.cwd !== undefined) sessionCwd = result.cwd
           return result
         },
