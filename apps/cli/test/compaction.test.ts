@@ -74,7 +74,14 @@ test('39KB协作正文与27未决点经过真实工作循环、连续两次自�
     try {
       expect(db.entries.filter(entry => entry.kind === 'summary')).toHaveLength(2)
       expect(db.entries.filter(entry => entry.kind === 'user')).toHaveLength(9)
-      for (const [index, entry] of db.entries.entries()) if (entry.kind === 'tool-call') expect(db.entries[index + 1]?.kind).toBe('tool-result')
+      // 并发之后条目不再相邻（调用先落、结果按序落）——成对性按 `call` 引用核，不按相邻核
+      const callEntries = db.entries.filter(entry => entry.kind === 'tool-call')
+      const resultEntries = db.entries.filter(entry => entry.kind === 'tool-result')
+      expect(resultEntries).toHaveLength(callEntries.length)
+      for (const result of resultEntries) {
+        const call = (result.payload as { call?: string } | undefined)?.call
+        expect(callEntries.some(entry => (entry.payload as { id?: string } | undefined)?.id === call)).toBe(true)
+      }
       expect(db.events.filter(event => event.kind === 'context.compacted')).toHaveLength(2)
       const finalSummary = db.entries.filter(entry => entry.kind === 'summary').at(-1)!
       expect(app.records.serviceFor(app.session!).coverage.read().summary).toBe(finalSummary.id)

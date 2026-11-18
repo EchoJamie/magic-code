@@ -16,7 +16,7 @@ export async function requestFromStoredSession(input: {
   const gateway = createFauxGateway({ stamper, turns: [{ text: '已核对当前材料' }] })
   const service = createConversationSession({ records: input.records, session: input.session,
     ...(input.knowledge === undefined ? {} : { knowledge: input.knowledge }),
-    prompt: { cwd: input.cwd, platform: 'darwin', date: '2026-10-26' },
+    prompt: { cwd: input.cwd, shell: '/bin/sh', platform: 'darwin', date: '2026-10-26' },
     stamper, sink, gateway, tools: makeFauxToolRuntime(),
   })
   try {

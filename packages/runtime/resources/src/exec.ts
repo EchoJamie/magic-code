@@ -2,6 +2,7 @@ import { spawnOwned } from './process.ts'
 import { reapOwned } from './groups.ts'
 /** 前台命令完成须同时取得业务退出码与双流 EOF；超时和取消覆盖整个等待。 */
 
+import { accessSync, constants, readFileSync, rmSync } from 'node:fs'
 import type { ExecResult, HandoverRun, OutputDelta, ProcessLedger } from '@magic/contracts'
 import type { AdoptedRun } from './background.ts'
 
@@ -21,8 +22,60 @@ export type DrainTee = {
 /** 输出上限缺省——字节；**每道流各自计**（见 `sandbox.ts` 头注的取舍说明）。 */
 export const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024
 
-/** 跑命令的宿主 shell——`-c` 取一条命令行。 */
+/** 跑命令的宿主 shell——`-c` 取一条命令行。缺省 `sh`；真实宿主要求用用户的 shell（`CommandOptions.shell`）。 */
 const SHELL = 'sh'
+
+/** 认得出「能用 POSIX 的 `VAR=…` / `trap … 0` 包装」的 shell 家族。 */
+const POSIX_SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
+
+/**
+ * 定这一条用哪只 shell、要不要加目录钩子。
+ *
+ * - 用户 shell 是 POSIX 家族（且可执行）⇒ 用它，加钩子；
+ * - 别的 shell（csh / tcsh / fish）⇒ 照用它跑命令，但**不加钩子**——那层包装的语法它们不认，
+ *   加了只会让命令报「Command not found」，反倒把真正的失败盖住；
+ * - 指了一个跑不起来的 shell ⇒ 退回 `sh`（每条命令都报「找不到可执行文件」比回落更坏）。
+ */
+function resolveShell(requested: string | undefined): { readonly path: string; readonly hook: boolean } {
+  const path = requested ?? SHELL
+  // 跑不起来的 shell ⇒ 退回 `sh`（每条命令都报「找不到可执行文件」比回落更坏）
+  try {
+    accessSync(path, constants.X_OK)
+  } catch {
+    return { path: SHELL, hook: true }
+  }
+  const base = path.split('/').pop() ?? path
+  return { path, hook: POSIX_SHELLS.has(base) }
+}
+
+/**
+ * 命令外层的**会话目录钩子**（`trap … 0`）——shell 退出时把真实 `PWD` 写进那个文件。
+ *
+ * 为什么是 `trap … 0` 而不是在命令后追加一句 `pwd`：`exit N`、`set -e` 失败退出都会让
+ * 追加句永远轮不到，而退出钩子照样跑。`exec` 把 shell 整个换掉时钩子不执行——那是已知边界，
+ * 取不到就缺席（不编值）。
+ *
+ * 变量名带下划线与前缀，避免与命令自己用到的名字撞车；`2>/dev/null || :` 让取不到目录
+ * （目录已被删一类）不往 stderr 里添噪声。
+ */
+function withCwdReport(cmd: string, file: string, oldCwd: string | undefined): string {
+  const quoted = `'${file.replaceAll("'", `'\\''`)}'`
+  // `OLDPWD` 要在**这个 shell 里**设置：`sh -c` 启动时会把外部注入的 OLDPWD 当没设
+  // （实测 `cd: OLDPWD not set`），只有 shell 自己 `export` 的那份才让 `cd -` 生效。
+  const old = oldCwd === undefined ? '' : `OLDPWD='${oldCwd.replaceAll("'", `'\\''`)}'; export OLDPWD\n`
+  return `_MAGIC_CWD_FILE_=${quoted}\n${old}trap 'pwd -P > "$_MAGIC_CWD_FILE_" 2>/dev/null || :' 0\n${cmd}\n`
+}
+
+/** 取回钩子写下的目录；文件不存在或为空都给 `undefined`（不编值）。 */
+function readReportedCwd(file: string | undefined): string | undefined {
+  if (file === undefined) return undefined
+  try {
+    const text = readFileSync(file, 'utf8').trim()
+    return text === '' ? undefined : text
+  } catch {
+    return undefined
+  }
+}
 
 const NEVER = new Promise<never>(() => undefined)
 
@@ -39,6 +92,13 @@ type OutputSink = (delta: OutputDelta) => void
 /** 一次执行的进程侧入参——cwd 已是绝对路径（路径问题归 `sandbox.ts`）。 */
 export type CommandOptions = {
   readonly env?: Readonly<Record<string, string>>
+  /**
+   * **执行命令的 shell**——用户是谁的 shell，就用谁的（路径）。缺省 `sh`。
+   *
+   * 换 shell 不是换「隔离级别」，是换**语法与启动文件**：`zsh -c` 会读 `~/.zshenv`，
+   * `bash -c` 读 `~/.bashrc`（非交互时行为不同）——这是用户环境的一部分。
+   */
+  readonly shell?: string
 
   readonly cwd: string
   /**
@@ -56,6 +116,16 @@ export type CommandOptions = {
   readonly onTimeout?: 'kill' | 'background'
   /** 把一条已经跑起来的命令交出去（工具把上下文里的后台端口接在这一格上）。 */
   readonly adopt?: (run: HandoverRun) => Promise<AdoptedRun>
+  /**
+   * 会话目录的报回口——见 `cwdFile`。给了只在 **POSIX 家族 shell** 下加分目录钩子。
+   */
+  readonly cwdFile?: string
+  /**
+   * **上一条命令开始时所在目录**（`OLDPWD`）——`cd -` 才有意义。
+   *
+   * 本文件不自己算这个：它是沙箱的会话状态（见 `sandbox.ts` 的 `previousCwd`）。
+   */
+  readonly oldCwd?: string
   /**
    * **归属账**（U50）——起来的这一组记它一笔。
    *
@@ -246,8 +316,10 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
   const began = Date.now()
   if (options.signal?.aborted) return { ok: false, reason: 'spawn', message: '命令已取消，未执行' }
   let started: Awaited<ReturnType<typeof spawnOwned<'pipe', 'pipe'>>>
+  const shell = resolveShell(options.shell)
   try {
-    started = await spawnOwned([SHELL, '-c', cmd], {
+    const script = options.cwdFile === undefined || !shell.hook ? cmd : withCwdReport(cmd, options.cwdFile, options.oldCwd)
+    started = await spawnOwned([shell.path, '-c', script], {
       cwd: options.cwd, env: options.env, signal: options.signal, ledger: options.ledger,
       stdout: 'pipe', stderr: 'pipe', kind: 'exec',
       what: `exec:${cmd.split('\n', 1)[0]?.trim().slice(0, LEDGER_WHAT_CHARS) ?? ''}`,
@@ -318,8 +390,10 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
     const outcome = await Promise.race([completed, deadline, canceled.promise, readFailure.promise])
     if (outcome.kind === 'finished' && outcome.exit !== null) {
       const [stdout, stderr] = outcome.output
+      const reported = readReportedCwd(options.cwdFile)
       return { ok: true, exit: outcome.exit, stdout: stdout.text, stderr: stderr.text,
-        ...(stdout.truncated || stderr.truncated ? { truncated: true } : {}) }
+        ...(stdout.truncated || stderr.truncated ? { truncated: true } : {}),
+        ...(reported === undefined ? {} : { cwd: reported }) }
     }
 
     // **到点没跑完 ≠ 该被删掉**：交出去接着跑，这一轮只把「它还在跑」说清楚。
@@ -386,6 +460,10 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
   } finally {
     clearTimeout(timer)
     options.signal?.removeEventListener('abort', onAbort)
+    // 钩子写下的那个文件读没读都清掉（移交后台时它可能还会被钩子重建一次，无妨）
+    if (options.cwdFile !== undefined) {
+      try { rmSync(options.cwdFile, { force: true }) } catch { /* 清不掉不影响这一条的结果 */ }
+    }
   }
 }
 

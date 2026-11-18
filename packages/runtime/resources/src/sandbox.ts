@@ -5,7 +5,11 @@
  * 目录枚举、文件创建和进程 cwd 的检查与 OS 调用尚非原子操作，不宣称 OS 沙箱保证。
  */
 
-import { resolve as resolvePath } from 'node:path'
+import { statSync } from 'node:fs'
+import { isAbsolute, resolve as resolvePath } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type {
   ExecOptions,
   ExecResult,
@@ -27,6 +31,8 @@ import { assertIdentity } from './workspace.ts'
 /** 装配期构造入参（技术方案 · 领域划分 · 装配视图 2：执行域——工作区根注册）。 */
 export type SandboxOptions = {
   readonly env?: Readonly<Record<string, string>>
+  /** 执行命令的 shell——用户的 shell（`$SHELL`）；缺省 `sh`。前台与后台同一路。 */
+  readonly shell?: string
 
   /** 工作区端口提供路径事实与默认根。 */
   readonly workspace: WorkspaceService
@@ -80,9 +86,28 @@ export function timeoutBoundOf(value: number | null | undefined): number | null 
   return Number.isFinite(value) && value > 0 ? value : null
 }
 
+/** 会话目录还能不能进——被删 / 不是目录 ⇒ 不能（`exec` 会回默认根）。 */
+function usableDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 /** 执行原语：权限已由工具入口裁决；这里只执行并保护本次目标身份。 */
 export function createSandbox(options: SandboxOptions): Sandbox {
   const { workspace } = options
+  /**
+   * **会话当前目录**——沙箱这一层的状态，不是调用方的参数。
+   *
+   * 命令不传 `cwd` 时用它；命令结束时跑出来的真实目录再写回（`ExecResult.cwd`）。
+   * 放在 `build()` 外面是因为它是**整个沙箱**的状态：`bindTarget` 每次换的是目标绑定，
+   * 换不掉「我在哪」。
+   */
+  let sessionCwd = workspace.defaultRoot()
+  /** 上一条命令开始时所在目录——`cd -` 的依据（`OLDPWD`）。 */
+  let previousCwd = workspace.defaultRoot()
 
   const build = (bound?: ResolvedPath, tool?: string): { sandbox: Sandbox; release(): Promise<void> } => {
     let opened: ReturnType<typeof openTarget> | undefined
@@ -104,18 +129,27 @@ export function createSandbox(options: SandboxOptions): Sandbox {
       },
       sandbox: {
         bindTarget: (target, name) => build(target, name),
+        sessionCwd: () => sessionCwd,
         async exec(cmd: string, opts: ExecOptions): Promise<ExecResult> {
           let cwd: string
           try {
-            const target = targetOf(opts.cwd ?? '.')
+            // **会话目录失效**（被删 / 进不去）⇒ 回默认根并重置：不能把会话永久钉在一个进不去的目录上
+            if (!usableDirectory(sessionCwd)) sessionCwd = workspace.defaultRoot()
+            const base = opts.cwd ?? sessionCwd
+            // **相对基准＝会话目录**（与命令里的 `cd` 同一个基准，不是默认根）
+            const target = targetOf(isAbsolute(base) ? base : join(sessionCwd, base))
             assertIdentity(target)
             cwd = target.absolute
           } catch (error) {
             return { ok: false, reason: 'spawn', message: error instanceof Error ? error.message : String(error) }
           }
-          return runCommand(cmd, {
+          const oldCwd = previousCwd
+          const result = await runCommand(cmd, {
             env: options.env,
+            shell: options.shell,
             cwd,
+            oldCwd,
+            cwdFile: join(tmpdir(), `magic-cwd-${randomUUID()}`),
             timeoutMs: timeoutBoundOf(opts.timeoutMs),
             maxOutputBytes: positiveOr(opts.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES),
             onOutput: opts.onOutput,
@@ -124,6 +158,11 @@ export function createSandbox(options: SandboxOptions): Sandbox {
             ...(opts.adopt === undefined ? {} : { adopt: opts.adopt }),
             ...(options.ledger === undefined ? {} : { ledger: options.ledger }),
           })
+          // 命令跑出来的真实目录写回会话——下一条不传 cwd 就从这里起。
+          // 显式给了 cwd 的那一条是一次性覆盖：它跑完往哪儿去，都不改会话目录。
+          previousCwd = cwd
+          if (opts.cwd === undefined && result.ok && result.cwd !== undefined) sessionCwd = result.cwd
+          return result
         },
         async read(path: string, opts?: { maxBytes?: number; from?: number; lines?: number }): Promise<ReadResult> {
           const target = targetOf(path)

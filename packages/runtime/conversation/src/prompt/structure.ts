@@ -21,6 +21,7 @@ export type PromptSectionId =
 /** 运行时注入项（模板变量——技术方案 · 系统提示词：工作目录 · 平台 · 日期）。 */
 export type PromptRuntimeVar =
   | 'cwd' // 工作目录
+  | 'shell' // 执行命令的 shell（用户自己的那只）
   | 'platform' // 平台
   | 'date' // 日期
 

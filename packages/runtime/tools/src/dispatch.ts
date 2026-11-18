@@ -208,12 +208,19 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
       const key = call.name === 'exec' ? 'cwd'
         : ['read', 'write', 'edit', 'ls', 'grep', 'glob'].includes(call.name) ? 'path' : undefined
       if (key !== undefined) {
-        const path = (call.args[key] as string | undefined) ?? '.'
-        const noteTarget = key === 'path' ? options.notes?.resolve(path) : undefined
-        ownNote = noteTarget !== undefined
-        target = noteTarget ?? options.workspace.resolve(path)
-        call = { ...call, args: { ...call.args, [key]: target.absolute } }
-        resolvedTarget(target)
+        const given = call.args[key]
+        // `exec` 的 cwd 在**沙箱有会话目录**时不在这里解析：相对基准是会话目录（不是默认根），
+        // 解析与目标绑定都交给执行体（`Sandbox.sessionCwd`）。没有会话目录的旧实现/替身走老径：
+        // 解析默认根并注入，行为不变。
+        const sessionAware = key === 'cwd' && typeof options.sandbox.sessionCwd === 'function'
+        if (!sessionAware) {
+          const path = (given as string | undefined) ?? '.'
+          const noteTarget = key === 'path' ? options.notes?.resolve(path) : undefined
+          ownNote = noteTarget !== undefined
+          target = noteTarget ?? options.workspace.resolve(path)
+          call = { ...call, args: { ...call.args, [key]: target.absolute } }
+          resolvedTarget(target)
+        }
       }
     }
 
@@ -278,7 +285,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
 
       // ④ 回填——终值定形（大块转存经记录域），先落事件、再交调用方
       const content = await toContent(outcome.output, options.blobs)
-      options.sink.emit(toolResultEvent(options.stamper, callRef, outcome.ok, content))
+      options.sink.emit(toolResultEvent(options.stamper, callRef, outcome.ok, content, outcome.cwd))
 
       // **读到哪儿了**（U63）——只读那三件**成了**才报（没成＝没读到，报它会把
       // 「读失败」说成「读过」）。落点归位在这一层做（见 `readPlaceOf`）：沙箱就在这儿。
@@ -299,6 +306,10 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
         // **这一轮停在这儿**（U72）——原样过手（本域不认识「哪一轮」，收束归对话域）
         ...(outcome.halt === true ? { halt: true as const } : {}),
         ...(outcome.background === undefined ? {} : { background: outcome.background }),
+        // **这一笔之后在哪**（给外壳状态区）——有就带、没有就不带
+        ...(outcome.cwd === undefined ? {} : { cwd: outcome.cwd }),
+        // **对应哪条模型调用**（并发后按它配对上下文）
+        ...(call.id === '' ? {} : { call: call.id }),
       }
     },
   }

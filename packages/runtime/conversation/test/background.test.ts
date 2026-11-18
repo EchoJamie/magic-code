@@ -20,7 +20,7 @@ import {
   withBackgroundRuns,
 } from '../src/prompt/index.ts'
 
-const VARS = { cwd: '/ws/magic-code', platform: 'darwin', date: '2026-09-26' }
+const VARS = { cwd: '/ws/magic-code', shell: '/bin/sh', platform: 'darwin', date: '2026-09-26' }
 
 /** 一条在跑的后台命令（三件齐——读面给的就是这三件）。 */
 function running(over: Partial<BackgroundRunning> = {}): BackgroundRunning {

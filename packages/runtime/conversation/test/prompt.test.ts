@@ -33,7 +33,7 @@ import {
 } from '../src/prompt/index.ts'
 import type { PromptBlockId, PromptRuntimeVar, PromptVars } from '../src/prompt/index.ts'
 
-const VARS: PromptVars = { cwd: '/ws/magic-code', platform: 'darwin', date: '2026-09-16' }
+const VARS: PromptVars = { cwd: '/ws/magic-code', shell: '/bin/sh', platform: 'darwin', date: '2026-09-16' }
 
 /** 装配产物的块标识序——段结构四段（顺序即结构）+ 环境注入块（殿后）。 */
 const BLOCK_IDS: PromptBlockId[] = [...PROMPT_SECTIONS, ENVIRONMENT_BLOCK_ID]
@@ -123,11 +123,11 @@ describe('M04 · 注入对', () => {
   })
 
   test('注入项齐项——覆盖段结构 PromptRuntimeVar 全量', () => {
-    expect([...PROMPT_RUNTIME_VARS].sort()).toEqual(['cwd', 'date', 'platform'])
+    expect([...PROMPT_RUNTIME_VARS].sort()).toEqual(['cwd', 'date', 'platform', 'shell'])
   })
 
   test('值按原样注入（不修剪），多余键被忽略', () => {
-    const raw: PromptVars = { cwd: '  /ws  ', platform: 'linux', date: '2026-09-16' }
+    const raw: PromptVars = { cwd: '  /ws  ', shell: '/bin/sh', platform: 'linux', date: '2026-09-16' }
     const prompt = buildSystemPrompt(raw)
 
     expect(prompt).toContain('- 工作目录：  /ws  ')
@@ -153,15 +153,15 @@ describe('M04 · 缺失行为', () => {
 
     expect(error).toBeInstanceOf(PromptVarsError)
     expect((error as PromptVarsError).name).toBe('PromptVarsError')
-    expect((error as PromptVarsError).missing).toEqual(['cwd', 'platform', 'date'])
+    expect((error as PromptVarsError).missing).toEqual(['cwd', 'shell', 'platform', 'date'])
     expect((error as PromptVarsError).message).toContain('系统提示词缺运行时注入值')
-    expect((error as PromptVarsError).message).toContain('cwd、platform、date')
+    expect((error as PromptVarsError).message).toContain('cwd、shell、platform、date')
   })
 
   test('缺一项 → 只报缺的那项', () => {
     const error = (() => {
       try {
-        buildSystemPrompt({ cwd: '/ws', platform: 'darwin' } as PromptVars)
+        buildSystemPrompt({ cwd: '/ws', shell: '/bin/sh', platform: 'darwin' } as PromptVars)
       } catch (caught) {
         return caught as PromptVarsError
       }
@@ -246,11 +246,11 @@ describe('M04 · 注入来源纪律', () => {
 
 /** 类型层探针——`PromptVars` 要求齐项（缺项即编译期报错）。 */
 export function varsRequireAllRuntimeVars(): void {
-  const full: PromptVars = { cwd: '/ws', platform: 'darwin', date: '2026-09-16' }
+  const full: PromptVars = { cwd: '/ws', shell: '/bin/sh', platform: 'darwin', date: '2026-09-16' }
   // @ts-expect-error 缺 date——类型层即拦
-  const incomplete: PromptVars = { cwd: '/ws', platform: 'darwin' }
+  const incomplete: PromptVars = { cwd: '/ws', shell: '/bin/sh', platform: 'darwin' }
   // @ts-expect-error 值须为字符串
-  const wrongType: PromptVars = { cwd: '/ws', platform: 'darwin', date: 20260916 }
+  const wrongType: PromptVars = { cwd: '/ws', shell: '/bin/sh', platform: 'darwin', date: 20260916 }
 
   const ids: readonly PromptRuntimeVar[] = [...PROMPT_RUNTIME_VARS]
   void full

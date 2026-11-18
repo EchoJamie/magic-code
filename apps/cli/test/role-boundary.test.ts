@@ -1,11 +1,28 @@
 import { expect, test } from 'bun:test'
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ModelRequest } from '@magic/contracts'
+import type { KernelEvent, ModelRequest } from '@magic/contracts'
 import { createFauxGateway, type FauxTurn } from '@magic/faux'
 import { createRecordsStore } from '@magic/data'
 import { attachShell, type Assembly } from '../src/index.ts'
 import { eventsOfKind, makeStage } from './support.ts'
+
+/** 按调用（名 ＋ 路径）取结果——并发与「扣下」都会让事件顺序不再等于调用顺序。 */
+function outcomesOf(events: readonly KernelEvent[]): Map<string, boolean> {
+  const calls = new Map<number, { name: string; args: Readonly<Record<string, unknown>> }>()
+  for (const event of events) {
+    if (event.kind === 'tool.call') calls.set(event.id, { name: event.data.name, args: event.data.args })
+  }
+  const out = new Map<string, boolean>()
+  for (const event of events) {
+    if (event.kind !== 'tool.result') continue
+    const call = calls.get(event.data.call)
+    if (call === undefined) continue
+    const path = typeof call.args['path'] === 'string' ? `:${call.args['path']}` : ''
+    out.set(`${call.name}${path}`, event.data.ok)
+  }
+  return out
+}
 
 for (const state of ['accepted', 'queued', 'stopped'] as const) test(`显式read角色的普通成员经完整协作链读取三种知识并维护自身记忆，生命周期 ${state}`, async () => {
   const stage = makeStage({ config: { agentRoles: { reader: { name: '查证', instructions: '只读核对业务材料', tools: ['read'] } } } })
@@ -48,13 +65,24 @@ for (const state of ['accepted', 'queued', 'stopped'] as const) test(`显式read
     const names = requests[0]!.tools!.map(tool => tool.name)
     for (const name of ['knowledge_search', 'knowledge_read', 'knowledge_source', 'write']) expect(names).toContain(name)
     const outputs = eventsOfKind(shell.events, 'tool.result')
+    const outcomes = outcomesOf(shell.events)
     if (state === 'accepted') {
-      expect(outputs.map(event => event.data.ok)).toEqual([true, true, true, true, true, false])
+      expect(outcomes.get('knowledge_search')).toBe(true)
+      expect(outcomes.get('knowledge_read')).toBe(true)
+      expect(outcomes.get('knowledge_source')).toBe(true)
+      expect(outcomes.get(`write:${join(stage.dataDir, 'notes', 'member', 'MEMORY.md')}`)).toBe(true)
+      expect(outcomes.get('read:probe.txt')).toBe(true)
+      expect(outcomes.get('write:probe.txt')).toBe(false)
       const results = requests.flatMap(request => request.messages).filter(message => message.role === 'tool')
       expect(results.some(message => message.role === 'tool' && message.name === 'knowledge_source' && message.output.includes('用户原工作证据'))).toBe(true)
     } else if (state === 'queued') {
-      expect(outputs.map(event => event.data.ok)).toEqual([false, false, false, true, false, false])
-      expect(JSON.stringify(outputs[0]?.data)).toContain('active delegation binding required')
+      expect(outcomes.get('knowledge_search')).toBe(false)
+      expect(outcomes.get('knowledge_read')).toBe(false)
+      expect(outcomes.get('knowledge_source')).toBe(false)
+      expect(outcomes.get(`write:${join(stage.dataDir, 'notes', 'member', 'MEMORY.md')}`)).toBe(true)
+      expect(outcomes.get('read:probe.txt')).toBe(false)
+      expect(outcomes.get('write:probe.txt')).toBe(false)
+      expect(outputs.some(event => JSON.stringify(event.data).includes('active delegation binding required'))).toBe(true)
     } else {
       expect(outputs.some(event => event.data.ok)).toBe(false)
       expect(app.records.collaboration.getCollaboration(collaboration.collaborationId)?.state).toBe('stopped')

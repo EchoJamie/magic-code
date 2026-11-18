@@ -99,6 +99,7 @@ export type PromptVars = Readonly<Record<PromptRuntimeVar, string>>
  */
 export const PROMPT_RUNTIME_VARS = [
   'cwd',
+  'shell',
   'platform',
   'date',
 ] as const satisfies readonly PromptRuntimeVar[]
@@ -106,6 +107,7 @@ export const PROMPT_RUNTIME_VARS = [
 /** 注入项的中文标签（环境块逐行呈现）。 */
 const RUNTIME_VAR_LABELS: Readonly<Record<PromptRuntimeVar, string>> = {
   cwd: '工作目录',
+  shell: 'shell',
   platform: '平台',
   date: '日期',
 }

@@ -29,7 +29,7 @@ function makeStage(input: { turns: readonly FauxTurn[]; handlers: Readonly<Recor
   const toolDomain = makeFauxToolRuntime({ handlers: input.handlers,
     definitions: Object.keys(input.handlers).map(name => ({ name, summary: '测试动作', parameters: {}, danger: { level: 'light' } })),
   })
-  return { stamper, sink, gateway, toolDomain, promptVars: { cwd: '/test', platform: 'test', date: '2026-09-26' } }
+  return { stamper, sink, gateway, toolDomain, promptVars: { cwd: '/test', shell: '/bin/sh', platform: 'test', date: '2026-09-26' } }
 }
 async function waitUntilIdle(sink: FauxSink) {
   const start = Date.now()

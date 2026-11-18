@@ -55,6 +55,7 @@ export function toolResultEvent(
   call: RecordId,
   ok: boolean,
   output: Content,
+  cwd?: string,
 ): KernelEvent {
-  return stamper.stamp('tool.result', { call, ok, output })
+  return stamper.stamp('tool.result', { call, ok, output, ...(cwd === undefined ? {} : { cwd }) })
 }

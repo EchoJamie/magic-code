@@ -1195,7 +1195,9 @@ function argTextOf(row: Extract<LogRow, { kind: 'tool' }>): string {
   const picked = (keys ?? fallbackKeys(args))
     .map((key) => args[key])
     .filter((value): value is string | number | boolean => isScalar(value))
-    .map((value) => String(value))
+    // 多行值（长命令 / heredoc）在行上只留第一行——要看全走展开
+    .map((value) => (typeof value === 'string' ? (value.split('\n', 1)[0] ?? '').trim() : String(value)))
+    .filter((value) => value !== '')
 
   return picked.length === 0 ? '' : picked.join(' · ')
 }
@@ -1215,8 +1217,8 @@ const isScalar = (value: unknown): value is string | number | boolean =>
 const KEY_ARGS: Readonly<Record<string, readonly string[]>> = {
   '咨询 Arcane': ['question'],
   // `cmd` 是旧记录里的键（重放照旧读得出来）；`description` 是模型自己写的那句意图——
-  // 显示给用户看就靠这一格（记录里 `args` 原样留着，回看也读得到）
-  exec: ['command', 'cmd', 'description'],
+  // **意图在前**：长命令会把这一行占满，命令放后面挨裁，别让「这次要干什么」先被吃掉
+  exec: ['description', 'command', 'cmd'],
   read: ['path'],
   write: ['path'],
   edit: ['path'],

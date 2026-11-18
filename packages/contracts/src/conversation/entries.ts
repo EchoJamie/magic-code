@@ -115,6 +115,13 @@ export type ToolResultPayload = {
   readonly ok: boolean
   /** 内联或 blob 引用。 */
   readonly output: Content
+  /** **这一笔之后执行会话所在的目录**（与事件侧同一位，重放要看同一份）。 */
+  readonly cwd?: string
+  /**
+   * **它对应哪一条模型调用**（`tool-call` 载荷里的 `id`）——并发后条目不再保证
+   * 「调用紧跟着结果」相邻，重建上下文按这一位配对；缺省＝旧记录，按出现顺序串位。
+   */
+  readonly call?: string
   /**
    * **这一笔压根没跑**（与事件侧 `EventDataOf['tool.result']` 同一位，理由见那边）。
    *

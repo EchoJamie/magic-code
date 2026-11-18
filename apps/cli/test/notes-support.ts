@@ -69,7 +69,7 @@ export function notesFixture(options: {
     gate: { decide: async () => 'reject' }, stamper, sink: { emit() {} }, blobs: records.blobs, trashAvailable: false })
   const service = createConversationSession({ session, records, notes, noteTools: toolRuntime, tools: toolRuntime(), gateway, stamper, sink,
     capacity: () => ({ inputBudget: options.budget ?? 32000, maxOutputTokens: 4096, identity: 'test-current' }),
-    context: { nearEntries: options.near ?? 1 }, prompt: { cwd: dir, platform: 'darwin', date: '2026-10-27' } })
+    context: { nearEntries: options.near ?? 1 }, prompt: { cwd: dir, shell: '/bin/sh', platform: 'darwin', date: '2026-10-27' } })
   return { dir, session, store, records, notes, service, requests, events, stamper, sink,
     compact: (id = 'compact', signal = new AbortController().signal) => service.compact({ requestId: id }, signal, () => {}),
     async close() { await service.shutdown(); store.close(); removeDir(dir) },

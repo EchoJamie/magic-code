@@ -11,7 +11,7 @@ function boundary(overrides: Partial<CollaborationBoundary> = {}): Collaboration
     requested: () => undefined, ...overrides }
 }
 
-test('批次中补充：在途调用如实完成，下一件旧工具暂停并重新请求模型', async () => {
+test('批次中补充：已发起的调用如实完成，新交代在下一轮开始前重新判断', async () => {
   let fresh = false
   const stage = makeStage({ turns: [
     { toolCalls: [{ name: 'exec', args: { command: 'first' } }, { name: 'exec', args: { command: 'stale' } }] },
@@ -19,27 +19,29 @@ test('批次中补充：在途调用如实完成，下一件旧工具暂停并�
   ], handlers: { exec: () => { fresh = true; return { ok: true, output: 'first finished' } } } })
   const port = boundary({ consume: async () => { const value = fresh; fresh = false; return value } })
   expect(await agentLoop(makeLoopRuntime(stage, { collaboration: port }), { text: '工作' }, new AbortController().signal)).toBe('settled')
-  expect(stage.tools.calls.map(call => call.args.command)).toEqual(['first'])
+  // **并发发起**：两件都已起跑——在途到达的新交代撤不回已发起的动作，如实完成
+  expect(stage.tools.calls.map(call => call.args.command)).toEqual(['first', 'stale'])
+  expect(stage.sink.byKind('tool.result').map(event => event.data.notExecuted === true)).toEqual([false, false])
   expect(stage.gateway.requests).toHaveLength(2)
-  expect(stage.sink.byKind('tool.result').map(event => event.data.notExecuted === true)).toEqual([false, true])
   expect(JSON.stringify(stage.gateway.requests[1])).toContain('重新判断')
 })
 
-test('停止准入挡住下一工具和下一模型请求，不声称撤销已执行动作', async () => {
+test('停止准入：已发起的调用完成，下一模型请求不再发起', async () => {
   let stopped = false
   const stage = makeStage({ turns: [{ toolCalls: [{ name: 'exec', args: { command: 'first' } }, { name: 'exec', args: { command: 'second' } }] }],
     handlers: { exec: () => { stopped = true; return { ok: true, output: '已发生' } } } })
   await agentLoop(makeLoopRuntime(stage, { collaboration: boundary({ admit: () => stopped ? '已停止' : undefined }) }), { text: '工作' }, new AbortController().signal)
-  expect(stage.tools.calls).toHaveLength(1)
+  // 同批并发发起 ⇒ 两件都跑；但收束时准入已挡，**不再开下一轮**
+  expect(stage.tools.calls).toHaveLength(2)
   expect(stage.gateway.requests).toHaveLength(1)
-  expect(stage.sink.byKind('tool.result')[1]?.data.notExecuted).toBe(true)
 })
 
-test('持久等待让出推进，不执行同批次后续动作或忙轮询', async () => {
+test('持久等待让出推进：同批已发起，不再开下一轮', async () => {
   const stage = makeStage({ turns: [{ toolCalls: [{ name: 'exec', args: { command: 'register wait' } }, { name: 'exec', args: { command: 'later' } }] }],
     handlers: { exec: () => ({ ok: true, output: '已登记等待', halt: true }) } })
   await agentLoop(makeLoopRuntime(stage, { collaboration: boundary() }), { text: '工作' }, new AbortController().signal)
-  expect(stage.tools.calls).toHaveLength(1)
+  // 并发发起后 `halt` 只能决定「还开不开下一轮」，不能撤回同批已起跑的那件
+  expect(stage.tools.calls).toHaveLength(2)
   expect(stage.gateway.requests).toHaveLength(1)
 })
 
@@ -60,7 +62,7 @@ test('收件唤起不伪造用户消息，重复无新信息的唤起不请求�
 })
 
 test('单会话只给一句提示，真正展开才注完整协作指导', async () => {
-  const base = buildSystemPrompt({ cwd: '/w', platform: 'test', date: '2026-09-26' })
+  const base = buildSystemPrompt({ cwd: '/w', shell: '/bin/sh', platform: 'test', date: '2026-09-26' })
   const plain = await collaborationPrompt(base)
   expect(plain).toBe(base)
   expect(plain).toContain(COLLABORATION_HINT)

@@ -246,12 +246,13 @@ export function assemble(options: AssembleOptions): Assembly {
   const backgroundRuns: BackgroundRegistry | undefined =
     backgroundDir === undefined
       ? undefined
-      : createBackgroundRuns({ dir: backgroundDir, workspace, ledger, env: environment, signal })
+      : createBackgroundRuns({ dir: backgroundDir, workspace, ledger, env: environment, signal, ...(environment['SHELL'] === undefined ? {} : { shell: environment['SHELL'] }) })
 
   const sandbox = createSandbox({
     env: environment,
     workspace,
     ledger,
+    ...(environment['SHELL'] === undefined ? {} : { shell: environment['SHELL'] }),
   })
 
   const mcp: McpServers = createMcpServers({
