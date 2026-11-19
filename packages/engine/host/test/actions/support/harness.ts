@@ -121,7 +121,7 @@ export function makeStage(options: StageOptions = {}): Stage {
 }
 
 /** 恢复用例的现场束——从这一束替身拼出来（记录 / 工具 / 扇出 / 铸造器同源）。 */
-export function runtimeOf(stage: Stage, idempotent?: (call: { readonly name: string }) => boolean) {
+export function runtimeOf(stage: Stage) {
   return {
     session: SESSION,
     records: stage.records,
@@ -129,7 +129,6 @@ export function runtimeOf(stage: Stage, idempotent?: (call: { readonly name: str
     sink: stage.sink,
     stamper: stage.stamper,
     now: () => T0,
-    ...(idempotent === undefined ? {} : { idempotent: (call: { readonly name: string }) => idempotent(call) }),
   }
 }
 

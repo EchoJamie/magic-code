@@ -48,7 +48,7 @@ import type {
   Timestamp,
   ToolRuntime,
 } from '@magic/contracts'
-import type { IdempotencyJudge, RecoveryReport } from './recover.ts'
+import type { RecoveryReport } from './recover.ts'
 import { recoverSession } from './recover.ts'
 
 /**
@@ -78,11 +78,6 @@ export type ActionsDeps = {
   readonly sink: EventSink
   /** 时钟（记录域不取时钟）——补记条目的时间戳。 */
   readonly now: () => Timestamp
-  /**
-   * 幂等判定——**生产装配不传**（`ToolSpec` 没有幂等声明位，「幂等 → 静默重放」无从判定
-   * ⇒ 首站一律交用户裁决）。见 `./recover.ts` 文件头注「② 首站为什么不自动重放」。
-   */
-  readonly idempotent?: IdempotencyJudge | undefined
 }
 
 /** 本层的面——**每个用例一个入口**。 */
@@ -116,7 +111,6 @@ export function createActions(deps: ActionsDeps): Actions {
         stamper: ports.stamper,
         sink: deps.sink,
         now: deps.now,
-        idempotent: deps.idempotent,
       })
 
       // ⑤ 上下文由条目重建 ＋ 界面重建展示（装载 · 认下水位与开工位 · 通知外壳「你在这儿」）
@@ -132,13 +126,12 @@ export function createActions(deps: ActionsDeps): Actions {
 
 // —— 公开面（技术方案 · 代码治理 · 公开面：端口实现 ＋ 装配期构造入参形态）——
 //
-// 出的是**用例入口**（`createActions`）与**它签名里点到名的形态**（`ActionsDeps` 的
-// `IdempotencyJudge` · 返回的 `RecoveryReport` 及其组成部分）。**用例本体不出**——
+// 出的是**用例入口**（`createActions`）与**它签名里点到名的形态**（返回的 `RecoveryReport`
+// 及其组成部分）。**用例本体不出**——
 // `recoverSession`（①②③④ 那一段）只在包内被 `createActions` 用；要看它的用例
 // 深链 `../src/recover.ts`（与对话域的既有做法同法：**没出，就没承诺**）。
 export type {
   CallDisposition,
-  IdempotencyJudge,
   NotReplayedReason,
   RecoveryReport,
 } from './recover.ts'

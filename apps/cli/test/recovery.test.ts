@@ -148,11 +148,11 @@ describe('接续（`resume` 那条路）——装载 ＋ 恢复 ＋ 重建展示
       const handle = attach(resumed)
       await resumed.boot()
 
-      // ① 在途识别 → ② 处置：**未重跑**（非幂等一律交用户裁决），补一条失败结果
+      // ① 在途识别 → ② 处置：**未重跑**（在途一律不重放），补一条失败结果
       const results = eventsOfKind(handle.events, 'tool.result')
       expect(results).toHaveLength(1)
       expect(results[0]?.data.ok).toBe(false)
-      expect(JSON.stringify(results[0])).toContain('未自动重跑')
+      expect(JSON.stringify(results[0])).toContain('未重跑')
 
       // ③ 未收尾的轮记中止
       const aborted = eventsOfKind(handle.events, 'turn.end').filter(
@@ -206,7 +206,7 @@ describe('接续（`resume` 那条路）——装载 ＋ 恢复 ＋ 重建展示
       // 回填那条说的是**未重跑**（不是「跑完了」那种假账）
       const backfill = messages.find((message) => message.role === 'tool')
       expect(backfill).toMatchObject({ name: 'exec', ok: false })
-      expect(messages.map(textOf).join('\n')).toContain('未自动重跑')
+      expect(messages.map(textOf).join('\n')).toContain('未重跑')
 
       handle.dispose()
       resumed.close()
@@ -300,7 +300,7 @@ describe('无人值守那条路（`--script`）也走启动流转', () => {
       // 恢复跑过了——补记在轨迹里（而不是「脚本没提这茬就静默跳过」）
       const results = eventsOfKind(handle.events, 'tool.result')
       expect(results).toHaveLength(1)
-      expect(JSON.stringify(results[0])).toContain('未自动重跑')
+      expect(JSON.stringify(results[0])).toContain('未重跑')
 
       handle.dispose()
       resumed.close()

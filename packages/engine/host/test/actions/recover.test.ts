@@ -4,7 +4,7 @@
  *
  * ```
  *   ① 在途识别        —— 有 tool.call 无 tool.result（记录域的查询面：`scanInFlight`）
- *   ② 处置            —— ★ 首站**不自动重放**：一律交用户裁决（重跑 / 记失败）
+ *   ② 处置            —— ★ **不重放任何调用**：在途一律补一条失败结果，下一步重新核对现状
  *   ③ 未完成流式消息  —— 丢弃（半截正文本就不落账）＋ 记中止（补 turn.end{aborted}）
  *   ④ 未答复裁决      —— 按「拒绝」落账（保守）
  *   ⑤ 上下文由条目重建 —— 递手给对话域的重建面（见文件末那一组：入口的接线）
@@ -25,10 +25,10 @@ import { recoverSession } from '../../src/actions/recover.ts'
 import { SESSION, T0, callOf, jsonOf, payloadTextOf, resultsOf, runtimeOf, scanOf } from './support/harness.ts'
 import { makeStage } from './support/harness.ts'
 
-describe('② 幂等的那笔——静默重放（首站不可达：没有声明位 ⇒ 装配不传判定）', () => {
-  test('重放：工具域被调一次，结果条目与原调用条目成对', async () => {
+describe('② 已批准但在途——不重放，按「结果未知」落账', () => {
+  test('已批准、结果未落库：工具域一次都不调，落「结果未知」失败', async () => {
     const stage = makeStage({
-      handlers: { exec: () => ({ ok: true, output: 'a.txt\n' }) },
+      handlers: { exec: () => ({ ok: true, output: '不该跑' }) },
       scan: scanOf([callOf()]),
     })
     stage.records.appendEntry({
@@ -46,50 +46,29 @@ describe('② 幂等的那笔——静默重放（首站不可达：没有声明
       data: { name: 'exec', args: { command: 'ls' } },
     } as KernelEvent)
 
-    const report = await recoverSession(runtimeOf(stage, () => true))
+    const report = await recoverSession(runtimeOf(stage))
 
-    // 工具真跑了一次（这就是「重放」）
-    expect(stage.tools.calls.map((call) => call.name)).toEqual(['exec'])
+    // 一次都不重跑——重跑等于替用户追加一次副作用
+    expect(stage.tools.calls).toEqual([])
 
-    // 条目侧：原调用条目之后的 `tool-result`——上下文重新合法（⑤）
+    // 条目侧：原调用之后补一条失败结果，上下文重新合法（⑤）
     expect(stage.records.entries.map((entry) => entry.kind)).toEqual(['tool-call', 'tool-result'])
-    expect(payloadTextOf(stage.records.entries[1] as Entry)).toBe('a.txt\n')
+    const result = resultsOf(stage.records.entries)[0]
+    expect(result?.payload).toMatchObject({ ok: false })
 
-    // 事件侧：**重放自己那一对在前**（工具域的产出），**原笔的补记在后**（恢复的了结）
-    const replayed = stage.sink.byKind('tool.call').at(-1)
-    expect(replayed).toBeDefined()
-    const results = stage.sink.byKind('tool.result')
-    expect(results.map((event) => event.data.call)).toEqual([replayed?.id ?? -1, 42])
-    expect(results.map((event) => event.data.ok)).toEqual([true, true])
+    // 事件侧：原笔的补记指回 42，且明说是失败
+    const closed = stage.sink.byKind('tool.result')[0]
+    expect(closed?.data.call).toBe(42)
+    expect(closed?.data.ok).toBe(false)
 
     expect(report.dispositions).toEqual([
-      { call: 42, entry: 2, name: 'exec', action: { kind: 'replayed', ok: true }, resultEntry: expect.any(Number) },
+      { call: 42, entry: 2, name: 'exec', action: { kind: 'not-replayed', why: 'unconfirmed' }, resultEntry: expect.any(Number) },
     ])
-  })
-
-  test('重放也走闸门（不可绕过）——闸门拒绝则如实记拒绝，不当作成功', async () => {
-    const stage = makeStage({
-      auto: 'reject',
-      handlers: { exec: () => ({ ok: true, output: '不该跑' }) },
-      scan: scanOf([callOf()]),
-    })
-    stage.records.appendEntry({
-      kind: 'tool-call',
-      content: { text: '' },
-      payload: { id: 'call-fixture-2', name: 'exec', args: { command: 'ls' } },
-      at: T0,
-    })
-
-    await recoverSession(runtimeOf(stage, () => true))
-
-    expect(stage.tools.calls).toEqual([]) // 闸门未批准 ⇒ 执行体压根不存在
-    const result = resultsOf(stage.records.entries)[0]
-    expect(payloadTextOf(result as Entry)).toContain('拒绝')
   })
 })
 
-describe('② 非幂等的那笔——拒绝自动恢复（本单元最硬的一条）', () => {
-  test('已批准但非幂等：**一次都不重跑**，落「未重跑」失败', async () => {
+describe('② 已批准但结果未落库——一次都不重跑（本单元最硬的一条）', () => {
+  test('已批准、结果未落库：**一次都不重跑**，落「结果未知」失败', async () => {
     const stage = makeStage({
       handlers: { exec: () => ({ ok: true, output: '不该跑' }) },
       scan: scanOf([callOf({ args: { command: 'mkdir -p src/new' } })]),
@@ -101,43 +80,26 @@ describe('② 非幂等的那笔——拒绝自动恢复（本单元最硬的一
       at: T0,
     })
 
-    const report = await recoverSession(runtimeOf(stage, () => false))
+    const report = await recoverSession(runtimeOf(stage))
 
     // ★ 绝不静默重试——工具域一次都没被调
     expect(stage.tools.calls).toEqual([])
 
     const result = resultsOf(stage.records.entries)[0]
     expect(result?.payload).toMatchObject({ ok: false })
-    expect(payloadTextOf(result as Entry)).toContain('未自动重跑')
+    expect(payloadTextOf(result as Entry)).toContain('未重跑')
 
     // 事件侧同样了结（call 指回原笔），且明说是失败
     const closed = stage.sink.byKind('tool.result')[0]
     expect(closed?.data.call).toBe(42)
     expect(closed?.data.ok).toBe(false)
 
-    expect(report.dispositions[0]?.action).toEqual({ kind: 'not-replayed', why: 'non-idempotent' })
+    expect(report.dispositions[0]?.action).toEqual({ kind: 'not-replayed', why: 'unconfirmed' })
 
-    // 材料要把「请裁决」说清楚（重跑 / 记失败）
-    expect(jsonOf(closed as KernelEvent)).toContain('重跑')
+    // 材料要说清「未重跑、先核对现状」
+    expect(jsonOf(closed as KernelEvent)).toContain('未重跑')
   })
 
-  test('幂等判定缺省从严——**没接线就一律不重放**（生产装配正是这条）', async () => {
-    const stage = makeStage({
-      handlers: { exec: () => ({ ok: true, output: '不该跑' }) },
-      scan: scanOf([callOf()]),
-    })
-    stage.records.appendEntry({
-      kind: 'tool-call',
-      content: { text: '' },
-      payload: { id: 'call-fixture-4', name: 'exec', args: { command: 'ls' } },
-      at: T0,
-    })
-
-    const report = await recoverSession(runtimeOf(stage)) // 不给 idempotent
-
-    expect(stage.tools.calls).toEqual([])
-    expect(report.dispositions[0]?.action).toEqual({ kind: 'not-replayed', why: 'non-idempotent' })
-  })
 })
 
 describe('④ 未答复裁决＝按「拒绝」落账（保守）', () => {
@@ -153,7 +115,7 @@ describe('④ 未答复裁决＝按「拒绝」落账（保守）', () => {
       at: T0,
     })
 
-    const report = await recoverSession(runtimeOf(stage, () => true))
+    const report = await recoverSession(runtimeOf(stage))
 
     // 幂等与否都不重跑——**没答复＝没批准**
     expect(stage.tools.calls).toEqual([])
@@ -170,7 +132,7 @@ describe('④ 未答复裁决＝按「拒绝」落账（保守）', () => {
       at: T0,
     })
 
-    const report = await recoverSession(runtimeOf(stage, () => true))
+    const report = await recoverSession(runtimeOf(stage))
 
     expect(stage.tools.calls).toEqual([])
     expect(report.dispositions[0]?.action).toEqual({ kind: 'not-replayed', why: 'rejected' })
@@ -228,7 +190,7 @@ describe('判据之外的钉子', () => {
       at: T0,
     })
 
-    const report = await recoverSession(runtimeOf(stage, () => true))
+    const report = await recoverSession(runtimeOf(stage))
 
     expect(stage.sink.byKind('tool.result')).toEqual([]) // 没有链引用就不铸结果事件（不编造）
     expect(resultsOf(stage.records.entries)).toHaveLength(1) // 条目侧照样了结
@@ -256,10 +218,10 @@ describe('判据之外的钉子', () => {
       at: T0,
     })
 
-    const report = await recoverSession(runtimeOf(stage, () => true))
+    const report = await recoverSession(runtimeOf(stage))
 
-    expect(report.dispositions.map((entry) => entry.action.kind)).toEqual(['replayed', 'not-replayed'])
-    expect(stage.tools.calls.map((call) => call.args['command'])).toEqual(['ls'])
+    expect(report.dispositions.map((entry) => entry.action.kind)).toEqual(['not-replayed', 'not-replayed'])
+    expect(stage.tools.calls).toEqual([])
     expect(stage.records.entries.map((entry) => entry.kind)).toEqual([
       'tool-call',
       'tool-call',
