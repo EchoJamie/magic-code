@@ -9,6 +9,8 @@ NAME="Magic Code"
 APP="$OUTPUT/$NAME.app"
 IDENTITY="${MAGIC_SIGN_IDENTITY:-Apple Development: echojamieee@outlook.com (9JHY98AJMC)}"
 VERSION="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
+# 版本号唯一来源是 package.json；这里把它对齐到 native.ts（编进组件身份的那一处）。
+node scripts/macos/sync-version.mjs
 DMG="$OUTPUT/$NAME-$VERSION-arm64.dmg"
 PROTOCOL="$(python3 - "$VERSION" <<'PY'
 import re, pathlib, sys
