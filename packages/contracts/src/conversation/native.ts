@@ -4,7 +4,7 @@ import type { RunNotice, RunState, StopPhase } from './runs.ts'
 
 /** App、CLI、内核同版发布。只认这一版，不协商或保留旧解码器。 */
 export const NATIVE_PROTOCOL = 2
-export const SOFTWARE_VERSION = '0.2.0+202611191710'
+export const SOFTWARE_VERSION = '0.2.0+202611192135'
 
 export type ServiceIdentity = {
   readonly protocol: number
