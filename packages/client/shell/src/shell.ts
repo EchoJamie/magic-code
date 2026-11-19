@@ -2786,8 +2786,25 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       case 'ctrl+w':
         return askStop('turn')
 
-      case 'enter':
+      case 'enter': {
+        // 候选开着、选中的是已注册命令、且草稿**还停在命令名上**（无空白、是它的前缀）
+        // ⇒ 回车先把它补进草稿（`命令名 ＋ 空格`），不提交（U133）。
+        //
+        // 三条限定缺一不可：
+        // - 只认**前缀**：候选是模糊匹配（包含／子序列），`/hlp` 也会列出 `/help`，
+        //   那种是打正文，回车必须照发；
+        // - 有空白就不拦：`/helpful text` 是正文；
+        // - 裸命令例外：`/ps`、`/status`、`/connect` 本身就是可执行的一条，回车照执行。
+        const bare = view.draft.trim()
+        const picked = view.completion?.candidates[view.completion.selected]
+        const isCommand = picked !== undefined && COMMANDS.some((command) => command.name === picked.name)
+        const bareCommand = bare === '/ps' || bare === '/status' || bare === '/connect'
+        if (isCommand && !/\s/.test(bare) && !bareCommand && picked !== undefined && picked.name.startsWith(bare)) {
+          pickCompletion()
+          return NONE
+        }
         return submit()
+      }
 
       case 'left':
         // 明确移动插入点后退出历史浏览，回到文字编辑。

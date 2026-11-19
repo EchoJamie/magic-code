@@ -15,8 +15,8 @@ test('多行上下不召回历史，Ctrl+P/N 归还完整原稿', () => {
  s.press({kind:'ctrl+n'}); expect(s.shell.getView().draft).toBe('one\ntwo\nthree')
  expect(s.shell.getView().caret).toBe(7)
 })
-test('裸命令、绝对路径和相似名称是正文，Enter 不补全', () => {
- for (const text of ['/help', '/helpful text', '/Users/jamie/file check', '/unknown value']) {
+test('带参数的命令名、绝对路径和不认得的词是正文，Enter 照发', () => {
+ for (const text of ['/helpful text', '/Users/jamie/file check', '/unknown value']) {
   const s=createStage(); s.type(text); s.press(enter)
   expect(s.commands()).toContainEqual(expect.objectContaining({type:'input.submit',text}))
  }

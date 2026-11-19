@@ -350,4 +350,50 @@ describe('输入行 · 光标落在哪', () => {
     expect(frame.rawCellsOf(row).some((cell) => cell.inverse)).toBe(false)
   })
 
+
+  /**
+   * U133 —— **候选开着时回车先补全**，不提交。
+   *
+   * 打 `/` 之后 ↑↓ 选完直接敲回车，曾经会把一条只有斜杠的交代发给模型：
+   * 回车走普通提交，而 `/`、`/h` 都不满足「完整命令名 ＋ 空格」。
+   */
+  test('候选开着时回车先补全（U133）——只有斜杠的交代不会发出去', async () => {
+    const stage = createStage()
+    stage.type('/c')
+
+    const opened = await stage.screen(WIDE)
+    expect(opened.statusLine).toContain('Tab 补全') // 候选真的开着
+
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'enter' })
+
+    const frame = await stage.screen(WIDE)
+    const input = frame.dock.map((line) => line.text).join('\n')
+
+    expect(input).toMatch(/\/(connect|clear|compact)/) // 补成了「命令名 ＋ 空格」
+    expect(frame.statusLine).not.toContain('Tab 补全') // 候选收起
+    expect(stage.commands().some((command) => command.type === 'input.submit')).toBe(false)
+  })
+
+
+  /**
+   * U133 的两条边界：**严格前缀才补全**；**模糊匹配出来的候选回车照发**。
+   *
+   * `/help` 是 `/help` 的前缀 ⇒ 补全；`/hlp` 只是子序列命中 ⇒ 那是正文，回车照发。
+   */
+  test('候选开着时只对前缀补全——模糊命中仍是正文（U133）', async () => {
+    const prefix = createStage()
+    prefix.type('/help')
+    expect((await prefix.screen(WIDE)).statusLine).toContain('Tab 补全')
+    prefix.press({ kind: 'enter' })
+    expect(prefix.shell.getView().draft).toBe('/help ')
+    expect(prefix.commands().some((command) => command.type === 'input.submit')).toBe(false)
+
+    const fuzzy = createStage()
+    fuzzy.type('/hlp')
+    expect((await fuzzy.screen(WIDE)).statusLine).toContain('Tab 补全') // 模糊命中确实列着
+    fuzzy.press({ kind: 'enter' })
+    expect(fuzzy.commands()).toContainEqual(expect.objectContaining({ type: 'input.submit', text: '/hlp' }))
+  })
+
 })
