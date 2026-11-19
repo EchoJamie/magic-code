@@ -236,6 +236,37 @@ describe('运行时切换 · 会话中途', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════
+// 一之二 · 还没有会话就切换——首条消息用换过的那条
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('运行时切换 · 还没有会话', () => {
+  test('连接已建立、还没发消息：切完以后首条消息就走新模型', async () => {
+    const land = stage()
+    const { fetch, seen } = splitEndpoint({ alpha: '甲答', beta: '乙答' })
+
+    try {
+      const assembly = land.assemble({ modelFetch: fetch })
+      const events: KernelEvent[] = []
+      const off = assembly.shell.subscribe((event) => events.push(event))
+
+      // 还没有任何交代——会话尚未建立
+      assembly.shell.send({ type: 'model.switch', choice: 'cantrip' })
+      const handle = attachShell(assembly.shell)
+      await handle.submit('起个头')
+      off()
+      handle.dispose()
+      assembly.close()
+
+      expect(seen[0]?.url).toContain('beta.example')
+      expect(seen[0]?.model).toBe('beta-1')
+      expect(startModels(events)[0]).toBe('beta-1')
+    } finally {
+      land.dispose()
+    }
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
 // 二 · 脚本步骤：换模型（`--script` 的入口）
 // ═══════════════════════════════════════════════════════════════════════
 
