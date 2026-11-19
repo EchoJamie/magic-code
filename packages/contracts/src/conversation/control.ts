@@ -127,6 +127,13 @@ export type UserInput = {
    */
   readonly notice?: true
   readonly background?: import('./background.ts').BackgroundChange
+  /**
+   * **这一条交代希望用的模型选择**——窗口自己的意图。
+   *
+   * 还没有会话时切模型只改窗口自己（内存），发送时随这一条带过来：装配按它建注册表，
+   * 「切完的第一条消息就走新模型」。缺省 ＝ 按配置默认。
+   */
+  readonly model?: ModelSwitchRequest
 }
 
 /**

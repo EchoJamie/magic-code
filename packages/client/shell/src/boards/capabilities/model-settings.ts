@@ -6,6 +6,7 @@ import type {
   ModelChoice,
   ModelInfo,
   ModelRef,
+  ModelSwitchRequest,
   ModelsDevMatch,
   ReasoningSetting,
 } from '@magic/contracts'
@@ -58,6 +59,11 @@ export function createModelSettings(ui: {
   enterLayer: () => void
   popLayer: () => void
   readonly prompt: Pick<ReturnType<typeof createPrompt>, 'open' | 'clear' | 'note'>
+  /**
+   * **还没有会话时，选择留在窗口自己身上**——返回 `true` 表示已落地、不必发命令。
+   * 由外壳决定（它才知道有没有会话）；这里只管「先问一声，没落地才发」。
+   */
+  readonly chooseInWindow: (request: ModelSwitchRequest) => boolean
 }) {
   const { present, receipt, send, enterLayer, popLayer } = ui
 
@@ -198,7 +204,7 @@ export function createModelSettings(ui: {
     collaborationModel = null
     present(null)
     if (target !== null) send({ type: 'collaboration.configure', ...target, model: { reasoning: setting } })
-    else send({ type: 'model.switch', reasoning: setting })
+    else if (!ui.chooseInWindow({ reasoning: setting })) send({ type: 'model.switch', reasoning: setting })
   }
 
   /** 接入字段集中编辑；刷新与移除仍是独立动作。 */
@@ -702,7 +708,7 @@ export function createModelSettings(ui: {
         return true
       }
       if (collaborationModel !== null) send({ type: 'collaboration.configure', ...collaborationModel, model: { choice } })
-      else send({ type: 'model.switch', choice })
+      else if (!ui.chooseInWindow({ choice })) send({ type: 'model.switch', choice })
       collaborationModel = null
       modelScope = 'session'
       present(null)
@@ -821,7 +827,7 @@ export function createModelSettings(ui: {
         } else if (!visible) {
           refreshModelPicker(event.data.note ?? '')
         }
-        if (start && event.data.saved === true) send({ type: 'model.switch', choice: 'default' })
+        if (start && event.data.saved === true && !ui.chooseInWindow({ choice: 'default' })) send({ type: 'model.switch', choice: 'default' })
         if (event.data.note !== undefined) receipt(event.data.note)
       } else if (intent === 'model') {
         openModelPicker(event.data.note ?? '')

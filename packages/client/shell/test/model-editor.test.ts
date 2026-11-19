@@ -150,6 +150,7 @@ describe('/model 集中编辑', () => {
 
   test('思考预算输入校验后仅应用当前对象；无预算声明不开放', () => {
     const stage = createStage(); const ref = { provider: 'local', model: 'm' }
+    stage.feed([event('session.state', { active: 'fixture', sessions: [{ archived: false, id: 'fixture', title: '夹具会话', at: 1 }] })])
     stage.type('/model '); stage.press({ kind: 'enter' })
     stage.feed([event('model.catalog', { entries: [{ ...entry, effectiveReasoning: { m: { budget: { minTokens: 1024, maxTokens: 4096 } } }, modelOverrides: { m: { reasoningSupport: { budget: { minTokens: 1024, maxTokens: 4096 } } } } }], current: { ...ref, choice: 'default', protocol: 'messages', endpoint: entry.baseURL! }, configuredModels: { default: ref } })])
     pick(stage, 'reasoning'); pick(stage, 'budget'); stage.type('0'); stage.press({ kind: 'enter' })

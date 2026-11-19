@@ -823,6 +823,8 @@ describe('粘贴（非接管）', () => {
 describe('选择器选定模型', () => {
   test('选定 ⇒ 发 `model.switch`（回执由内核的 `model.switched` 给）', () => {
     const app = live()
+    // 已有会话时才发 `model.switch`；还没有会话的那条路见「还没有会话：选择留在窗口」。
+    app.spy.emit(event('session.state', { active: 'fixture', sessions: [{ archived: false, id: 'fixture', title: '夹具会话', at: 1 }] }))
     app.spy.emit(event('model.call.start', { choice: 'default', model: 'MiniMax-M3', provider: 'minimax' }))
 
     app.type('/model ')
@@ -849,5 +851,33 @@ describe('选择器选定模型', () => {
       choice: 'default',
     })
     expect(app.view().dock.kind).toBe('input')
+  })
+})
+
+describe('还没有会话：模型选择留在窗口', () => {
+  test('选定不发命令；回执说清下一条消息起用它，发送时随交代带上', () => {
+    const app = live()
+    // 连接已经有了、会话还没建立——窗口自己记下选择（用户 2026-11-19 定）
+    app.type('/model ')
+    app.press(ENTER)
+    app.spy.emit(
+      event('model.catalog', {
+        entries: [{ provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'test', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } } }],
+        configuredModels: { default: { provider: 'minimax', model: 'MiniMax-M3' }, cantrip: { provider: 'minimax', model: 'MiniMax-M3' } },
+        current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
+      }),
+    )
+    for (let i = 0; i < 4; i++) app.press({ kind: 'down' })
+    app.press(ENTER) // 工作选择
+    app.press({ kind: 'down' }) // → Cantrip
+    app.press(ENTER)
+
+    expect(app.commands().some(command => command.type === 'model.switch')).toBe(false)
+    expect(app.view().modelChoice).toEqual({ choice: 'cantrip' })
+    expect(app.rows().filter(row => row.kind === 'receipt').at(-1)).toMatchObject({ text: expect.stringContaining('下一条消息起用它') })
+
+    app.type('开始干活')
+    app.press(ENTER)
+    expect(app.commands().at(-1)).toMatchObject({ type: 'input.submit', model: { choice: 'cantrip' } })
   })
 })

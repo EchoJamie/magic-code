@@ -722,6 +722,7 @@ describe('⑨ 换模型**不动用户默认**（两件事分开）', () => {
   test('选定只发那两条（读面 ＋ 切换）——没有「保存默认」那一类', () => {
     // 设计（模型与上下文 · 4）：选模型只改当前 Agent；保存默认是**另一次明确动作**。
     const stage = createStage()
+    stage.feed([event('session.state', { active: 'fixture', sessions: [{ archived: false, id: 'fixture', title: '夹具会话', at: 1 }] })])
     stage.type('/model ')
     stage.press({ kind: 'enter' })
     stage.feed([event('model.catalog', { entries: [], configuredModels: { default: { provider: 'personal', model: 'MiniMax-M3' } } })])

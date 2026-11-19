@@ -1,6 +1,7 @@
 import type { BackgroundCommand, BackgroundView } from '@magic/contracts'
 import { backgroundDetail, backgroundKey, backgroundPicker } from './boards/conversation/background.ts'
 import { createModelSettings, type ModelNavigation } from './boards/capabilities/model-settings.ts'
+import { modelLabel } from './boards/capabilities/models.ts'
 import { createPrompt, type Ask } from './prompt.ts'
 import { createMemoryPicker } from './boards/records/memory-picker.ts'
 import { createSessionPicker } from './boards/records/session-picker.ts'
@@ -540,6 +541,20 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     send: command => send(command),
   })
 
+  /**
+   * **还没有会话时，模型选择留在窗口自己身上**（用户 2026-11-19 定：连接是核心、会话懒建立）。
+   *
+   * 不发给引擎：那时没有装配、也没有会话可落这条事实。发送下一条消息时随它带过去
+   * （`UserInput.model`），装配按它建注册表。返回 `false` ＝ 已有会话，调用方照旧发 `model.switch`。
+   */
+  const chooseInWindow = (request: import('@magic/contracts').ModelSwitchRequest): boolean => {
+    if (view.sessionId !== null || view.collaboration?.collaboration !== undefined) return false
+    const choice = request.choice ?? view.modelChoice?.choice
+    const said = choice === undefined ? '已选择思考等级' : `已选择 ${modelLabel(choice)}`
+    commit(noteResult({ ...view, modelChoice: { ...view.modelChoice, ...request }, status: { ...view.status, ...(choice === undefined ? {} : { model: modelLabel(choice) }) } }, `${said}；下一条消息起用它`))
+    return true
+  }
+
   const compactDrafts = new Map<string, { session: string; text: string; refs: readonly DraftRef[]; caret: number }>()
   const compactLabel = (state: import('@magic/contracts').CompactState['state']) => ({ pending: '等待完整交互边界', running: '正在整理笔记', completed: '压缩完成', failed: '压缩失败', cancelled: '已取消', interrupted: '已中断', 'no-material': '没有可压材料', unknown: '受理或结果尚未确认' })[state]
   const compactNote = (state: import('@magic/contracts').CompactState) => state.notesSaved && state.state !== 'completed' ? '已保存的笔记保留，本次历史收缩未完成' : ''
@@ -589,6 +604,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     enterLayer: () => enterLayer(),
     popLayer: () => popLayer(),
     get prompt() { return prompt },
+    chooseInWindow: request => chooseInWindow(request),
   })
 
   let collaborationQuery: { readonly member?: AgentId } | null = null
@@ -2189,7 +2205,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     const echoed = view.inputMember === undefined ? appendEcho(cleared,text,userImages(refs)) : cleared
     draft({...echoed,rows:echoed.rows.map((row,index)=>row.kind==='user'&&index===echoed.rows.length-1?{...row,inputRef:ref,inputState:'提交中'}:row)})
-    const input = { text, ref, purpose, ...(refs.length === 0 ? {} : { refs: wire(refs) }) }
+    const input = { text, ref, purpose, ...(refs.length === 0 ? {} : { refs: wire(refs) }), ...(view.modelChoice === null ? {} : { model: view.modelChoice }) }
     // 子会话里输入只发给这一条子会话；入口会话默认只给自己（不再广播给成员）。
     const sub = currentMember(view)
     send(view.collaboration?.collaboration === undefined ? { type: 'input.submit', ...input }
@@ -3356,14 +3372,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // 命令把这一行整个吃掉了（交互配置型不带正文）——**引用也跟着走**：
     // 它们指向的那段文字已经不在草稿里了（留着就是「正文没了、材料还在」的暗带）。
     const cleared: ShellView = { ...from, draft: '', caret: 0, refs: [] }
-    /**
-     * **断线时先问连接、再动界面**：需要引擎的命令不在本地留下半开的页面或等待态——
-     * 直接回一句说明、**草稿保留**（`submit` 见最后一行是回执就把草稿还原）。
-     * 纯壳命令（`/help`、`/status`、`/exit`）与入口自己完成的配置动作（`/model`、`/web`）不走这一判。
-     */
-    const offline = (): { next: ShellView; commands: readonly Command[]; leaving: boolean } =>
-      only(appendReceipt(cleared, `Engine 未连接，${word} 需要连接后使用；草稿保留`))
-
     /** 本地这一下的改动 ＋ 待发的命令——两件一起交回调用方（它决定次序）。 */
     const only = (
       next: ShellView,
@@ -3373,6 +3381,26 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       commands,
       leaving: false,
     })
+
+    /**
+     * **断线时先问连接、再动界面**：需要引擎的命令不在本地留下半开的页面或等待态——
+     * 直接回一句说明、**草稿保留**（`submit` 见最后一行是回执就把草稿还原）。
+     *
+     * 判据取**这条命令要发的那些命令**是否都在 `offlineCommands` 里，而不是「断没断」：
+     * 设置模式下 `mcp.list` 也由入口直接答，`/config` 因此照常可用；普通模式断线时它要等
+     * 一份不会来的答复，才该拦。纯壳命令（`/help`、`/status`、`/exit`）不在表里。
+     */
+    const needs: readonly Command['type'][] = word === '/clear' ? ['session.new']
+      : word === '/ps' ? ['collaboration.read', 'background.list']
+        : word === '/resume' ? ['session.list']
+          : word === '/rename' ? ['session.rename']
+            : word === '/skills' ? ['skills.list']
+              : word === '/config' ? ['model.list', 'mcp.list', 'web.list']
+                : word === '/mcp' ? ['mcp.list']
+                  : []
+    const offline = (): { next: ShellView; commands: readonly Command[]; leaving: boolean } =>
+      only(appendReceipt(cleared, `Engine 未连接，${word} 需要连接后使用；草稿保留`))
+    if (!connected && needs.length > 0 && !needs.every(type => transport.offlineCommands?.includes(type) === true)) return offline()
 
     // —— 本地结果进记录区，原文已按用户输入回显 ——
     if (word === '/help') return only(appendOutput(cleared, HELP_TITLE, HELP_LINES))
@@ -3388,7 +3416,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       // 「同一入口下挂动作」的姿势留给 `/model`）。多写的词照 `submit` 那一侧的老规矩
       // 如实回一句，不当交代发出去。
       if (arg !== '') return only(appendReceipt(cleared, '认得的用法：/clear（不带参数）'))
-      if (!connected) return offline()
 
       turn = { kind: 'new', label: null }
       return only(cleared, { type: 'session.new' })
@@ -3396,15 +3423,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     if (word === '/ps') {
       if (arg) return only(appendReceipt(cleared, '用法：/ps'))
-      if (!connected) return offline()
       collaborationQuery = {}
       return only(openPicker(cleared, { source: 'collaboration', title: '[协作] 整件工作 · 子会话  │  后台命令', rows: [], selected: 0, hint: '正在读取 · Tab/Shift+Tab 切换 · Esc 返回' }), { type: 'collaboration.read' }, { type: 'background.list' })
     }
 
     if (word === '/resume') {
       if (arg === '') {
-        if (!connected) return offline()
-        models.cancelOpen()
+          models.cancelOpen()
         waiting = 'session'
         return only(cleared, { type: 'session.list' })
       }
@@ -3424,7 +3449,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       if (from.sessionId === null) {
         return only(appendReceipt(cleared, '还没有会话可改名——先交代一句开张'))
       }
-      if (!connected) return offline()
       return only(cleared, { type: 'session.rename', session: from.sessionId, title })
     }
 
@@ -3437,7 +3461,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
 
     if (word === '/skills') {
-      if (!connected) return offline()
       models.cancelOpen()
       waiting = 'skills'
       skillSeed = arg
@@ -3453,7 +3476,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     if (word === '/config') {
       if (arg !== '') return only(appendReceipt(cleared, '认得的用法：/config（不带参数）'))
-      if (!connected) return offline()
       models.cancelOpen()
       waiting = 'config'
       configPending = new Set(CONFIG_READINGS.map(one => one.event))
@@ -3487,14 +3509,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         const who = arg.slice('reconnect'.length).trim()
         if (who === '') return only(appendReceipt(cleared, '要重连哪一台？`/mcp reconnect <名字>`'))
 
-        if (!connected) return offline()
-        models.cancelOpen()
+          models.cancelOpen()
         waiting = 'mcp'
         mcpServer = who
         return only(cleared, { type: 'mcp.reconnect', server: who })
       }
 
-      if (!connected) return offline()
       models.cancelOpen()
       waiting = 'mcp'
       mcpServer = arg

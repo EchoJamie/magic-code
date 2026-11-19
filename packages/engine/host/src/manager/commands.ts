@@ -487,11 +487,13 @@ export function installCommands(ctx: ManagerContext): void {
 
       // 这一支的前提就是「没有目标」（上面那个 if），故没有可复用的当下那一代——
       // main 的 `retarget` 里有这一段是因为它那儿 `current` 可能还在。
+      const carried = command.type === 'input.submit' ? command.model : undefined
+      const choice = carried ?? conn.switch
       const spawned = ctx.spawn({
         session,
         explicit: true,
         cwd: conn.cwd, environment: conn.environment,
-        ...(conn.switch === undefined ? {} : { switch: conn.switch }),
+        ...(choice === undefined ? {} : { switch: choice }),
       })
       if (spawned === undefined) {
         conn.link.send({ t: 'line', text: `起不了执行者——没接上 ${session}` })
@@ -506,7 +508,7 @@ export function installCommands(ctx: ManagerContext): void {
       return
     }
 
-    const target = conn.target ?? ctx.spawnFresh(conn)
+    const target = conn.target ?? ctx.spawnFresh(conn, command.type === 'input.submit' ? command.model : undefined)
     if (target === undefined) {
       conn.link.send({ t: 'line', text: '起不了执行者——这条命令没能送到' })
       return

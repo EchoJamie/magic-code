@@ -5,7 +5,7 @@ import { messageRows } from './boards/conversation/collaboration.ts'
 import type { McpCatalog } from './boards/capabilities/mcp.ts'
 import { modelLabel } from './boards/capabilities/models.ts'
 
-import type { ModelSelectionRef } from '@magic/contracts'
+import type { ModelSelectionRef, ModelSwitchRequest } from '@magic/contracts'
 
 import type {
   AgentId,
@@ -675,6 +675,13 @@ export type ShellView = {
   readonly vendors: readonly VendorInfo[]
 
   readonly modelCurrent: ModelSelectionRef | null
+  /**
+   * **窗口自己的模型意图**（用户 2026-11-19 定：连接是核心、会话懒建立）。
+   *
+   * 还没有会话时切模型只落在这里（内存），不发给引擎；发送交代时随 `input.submit` 带过去。
+   * 引擎答复 `model.switched{ok}` 时同步成同一条——两处说的是同一件事。
+   */
+  readonly modelChoice: ModelSwitchRequest | null
 
   readonly configuredModels: NonNullable<MagicConfig['models']>
   /** **网页服务读数**（`web.state` · U94）——`/config` 与 `/web` 那一格；`null` ＝还没问到。 */
@@ -751,6 +758,7 @@ export function createView(input: CreateViewInput = {}): ShellView {
     models: [],
     vendors: [],
     modelCurrent: null,
+    modelChoice: null,
     configuredModels: {},
     web: null,
     turnTools: 0,
@@ -864,7 +872,7 @@ export function reduce(
       // **不沿用换之前那个模型的容量**）。**没换成＝原样不动**（切不动就不动）。
       return appendReceipt(
         event.data.ok && event.data.model !== undefined
-          ? patchStatus({ ...view, modelCurrent: event.data.provider === undefined || event.data.choice === undefined || event.data.protocol === undefined || event.data.endpoint === undefined ? view.modelCurrent : { protocol: event.data.protocol, endpoint: event.data.endpoint, choice: event.data.choice, provider: event.data.provider, model: event.data.model, ...(event.data.reasoning === undefined ? {} : { reasoning: event.data.reasoning }) } }, {
+          ? patchStatus({ ...view, modelChoice: { ...(event.data.choice === undefined ? {} : { choice: event.data.choice }), ...(event.data.reasoning === undefined ? {} : { reasoning: event.data.reasoning }) }, modelCurrent: event.data.provider === undefined || event.data.choice === undefined || event.data.protocol === undefined || event.data.endpoint === undefined ? view.modelCurrent : { protocol: event.data.protocol, endpoint: event.data.endpoint, choice: event.data.choice, provider: event.data.provider, model: event.data.model, ...(event.data.reasoning === undefined ? {} : { reasoning: event.data.reasoning }) } }, {
               model: event.data.choice === undefined ? view.status.model : modelLabel(event.data.choice),
               window: event.data.inputBudget ?? null,
             })

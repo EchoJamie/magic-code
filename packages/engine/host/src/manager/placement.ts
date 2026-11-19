@@ -38,13 +38,20 @@ export function installPlacement(ctx: ManagerContext): void {
   }
 
   /** 起一个还没开张的执行者——**窗口的第一条命令**走它（空白启动页此时才有进程）。 */
-  function spawnFresh(conn: ClientConn): Executor | undefined {
+  /**
+   * 起一代**还没有会话**的执行者。
+   *
+   * `model` 是**这一条交代带来的**窗口选择（`UserInput.model`）——优先于连接上记的开局请求：
+   * 用户刚在窗口里切过模型，第一条消息就该走它，而不是回头读启动时那份。
+   */
+  function spawnFresh(conn: ClientConn, model?: import('@magic/contracts').ModelSwitchRequest): Executor | undefined {
+    const choice = model ?? conn.switch
     const spawned = spawn({
       session: null,
       explicit: false,
       environment: conn.environment,
       cwd: conn.cwd,
-      ...(conn.switch === undefined ? {} : { switch: conn.switch }),
+      ...(choice === undefined ? {} : { switch: choice }),
     })
     if (spawned !== undefined) connections.bind(conn, spawned)
     return spawned

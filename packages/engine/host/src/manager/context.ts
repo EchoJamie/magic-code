@@ -236,7 +236,7 @@ export type ManagerContext = {
 
   // —— 执行者放置与送达 ——
   liveOf(session: string): Executor | undefined
-  spawnFresh(conn: ClientConn): Executor | undefined
+  spawnFresh(conn: ClientConn, model?: import('@magic/contracts').ModelSwitchRequest): Executor | undefined
   spawn(input: SpawnInput): Executor | undefined
   retarget(conn: ClientConn, session: string): void
   bindEnvironment(executor: Executor, session: string | null): void
