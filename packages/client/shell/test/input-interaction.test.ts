@@ -28,6 +28,13 @@ test('本地命令原文进入记录和历史，Esc 不清稿', () => {
  s.type('draft'); s.press({kind:'up'}); expect(s.shell.getView().draft).toBe('/help ')
  s.press({kind:'down'}); s.press({kind:'escape'}); expect(s.shell.getView().draft).toBe('draft')
 })
+test('草稿恰好是命令名时回车直接执行，不发给模型（U134）', () => {
+ for (const text of ['/help','/model','/status','/resume']) {
+  const s=createStage(); s.type(text); s.press(enter)
+  expect(s.shell.getView().draft).toBe('')                                     // 执行即清稿
+  expect(s.commands().some(c=>c.type==='input.submit'&&c.local!==true)).toBe(false)
+ }
+})
 test('PgUp/PgDn 是翻页，未知序列不污染搜索或退出', () => {
  expect(parseScreenKeys('\x1b[5~')).toEqual([{kind:'pageUp'}])
  expect(parseScreenKeys('\x1b[6~')).toEqual([{kind:'pageDown'}])

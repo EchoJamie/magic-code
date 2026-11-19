@@ -46,7 +46,9 @@ test('/ps 裸命令直接打开成员页，空成员仍可切后台，不发送�
   f.shell.key({ kind: 'tab' }); dock = f.shell.getView().dock
   expect(dock.kind === 'picker' && dock.picker.source).toBe('background')
   expect(dock.kind === 'picker' && dock.picker.rows).toHaveLength(2)
-  expect(f.spy.commands.some(one => one.type === 'input.submit' || one.type === 'collaboration.input' || one.type === 'background.stop')).toBe(false)
+  // 本地命令会留一条 `local` 的本地输入记录（与其他 slash 一致）；**不发给模型**
+  expect(f.spy.commands.some(one => one.type === 'collaboration.input' || one.type === 'background.stop')).toBe(false)
+  expect(f.spy.commands.some(one => one.type === 'input.submit' && one.local !== true)).toBe(false)
 })
 
 test('两个 tab 保留对象身份，更新不按旧行号跳对象；Enter 只看详情，明确停止绑定原执行代次', () => {

@@ -381,17 +381,25 @@ describe('输入行 · 光标落在哪', () => {
    *
    * `/help` 是 `/help` 的前缀 ⇒ 补全；`/hlp` 只是子序列命中 ⇒ 那是正文，回车照发。
    */
-  test('候选开着时只对前缀补全——模糊命中仍是正文（U133）', async () => {
+  test('候选开着时只对前缀补全——命令名打完就直接执行（U133 · U134）', async () => {
+    // 前缀：还没打全 ⇒ 补全，不提交
     const prefix = createStage()
-    prefix.type('/help')
+    prefix.type('/h')
     expect((await prefix.screen(WIDE)).statusLine).toContain('Tab 补全')
     prefix.press({ kind: 'enter' })
     expect(prefix.shell.getView().draft).toBe('/help ')
     expect(prefix.commands().some((command) => command.type === 'input.submit')).toBe(false)
 
+    // 打全了 ⇒ 回车直接执行（清稿），不再补全
+    const full = createStage()
+    full.type('/help')
+    full.press({ kind: 'enter' })
+    expect(full.shell.getView().draft).toBe('')
+
+    // 模糊命中（子序列）⇒ 那是正文，回车照发
     const fuzzy = createStage()
     fuzzy.type('/hlp')
-    expect((await fuzzy.screen(WIDE)).statusLine).toContain('Tab 补全') // 模糊命中确实列着
+    expect((await fuzzy.screen(WIDE)).statusLine).toContain('Tab 补全')
     fuzzy.press({ kind: 'enter' })
     expect(fuzzy.commands()).toContainEqual(expect.objectContaining({ type: 'input.submit', text: '/hlp' }))
   })

@@ -2798,7 +2798,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         const bare = view.draft.trim()
         const picked = view.completion?.candidates[view.completion.selected]
         const isCommand = picked !== undefined && COMMANDS.some((command) => command.name === picked.name)
-        const bareCommand = bare === '/ps' || bare === '/status' || bare === '/connect'
+        const bareCommand = COMMANDS.some((command) => command.name === bare)
         if (isCommand && !/\s/.test(bare) && !bareCommand && picked !== undefined && picked.name.startsWith(bare)) {
           pickCompletion()
           return NONE
@@ -3086,7 +3086,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       return NONE
     }
 
-    if (text.startsWith('/compact ')) {
+    if (text.startsWith('/compact ') || text.trim() === '/compact') {
       if (view.sessionId === null) { commit({ ...view, flash: '还没有会话可压缩；未建立新会话，命令保留。' }); return NONE }
       if (!connected) { commit({ ...view, flash: '连接已断开；命令保留，重连后先查询原请求。' }); return NONE }
       const previous = [...compactDrafts].find(([, one]) => one.session === view.sessionId && one.text === text)
@@ -3102,19 +3102,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       showCompactions(); return NONE
     }
 
-    if (text.startsWith('/memory ')) {
+    if (text.startsWith('/memory ') || text.trim() === '/memory') {
       if (text.trim() !== '/memory') { commit({ ...view, flash: '用法：/memory ' }); return NONE }
       rememberInput(text, placed)
       draft({ ...view, draft: '', caret: 0, refs: [], completion: null })
       memory.open(); return NONE
     }
 
-    if (text.trim() === '/ps') {
-      const { next, commands } = runSlash(view, text.trim())
-      draft(next)
-      for (const command of commands) send(command)
-      return NONE
-    }
 
     if (text.startsWith('/')) {
       const word = text.split(/\s+/)[0] ?? ''
@@ -3166,7 +3160,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         }
       }
 
-      if (COMMANDS.some(command => text.startsWith(command.name + ' '))) {
+      // 「命令名 ＋ 空格」是带参数的写法；草稿**恰好等于命令名**时回车也执行（U134）——
+      // 原先 /ps、/connect 靠各自的特例分支才能裸执行，其余命令裸回车会被当正文发出去。
+      if (COMMANDS.some(command => text.startsWith(command.name + ' ') || text.trim() === command.name)) {
         rememberInput(text, placed)
         const ref=crypto.randomUUID()
         lastSubmit={ref,text,refs:placed,caret:view.caret,local:true}
