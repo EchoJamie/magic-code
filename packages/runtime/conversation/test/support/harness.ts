@@ -257,7 +257,7 @@ export function makeLoopRuntime(stage: Stage, overrides: Partial<LoopRuntime> = 
  */
 export function makeCompactor(
   stage: Stage,
-  options: { readonly policy?: Partial<ContextPolicy> } = {},
+  options: { readonly policy?: Partial<ContextPolicy>; readonly capacity?: () => { readonly inputBudget?: number } } = {},
 ): Compactor {
   const policy: ContextPolicy = { ...DEFAULT_CONTEXT_POLICY, ...options.policy }
 
@@ -268,9 +268,9 @@ export function makeCompactor(
     sink: stage.sink,
     stamper: stage.stamper,
     now: () => FIXED_AT,
-    nearEntries: policy.nearEntries,
     compactAtFraction: policy.compactAtFraction,
     compactAtTokens: policy.compactAtTokens,
+    ...(options.capacity === undefined ? {} : { capacity: options.capacity }),
   })
 }
 

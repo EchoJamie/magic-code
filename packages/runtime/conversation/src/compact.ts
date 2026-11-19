@@ -10,7 +10,8 @@ export type CompactOutcome = ({ readonly notesSaved: boolean } & (
   | { readonly ok: false; readonly reason: string; readonly kind: CompactFailureKind; readonly canContinue: boolean }
 ))
 export type Compactor = {
-  readonly nearEntries: number
+  /** 近段 token 预算；交接形态不再留近段，保留字段只为装配面少改一处。 */
+  readonly nearTokens?: number | undefined
   observe(usage: { readonly inputTokens?: number | undefined; readonly contextWindow?: number | undefined }): void
   needed(): boolean
   run(input: { readonly trigger: CompactTrigger; readonly signal?: AbortSignal | undefined; readonly compact?: { readonly requestId: string; readonly focus?: string } }): Promise<CompactOutcome>
@@ -18,42 +19,29 @@ export type Compactor = {
 export type CompactorDeps = {
   readonly records: RecordsService; readonly session: SessionId
   readonly gateway: ModelGateway
-  /** 旧接续装配的依赖；简报路径不再使用，保留字段以免装配面同时改两处。 */
   readonly notes?: WorkingNotes
   readonly noteTools?: (notes: WorkingNotes) => ToolRuntime
   readonly capacity?: () => BriefCapacity
   readonly inputVersion?: () => number
   readonly sink: EventSink; readonly stamper: EventStamper; readonly now: () => number
-  readonly nearEntries: number; readonly compactAtFraction: number; readonly compactAtTokens: number
+  readonly nearTokens?: number | undefined; readonly compactAtFraction: number; readonly compactAtTokens: number
 }
 
-/** 只在完整交互边界移出旧段；准备期间的新材料保留在上界之后。 */
-export function frozenSegment(all: readonly Entry[], nearEntries: number): readonly Entry[] {
-  const meaningful = substantiveEntries(all)
-  const keepFrom = meaningful[Math.max(0, meaningful.length - Math.max(1, nearEntries))]?.id
-  let cut = keepFrom === undefined ? 0 : all.findIndex(entry => entry.id === keepFrom)
-  const interaction = all.filter(entry => entry.kind !== 'agent-message')
-  const next = interaction.find(entry => entry.id >= (all[cut]?.id ?? Infinity))
-  if (next?.kind === 'tool-call' || next?.kind === 'tool-result') {
-    while (cut > 0 && all[cut]?.kind !== 'assistant') cut--
-  }
-  for (let index = 0; index < interaction.length; index++) {
-    const entry = interaction[index]!
-    if (entry.id >= (all[cut]?.id ?? Infinity)) break
-    if (entry.kind === 'tool-call' && interaction[index + 1]?.kind !== 'tool-result') {
-      cut = all.indexOf(entry)
-      while (cut > 0 && all[cut]?.kind !== 'assistant') cut--
-      break
-    }
-  }
-  return all.slice(0, cut)
-}
-
+/**
+ * **压缩 ＝ 交接**（用户 2026-11-19 定，D74）：
+ *
+ * 1. 让模型把「过往行为 ＋ 当前目标」写成一份交接材料（一次调用，材料从最近的往前装）；
+ * 2. 这份材料写进工作笔记；
+ * 3. 它作为**新上下文的第一句用户输入**落成一条 `user` 条目，覆盖点停在它之前；
+ * 4. 之后照常继续，旧记录一条不动。
+ *
+ * 没有摘要、没有近段切分、没有切段边界：模型看到的就是「用户说：这是之前的进度，接着干」。
+ */
 export function createCompactor(deps: CompactorDeps): Compactor {
   let usage: number | undefined, contextWindow: number | undefined
   let failedBasis: string | undefined
   return {
-    nearEntries: deps.nearEntries,
+    nearTokens: deps.nearTokens,
     observe(reading) { if (reading.inputTokens !== undefined) { usage = reading.inputTokens; contextWindow = reading.contextWindow } },
     needed() {
       if (usage === undefined) return false
@@ -72,15 +60,15 @@ export function createCompactor(deps: CompactorDeps): Compactor {
         const plan = readPlanOf(deps.records, deps.session)
         const capacity = deps.capacity?.() ?? { inputBudget: contextWindow }
         const all = substantiveEntries(await Array.fromAsync(deps.records.readEntries(deps.session, { from: (before.coveredThrough ?? 0) + 1 })))
-        // 近段按条数留；但**材料不够近段时退化成「只留最后一条」**——否则上下文快满了、
-        // 条目数却不足近段，就会出现「没有可压材料」这种死局（条数不是 token 预算）。
-        const old = frozenSegment(all, deps.nearEntries).length > 0
-          ? frozenSegment(all, deps.nearEntries)
-          : frozenSegment(all, 1)
-        const last = old.at(-1)?.id
-        if (last === undefined) return { ok: false, kind: 'no-material', reason: '没有可整理的完整交互（只有一条，或一条都没有）', canContinue: true, notesSaved: false }
-        basisKey = JSON.stringify([before, last, version, inputBasis, plan.entry, capacity])
-        if (compact === undefined && basisKey === failedBasis) return { ok: false, kind: 'transient', reason: '相同接续条件已失败，等待材料或条件变化后再整理', canContinue: trigger === 'threshold', notesSaved: false }
+        const first = all[0]?.id
+        if (first === undefined) {
+          // 没有材料同样是「交接没做成」，自动路径也要说出来（D74）。
+          deps.sink.emit(deps.stamper.stamp('error', { message: '交接未完成：没有可交接的材料（这一轮还没开始工作）。原始历史已保留。' }))
+          if (compact === undefined) deps.sink.emit(deps.stamper.stamp('compact.state', { requestId: `auto:${deps.now()}`, accepted: true, state: 'no-material', reason: '没有可交接的材料', notesSaved: false }))
+          return { ok: false, kind: 'no-material', reason: '没有可交接的材料（这一轮还没开始工作）', canContinue: true, notesSaved: false }
+        }
+        basisKey = JSON.stringify([before, all.at(-1)!.id, version, inputBasis, plan.entry, capacity])
+        if (compact === undefined && basisKey === failedBasis) return { ok: false, kind: 'transient', reason: '相同接续条件已失败，等待材料或条件变化后再交接', canContinue: trigger === 'threshold', notesSaved: false }
         const checkBasis = () => {
           if (deps.records.coverage.read().summary !== before.summary || deps.inputVersion?.() !== version || inputs() !== inputBasis
             || JSON.stringify(deps.capacity?.() ?? capacity) !== JSON.stringify(capacity) || readPlanOf(deps.records, deps.session).entry !== plan.entry) throw new PreparationFailure('changed', '新交代、模型能力或覆盖依据已改变，先处理新内容后重新准备')
@@ -94,16 +82,24 @@ export function createCompactor(deps: CompactorDeps): Compactor {
             cursor = recent[0]!.id
           }
         }
-        const brief = await prepareBrief({ records: deps.records, session: deps.session, gateway: deps.gateway, capacity,
-          sink: deps.sink, stamper: deps.stamper, now: deps.now, ...(signal === undefined ? {} : { signal }), ...(compact?.focus === undefined ? {} : { focus: compact.focus }) }, old)
-        // 最后一次异步 I/O 之后，同步复核全部可变依据并提交。
+        const handoff = await prepareBrief({ records: deps.records, session: deps.session, gateway: deps.gateway, capacity,
+          sink: deps.sink, stamper: deps.stamper, now: deps.now, ...(signal === undefined ? {} : { signal }), ...(compact?.focus === undefined ? {} : { focus: compact.focus }) }, all)
         checkBasis()
         signal?.throwIfAborted()
-        const summary = deps.records.coverage.publish({ previousSummary: before.summary, from: old[0]!.id, through: brief.through, at: deps.now(), notesSaved: true, text: brief.text, ...(compact ? { compact } : {}) })
+        // 笔记与新上下文的第一句同源：写不进笔记就不提交交接（材料不能只活在一个地方）。
+        const notesSaved = await saveNotes(deps, handoff.text)
+        if (!notesSaved) throw new BriefFailure('incomplete', '工作笔记没有写入成功，交接未提交')
+        const entry = deps.records.appendEntry({ kind: 'user', content: { text: handoff.text }, payload: { handoff: true }, at: deps.now() })
+        // 覆盖到「最后一条用户输入之前」：用户最新说的那句话必须原样留在新上下文里，
+        // 不能被压进交接材料（那是有损的）。记录 id 可能跳号，用真实条目的 id 当上界。
+        const lastUserIndex = all.findLastIndex(item => item.kind === 'user')
+        const through = lastUserIndex > 0 ? all[lastUserIndex - 1]!.id : undefined
+        if (through === undefined || through < first || through >= entry) throw new BriefFailure('incomplete', '没有可覆盖的旧段，交接不成立')
+        const summary = deps.records.coverage.publish({ previousSummary: before.summary, from: first, through, at: deps.now(), notesSaved, ...(compact ? { compact } : {}) })
         failedBasis = undefined; usage = undefined
         deps.sink.emit(deps.stamper.stamp('context.compacted', { summary }))
-        if (compact === undefined) deps.sink.emit(deps.stamper.stamp('compact.state', { requestId: `auto:${summary}`, accepted: true, state: 'completed', summary, notesSaved: true }))
-        return { ok: true, summary, summarized: brief.summarized, kept: all.length - brief.summarized, notesSaved: true }
+        if (compact === undefined) deps.sink.emit(deps.stamper.stamp('compact.state', { requestId: `auto:${summary}`, accepted: true, state: 'completed', summary, notesSaved }))
+        return { ok: true, summary, summarized: all.length, kept: 0, notesSaved }
       } catch (error) {
         const kind: CompactFailureKind = signal?.aborted ? 'canceled'
           : error instanceof BriefFailure ? error.kind === 'capacity' ? 'local-capacity' : 'transient'
@@ -112,7 +108,7 @@ export function createCompactor(deps: CompactorDeps): Compactor {
         const reason = error instanceof Error ? error.message : String(error)
         if (kind !== 'changed' && kind !== 'canceled') {
           failedBasis = basisKey
-          deps.sink.emit(deps.stamper.stamp('error', { message: `上下文整理未完成：${reason}。原始历史已保留，没有切换模型。` }))
+          deps.sink.emit(deps.stamper.stamp('error', { message: `交接未完成：${reason}。原始历史已保留，可再试一次。` }))
           if (compact === undefined) deps.sink.emit(deps.stamper.stamp('compact.state', { requestId: `auto:${deps.now()}`, accepted: true, state: 'failed', reason, notesSaved: false }))
         }
         return { ok: false, kind, reason, canContinue: trigger === 'threshold' && kind !== 'canceled', notesSaved: false }
@@ -120,3 +116,18 @@ export function createCompactor(deps: CompactorDeps): Compactor {
     },
   }
 }
+
+/** 把交接材料写进本次会话的工作笔记（覆盖 MEMORY.md，笔记的其余文件不动）。 */
+async function saveNotes(deps: CompactorDeps, text: string): Promise<boolean> {
+  const notes = deps.notes
+  if (notes?.overwrite === undefined) return true
+  try {
+    await notes.overwrite('MEMORY.md', text)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 供装配与其他调用方判断一条记录是不是交接材料。 */
+export const isHandoffEntry = (entry: Entry): boolean => entry.kind === 'user' && entry.payload !== undefined && 'handoff' in entry.payload && entry.payload.handoff === true

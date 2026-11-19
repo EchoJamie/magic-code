@@ -261,7 +261,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     records: deps.records, session: deps.session, gateway: deps.continuationGateway ?? deps.gateway,
     ...(deps.notes ? { notes: deps.notes } : {}), ...(deps.noteTools ? { noteTools: deps.noteTools } : {}),
     ...(deps.capacity ? { capacity: deps.capacity } : {}), inputVersion: () => inputVersion,
-    sink, stamper, now: deps.now ?? Date.now, nearEntries: policy.nearEntries,
+    sink, stamper, now: deps.now ?? Date.now, ...(policy.nearTokens === undefined ? {} : { nearTokens: policy.nearTokens }),
     compactAtFraction: policy.compactAtFraction, compactAtTokens: policy.compactAtTokens,
   })
 
@@ -345,6 +345,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     now: deps.now ?? Date.now,
     blobThreshold: policy.blobThreshold,
     compact: compactor,
+    ...(deps.capacity ? { capacity: deps.capacity } : {}),
     rules,
     skills,
     refs,

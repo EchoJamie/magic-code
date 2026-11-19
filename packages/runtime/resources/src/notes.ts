@@ -197,6 +197,12 @@ export function createWorkingNotes(dataDir: string, session: string, pageLimit =
     directory, read, saved: () => saved,
     fork: limit => createWorkingNotes(dataDir, session, limit ?? pageLimit),
     writes: () => ({ ...written }),
+    async overwrite(path, text) {
+      const absolute = join(directory, normalizeNotePath(path))
+      await checkPath(absolute)
+      const current = await content(path)
+      await save(inspectTarget(absolute), text, current?.text)
+    },
     async snapshot() {
       const state: Record<string, string> = {}
       for (const path of await files()) state[path] = (await content(path))?.fingerprint ?? 'missing'

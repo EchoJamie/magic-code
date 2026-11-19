@@ -53,6 +53,14 @@ export interface WorkingNotes {
   bindTarget(target: ResolvedPath, tool: string, signal?: AbortSignal): { sandbox: Sandbox; release(): Promise<void> }
   saved(): number
   fork(pageLimit?: number): WorkingNotes
+  /**
+   * **内部整写**（不经过业务工具与审批）——给系统的自动行为用（压缩交接把材料写进笔记）。
+   *
+   * 与工具侧 `write` 的差别只有一条：不做「覆盖前须完整读取」的收据校验；仍然校验路径、
+   * 符号链接与并发改变（写入前取当前正文，变了就拒绝）。笔记是模型自己的工作记忆，
+   * 不是用户代码，自动整理写它不该弹审批。
+   */
+  overwrite?(path: string, text: string): Promise<void>
 }
 
 export type ContextCoverage = { readonly summary: number | null; readonly coveredThrough: number | null }

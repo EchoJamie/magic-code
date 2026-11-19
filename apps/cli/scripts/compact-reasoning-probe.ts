@@ -186,7 +186,7 @@ const assembly = assemble({
   // 阈值压到 0 —— **降的是阈值，不是机制**（同 compact-probe 那条注）。
   // ⚠️ 两个数都要压：**模型信息声明了窗长时走占比**（MiniMax 有内置窗长）、
   // 没声明才走绝对值——只压绝对值那一支，MiniMax 那条路永远够不着（实测第一版即此）。
-  context: { compactAtTokens: 1, compactAtFraction: 0, nearEntries: 1 },
+  context: { compactAtTokens: 1, compactAtFraction: 0, nearTokens: 0 },
 })
 
 const marks: string[] = []

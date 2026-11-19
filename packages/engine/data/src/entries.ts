@@ -294,7 +294,7 @@ export function isContent(value: unknown): value is Content {
  */
 export function isUserPayload(payload: unknown): payload is UserPayload {
   if (!isRecord(payload)) return false
-  if (Object.keys(payload).some((key) => key !== 'skills' && key !== 'refs' && key !== 'notice' && key !== 'background')) {
+  if (Object.keys(payload).some((key) => key !== 'skills' && key !== 'refs' && key !== 'notice' && key !== 'background' && key !== 'handoff')) {
     return false
   }
 
@@ -311,9 +311,12 @@ export function isUserPayload(payload: unknown): payload is UserPayload {
   if (background !== undefined && (payload['notice'] !== true || !isBackgroundChange(background))) return false
   const notice = payload['notice']
   if (notice !== undefined && notice !== true) return false
+  // `handoff`（D74）——**说话人**的标记：这一条是压缩交接材料，不是用户交代。
+  const handoff = payload['handoff']
+  if (handoff !== undefined && handoff !== true) return false
 
   // 空载荷（一个键都没有）不算「带了材料」——它是「没有载荷」写错了地方
-  return skills !== undefined || refs !== undefined || notice === true
+  return skills !== undefined || refs !== undefined || notice === true || handoff === true
 }
 
 /** 旧形（U33）：技能材料三件齐全（名字 / 来源 / 正文）。 */

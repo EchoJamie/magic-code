@@ -79,7 +79,7 @@ try {
       { text: '这件事收了，清单撤了。' },
     ],
     // 阈值与近段压到脚本体量（装配期入参，不是用户配置）——为的是在一段短会话里真看见压缩
-    context: { compactAtTokens: 100, nearEntries: 0 },
+    context: { compactAtTokens: 100, nearTokens: 0 },
   })
   const shell = attachShell(assembly.shell)
 
@@ -151,7 +151,7 @@ try {
       { toolCalls: [{ name: 'history_read', args: {} }], usage: { inputTokens: 1, outputTokens: 1 } },
       { text: '接着读', usage: { inputTokens: 1, outputTokens: 1 } },
     ],
-    context: { compactAtTokens: 100, nearEntries: 0 },
+    context: { compactAtTokens: 100, nearTokens: 0 },
   })
   const longHandle = attachShell(longs.shell)
   await longHandle.submit(long)

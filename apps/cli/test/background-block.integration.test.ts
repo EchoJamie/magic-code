@@ -267,7 +267,7 @@ describe('⑤ 每请求重算（压缩碰不到它）', () => {
           return createFauxGateway({ stamper, turns: [auxiliary ? continuationTurn(request) : turns[mainCalls++]!] }).stream(request, options)
         } }),
         // 触发与近段都压到脚本体量（实现级常量——装配期入参，与 U19 那支同一手法）
-        context: { compactAtTokens: 100, nearEntries: 1 },
+        context: { compactAtTokens: 100, nearTokens: 0 },
       })
       reap = () => reapBackground(assembly)
       const shell = attachShell(assembly.shell)

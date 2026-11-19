@@ -135,9 +135,14 @@ export type LoopRuntime = {
    * 压缩器（阶段 3 · U19）——**不接线＝不压缩**（首站无压缩那几轮的行为一字不动；
    * 用例只想验循环时也不必拖一个压缩器进来）。真装配一律给（见 `./service.ts`）。
    *
-   * 「近段」条数**不从别处另给**——装配照它的 `nearEntries` 认（见 `Compactor` 的注）。
+   * 「近段」保留多少**不从别处另给**——压缩器按当前输入预算推导（`nearTokens` 只给受控场景）。
    */
   readonly compact?: Compactor | undefined
+  /**
+   * 当前模型的输入预算——压缩闭环与装配兜底共用这一读数（D74）。
+   * 不给＝不核对预算：压缩只压一次，装配照旧全量（旧行为，供只验循环的用例）。
+   */
+  readonly capacity?: (() => { readonly inputBudget?: number | undefined }) | undefined
   /**
    * 项目规约的送达账（U32）——**不接线＝不加载规约**（没有规约的那些工作区行为一字不动；
    * 用例只想验循环时也不必拖一份规约进来）。真装配一律给（见 `./service.ts`）。
@@ -777,9 +782,11 @@ async function runTurn(
       if (runtime.collaboration?.admit() !== undefined) return close(runtime, 'aborted', false)
       let included: readonly number[] = []
       let userEntries: readonly RecordId[] = []
-      const messages = await assembleContext({
+      const assembly = await assembleContext({
         knowledge: runtime.knowledge,
         onKnowledge: provided,
+        // 装配兜底：压缩没做成时，请求也不能以超限的形式发出去（D74）。
+        budget: runtime.capacity?.().inputBudget,
         latestInput: runtime.records.inputs.list().filter(row => row.entry !== undefined && row.entry >= inputFrom
           && !row.input.notice && (row.state === 'consumed' || row.state === 'included')).at(-1)?.input.text ?? initialInput,
         records: runtime.records,
@@ -791,7 +798,13 @@ async function runTurn(
         // → 后台命令块（见 `prompt/skills.ts` / `prompt/background.ts`）；
         // 规约那一趟还顺带记账「这一趟送出去哪几版」（预查据它判「拦不拦」）
         systemPrompt: withPlan(runtime, await collaborationPrompt(withBackground(runtime, (await withSkills(runtime, (await withRules(runtime, signal)), signal))), runtime.collaboration, provided)),
-      })
+      }).then(messages => ({ ok: true as const, messages }), (error: unknown) => ({ ok: false as const, reason: error instanceof Error ? error.message : String(error) }))
+      // 装配兜底拒绝发送：说清原因，本轮照常收束——不把超预算请求交给供应商，也不让异常冒成 crash。
+      if (!assembly.ok) {
+        sink.emit(stamper.stamp('error', { message: `本轮不能发送：${assembly.reason}。原始记录已保留。` }))
+        return close(runtime, 'error', false)
+      }
+      const messages = assembly.messages
 
       if (signal.aborted || runtime.collaboration?.admit() !== undefined) return close(runtime, 'aborted', false)
       // 一步＝轮内一次模型调用及它带出的工具执行；重发（超限）另起一步。
@@ -866,7 +879,7 @@ async function runTurn(
         const outcome = await compact.run({ trigger: 'context-limit', signal })
         if (outcome.ok) continue
         if (signal.aborted) return close(runtime, 'aborted', false)
-        sink.emit(stamper.stamp('error', { message: '原上下文已超限，压缩未完成，本轮暂不能继续；原始记录已保留，请核对当前模型的输入预算后再试' }))
+        sink.emit(stamper.stamp('error', { message: `原上下文已超限，压缩未完成（${outcome.reason}），本轮暂不能继续；原始记录已保留，可再试一次，或换用更大的模型` }))
       }
 
       failed = true

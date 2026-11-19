@@ -24,7 +24,7 @@ const configuredModels = {
 } satisfies NonNullable<MagicConfig['models']>
 const defaults: AgentModelConfig = { protocol: 'chat-completions', endpoint: providers.main.baseURL, choice: 'default', provider: 'main', model: 'deepseek-flash', reasoning: { mode: 'level', level: 'high' } }
 
-const isPreparation = (body: Record<string, any>): boolean => body.messages?.[0]?.content?.startsWith('你是接续简报的整理者') === true
+const isPreparation = (body: Record<string, any>): boolean => body.messages?.[0]?.content?.startsWith('你是这次交接的记录者') === true
 
 function endpoint(options: { failure?: 'server' | 'auth' | 'network' | 'empty' | 'incomplete' | 'cancel'; mainLimit?: boolean } = {}) {
   const seen: { url: string; body: Record<string, any> }[] = []
@@ -148,7 +148,7 @@ describe('统一模型配置与执行选择', () => {
     const wire = endpoint()
     const stage = makeStage({ config: { providers, models: configuredModels } })
     const assembly = stage.assemble({ modelGateway: undefined, modelFetch: wire.fetch,
-      context: { nearEntries: 1, compactAtTokens: 1, compactAtFraction: 0.000001 } })
+      context: { nearTokens: 0, compactAtTokens: 1, compactAtFraction: 0.000001 } })
     const shell = attachShell(assembly.shell)
     try {
       await shell.submit('保留这项约束')
@@ -159,7 +159,8 @@ describe('统一模型配置与执行选择', () => {
       expect(wire.seen.every(one => one.url === 'https://main.example/v1/chat/completions' && one.body.model === 'deepseek-flash')).toBe(true)
       const database = readDatabase(assembly.paths.database)
       try {
-        expect(database.entries.filter(one => one.kind === 'user')).toHaveLength(2)
+        // 两条用户交代 ＋ 一条交接材料（新上下文的第一句用户输入）
+        expect(database.entries.filter(one => one.kind === 'user')).toHaveLength(3)
         expect(database.entries.filter(one => one.kind === 'summary').length).toBeGreaterThan(0)
         expect(database.entries.some(one => one.kind === 'continuation')).toBe(false)
       } finally { database.close() }
@@ -171,7 +172,7 @@ describe('统一模型配置与执行选择', () => {
   test('原上下文超限且当前模型接续准备失败，不重复业务请求或切换模型', async () => {
     const wire = endpoint({ mainLimit: true, failure: 'server' })
     const stage = makeStage({ config: { providers, models: configuredModels } })
-    const app = stage.assemble({ modelGateway: undefined, modelFetch: wire.fetch, context: { nearEntries: 1, compactAtTokens: 100000000, compactAtFraction: 2 } })
+    const app = stage.assemble({ modelGateway: undefined, modelFetch: wire.fetch, context: { nearTokens: 0, compactAtTokens: 100000000, compactAtFraction: 2 } })
     const shell = attachShell(app.shell)
     try {
       await shell.submit('已经确认的约束与原始工作')
@@ -193,7 +194,7 @@ describe('统一模型配置与执行选择', () => {
   test('取消中断当前模型接续准备，原记录与模型选择保留', async () => {
     const wire = endpoint({ failure: 'cancel' })
     const stage = makeStage({ config: { providers, models: configuredModels } })
-    const app = stage.assemble({ modelGateway: undefined, modelFetch: wire.fetch, context: { nearEntries: 1, compactAtTokens: 1, compactAtFraction: 0.000001 } })
+    const app = stage.assemble({ modelGateway: undefined, modelFetch: wire.fetch, context: { nearTokens: 0, compactAtTokens: 1, compactAtFraction: 0.000001 } })
     const shell = attachShell(app.shell)
     try {
       await shell.submit('保留原始约束')

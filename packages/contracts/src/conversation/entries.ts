@@ -360,6 +360,13 @@ export type UserPayload = {
    */
   readonly notice?: true
   readonly background?: import('./background.ts').BackgroundChange
+  /**
+   * **这一条是压缩交接材料**——新上下文的第一句，说话的是上一个上下文里的自己，不是用户。
+   *
+   * 它照旧走 `user` 通道（模型认得这条路），但装配时被放到最前；会话标题、输入统计与
+   * 「用户刚说了什么」都不把它当成用户交代。
+   */
+  readonly handoff?: true
 }
 
 /**

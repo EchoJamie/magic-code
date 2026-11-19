@@ -1,66 +1,96 @@
 import { expect, test } from 'bun:test'
-import type { Entry } from '@magic/contracts'
-import { createCompactor, frozenSegment } from '../src/compact.ts'
+import { createCompactor } from '../src/compact.ts'
+import { assembleContext } from '../src/context.ts'
 import { DEFAULT_TEST_SESSION } from '@magic/faux'
 import { makeCompactor, makeStage } from './support/harness.ts'
 
-test('压缩触发依据实际用量，未报告用量不触发', () => {
-  const compact = makeCompactor(makeStage(), { policy: { compactAtFraction: .5, compactAtTokens: 100 } })
+/** 取消息正文——只取字符串形态。 */
+const textOf = (message: unknown): string => {
+  if (typeof message !== 'object' || message === null) return ''
+  const content = (message as { content?: unknown }).content
+  return typeof content === 'string' ? content : ''
+}
+
+test('用量到 85% 触发压缩；预算读数更小时按预算算', () => {
+  const compact = makeCompactor(makeStage(), { policy: { compactAtFraction: .85, compactAtTokens: 100 } })
+  compact.observe({ inputTokens: 849, contextWindow: 1000 })
   expect(compact.needed()).toBe(false)
-  compact.observe({ inputTokens: 99 }); expect(compact.needed()).toBe(false)
-  compact.observe({ inputTokens: 100 }); expect(compact.needed()).toBe(true)
-  compact.observe({ inputTokens: 499, contextWindow: 1000 }); expect(compact.needed()).toBe(false)
-  compact.observe({ inputTokens: 500, contextWindow: 1000 }); expect(compact.needed()).toBe(true)
-})
-
-test('冻结只经过完整assistant/tool-call/tool-result边界，穿插成员消息不拆协议配对', () => {
-  const kinds = ['user', 'assistant', 'tool-call', 'agent-message', 'tool-result', 'user'] as const
-  const entries = kinds.map((kind, index): Entry => ({ id: index + 1, kind, at: 1, content: { text: '' } }))
-  expect(frozenSegment(entries, 2).map(entry => entry.id)).toEqual([1])
-  expect(frozenSegment(entries, 1).map(entry => entry.id)).toEqual([1, 2, 3, 4, 5])
-  const incomplete = entries.filter(entry => entry.kind !== 'tool-result')
-  expect(frozenSegment(incomplete, 1).map(entry => entry.id)).toEqual([1])
-})
-
-test('没有旧段时保留覆盖；有旧段时一次调用生成简报并提交', async () => {
-  const stage = makeStage({ turns: [{ text: '## 目标与阶段\n保留原文\n## 下一步\n继续' }] })
-  const compact = makeCompactor(stage, { policy: { nearEntries: 1 } })
-  expect(await compact.run({ trigger: 'threshold' })).toMatchObject({ ok: false, kind: 'no-material' })
-  for (let n = 0; n < 3; n++) stage.records.appendEntry({ kind: 'user', content: { text: '保留原文' }, at: n })
-  expect(await compact.run({ trigger: 'threshold' })).toMatchObject({ ok: true, summarized: 2 })
-  expect(stage.gateway.requests).toHaveLength(1)
-  expect(stage.records.coverage.read()).toMatchObject({ coveredThrough: 2 })
-  const summary = stage.records.coverage.read().summary
-  expect(summary).not.toBeNull()
-  const entries = await Array.fromAsync(stage.records.readEntries(DEFAULT_TEST_SESSION, { auxiliary: true, from: summary!, to: summary! }))
-  expect(entries[0]?.content).toEqual({ text: '## 目标与阶段\n保留原文\n## 下一步\n继续' })
-})
-
-test('当前模型有效输入预算比上下文窗口小，自动触发仍保留接续往返余量', () => {
-  const stage = makeStage()
-  const compact = createCompactor({ records: stage.records, session: 'test', gateway: stage.gateway,
-    sink: stage.sink, stamper: stage.stamper, now: () => 1, nearEntries: 1,
-    compactAtFraction: .8, compactAtTokens: 120000, capacity: () => ({ inputBudget: 2000 }) })
-  compact.observe({ inputTokens: 1000, contextWindow: 128000 })
-  expect(compact.needed()).toBe(false)
-  compact.observe({ inputTokens: 1600, contextWindow: 128000 })
+  compact.observe({ inputTokens: 850, contextWindow: 1000 })
   expect(compact.needed()).toBe(true)
+
+  const stage = makeStage()
+  const budgeted = createCompactor({ records: stage.records, session: 'test', gateway: stage.gateway,
+    sink: stage.sink, stamper: stage.stamper, now: () => 1, compactAtFraction: .85, compactAtTokens: 120000,
+    capacity: () => ({ inputBudget: 2000 }) })
+  // 2000 − 512（准备预留）= 1488；1487 不压，1488 压
+  budgeted.observe({ inputTokens: 1487, contextWindow: 128000 })
+  expect(budgeted.needed()).toBe(false)
+  budgeted.observe({ inputTokens: 1488, contextWindow: 128000 })
+  expect(budgeted.needed()).toBe(true)
 })
 
-test('条目数不足近段时也能压——只留最后一条，其余进旧段', async () => {
-  const stage = makeStage({ turns: [{ text: '## 目标与阶段\n少材料\n## 下一步\n继续' }] })
-  // 近段要 20 条，但这个会话只有 3 条——旧版这里会判 no-material
-  const compact = makeCompactor(stage, { policy: { nearEntries: 20 } })
-  for (let n = 0; n < 3; n++) stage.records.appendEntry({ kind: 'user', content: { text: `第${n}条` }, at: n })
+/** 一段像真的会话：几轮问答，最后再补一条最新交代。 */
+function seed(stage: ReturnType<typeof makeStage>, turns: number): void {
+  for (let n = 0; n < turns; n++) {
+    stage.records.appendEntry({ kind: 'user', content: { text: `第${n}条` }, at: n })
+    stage.records.appendEntry({ kind: 'assistant', content: { text: `答复${n}` }, at: n })
+  }
+  stage.records.appendEntry({ kind: 'user', content: { text: '最新一句' }, at: 100 })
+}
+
+test('压缩＝交接材料成为新的第一句，最新一句原文仍留在上下文里', async () => {
+  const stage = makeStage({ turns: [{ text: '## 目标与当前状态\n把压缩改成交接\n## 未完成与下一步\n继续' }] })
+  const compact = makeCompactor(stage, { capacity: () => ({ inputBudget: 8000 }) })
+  seed(stage, 5)
 
   const outcome = await compact.run({ trigger: 'threshold' })
-  expect(outcome).toMatchObject({ ok: true, summarized: 2 })
-  expect(stage.gateway.requests).toHaveLength(1)
+  expect(outcome.ok).toBe(true)
+
+  const coverage = stage.records.coverage.read()
+  const rest = await Array.fromAsync(stage.records.readEntries(DEFAULT_TEST_SESSION, { from: (coverage.coveredThrough ?? 0) + 1 }))
+  const users = rest.filter(entry => entry.kind === 'user')
+  // 交接材料带标记，用户最新说的那句原样留着（记录顺序按追加；装配时交接材料排最前）
+  expect(users.filter(entry => entry.payload !== undefined && 'handoff' in entry.payload && entry.payload.handoff === true)).toHaveLength(1)
+  expect(users.map(entry => (entry.content as { text?: string }).text)).toContain('最新一句')
+
+  const messages = await assembleContext({ records: stage.records, session: DEFAULT_TEST_SESSION, systemPrompt: '系统提示' })
+  expect(messages[1]).toMatchObject({ role: 'user' })
+  expect(textOf(messages[1])).toContain('把压缩改成交接')
+  expect(messages.some(message => textOf(message).includes('最新一句'))).toBe(true)
+  // 旧材料不再进上下文
+  expect(messages.some(message => textOf(message).includes('第3条'))).toBe(false)
 })
 
-test('一条交互都没有时才判没有材料', async () => {
-  const stage = makeStage({ turns: [{ text: '空' }] })
-  const compact = makeCompactor(stage, { policy: { nearEntries: 20 } })
-  stage.records.appendEntry({ kind: 'user', content: { text: '只有一条' }, at: 0 })
-  expect(await compact.run({ trigger: 'threshold' })).toMatchObject({ ok: false, kind: 'no-material' })
+test('没有可交接的材料时明说，并且自动路径也要发状态', async () => {
+  const stage = makeStage({ turns: [] })
+  const compact = makeCompactor(stage, { capacity: () => ({ inputBudget: 8000 }) })
+  const outcome = await compact.run({ trigger: 'threshold' })
+  expect(outcome).toMatchObject({ ok: false, kind: 'no-material' })
+  expect(stage.sink.events.filter(event => event.kind === 'compact.state').at(-1)?.data).toMatchObject({ state: 'no-material' })
+})
+
+test('交接材料生成失败时保留原上下文并报出原因', async () => {
+  const stage = makeStage({ turns: [] })
+  const compact = makeCompactor(stage, { capacity: () => ({ inputBudget: 8000 }) })
+  stage.records.appendEntry({ kind: 'user', content: { text: '原始交代' }, at: 0 })
+  stage.records.appendEntry({ kind: 'assistant', content: { text: '做了一些事' }, at: 1 })
+  stage.records.appendEntry({ kind: 'user', content: { text: '最新一句' }, at: 2 })
+  const outcome = await compact.run({ trigger: 'threshold' })
+  expect(outcome.ok).toBe(false)
+  expect(stage.records.coverage.read().coveredThrough).toBeNull()
+  expect(stage.sink.events.some(event => event.kind === 'compact.state' && event.data.state === 'failed')).toBe(true)
+})
+
+test('手动压缩与自动走同一条交接路径', async () => {
+  const stage = makeStage({ turns: [{ text: '## 目标与当前状态\n手动交接\n## 未完成与下一步\n继续' }] })
+  const compact = makeCompactor(stage, { capacity: () => ({ inputBudget: 8000 }) })
+  seed(stage, 3)
+  const outcome = await compact.run({ trigger: 'threshold', compact: { requestId: 'req-1', focus: '保留 slash 部分' } })
+  expect(outcome.ok).toBe(true)
+  const coverage = stage.records.coverage.read()
+  expect(coverage.coveredThrough).not.toBeNull()
+  const rest = await Array.fromAsync(stage.records.readEntries(DEFAULT_TEST_SESSION, { from: (coverage.coveredThrough ?? 0) + 1 }))
+  const users = rest.filter(entry => entry.kind === 'user')
+  expect(users.filter(entry => entry.payload !== undefined && 'handoff' in entry.payload && entry.payload.handoff === true)).toHaveLength(1)
+  expect(users.map(entry => (entry.content as { text?: string }).text)).toContain('最新一句')
 })

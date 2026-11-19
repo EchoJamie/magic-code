@@ -21,6 +21,8 @@ import type {
   UsedSkillEntry,
 } from '@magic/contracts'
 import { entryKnowledgeReferences } from './knowledge-material.ts'
+import { estimateTokens } from './brief.ts'
+import { preparationReserve } from './organize.ts'
 
 /**
  * 引用表里**文本那几支**（技能 / 文件 / 目录）——`inlineOf` 的入参面（U37）。
@@ -29,9 +31,6 @@ import { entryKnowledgeReferences } from './knowledge-material.ts'
  * （字节放不进 `string`）。走错路 tsc 当场报，不必等运行期去发现「有一张图被当成了空文本」。
  */
 export type TextRefEntry = Exclude<InputRefEntry, { kind: 'image' }>
-
-/** 压缩保留的近段条数；完整工具交互可能使实际保留范围更大。 */
-export const DEFAULT_NEAR_ENTRIES = 20
 
 export type AssembleContextInput = {
   readonly knowledge?: import('@magic/contracts').KnowledgeRecords
@@ -43,6 +42,11 @@ export type AssembleContextInput = {
   readonly session: SessionId
   /** 系统提示词全文——由提示词部件装配好后传入（本文件不认知提示词的段结构）。 */
   readonly systemPrompt: string
+  /**
+   * 当前模型的输入预算（token）——给了就在装配完成后核对（D74 的装配兜底）：
+   * 超了先折叠较早的工具结果，再裁最早的完整交互；仍超就拒绝发送，不把超限交给供应商。
+   */
+  readonly budget?: number | undefined
   /**
    * 本次成功装配实际展开的协作消息。只报告，不写“已带入”事实；宿主在实际请求发出时
    * 对照已消费收件标记。包括发出消息；撤回、压出窗口且已带入的消息不在其中。
@@ -86,6 +90,10 @@ export async function assembleContext(
   }
 
   const users: RecordId[] = []
+  /** 压缩交接材料——它不是用户说的，装配完摆到最前（新上下文的第一句）。 */
+  let handoff: string | undefined
+  /** 工具结果消息与来源条目的对应——装配兜底折叠时要写出「原文在哪」。 */
+  const toolMeta: { index: number; entryId: RecordId; chars: number }[] = []
 
   // 按记录位置展开成员材料；工具往返作为整体处理，穿插材料在该整体之后进入。
   const projected: MessageId[] = []
@@ -134,6 +142,12 @@ export async function assembleContext(
       // 的那一份，**不重新去读文件**（源改了之后新调用才取新的，历史不被改写）。
       const text = await rawTextOf(entry.content, input.records)
       const payload = entry.payload
+      // **交接材料不是用户说的**：它照旧走 user 通道，但装配时放到最前（新上下文第一句）。
+      if (payload !== undefined && 'handoff' in payload && payload.handoff === true) {
+        handoff = text
+        index += 1
+        continue
+      }
       const refs = refsPayloadOf(payload)
       provided(entryKnowledgeReferences(entry))
       const skills = userPayloadOf(payload)
@@ -202,6 +216,7 @@ export async function assembleContext(
           ok: hit.result.ok,
           output: content.text,
         })
+        toolMeta.push({ index: messages.length + toolMessages.length, entryId: hit.entry.id, chars: content.text.length })
         provided(entryKnowledgeReferences(hit.entry))
       }
 
@@ -224,10 +239,76 @@ export async function assembleContext(
   }
 
   await appendMaterialsThrough(Infinity)
+  if (handoff !== undefined) messages.splice(1, 0, { role: 'user', content: handoff })
   input.onIncluded?.(projected)
   input.onUserEntries?.(users)
   input.onKnowledge?.([...supplied.values()])
-  return messages
+  return fitBudget(messages, input.budget, toolMeta)
+}
+
+/**
+ * 装配的预算兜底（D74）——请求发出之前核对，不把「超限」交给供应商当唯一防线。
+ *
+ * 次序：折叠较早的、成功的、大的工具结果（原文位置写进占位）→ 裁最早的完整交互（至少留
+ * 最后一段，并把裁掉的事实写进系统提示）→ 仍超就拒绝发送。压缩是主路径，这里只保证
+ * 「压缩没做成」的时候请求不会以超限的形式发出去。
+ */
+function fitBudget(
+  messages: readonly ModelMessage[],
+  budget: number | undefined,
+  toolMeta: readonly { index: number; entryId: RecordId; chars: number }[],
+): readonly ModelMessage[] {
+  if (budget === undefined) return messages
+  // 工具定义与本轮新增不在这份消息里，留一份与压缩同一口径的余量。
+  const room = Math.max(0, budget - preparationReserve(budget))
+  let kept: ModelMessage[] = [...messages]
+  const total = () => kept.reduce((sum, message) => sum + messageTokens(message), 0)
+  if (total() <= room) return kept
+
+  const byIndex = new Map(toolMeta.map(meta => [meta.index, meta]))
+  for (let index = 1; index < kept.length && total() > room; index++) {
+    const message = kept[index]!
+    if (message.role !== 'tool' || !message.ok) continue
+    const meta = byIndex.get(index)
+    if (meta === undefined || meta.chars <= FOLD_TOOL_RESULT_CHARS) continue
+    kept[index] = { ...message, output: `【较早工具结果已折叠 · ${meta.chars} 字符 · 会话记录#${meta.entryId}】` }
+  }
+  if (total() <= room) return kept
+
+  const starts: number[] = []
+  for (let index = 1; index < kept.length; index++) if (kept[index]!.role === 'user') starts.push(index)
+  let dropped = 0
+  while (starts.length > 1 && total() > room) {
+    const from = starts.shift()!
+    const to = starts[0] ?? kept.length
+    kept = [...kept.slice(0, from), ...kept.slice(to)]
+    dropped += 1
+    for (let index = 0; index < starts.length; index++) starts[index] = starts[index]! - (to - from)
+  }
+  const system = kept[0]
+  if (dropped > 0 && system !== undefined && system.role === 'system') {
+    kept[0] = { role: 'system', content: `${system.content}\n\n【上下文预算】较早的 ${dropped} 段交互已从本次请求裁出（原文仍在会话记录里，可用 history_read 回取）。` }
+  }
+  if (total() <= room) return kept
+
+  throw new Error(`本次请求约 ${total()} tokens，折叠旧工具结果、裁掉较早交互后仍超出输入预算 ${budget}；先用 /compact 压缩或换用更大的模型`)
+}
+
+/** 折叠阈值：超过这个字符数的成功工具结果，遇到预算不足时优先折叠（与简报材料同一量级）。 */
+const FOLD_TOOL_RESULT_CHARS = 8_000
+
+function messageTokens(message: ModelMessage): number {
+  if (message.role === 'tool') return estimateTokens(message.output) + estimateTokens(message.name)
+  if (message.role === 'assistant') {
+    let sum = estimateTokens(message.content)
+    for (const call of message.toolCalls ?? []) sum += estimateTokens(call.name) + estimateTokens(JSON.stringify(call.args))
+    if (message.reasoning !== undefined) sum += estimateTokens(message.reasoning)
+    return sum
+  }
+  if (typeof message.content === 'string') return estimateTokens(message.content)
+  let sum = 0
+  for (const part of message.content) if (part.type === 'text') sum += estimateTokens(part.text)
+  return sum
 }
 
 /** 协作引用只寻址，不复制正文；材料的授权来自 readMessage 成功后的权威正文。 */
