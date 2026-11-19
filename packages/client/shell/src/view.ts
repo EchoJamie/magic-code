@@ -630,6 +630,14 @@ export type ShellView = {
   /** 接管期间「不静默吞键」的提示（一次性，按下一个键即清）。 */
   readonly flash: string | null
 
+  /**
+   * **正在用嘴说**（U135）——`null`／不给＝没在录。
+   *
+   * 只有两态：`recording` 在采音、`transcribing` 已经说完在等文字。
+   * 它是**这一次录音**的状态，不是设置：不进配置、不留记录，退出即无。
+   */
+  readonly voice?: { readonly state: 'recording' | 'transcribing'; readonly reason?: string } | null
+
   readonly exitArmed: boolean
 
   readonly leaving: boolean

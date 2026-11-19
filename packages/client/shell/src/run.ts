@@ -114,6 +114,8 @@ export type RunTuiOptions = {
   readonly notices?: ((listener: (notice: RunNotice) => void) => void) | undefined
   /** **sudo 密码组件**（U129）——密码只经这条瞬时通道到 Engine。 */
   readonly sudo?: SudoFeed | undefined
+  /** **语音输入**（U135）——装配把本机能力递进来；不给＝这台机器上没有语音入口。 */
+  readonly voice?: ShellOptions['voice'] | undefined
 }
 
 /** 挂上终端之后的把手。 */
@@ -149,6 +151,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     detached: options.detached,
     reopen: options.reopen,
     openingSession: options.openingSession,
+    voice: options.voice,
     stop: options.stop,
     stopped: options.stopped,
     lines: options.lines,
@@ -159,6 +162,10 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     // 没有 `boot` 可等的调用方（测试 / 演示）照旧一挂载就能提交。
     inputReady: options.boot === undefined,
   })
+
+  // **右 ⌥ 那一下**（U135）——不走终端：终端默认编码里没有裸修饰键，报它就得改键盘协议，
+  // 而那个协议位会毁掉输入法。改由本机只读监听（`CGEvent` listen-only）取，监听器随 TUI 启停。
+  const stopVoiceHotkey = options.voice?.listen(() => { shell.key({ kind: 'voice' }) })
 
   const app = render(h(TuiApp, { shell }), {
     stdin,
@@ -182,6 +189,13 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     //    （pty 里真跑过：应答被终端的回显吃掉、协议没开起来，`shift+回车` 当场与 `回车` 同形）。
     //     `enabled` 是无条件推一把（`CSI > 1 u`）：支持的终端照办，**不支持的终端按规范忽略
     //     未知 CSI**——退化成今天的样子（`shift+回车` ＝ `回车`），不会更坏。退出时 Ink 弹回。
+    // ⚠️ **不要加 `reportEventTypes`**（U135 撞过一次）：开了它，终端会把**松键**也报上来，
+    //    而松键那一串照样带着正文（`CSI 97;1:3u` → `text: 'a'`），Ink 的 `useInput` 认不出
+    //    「这是松手」——于是**每按一个字都落两遍**（按下一次、松手一次）。
+    //    要的只是「裸修饰键按下了」，那一条 `reportAllKeysAsEscapeCodes` 就够了。
+    // ⚠️ **不要加 reportAllKeysAsEscapeCodes / reportEventTypes**（U135 撞过两次）：
+    //    前者让终端把输入法组字时的按键也送进来（空格不再选候选），后者把松键也当按键。
+    //    语音键不走终端编码——由本机只读监听（`CGEvent` listen-only）取得，见 `voice.ts`。
     kittyKeyboard: { mode: 'enabled', flags: ['disambiguateEscapeCodes'] },
   })
 
@@ -214,6 +228,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
   const closeOut = (): void => {
     if (unmounted) return
     unmounted = true
+    stopVoiceHotkey?.()
     app.unmount()
   }
 

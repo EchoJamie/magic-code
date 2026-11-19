@@ -19,3 +19,6 @@ playground/*
 
 # 原生构建与隔离验收
 .artifacts/
+
+# 打包时编出来的语音助手（build-components.sh 生成，由 CLI 单文件内嵌）
+packages/client/local-capabilities/voice/build/

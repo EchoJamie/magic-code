@@ -6,3 +6,4 @@
  */
 export { readClipboardImage, writeClipboardText } from './clipboard.ts'
 export type { ClipboardImage } from './clipboard.ts'
+export { startVoice, startVoiceHotkey } from './voice.ts'

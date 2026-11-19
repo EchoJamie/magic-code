@@ -7,6 +7,9 @@ export type ShellKey =
   | { readonly kind: 'tab' }
   | { readonly kind: 'shift+tab' }
   | { readonly kind: 'ctrl+g' }
+  /** 轻点右 ⌥（U135）——开／停一次语音输入。**不是** Ink 报出来的键：
+   *  `rightalt` 不在 Ink 的 `Key` 里，这一下由 `run.ts` 在最外层看住原始序列再递进来。 */
+  | { readonly kind: 'voice' }
   | { readonly kind: 'backspace' }
 
   | { readonly kind: 'left' }

@@ -289,6 +289,27 @@ export type ShellOptions = {
   readonly notices?: ((listener: (notice: RunNotice) => void) => void) | undefined
   /** **sudo 密码组件**（U129）——请求与答复都走 UI→Engine 的瞬时通道。 */
   readonly sudo?: SudoFeed | undefined
+  /**
+   * **语音输入**（U135）——由装配注入（本机能力在 `@magic/client` 那一侧）。
+   * 不给＝这台机器上不提供语音入口（键位照旧，只是没人接）。
+   */
+  readonly voice?: VoiceInput | undefined
+}
+
+/**
+ * **语音那一条**（U135）——两件事：**开一次录音**、**听那一下按键**。
+ *
+ * 外壳只管：什么时候开始、什么时候收尾、文字往草稿哪儿插；采音、转写与按键监听都是
+ * 注入进来的（本机的 Swift 助手，见 `@magic/client` 的 `startVoice`／`startVoiceHotkey`）。
+ * 按键**不走终端**——裸修饰键要终端上报就得改键盘协议，而那个协议位会毁掉输入法。
+ */
+export type VoiceInput = {
+  start(handlers: {
+    readonly onFinal: (text: string) => void
+    readonly onError: (code: string, message?: string) => void
+  }): { readonly stop: () => void; readonly cancel: () => void }
+  /** 听「右 ⌥ 单独按一下」；返回退订（TUI 收摊时调）。 */
+  listen(onTap: () => void): () => void
 }
 
 /** sudo 密码通道（U129）——**只传密码，不落任何事件 / 记录**。 */
@@ -2569,11 +2590,89 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     return NONE
   }
 
+  /**
+   * **语音那一路**（U135）——录一句，把文字插到插入点。
+   *
+   * 它只做三件事：开、收、插。**不接管输入区**：录音期间照旧可以打字、按别的键
+   * （语音只是又一个输入源）；Esc 那一支在录音时先归这里。
+   *
+   * 文字**等同键盘输入**：插在插入点、不自动发送、不碰引用——与手打出来的草稿没有区别，
+   * 故上下文装配、输入契约、记录域一个字都不用改。
+   */
+  let voiceSession: { readonly stop: () => void; readonly cancel: () => void } | null = null
+  /** 第几次录音——取消过的那些回调**不再算数**（麦克风那头可能晚一步才回来）。 */
+  let voiceRun = 0
+
+  /** 语音失败时那句人话——按助手给的码说清楚下一步，不把「没听见」当成功。 */
+  const voiceProblem = (code: string, message?: string): string => {
+    switch (code) {
+      case 'denied':
+        return '还没有麦克风／语音识别的授权：到「系统设置 › 隐私与安全性 › 麦克风（与语音识别）」里给这个终端打开，再轻点右 ⌥。'
+      case 'restricted':
+        return '这台机器不允许语音识别（受系统限制），语音这一路用不了。'
+      case 'auth-timeout':
+        return '系统没有回应授权请求（可能弹窗在别的桌面或没点）。授权完再轻点右 ⌥。'
+      case 'locale-unavailable':
+        return '系统里没有中文（zh-CN）的识别资源，语音这一路用不了。'
+      case 'on-device-unavailable':
+        return '端侧识别还没就绪：先在「系统设置 › 键盘 › 听写」里装上中文，再来一次。'
+      case 'no-input-device':
+        return '这台机器上没有可用的麦克风。'
+      case 'audio-start':
+        return `开不了麦克风：${message ?? '系统没给设备'}`
+      default:
+        return message === undefined ? `语音这一路没走通（${code}）。` : `语音这一路没走通（${code}）：${message}`
+    }
+  }
+
+  const toggleVoice = (): ShellEffect => {
+    const voice = options.voice
+    if (voice === undefined) return NONE
+    // 正在等文字：再点也不叠第二次录音。
+    if (view.voice?.state === 'transcribing') return NONE
+    if (view.voice?.state === 'recording') {
+      voiceSession?.stop()
+      commit({ ...view, voice: { state: 'transcribing' } })
+      return NONE
+    }
+    if (voiceSession !== null) return NONE
+    const run = voiceRun + 1
+    voiceRun = run
+    const session = voice.start({
+      onFinal: (text) => {
+        // 取消过的那一次：晚到的结果**丢掉**（它已经不算数了）。
+        if (voiceRun !== run) return
+        voiceSession = null
+        const at = view.caret
+        commit({ ...view, draft: view.draft.slice(0, at) + text + view.draft.slice(at), caret: at + text.length, voice: null })
+      },
+      onError: (code, message) => {
+        if (voiceRun !== run) return
+        voiceSession = null
+        commit(noteResult({ ...view, voice: null }, voiceProblem(code, message)))
+      },
+    })
+    voiceSession = session
+    commit({ ...view, voice: { state: 'recording' } })
+    return NONE
+  }
+
   const key = (input: ShellKey): ShellEffect => {
     const sudo = sudoKey(input)
     if (sudo !== undefined) return sudo
     if(input.kind!=='up'&&input.kind!=='down')verticalColumn=null
     if (disposed) return NONE
+    // **语音那一路**（U135）——放在最前面：它是「又一个输入源」，不该被下面
+    // 「已归档 / 选择器 / 断线」那些分流吞掉（那些是**提交**那一步的规矩，不是打字的规矩）。
+    if (input.kind === 'voice') return toggleVoice()
+    // 录音中按 Esc＝**取消这一次**（不写草稿），不打断运行中的工作。
+    if (input.kind === 'escape' && view.voice?.state === 'recording') {
+      voiceSession?.cancel()
+      voiceSession = null
+      voiceRun += 1
+      commit({ ...view, voice: null })
+      return NONE
+    }
     if (input.kind === 'ctrl+r') { managementPending = null; return reconnect() }
     if (managementPending !== null && input.kind !== 'ctrl+c') return NONE
     if (input.kind === 'enter' && view.dock.kind === 'picker' && view.dock.picker.source === 'session' && view.flash?.endsWith(' · Enter 重试')) { directory.query(); return NONE }

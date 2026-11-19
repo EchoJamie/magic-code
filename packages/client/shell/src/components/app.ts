@@ -260,7 +260,7 @@ export function AppView({ view, columns, rows, now = null, pulseAt = null }: App
     separatorOf(columns, 'rule:status'),
     h(StatusLine, {
       key: 'status',
-      activity: view.status.state !== 'lost' && view.compactions.some(one => one.session === view.sessionId && one.state.state === 'running') ? '正在压缩' : undefined,
+      activity: voiceActivity(view) ?? (view.status.state !== 'lost' && view.compactions.some(one => one.session === view.sessionId && one.state.state === 'running') ? '正在压缩' : undefined),
       status: collaborationStatus(view),
       columns,
       // 锚之后那几格与上色开关——**从视图那一份配置取**（没配过＝默认那条）
@@ -613,6 +613,12 @@ function inputNotices(view:ShellView,columns:number):readonly string[]{
   const sending=[...view.settled,...view.rows].filter(row=>row.kind==='user'&&row.inputRef!==undefined&&!known.has(row.inputRef)&&row.inputState!==undefined).map(row=>row.kind==='user'?`${view.status.state==='lost'&&row.inputState==='提交中'?'受理未确认':row.inputState}：${row.text}`:'')
   const pending=view.pendingInputs.filter(one=>one.state==='pending'||one.state==='consumed').map(one=>`${one.reason??(one.purpose==='next'?'下一件排队中':one.state==='consumed'?'待请求带入':'待带入')}：${one.input.text}`)
   return [...sending,...pending].map(line=>clip(line,columns))
+}
+
+/** 状态那一格此刻显示什么：录音／转写**顶替状态词**（U135）。 */
+function voiceActivity(view: ShellView): string | undefined {
+  if (view.voice == null) return undefined
+  return view.voice.state === 'recording' ? '录音中' : '转写中'
 }
 
 function dockOf(view: ShellView, columns: number, rows: number): readonly ReactElement[] {

@@ -31,7 +31,8 @@ import type {
   ModelSwitchRequest,
 } from '@magic/contracts'
 import { createProjectRules } from '@magic/resources'
-import { writeClipboardText } from '@magic/client'
+import { join } from 'node:path'
+import { startVoice, startVoiceHotkey, writeClipboardText } from '@magic/client'
 import { createModelRegistry } from '@magic/model'
 import type { ModelRegistry } from '@magic/model'
 import type { RunTuiOptions } from '@magic/shell'
@@ -138,6 +139,12 @@ export async function terminalOptions(inputs: TerminalInputs): Promise<RunTuiOpt
     sudo: {
       subscribe: (listener) => client.onSudo(listener),
       answer: (requestId, password) => client.answerSudo(requestId, password),
+    },
+    // **语音**（U135）——录一句、给一句文字；采音与转写在本机那条 Swift 助手里。
+    // 助手落在**数据目录**里（`<magic.base>/voice/`），与配置、记录、组件同一处。
+    voice: {
+      start: (handlers) => startVoice(handlers, { directory: join(inputs.magic.base, 'voice') }),
+      listen: (onTap) => startVoiceHotkey(onTap, { directory: join(inputs.magic.base, 'voice') }),
     },
     ...(inputs.session === undefined ? {} : { openingSession: inputs.session }),
     // **管理者不在了 ⇒ 交给外壳如实说**（见 `run.ts` 的 `onGone`）：留在界面、说清失联，
