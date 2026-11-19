@@ -46,3 +46,21 @@ test('当前模型有效输入预算比上下文窗口小，自动触发仍保�
   compact.observe({ inputTokens: 1600, contextWindow: 128000 })
   expect(compact.needed()).toBe(true)
 })
+
+test('条目数不足近段时也能压——只留最后一条，其余进旧段', async () => {
+  const stage = makeStage({ turns: [{ text: '## 目标与阶段\n少材料\n## 下一步\n继续' }] })
+  // 近段要 20 条，但这个会话只有 3 条——旧版这里会判 no-material
+  const compact = makeCompactor(stage, { policy: { nearEntries: 20 } })
+  for (let n = 0; n < 3; n++) stage.records.appendEntry({ kind: 'user', content: { text: `第${n}条` }, at: n })
+
+  const outcome = await compact.run({ trigger: 'threshold' })
+  expect(outcome).toMatchObject({ ok: true, summarized: 2 })
+  expect(stage.gateway.requests).toHaveLength(1)
+})
+
+test('一条交互都没有时才判没有材料', async () => {
+  const stage = makeStage({ turns: [{ text: '空' }] })
+  const compact = makeCompactor(stage, { policy: { nearEntries: 20 } })
+  stage.records.appendEntry({ kind: 'user', content: { text: '只有一条' }, at: 0 })
+  expect(await compact.run({ trigger: 'threshold' })).toMatchObject({ ok: false, kind: 'no-material' })
+})

@@ -72,9 +72,13 @@ export function createCompactor(deps: CompactorDeps): Compactor {
         const plan = readPlanOf(deps.records, deps.session)
         const capacity = deps.capacity?.() ?? { inputBudget: contextWindow }
         const all = substantiveEntries(await Array.fromAsync(deps.records.readEntries(deps.session, { from: (before.coveredThrough ?? 0) + 1 })))
-        const old = frozenSegment(all, deps.nearEntries)
+        // 近段按条数留；但**材料不够近段时退化成「只留最后一条」**——否则上下文快满了、
+        // 条目数却不足近段，就会出现「没有可压材料」这种死局（条数不是 token 预算）。
+        const old = frozenSegment(all, deps.nearEntries).length > 0
+          ? frozenSegment(all, deps.nearEntries)
+          : frozenSegment(all, 1)
         const last = old.at(-1)?.id
-        if (last === undefined) return { ok: false, kind: 'no-material', reason: '近段之外没有可整理的完整交互', canContinue: true, notesSaved: false }
+        if (last === undefined) return { ok: false, kind: 'no-material', reason: '没有可整理的完整交互（只有一条，或一条都没有）', canContinue: true, notesSaved: false }
         basisKey = JSON.stringify([before, last, version, inputBasis, plan.entry, capacity])
         if (compact === undefined && basisKey === failedBasis) return { ok: false, kind: 'transient', reason: '相同接续条件已失败，等待材料或条件变化后再整理', canContinue: trigger === 'threshold', notesSaved: false }
         const checkBasis = () => {
