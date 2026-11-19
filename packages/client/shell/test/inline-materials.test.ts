@@ -751,7 +751,7 @@ describe('提交：位置与身份一起走', () => {
 
     expect(submitted(stage)).toEqual([])
     expect(stage.shell.getView().draft).toBe('/review') // 草稿留着
-    expect(stage.shell.getView().flash).toContain('只有一处技能引用')
+    expect(stage.shell.getView().settled.filter(row => row.kind === 'receipt').at(-1)).toMatchObject({ text: expect.stringContaining('只有一处技能引用') })
   })
 
   test('**同一份材料引用两次**：两处各自留着（不按身份去重、不丢位置）', () => {

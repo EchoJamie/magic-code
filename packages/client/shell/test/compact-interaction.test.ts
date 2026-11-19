@@ -35,7 +35,7 @@ test('主动压缩固定请求目标与重点，受理前保稿，不走普通�
   stage.type('新的草稿')
   stage.feed([event('compact.state', { requestId: request.requestId, accepted: true, state: 'failed', reason: '模型不可用' })])
   expect(stage.shell.getView().draft).toBe('新的草稿')
-  expect(stage.shell.getView().flash).toBe('压缩失败：模型不可用')
+  expect(stage.shell.getView().settled.at(-1)).toMatchObject({ kind: 'receipt', text: '压缩失败：模型不可用' })
 })
 test('无会话不创建；补全与召回不执行；终态不被迟到 pending 覆盖', () => {
   const empty = createStage()
@@ -48,10 +48,10 @@ test('无会话不创建；补全与召回不执行；终态不被迟到 pending
   const request = stage.commands().findLast(command => command.type === 'compact.request')!
   if (request.type !== 'compact.request') throw new Error('缺少请求')
   stage.feed([event('compact.state', { requestId: request.requestId, state: 'completed', accepted: true, summary: 77 })])
-  expect(stage.shell.getView().flash).toBe('压缩完成')
+  expect(stage.shell.getView().settled.at(-1)).toMatchObject({ kind: 'receipt', text: '压缩完成' })
   stage.feed([event('compact.state', { requestId: request.requestId, state: 'pending', accepted: true })])
   expect(stage.shell.getView().compactions.at(-1)?.state.state).toBe('completed')
-  expect(stage.shell.getView().flash).toBe('压缩完成')
+  expect(stage.shell.getView().settled.at(-1)).toMatchObject({ kind: 'receipt', text: '压缩完成' })
   const before = stage.commands().length
   stage.press({ kind: 'up' })
   expect(stage.shell.getView().draft.startsWith('/compact ')).toBe(true)
@@ -67,7 +67,8 @@ test.each(['failed', 'cancelled', 'interrupted'] as const)('部分笔记保存�
   expect(dock.picker.rows[0]?.detail).toContain('已保存的笔记保留，本次历史收缩未完成')
   stage.press({ kind: 'escape' })
   stage.feed([event('compact.state', { requestId: 'saved-notes', accepted: true, state, notesSaved: true })])
-  expect(stage.shell.getView().flash).toContain('已保存的笔记保留，本次历史收缩未完成')
+  const receipts = stage.shell.getView().settled.filter(row => row.kind === 'receipt')
+  expect(receipts.at(-1)).toMatchObject({ text: expect.stringContaining('已保存的笔记保留，本次历史收缩未完成') })
   stage.type('/status '); stage.press({ kind: 'enter' })
   dock = stage.shell.getView().dock
   if (dock.kind !== 'picker') throw new Error('缺少压缩请求面板')

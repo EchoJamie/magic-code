@@ -522,6 +522,17 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const compactDrafts = new Map<string, { session: string; text: string; refs: readonly DraftRef[]; caret: number }>()
   const compactLabel = (state: import('@magic/contracts').CompactState['state']) => ({ pending: '等待完整交互边界', running: '正在整理笔记', completed: '压缩完成', failed: '压缩失败', cancelled: '已取消', interrupted: '已中断', 'no-material': '没有可压材料', unknown: '受理或结果尚未确认' })[state]
   const compactNote = (state: import('@magic/contracts').CompactState) => state.notesSaved && state.state !== 'completed' ? '已保存的笔记保留，本次历史收缩未完成' : ''
+  /**
+   * **结果通知进记录区**——用户 2026-11-19 定：输入区不放任何结果反馈。
+   *
+   * 拒绝、失败、完成这类「对用户那句话的结果」落进已定局的记录区（`appendReceipt`）：
+   * 跟着会话记录走、能回查；输入行只留**正在进行**的提示（正在保存、正在读取、正在提交）。
+   * 同一句话紧挨着重复时不重复追加——连按回车拒绝同一个动作，不在记录区刷出一排。
+   */
+  const noteResult = (from: ShellView, text: string): ShellView => {
+    const last = from.settled[from.settled.length - 1]
+    return last !== undefined && last.kind === 'receipt' && last.text === text ? from : appendReceipt(from, text)
+  }
   const showCompactions = (): void => {
     const rows = view.compactions.filter(one => one.session === view.sessionId)
     commit(openPicker(view, { source: 'compact-status', title: '本会话压缩请求', selected: 0, rows: [
@@ -541,7 +552,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     push: () => enterLayer(), back: () => popLayer(), send: command => send(command),
     correct: ref => {
       const target = view.inputMember === undefined ? view.sessionId : view.collaboration?.members.find(one => one.agent.agentId === view.inputMember)?.agent.sessionId
-      if (ref.kind === 'note' && ref.session !== target) { commit({ ...view, flash: `所选笔记属于 ${nameOfSession(ref.session)}；请回到该对象交代，原草稿与发送目标保留。` }); return }
+      if (ref.kind === 'note' && ref.session !== target) { commit(noteResult(view, `所选笔记属于 ${nameOfSession(ref.session)}；请回到该对象交代，原草稿与发送目标保留。`)); return }
       while (layers.length > 0) popLayer()
       collapseDock()
       commit(withCompletion({ ...view, ...replaceWith(view.draft, view.refs, { from: view.caret, to: view.caret }, ref, view.caret) }))
@@ -572,8 +583,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     onSubmit: (command, value) => {
       if (command.type !== 'session.rename' || sessionTarget !== command.session) return false
       if (managementPending !== null) return true
-      if (!connected) { commit({ ...view, flash: 'Engine 未连接，请先 Ctrl+R 重连' }); return true }
-      if (value.trim() === '') { commit({ ...view, flash: '名称不能为空' }); return true }
+      if (!connected) { commit(noteResult(view, 'Engine 未连接，请先 Ctrl+R 重连')); return true }
+      if (value.trim() === '') { commit(noteResult(view, '名称不能为空')); return true }
       managementPending = command.type
       commit({ ...view, flash: '正在保存…' })
       send(command)
@@ -911,10 +922,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // 这儿是兜底：别的路径（选择器 / 裁决）此刻本就不该有，有也一并拦下。
     if (!ready) return
     if (!connected && !transport.offlineCommands?.includes(command.type)) {
-      commit(appendReceipt(view, 'Engine 未连接，这项运行操作暂不可用。')); return
+      commit(appendReceipt(view, 'Engine 未连接，这项操作需要连接后使用。')); return
     }
     if (view.archived && (command.type === 'input.submit' && command.local !== true || ['collaboration.input', 'collaboration.resume'].includes(command.type) || command.type === 'input.manage' && command.action === 'continue')) {
-      commit({ ...view, flash: '会话已归档，请明确恢复后继续' }); return
+      commit(noteResult(view, '会话已归档，请明确恢复后继续')); return
     }
     transport.send(command.type==='input.manage'&&view.inputMember!==undefined?{...command,member:view.inputMember}:command)
   }
@@ -960,7 +971,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       if (next === view) return
       commit(next)
       if (view.dock.kind === 'picker' && view.dock.picker.source === 'compact-status') showCompactions()
-      else if (view.sessionId === event.session) commit({ ...view, flash: ['pending', 'running'].includes(event.data.state) ? null : `${compactLabel(event.data.state)}${event.data.reason ? '：' + event.data.reason : ''}${compactNote(event.data) ? '；' + compactNote(event.data) : ''}` })
+      else if (view.sessionId === event.session) {
+        const line = `${compactLabel(event.data.state)}${event.data.reason ? '：' + event.data.reason : ''}${compactNote(event.data) ? '；' + compactNote(event.data) : ''}`
+        commit(['pending', 'running'].includes(event.data.state) ? { ...next, flash: null } : noteResult(next, line))
+      }
       return
     }
 
@@ -977,7 +991,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (event.kind === 'session.state' && (waiting === 'session' || view.dock.kind === 'picker' && view.dock.picker.source === 'session') && turn === null) {
       if (event.data.note !== undefined) {
         if (waiting === 'session') { waiting = null; directory.open() }
-        commit({ ...view, flash: `${event.data.note} · Enter 重试` }); return
+        commit(noteResult(view, `${event.data.note} · Enter 重试`)); return
       }
     }
     if (event.kind === 'session.changed') {
@@ -992,13 +1006,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (event.kind === 'session.managed') {
       if (event.data.session !== sessionTarget || managementPending === null) {
         if (event.data.action === 'rename') {
-          if (!event.data.ok) { if (lastSubmit?.local === true) settleDraft(lastSubmit.ref, true); commit({ ...view, flash: event.data.error ?? '改名失败' }) }
+          if (!event.data.ok) { if (lastSubmit?.local === true) settleDraft(lastSubmit.ref, true); commit(noteResult(view, event.data.error ?? '改名失败')) }
           else send({ type: 'session.list', archived: directory.archived })
         }
         return
       }
       managementPending = null
-      if (!event.data.ok) { commit({ ...view, flash: event.data.error ?? '会话操作失败，请重试' }); return }
+      if (!event.data.ok) { commit(noteResult(view, event.data.error ?? '会话操作失败，请重试')); return }
       commit({ ...view, flash: null })
       if (event.data.action === 'rename') { prompt.clear(); popLayer(); popLayer() }
       else {
@@ -1053,7 +1067,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (event.kind === 'session.history') {
       if (preview?.session === event.data.session) {
         if (view.dock.kind !== 'picker' || view.dock.picker.source !== 'session-history') { if (event.data.done) preview = null; return }
-        if (event.data.error !== undefined) { commit({ ...view, flash: `${event.data.error} · Enter 重试` }); preview = null; return }
+        if (event.data.error !== undefined) { commit(noteResult(view, `${event.data.error} · Enter 重试`)); preview = null; return }
         preview.entries.push(...historyEntries(event.data))
         preview.entries.sort((a, b) => a.at - b.at || a.id - b.id)
         const picker = view.dock.picker
@@ -1356,7 +1370,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   }
   const manageSession = (type: 'session.archive' | 'session.restore'): void => {
     if (sessionTarget === undefined || managementPending !== null) return
-    if (!connected) { commit({ ...view, flash: 'Engine 未连接，请先 Ctrl+R 重连' }); return }
+    if (!connected) { commit(noteResult(view, 'Engine 未连接，请先 Ctrl+R 重连')); return }
     managementPending = type
     commit({ ...view, flash: '正在保存…' })
     send({ type, session: sessionTarget })
@@ -2576,7 +2590,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         return NONE
       }
       if (!['ctrl+c', 'ctrl+o', 'escape', 'planTop', 'ctrl+t'].includes(input.kind)) {
-        commit({ ...view, flash: '已归档，原草稿保留。Ctrl+G 查看草稿或明确恢复；/resume 切换会话。' }); return NONE
+        commit(noteResult(view, '已归档，原草稿保留。Ctrl+G 查看草稿或明确恢复；/resume 切换会话。')); return NONE
       }
     }
     if (input.kind === 'enter' && view.dock.kind === 'input' && view.draft.trim() === '/connect') {
@@ -2584,7 +2598,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       return reconnect()
     }
     if (!connected && input.kind === 'enter' && view.dock.kind === 'input' && !view.draft.trim().startsWith('/')) {
-      commit({ ...view, flash: options.settingsOnly ? '本地设置不发送任务，草稿已保留；退出后运行 magic 开始工作。' : '连接已断开，草稿未发送。输入 /connect 或按 Ctrl+R 重连。' })
+      commit(noteResult(view, options.settingsOnly ? '本地设置不发送任务，草稿已保留；退出后运行 magic 开始工作。' : '连接已断开，草稿未发送。输入 /connect 或按 Ctrl+R 重连。'))
       return NONE
     }
 
@@ -2878,7 +2892,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const submit = (): ShellEffect => {
     // **启动中不收**（技术方案 · 装配视图第 5 步：以 `boot` 完成为界）——草稿留着
     if (!ready) return bootRefusal()
-    if (view.archived && view.dock.kind === 'input') { commit({ ...view, flash: '会话已归档，请明确恢复后继续' }); return NONE }
+    if (view.archived && view.dock.kind === 'input') { commit(noteResult(view, '会话已归档，请明确恢复后继续')); return NONE }
     // 本地小输入开着 ⇒ 回车是**把它交出去**（不是发交代——那一路归 `input.submit`）
     if (view.dock.kind === 'prompt') { prompt.submit(); return NONE }
 
@@ -3082,13 +3096,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // **只有技能引用、一个字都没有** ⇒ 这一条按不下去（见 `submittable`）。
     // 出声说一句，不静默吞——「按了没反应」是最难查的那种。
     if (!submittable(view.draft, view.refs)) {
-      commit(said(view, '这一句只有一处技能引用——补上要它做什么，再回车发送。'))
+      commit(noteResult(view, '这一句只有一处技能引用——补上要它做什么，再回车发送。'))
       return NONE
     }
 
     if (text.startsWith('/compact ') || text.trim() === '/compact') {
-      if (view.sessionId === null) { commit({ ...view, flash: '还没有会话可压缩；未建立新会话，命令保留。' }); return NONE }
-      if (!connected) { commit({ ...view, flash: '连接已断开；命令保留，重连后先查询原请求。' }); return NONE }
+      if (view.sessionId === null) { commit(noteResult(view, '还没有会话可压缩；未建立新会话，命令保留。')); return NONE }
+      if (!connected) { commit(noteResult(view, '连接已断开；命令保留，重连后先查询原请求。')); return NONE }
       const previous = [...compactDrafts].find(([, one]) => one.session === view.sessionId && one.text === text)
       if (previous) { send({ type: 'compact.query', session: previous[1].session, requestId: previous[0] }); return NONE }
       const requestId = crypto.randomUUID(), session = view.sessionId, focus = text.slice('/compact '.length).trim()
@@ -3103,7 +3117,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
 
     if (text.startsWith('/memory ') || text.trim() === '/memory') {
-      if (text.trim() !== '/memory') { commit({ ...view, flash: '用法：/memory ' }); return NONE }
+      if (text.trim() !== '/memory') { commit(noteResult(view, '用法：/memory ')); return NONE }
       rememberInput(text, placed)
       draft({ ...view, draft: '', caret: 0, refs: [], completion: null })
       memory.open(); return NONE
@@ -3243,6 +3257,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // 命令把这一行整个吃掉了（交互配置型不带正文）——**引用也跟着走**：
     // 它们指向的那段文字已经不在草稿里了（留着就是「正文没了、材料还在」的暗带）。
     const cleared: ShellView = { ...from, draft: '', caret: 0, refs: [] }
+    /**
+     * **断线时先问连接、再动界面**：需要引擎的命令不在本地留下半开的页面或等待态——
+     * 直接回一句说明、**草稿保留**（`submit` 见最后一行是回执就把草稿还原）。
+     * 纯壳命令（`/help`、`/status`、`/exit`）与入口自己完成的配置动作（`/model`、`/web`）不走这一判。
+     */
+    const offline = (): { next: ShellView; commands: readonly Command[]; leaving: boolean } =>
+      only(appendReceipt(cleared, `Engine 未连接，${word} 需要连接后使用；草稿保留`))
+
     /** 本地这一下的改动 ＋ 待发的命令——两件一起交回调用方（它决定次序）。 */
     const only = (
       next: ShellView,
@@ -3267,6 +3289,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       // 「同一入口下挂动作」的姿势留给 `/model`）。多写的词照 `submit` 那一侧的老规矩
       // 如实回一句，不当交代发出去。
       if (arg !== '') return only(appendReceipt(cleared, '认得的用法：/clear（不带参数）'))
+      if (!connected) return offline()
 
       turn = { kind: 'new', label: null }
       return only(cleared, { type: 'session.new' })
@@ -3274,12 +3297,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     if (word === '/ps') {
       if (arg) return only(appendReceipt(cleared, '用法：/ps'))
+      if (!connected) return offline()
       collaborationQuery = {}
       return only(openPicker(cleared, { source: 'collaboration', title: '[协作] 整件工作 · 子会话  │  后台命令', rows: [], selected: 0, hint: '正在读取 · Tab/Shift+Tab 切换 · Esc 返回' }), { type: 'collaboration.read' }, { type: 'background.list' })
     }
 
     if (word === '/resume') {
       if (arg === '') {
+        if (!connected) return offline()
         models.cancelOpen()
         waiting = 'session'
         return only(cleared, { type: 'session.list' })
@@ -3300,6 +3325,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       if (from.sessionId === null) {
         return only(appendReceipt(cleared, '还没有会话可改名——先交代一句开张'))
       }
+      if (!connected) return offline()
       return only(cleared, { type: 'session.rename', session: from.sessionId, title })
     }
 
@@ -3312,6 +3338,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
 
     if (word === '/skills') {
+      if (!connected) return offline()
       models.cancelOpen()
       waiting = 'skills'
       skillSeed = arg
@@ -3327,6 +3354,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     if (word === '/config') {
       if (arg !== '') return only(appendReceipt(cleared, '认得的用法：/config（不带参数）'))
+      if (!connected) return offline()
       models.cancelOpen()
       waiting = 'config'
       configPending = new Set(CONFIG_READINGS.map(one => one.event))
@@ -3360,12 +3388,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         const who = arg.slice('reconnect'.length).trim()
         if (who === '') return only(appendReceipt(cleared, '要重连哪一台？`/mcp reconnect <名字>`'))
 
+        if (!connected) return offline()
         models.cancelOpen()
         waiting = 'mcp'
         mcpServer = who
         return only(cleared, { type: 'mcp.reconnect', server: who })
       }
 
+      if (!connected) return offline()
       models.cancelOpen()
       waiting = 'mcp'
       mcpServer = arg

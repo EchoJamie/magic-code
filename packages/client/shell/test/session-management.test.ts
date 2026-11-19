@@ -64,7 +64,7 @@ describe('会话整理', () => {
     expect(a.spy.commands.at(-1)).toEqual({ type: 'session.archive', session: current.id })
     const count = a.spy.commands.length; a.key('enter'); expect(a.spy.commands.length).toBe(count)
     a.spy.emit(event('session.managed', { session: current.id, action: 'archive', ok: false, error: '刚开始执行' }))
-    expect(a.picker().source).toBe('session-actions'); expect(a.shell.getView().flash).toBe('刚开始执行')
+    expect(a.picker().source).toBe('session-actions'); expect(a.shell.getView().settled.at(-1)).toMatchObject({ kind: 'receipt', text: '刚开始执行' })
     a.key('enter')
     a.spy.emit(event('session.changed', { session: current.id, archived: true, canArchive: false, terminalOpen: true }))
     a.spy.emit(event('session.managed', { session: current.id, action: 'archive', ok: true, archived: true }))
@@ -116,7 +116,7 @@ describe('会话整理', () => {
     a.spy.emit(event('session.managed', { session: current.id, action: 'rename', ok: false, error: '写入失败' }))
     const dock = a.shell.getView().dock
     expect(dock.kind).toBe('prompt'); if (dock.kind === 'prompt') expect(dock.prompt.display).toContain('新名')
-    expect(a.shell.getView().flash).toBe('写入失败')
+    expect(a.shell.getView().settled.at(-1)).toMatchObject({ kind: 'receipt', text: '写入失败' })
     a.key('escape'); expect(a.picker().source).toBe('session-actions')
     a.key('escape'); expect(a.picker().source).toBe('session')
     a.shell.dispose()
@@ -124,7 +124,7 @@ describe('会话整理', () => {
   test('历史读取失败留在阅读层、重试可读；已返回的迟到预览不重建主对话', () => {
     const a = setup(); a.open(); a.key('ctrl+g'); a.choose('history')
     a.spy.emit(event('session.history', { session: current.id, entries: [], done: true, error: '暂不可读' }))
-    expect(a.picker().source).toBe('session-history'); expect(a.shell.getView().flash).toContain('Enter 重试')
+    expect(a.picker().source).toBe('session-history'); expect(a.shell.getView().settled.filter(row => row.kind === 'receipt').at(-1)).toMatchObject({ text: expect.stringContaining('Enter 重试') })
     a.key('enter'); expect(a.spy.commands.at(-1)).toEqual({ type: 'history.read', session: current.id })
     a.key('escape'); a.key('escape'); a.key('escape')
     a.spy.emit(event('session.history', { session: current.id, entries: [{ id: 1, kind: 'assistant', content: { text: '迟到预览' }, at: 1 }], done: true }))

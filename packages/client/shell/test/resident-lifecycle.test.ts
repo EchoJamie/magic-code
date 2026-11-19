@@ -33,9 +33,9 @@ test('App退出留屏且不自动重开，明确ctrl+r成功后仍不自动发�
   expect(opens).toBe(0)
   expect(spy.commands).toHaveLength(0)
   expect(shell.getView().draft).toBe(draft)
-  expect(shell.getView().flash).toContain('连接已断开')
   const disconnectRows = shell.getView().settled.filter(row => row.kind === 'receipt' && row.text.includes('连接已断开'))
-  expect(disconnectRows).toHaveLength(1)
+  expect(disconnectRows).toHaveLength(2)
+  expect(disconnectRows.at(-1)).toMatchObject({ text: expect.stringContaining('草稿未发送') })
   expect(shell.getView().status.hint).toContain('/connect')
   shell.key({ kind: 'ctrl+r' })
   await Bun.sleep(0)
@@ -48,6 +48,20 @@ test('App退出留屏且不自动重开，明确ctrl+r成功后仍不自动发�
   expect(spy.commands.filter((command) => command.type === 'input.submit')).toHaveLength(0)
   shell.key({ kind: 'enter' })
   expect(spy.commands.filter((command) => command.type === 'input.submit')).toHaveLength(1)
+  shell.dispose()
+})
+
+test('断线时 slash 先问连接：不留半开面板，草稿还原，结果进记录区', () => {
+  const spy = createSpyTransport()
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic' })
+  shell.hostGone()
+  shell.key({ kind: 'paste', text: '/ps' })
+  shell.key({ kind: 'enter' })
+  // 面板不打开（断线时先判连接），草稿原样留着，记录区说明原因
+  expect(shell.getView().dock.kind).toBe('input')
+  expect(shell.getView().draft).toBe('/ps')
+  expect(shell.getView().settled.filter(row => row.kind === 'receipt').at(-1)).toMatchObject({ text: expect.stringContaining('/ps 需要连接后使用') })
+  expect(spy.commands.some(command => command.type === 'collaboration.read' || command.type === 'background.list')).toBe(false)
   shell.dispose()
 })
 
