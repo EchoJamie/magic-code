@@ -22,6 +22,10 @@ export type LogFields = Partial<Record<'hostInstance' | 'serviceInstance' | 'ses
   reason?: string
   /** 哪一类消息（`t` 或 `ev:kind` 的短 token）——只记形状，不记正文。 */
   kind?: string
+  /** 本次积压 episode 里被拒发的帧数（终止时汇总）。 */
+  dropped?: number
+  /** 拒发时已有的欠账字节数。 */
+  backlog?: number
   debugMode?: boolean
   previousDebugMode?: boolean
   logLevel?: LogLevel
@@ -74,6 +78,10 @@ export class DiagnosticLog {
     if (fields.by === 'local' || fields.by === 'peer') safe.by = fields.by
     if (typeof fields.reason === 'string' && fields.reason.length > 0 && fields.reason.length <= 120 && !/[\u0000-\u001f\u007f]/.test(fields.reason)) safe.reason = fields.reason
     if (typeof fields.kind === 'string' && /^[a-zA-Z0-9:._-]{1,64}$/.test(fields.kind)) safe.kind = fields.kind
+    const dropped = fields.dropped
+    if (dropped !== undefined && Number.isSafeInteger(dropped) && dropped >= 0) safe.dropped = dropped
+    const backlog = fields.backlog
+    if (backlog !== undefined && Number.isSafeInteger(backlog) && backlog >= 0) safe.backlog = backlog
     for (const key of ['debugMode', 'previousDebugMode'] as const) if (typeof fields[key] === 'boolean') safe[key] = fields[key]
     for (const key of ['logLevel', 'previousLogLevel'] as const) if (isLogLevel(fields[key])) safe[key] = fields[key]
     if (fields.settingSource && ['app', 'cli', 'config'].includes(fields.settingSource)) safe.settingSource = fields.settingSource

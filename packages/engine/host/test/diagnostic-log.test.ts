@@ -17,12 +17,13 @@ test('连接诊断字段真的落盘——不只是类型里有', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'magic-diag-'))
   try {
     const log = new DiagnosticLog('manager', dir, 'info')
-    log.write('error', 'link.terminated', { conn: 7, bytes: 13_175_290, by: 'peer', reason: 'send-backlog' })
+    log.write('error', 'link.terminated', { conn: 7, bytes: 13_175_290, by: 'peer', reason: 'send-backlog', dropped: 3, backlog: 8_388_608 })
     log.write('warn', 'link.closed.silent', { by: 'local' })
     const [terminated, silent] = await readLines(log, dir)
 
     expect(terminated).toMatchObject({
       event: 'link.terminated', level: 'error', conn: 7, bytes: 13_175_290, by: 'peer', reason: 'send-backlog',
+      dropped: 3, backlog: 8_388_608,
     })
     expect(silent).toMatchObject({ event: 'link.closed.silent', by: 'local' })
     expect('reason' in silent!).toBe(false)

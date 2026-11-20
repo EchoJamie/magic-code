@@ -85,6 +85,8 @@ export function installCommands(ctx: ManagerContext): void {
         ...(typeof data['reason'] === 'string' ? { reason: data['reason'] } : {}),
         ...(typeof data['bytes'] === 'number' ? { bytes: data['bytes'] } : {}),
         ...(typeof data['kind'] === 'string' ? { kind: data['kind'] } : {}),
+        ...(typeof data['dropped'] === 'number' ? { dropped: data['dropped'] } : {}),
+        ...(typeof data['backlog'] === 'number' ? { backlog: data['backlog'] } : {}),
       }),
       closed: (detail) => diagnosticLog.write(
         // 对端先断且没给原因：**warn**——这就是「连不上」最常见的那一形
