@@ -551,7 +551,7 @@ describe('停止、后台命令与接着交代（真窗口）', () => {
     const MARK = `321.${Math.floor(Math.random() * 900_000) + 100_000}`
     const fixture = startFixture({
       turns: [
-        { kind: 'tool', name: 'exec', args: { command: `sleep ${MARK}`, background: true } },
+        { kind: 'tool', name: 'exec', args: { description: '测试命令', command: `sleep ${MARK}`, background: true } },
         { kind: 'text', text: '交出去了。' },
       ],
     })
@@ -608,7 +608,7 @@ describe('停止、后台命令与接着交代（真窗口）', () => {
     const fixture = startFixture({
       turns: [
         // ① 一件**要跑一会儿**的工具（好让菜单开在「它正跑着」那一刻）
-        { kind: 'tool', name: 'exec', args: { command: `while [ ! -f '${toolRelease}' ]; do sleep 0.02; done; echo 看完了` } },
+        { kind: 'tool', name: 'exec', args: { description: '测试命令', command: `while [ ! -f '${toolRelease}' ]; do sleep 0.02; done; echo 看完了` } },
         // ② 第二轮的正文**慢慢长**（这样还能看见「第二轮真起来了」）
         { kind: 'text', text: '看完了，接着做。'.repeat(2), chunks: 2, chunkDelayMs: 0,
           beforeChunk: async (index) => { if (index === 1) await tail.promise } },
@@ -673,7 +673,7 @@ describe('停止、后台命令与接着交代（真窗口）', () => {
   test.each([false, true])('转后台留的接回入口：照那一行真敲一遍，接回同一个库（自定义符号链接位置=%s）', async (alias) => {
     const runs = tempDir('magic-u100-resume-runs-')
     const fixture = startFixture({ turns: [
-      { kind: 'tool', name: 'exec', args: { command: 'sleep 60', background: true } },
+      { kind: 'tool', name: 'exec', args: { description: '测试命令', command: 'sleep 60', background: true } },
       { kind: 'text', text: '第一句答复。' },
     ] })
     const base = createSandbox({ baseURL: fixture.baseURL })
@@ -815,7 +815,7 @@ describe('停止、后台命令与接着交代（真窗口）', () => {
     const MARK = `322.${Math.floor(Math.random() * 900_000) + 100_000}`
     const fixture = startFixture({
       turns: [
-        { kind: 'tool', name: 'exec', args: { command: `sleep ${MARK}`, background: true } },
+        { kind: 'tool', name: 'exec', args: { description: '测试命令', command: `sleep ${MARK}`, background: true } },
         { kind: 'text', text: '交出去了。' },
       ],
     })

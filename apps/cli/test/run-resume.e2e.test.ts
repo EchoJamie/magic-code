@@ -81,7 +81,7 @@ describe('接回（真窗口）', () => {
     const runs = tempDir('magic-u49-decide-runs-')
     const fixture = startFixture({
       turns: [
-        { kind: 'tool', name: 'exec', args: { command: 'printf u49-只跑一次' } },
+        { kind: 'tool', name: 'exec', args: { description: '测试命令', command: 'printf u49-只跑一次' } },
         { kind: 'text', text: '收工收工' },
       ],
     })
@@ -109,7 +109,8 @@ describe('接回（真窗口）', () => {
       expect(host.executorStarts()).toBe(1)
       expect(fixture.requests().length).toBe(2)
       const seen = await two.capture({ label: '02-接回之后' })
-      const calls = seen.history.join('\n').match(/✓ exec\(printf/g)?.length ?? 0
+      // 括号里现在放的是 `description`（工具的意图那句），不再认命令首行
+      const calls = seen.history.join('\n').match(/✓ exec\(/g)?.length ?? 0
       expect(calls).toBe(1)
     } finally {
       for (const window of windows) await window.close().catch(() => {})

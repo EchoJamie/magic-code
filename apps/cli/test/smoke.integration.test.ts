@@ -31,7 +31,7 @@ const TRANSIENT = ['background.state', 'model.delta', 'tool.output.delta', 'inpu
  */
 const GATED_TURNS: readonly FauxTurn[] = [
   {
-    toolCalls: [{ name: 'exec', args: { command: 'chmod 755 . && echo hello-magic' } }],
+    toolCalls: [{ name: 'exec', args: { description: '测试命令', command: 'chmod 755 . && echo hello-magic' } }],
     usage: { inputTokens: 11, outputTokens: 3 },
   },
   { text: '跑完了', usage: { inputTokens: 21, outputTokens: 7 } },
@@ -157,7 +157,7 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
         expect(JSON.parse(toolCall?.payload ?? '{}')).toEqual({
           id: 'call_1',
           name: 'exec',
-          args: { command: 'chmod 755 . && echo hello-magic' },
+          args: { description: '测试命令', command: 'chmod 755 . && echo hello-magic' },
         })
 
         const toolResultRow = raw.entries.find((row) => row.kind === 'tool-result')

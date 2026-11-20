@@ -87,16 +87,17 @@ describe('定义与注册', () => {
     expect(parameters).toEqual(JSON.parse(JSON.stringify(parameters)))
 
     expect(parameters?.type).toBe('object')
-    expect(parameters?.required).toEqual(['command'])
+    expect(parameters?.required).toEqual(['command', 'description'])
     const properties = parameters?.properties as
       | Record<string, { type?: string | readonly string[]; description?: string }>
       | undefined
     expect(properties?.command?.type).toBe('string')
 
-    // **五把键**——`command`（唯一必填）· `description` · `cwd` · `timeoutMs` · `background`。
+    // **四把键**——`command` · `description`（必填，≤50 字）· `timeoutMs` · `background`。
     // 键名跟主流工具走（Claude Code / Codex / Gemini CLI 都叫 `command`）：模型被训练成写它，
-    // 而 `cmd` 是全表唯一的缩写。
-    expect(Object.keys(properties ?? {})).toEqual(['command', 'description', 'cwd', 'timeoutMs', 'background'])
+    // 而 `cmd` 是全表唯一的缩写。`cwd` 已撤（用户 2026-11-20 定）：目录只有会话那一个，
+    // 换目录写进命令里。
+    expect(Object.keys(properties ?? {})).toEqual(['command', 'description', 'timeoutMs', 'background'])
     expect(properties?.background?.type).toBe('boolean')
 
     // 「不设上界」那个写法**得在模式里看得见**：`null` 是正当的一档，不是「忘了填」。

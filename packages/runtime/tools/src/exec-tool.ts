@@ -20,7 +20,8 @@
  *    机械分析在 `@magic/permission`。**不替它判、也不猜**；
  * ④ 大块转存 —— 归分发（机制层，对所有工具一视同仁）。
  *
- * **工作目录**：cwd 缺省为默认根；工具入口在裁决前解析真实目录，执行时核对目标。
+ * **工作目录**：**始终是会话目录**（命令里的 `cd` 会更新它，见 `command` 的说明）——
+ * 没有「这一次换个目录」的参数：换目录就写进命令里，一处状态，不必两条路。
  *
  * **超时那一把**（U69）——`timeoutMs` 是**唯一**一处「模型自己定系统量」的参数：它知道手上
  * 这件事是 `ls` 还是一次构建，别人替不了它（见 `EXEC_PARAMETERS` 里那一项的描述）。
@@ -36,7 +37,6 @@
  */
 
 import type { ExecResult, SudoPlan } from '@magic/contracts'
-import { isAbsolute, join } from 'node:path'
 import {
   backgroundStarted,
   backgroundStartFailed,
@@ -46,6 +46,8 @@ import {
   execTimedOutOutput,
   OUTPUT_EXEC_BACKGROUND_WITH_TIMEOUT,
   OUTPUT_EXEC_BAD_TIMEOUT,
+  OUTPUT_EXEC_DESCRIPTION_REQUIRED,
+  OUTPUT_EXEC_DESCRIPTION_TOO_LONG,
   execNoCommandOutput,
   OUTPUT_SUDO_CANCELED,
   OUTPUT_SUDO_NO_CHANNEL,
@@ -95,14 +97,10 @@ export const EXEC_PARAMETERS = {
     },
     description: {
       type: 'string',
-      maxLength: 160,
-      description: '这条命令要做什么，一句话（工具行上显示给用户看，也进执行记录）；不参与执行。',
-    },
-    cwd: {
-      type: 'string',
       minLength: 1,
+      maxLength: 50,
       pattern: '\\S',
-      description: '只在这一条要换目录时给：相对默认目录，绝对路径也可。不填就在会话目录下跑。',
+      description: '这条命令要做什么，一句话（最多 50 字；工具行上显示给用户看，也进执行记录）；不参与执行。',
     },
     /**
      * 超时——**管的是「等它多久」**，不是「它能跑多久」：到点命令已跑出的输出照样带回。
@@ -124,7 +122,7 @@ export const EXEC_PARAMETERS = {
         '给 0 或负数不算「不设」，是参数错误。',
     },
   },
-  required: ['command'],
+  required: ['command', 'description'],
   additionalProperties: false,
 } as const
 
@@ -279,17 +277,6 @@ async function authenticateSudo(
   }
 }
 
-/**
- * 后台起始目录——相对 `cwd` 以**会话目录**为基准（与前台同一条尺子）。
- *
- * 后台的 `start` 拿不到会话状态（它不属于沙箱实例），故在这里先化成绝对路径。
- */
-function startCwdOf(cwd: string | undefined, ctx: ToolRunContext): string | undefined {
-  if (cwd === undefined || isAbsolute(cwd)) return cwd
-  const session = ctx.sandbox.sessionCwd?.()
-  return session === undefined ? cwd : join(session, cwd)
-}
-
 /** 造 `exec` 的工具定义。 */
 export function defineExecTool(): ToolDefinition {
   const row = rowOf('exec')
@@ -299,21 +286,22 @@ export function defineExecTool(): ToolDefinition {
       const command = args.command
       if (typeof command !== 'string' || command.trim() === '') throw new Error(execNoCommandOutput(Object.keys(args)))
       const description = args.description
-      if (description !== undefined && typeof description !== 'string') throw new Error('参数错误：description 须为字符串')
+      // **必填**：这一句是给人看的（工具行、审批、记录），模型省掉它等于让人去读命令猜意图。
+      if (typeof description !== 'string' || description.trim() === '') throw new Error(OUTPUT_EXEC_DESCRIPTION_REQUIRED)
+      // 上限按**码点**数（与模式里的 `maxLength` 同一口径）：超了当场说，不截断也不静默收下
+      if ([...description].length > 50) throw new Error(OUTPUT_EXEC_DESCRIPTION_TOO_LONG)
       const timeout = readTimeout(args.timeoutMs)
       if ('bad' in timeout) throw new Error(OUTPUT_EXEC_BAD_TIMEOUT)
-      const cwd = args.cwd
-      if (cwd !== undefined && (typeof cwd !== 'string' || cwd.trim() === '')) throw new Error('参数错误：cwd 须为非空字符串')
       const background = args.background
       if (background !== undefined && typeof background !== 'boolean') throw new Error('参数错误：background 须为布尔值')
       // 只拦**显式**给了上界又要求后台的一对；不填超时现在有缺省值，不该因此判错
       if (background === true && timeout.given && timeout.ms !== null) throw new Error(OUTPUT_EXEC_BACKGROUND_WITH_TIMEOUT)
-      return { command, description, cwd, background, timeoutMs: background === true ? null : timeout.ms }
+      return { command, description, background, timeoutMs: background === true ? null : timeout.ms }
     },
     async run(args, ctx): Promise<ToolRunResult> {
-      // **会话目录**——模型没给 cwd 就用沙箱记着的那个（命令里的 cd 会更新它）。
+      // **会话目录**——执行环境自己记着那一个（命令里的 cd 会更新它）。
       // 于是「我在哪」不是每条都要模型判断的参数，而是执行环境自己的状态。
-      const cwd = args.cwd ?? ctx.sandbox.sessionCwd?.()
+      const cwd = ctx.sandbox.sessionCwd?.()
       // sudo 先认证、再执行；认证没通过时原命令一个字节都不碰（U129）。
       // 实际交给沙箱的是 `plan.run`（`sudo` 后已插入 `-n`），不是模型原句。
       const plan = ctx.sudo
@@ -323,22 +311,20 @@ export function defineExecTool(): ToolDefinition {
       }
       const command = plan === undefined ? args.command : plan.run
 
-      if (args.background === true) return startBackground(command, ctx, startCwdOf(cwd, ctx))
+      if (args.background === true) return startBackground(command, ctx, cwd)
       // 契约上 `adopt` 是**可选**的一格：宿主只实现了 `start` 时不带它，超时照旧按进程组收掉
       // （不能凭「有 background 对象」就假定它会接管——那是宿主侧才看得见的能力）。
       const adopter = typeof ctx.background?.adopt === 'function' ? ctx.background : undefined
       const result = await ctx.sandbox.exec(command, {
-        cwd: args.cwd, timeoutMs: args.timeoutMs, maxOutputBytes: EXEC_MAX_OUTPUT_BYTES,
+        ...(cwd === undefined ? {} : { cwd }), timeoutMs: args.timeoutMs, maxOutputBytes: EXEC_MAX_OUTPUT_BYTES,
         // 到点还没跑完 ⇒ 交出去接着跑（没接后台能力时沙箱按 kill 处置，行为与旧版一致）
         onTimeout: adopter === undefined ? 'kill' : 'background',
         ...(adopter === undefined ? {} : { adopt: run => adopter.adopt!(run) }),
         onOutput: ctx.onOutput, signal: ctx.signal,
       })
       const outcome = composeOutcome(result, cwd)
-      // **会话目录变了**才报给外壳（显式 cwd 是一次性覆盖，不改会话目录）
-      return args.cwd === undefined && result.ok && result.cwd !== undefined
-        ? { ...outcome, cwd: result.cwd }
-        : outcome
+      // **会话目录变了**才报给外壳（命令里的 `cd` 改了它）
+      return result.ok && result.cwd !== undefined ? { ...outcome, cwd: result.cwd } : outcome
     },
   })
 }

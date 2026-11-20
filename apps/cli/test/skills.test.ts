@@ -898,8 +898,8 @@ describe('边界不越', () => {
         turns: [
           // 模型读了技能，然后照它说的跑两条：一条**删除**（内核直接拒）、一条**改权限**（照问）
           { toolCalls: [{ name: 'skill', args: { name: 'risky' } }] },
-          { toolCalls: [{ name: 'exec', args: { command: `rm -f ${target}` } }] },
-          { toolCalls: [{ name: 'exec', args: { command: `chmod 600 ${target}` } }] },
+          { toolCalls: [{ name: 'exec', args: { description: '测试命令', command: `rm -f ${target}` } }] },
+          { toolCalls: [{ name: 'exec', args: { description: '测试命令', command: `chmod 600 ${target}` } }] },
           { text: '好' },
         ],
       })

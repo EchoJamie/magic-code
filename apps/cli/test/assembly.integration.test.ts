@@ -205,7 +205,7 @@ describe('执行域——单根＝启动目录（缺省）／多根＝配置接�
       const stage = makeStage({ config: { workspaceRoots: [second, first] } })
       try {
         const assembly = stage.assemble({
-          turns: [{ toolCalls: [{ name: 'exec', args: { command: 'pwd' } }] }, { text: '好' }],
+          turns: [{ toolCalls: [{ name: 'exec', args: { description: '测试命令', command: 'pwd' } }] }, { text: '好' }],
         })
         const shell = attachShell(assembly.shell)
 
@@ -231,7 +231,7 @@ describe('执行域——单根＝启动目录（缺省）／多根＝配置接�
     const stage = makeStage()
 
     try {
-      const assembly = stage.assemble({ turns: [{ toolCalls: [{ name: 'exec', args: { command: 'pwd' } }] }, { text: '好' }] })
+      const assembly = stage.assemble({ turns: [{ toolCalls: [{ name: 'exec', args: { description: '测试命令', command: 'pwd' } }] }, { text: '好' }] })
       const shell = attachShell(assembly.shell)
 
       await shell.submit('我在哪')

@@ -98,11 +98,11 @@ describe('skill 工具', () => {
    * **参数表里没有 `source` 这一格**（U58 收掉的那一个）：多给的键不当回事——
    * 读的东西仍由**发现结果**定，模型编一个路径进来也不认。
    */
-  test('未声明的 source 直接报参数错误，不读取其他来源', async () => {
+  test('多给的 source 不认——照发现结果读，模型编的路径不生效（用户 2026-11-20 定）', async () => {
     const { port, asked } = stubSkills([PDF])
 
-    expect((await run(port, { name: 'pdf', source: '/elsewhere/pdf' })).ok).toBe(false)
-    expect(asked).toEqual([])
+    expect((await run(port, { name: 'pdf', source: '/elsewhere/pdf' })).ok).toBe(true)
+    expect(asked).toEqual(['main:pdf@/sk/pdf']) // 读的是发现结果那一条，不是编进来的路径
   })
 
   test('没有这个技能：回填列出可用的（空清单时说清「这次一个都没发现」）', async () => {

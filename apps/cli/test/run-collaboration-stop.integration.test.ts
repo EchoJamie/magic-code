@@ -19,7 +19,7 @@ async function scenario(name: string, reply: (f: StopRuntime) => ModelReply | Pr
     }
     if (call.model === 'member-model') {
       if (call.index === 0) return { tool: 'agent_message', args: { action: 'respond', operationId: 'stop-accept', delegation: delegationOf(f).delegationId, response: 'accept' } }
-      if (call.index === 1) return { tool: 'exec', args: { command: 'sleep 30', background: true } }
+      if (call.index === 1) return { tool: 'exec', args: { description: '测试命令', command: 'sleep 30', background: true } }
       if (call.index === 2) return reply(f)
     }
     return { text: 'UNEXPECTED_WORK_AFTER_BARRIER' }
@@ -151,13 +151,13 @@ test('后代已登记、真实启动并持有后台进程后整体 stop：入口
     }
     if (call.model === 'member-model') {
       if (call.index === 0) return { tool: 'agent_message', args: { action: 'respond', operationId: 'stop-accept', delegation: delegationOf(f).delegationId, response: 'accept' } }
-      if (call.index === 1) return { tool: 'exec', args: { command: 'sleep 30', background: true } }
+      if (call.index === 1) return { tool: 'exec', args: { description: '测试命令', command: 'sleep 30', background: true } }
       if (call.index === 2) { await spawn.promise; return spawnDescendant }
       if (call.index === 3) return { text: 'A 已派生 B，等待核对。' }
     }
     if (call.model === 'descendant-model') {
       if (call.index === 0) return { tool: 'agent_message', args: { action: 'respond', operationId: 'descendant-accept', delegation: childDelegation()!.delegationId, response: 'accept' } }
-      if (call.index === 1) return { tool: 'exec', args: { command: 'sleep 30', background: true } }
+      if (call.index === 1) return { tool: 'exec', args: { description: '测试命令', command: 'sleep 30', background: true } }
       if (call.index === 2) { await descendantResponse.promise; return { text: 'B 的旧响应。' } }
     }
     return { text: 'UNEXPECTED_WORK_AFTER_BARRIER' }

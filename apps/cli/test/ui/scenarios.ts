@@ -302,7 +302,7 @@ const modelStreamApproval: Scenario = {
     const head = [...streamed].slice(0, 3).join('')
     const tail = [...streamed].at(-1) as string
     const turns: readonly FixtureTurn[] = [
-      { kind: 'tool', name: 'exec', args: { command: 'chmod 755 . && echo hello-magic' } },
+      { kind: 'tool', name: 'exec', args: { description: '测试命令', command: 'chmod 755 . && echo hello-magic' } },
       { kind: 'text', text: streamed, chunks: 4, chunkDelayMs: 220 },
     ]
     const session = await ui.open({

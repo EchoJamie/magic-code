@@ -298,7 +298,7 @@ describe('查询（`/mcp` 那一屏 · `mcp.list` → `mcp.catalog`）', () => {
         turns: [
           { toolCalls: [{ name: 'mcp__remote__echo', args: { text: '先把对端弄没' } }] },
           // 内置件照常：U129 起判轻与改权限都默认放行，`echo 内置照常` 那串输出原样回来。
-          { toolCalls: [{ name: 'exec', args: { command: 'echo 内置照常' } }] },
+          { toolCalls: [{ name: 'exec', args: { description: '测试命令', command: 'echo 内置照常' } }] },
           { text: '好' },
         ],
       })

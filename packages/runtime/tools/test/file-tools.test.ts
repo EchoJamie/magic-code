@@ -149,16 +149,16 @@ describe('read', () => {
       expect(result.output).toBe('参数错误：path 须为非空字符串')
     }
 
-    // 键名写错**先于**「缺了什么」报出来：模型拿到的是「改哪个键」，不是「你没给 path」
+    // 键名写错 ⇒ 必填那一位还是没给（用户 2026-11-20 定：只校必填，不校多给）
     const misnamed = await runtime.invoke({ id: 'c2', name: 'read', args: { file: 'a.txt' } }, {})
     expect(misnamed.ok).toBe(false)
-    expect(misnamed.output).toBe('参数错误（read）：未声明字段 file；可用字段：from、lines、path')
+    expect(misnamed.output).toBe('参数错误：path 须为非空字符串')
 
     expect(sandbox.reads).toEqual([])
   })
 
-  test('未声明字段一次报出工具名与可用字段——去掉 lines 即可改，不必绕 exec（D64）', async () => {
-    // 这一条钉的是「一次就够改」——工具名 ＋ 可用字段都在同一句里，且在授权之前返回。
+  test('多给的键不拦——只校必填（用户 2026-11-20 定）', async () => {
+    // 模型顺手多带一格（名称记岔、从别的工具抄来）：忽略它，照常读——不因此拒掉整条调用。
     const { runtime, sandbox, gate } = makeToolDeps()
 
     const result = await runtime.invoke(
@@ -166,10 +166,9 @@ describe('read', () => {
       {},
     )
 
-    expect(result.ok).toBe(false)
-    expect(result.output).toBe('参数错误（read）：未声明字段 range；可用字段：from、lines、path')
-    expect(sandbox.reads).toEqual([])
-    expect(gate.requests).toHaveLength(0) // D58：参数错在授权之前，不会先问一次
+    expect(result.ok).toBe(true)
+    expect(sandbox.reads).toEqual([{ path: '/work/proj/a.txt', opts: undefined }])
+    expect(gate.requests).toHaveLength(1)
   })
 
   test('笔记：回执写行范围与续读行号（不再是字符位置）', async () => {

@@ -11,8 +11,8 @@ const finish = join(artifacts, 'finish')
 const copied = join(artifacts, 'clipboard')
 writeFileSync(join(artifacts, 'pbcopy'), '#!/bin/sh\ncat > "$U124_COPY_FILE"\n', { mode: 0o755 })
 const ui = await createUiSession({ columns: 200, rows: 40, label: 'background-commands-', artifacts, env: { PATH: `${artifacts}:${process.env.PATH}`, U124_COPY_FILE: copied }, argv: [], turns: [
-  { kind: 'tool', name: 'exec', args: { command: `while [ ! -f '${finish}' ]; do sleep 0.02; done; printf 后台测试完成`, background: true }, following: [
-    { name: 'exec', args: { command: 'sleep 90 # 中文常驻服务', background: true } },
+  { kind: 'tool', name: 'exec', args: { description: '测试命令', command: `while [ ! -f '${finish}' ]; do sleep 0.02; done; printf 后台测试完成`, background: true }, following: [
+    { name: 'exec', args: { description: '测试命令', command: 'sleep 90 # 中文常驻服务', background: true } },
   ] },
   { kind: 'tool', name: 'background_wait', args: { ids: ['bg-1'] } },
   { kind: 'text', text: 'U124_RESULT_RECEIVED', chunks: 1, chunkDelayMs: 0 },

@@ -191,6 +191,19 @@ export const OUTPUT_EXEC_BAD_TIMEOUT =
   '参数错误：timeoutMs 须为正数（毫秒）；不填或给 null ＝ 不设上界（一直等）'
 
 /**
+ * `description` 没给（或给了空串）——**必填**（用户 2026-11-20 定）。
+ *
+ * 这一句是给人看的：工具行上显示、审批时读它、记录里留一行。模型省掉它，
+ * 替它做判断的人就只能去读命令猜意图。上限 50 字，与模式里的 `maxLength` 同一口径。
+ */
+export const OUTPUT_EXEC_DESCRIPTION_REQUIRED =
+  '参数错误：description 必填——一句话说清这条命令要做什么（最多 50 字，会显示给人看）'
+
+/** `description` 超长——**不截断、不静默收下**，当场说清上限，让模型自己缩写。 */
+export const OUTPUT_EXEC_DESCRIPTION_TOO_LONG =
+  '参数错误：description 最多 50 字——缩成一句话再给'
+
+/**
  * `background` 与 `timeoutMs` **一起给了**（U69 集成时加）。
  *
  * 为什么不静默用其中一个：后台那一形**根本不读** `timeoutMs`（它在 `run` 里早早转手就回了），

@@ -299,7 +299,7 @@ describe('成员主机装配', () => {
     const shell = attachShell(app.shell)
     try {
       await app.ready(); await app.boot()
-      f.tool('exec', { command: 'rm same.txt' })
+      f.tool('exec', { description: '测试命令',  command: 'rm same.txt' })
       await shell.submit('检查权限', 3000)
       expect(existsSync(join(f.workspace, 'same.txt'))).toBe(true)
       expect(shell.events.some(event => event.kind === 'tool.result' && !event.data.ok)).toBe(true)
@@ -430,7 +430,7 @@ describe('成员主机装配', () => {
     const releaseFile = join(f.workspace, 'release-background')
     try {
       await app.ready(); await app.boot()
-      f.tool('exec', { command: 'while test ! -f release-background; do sleep 0.02; done', background: true })
+      f.tool('exec', { description: '测试命令',  command: 'while test ! -f release-background; do sleep 0.02; done', background: true })
       await shell.submit('运行受控后台任务', 3000)
       expect(app.background?.running()).toHaveLength(1)
       const records = f.store.collaboration
@@ -478,7 +478,7 @@ describe('成员主机装配', () => {
           if (throws) throw new Error('模拟启动异常')
           return { ok: false, reason: '模拟启动失败' }
         }
-        f.tool('exec', { command: 'echo never-started', background: true })
+        f.tool('exec', { description: '测试命令',  command: 'echo never-started', background: true })
         await shell.submit('失败的后台启动', 3000)
         const executions = f.store.collaboration.listExecutions(f.collaboration.collaborationId)
         expect(executions.filter(one => one.kind === 'tool')).toHaveLength(2)
