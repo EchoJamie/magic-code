@@ -2,13 +2,14 @@ import type {
   ClientToManager,
   CollaborationCommand,
   Command,
+  Content,
   Entry,
   KernelEvent,
   StopScope,
   TurnTimingEvent,
   Wire,
 } from '@magic/contracts'
-import { isTurnTimingEvent } from '@magic/contracts'
+import { isTurnTimingEvent, WIRE_MESSAGE_BUDGET_BYTES } from '@magic/contracts'
 import { loadConfig, setPrefs } from '@magic/state'
 import { ARCHIVED_NOTE, backgroundOf, createWorkEnvironment, linkOf, memoryWorkspace, query as observe, readMemory, readMemorySource, readReferenceSessions, workspaceOf } from '@magic/host'
 import { bindSessionReferences, createPlanReader, readSessionDisplayHistory } from '@magic/conversation'
@@ -16,6 +17,54 @@ import type { Socket } from 'bun'
 import { sendToExecutor as send, type Executor } from '../executor-control.ts'
 import type { ClientConn } from '../connections.ts'
 import type { ManagerContext } from './context.ts'
+
+/**
+ * 历史分批发给窗口的字节预算——单条消息预算的四分之一。
+ *
+ * 原先按「50 条一批」发：条数不是字节数。一批里只要有几条几十万字的工具结果，
+ * 单条 `session.history` 就能逼近甚至超过连接层上限（与 2026-11-21 接续事故同形）。
+ * 留四分之一是给末批随附的 inputs / timing / plan 留余量。
+ */
+const HISTORY_BATCH_BYTES = WIRE_MESSAGE_BUDGET_BYTES / 4
+
+/** 单条历史记录装得下的预算——超过就裁正文（保留开头并注明），别让一条旧记录撑破连接。 */
+const HISTORY_ENTRY_BYTES = WIRE_MESSAGE_BUDGET_BYTES / 2
+
+const historyEncoder = new TextEncoder()
+const TRUNCATED_MARK = '\n[记录过大，显示已截断]'
+
+function wireBytesOf(value: unknown): number {
+  return historyEncoder.encode(JSON.stringify(value)).byteLength
+}
+
+/** 按 UTF-8 字节裁文本——逐码点收，不切坏多字节字符；截断处留一句说明。 */
+function clipTextBytes(text: string, maxBytes: number): string {
+  if (historyEncoder.encode(text).byteLength <= maxBytes) return text
+  const room = Math.max(0, maxBytes - historyEncoder.encode(TRUNCATED_MARK).byteLength)
+  let used = 0
+  let out = ''
+  for (const char of text) {
+    const bytes = historyEncoder.encode(char).byteLength
+    if (used + bytes > room) break
+    out += char
+    used += bytes
+  }
+  return `${out}${TRUNCATED_MARK}`
+}
+
+function clipContent(content: Content, maxBytes: number): Content {
+  return 'text' in content ? { text: clipTextBytes(content.text, maxBytes) } : content
+}
+
+/** 历史阅读（展示层）的单条预算：正文与工具输出各分一半。 */
+function clipEntryForWire(entry: Entry, maxBytes: number): Entry {
+  if (wireBytesOf(entry) <= maxBytes) return entry
+  const half = Math.max(1, Math.floor(maxBytes / 2))
+  const content = clipContent(entry.content, half)
+  const payload = entry.payload
+  if (entry.kind !== 'tool-result' || payload === undefined || !('output' in payload)) return { ...entry, content }
+  return { ...entry, content, payload: { ...payload, output: clipContent(payload.output, half) } }
+}
 
 /** 客户端命令的受理、路由与回执。 */
 export function installCommands(ctx: ManagerContext): void {
@@ -163,6 +212,7 @@ export function installCommands(ctx: ManagerContext): void {
     if (revision === undefined) return
     try {
       let entries: Entry[] = []
+      let batchBytes = 0
       const inputs: Extract<KernelEvent, { kind: 'input.local' }>[] = []
       const timing: TurnTimingEvent[] = []
       const compactEvents: Extract<KernelEvent, { kind: 'compact.state' }>[] = []
@@ -184,10 +234,16 @@ export function installCommands(ctx: ManagerContext): void {
           }
         })
         entries = []
+        batchBytes = 0
       }
-      for await (const entry of readSessionDisplayHistory(store, session)) {
+      for await (const raw of readSessionDisplayHistory(store, session)) {
         if (!connections.historyCurrent(conn, revision)) return
+        // **按字节分类**（2026-11-21）：条数只是上限之一；单条超预算先裁正文。
+        const entry = clipEntryForWire(raw, HISTORY_ENTRY_BYTES)
+        const bytes = wireBytesOf(entry)
+        if (entries.length > 0 && batchBytes + bytes > HISTORY_BATCH_BYTES) send(false)
         entries.push(entry)
+        batchBytes += bytes
         if (entries.length === 50) send(false)
       }
       if (connections.historyCurrent(conn, revision)) {
