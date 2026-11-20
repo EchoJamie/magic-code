@@ -2125,7 +2125,7 @@ export const TOOLSET_V1 = [
     name: 'exec',
     summary:
       '命令执行：在当前会话目录下执行（命令里的 cd 会更新会话目录）。' +
-      '等满两分钟还没结束就转后台；dev server/watch 直接用 background:true，命令不加 nohup 或末尾 &。',
+      '缺省等满两分钟还没结束就转后台；dev server/watch 这类持续服务适合 background:true，命令不用加 nohup 或末尾 &。',
     danger: { level: 'by-call', note: '按命令解析' },
   },
   { name: 'read', summary: '读文件（按行分段）', danger: { level: 'light' } },
