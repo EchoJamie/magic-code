@@ -87,9 +87,19 @@ test('降不动的超大消息 → 拒发这一帧、连接保持', () => {
   const { sent, link } = fakeLink()
   const faults: { event: string; data: Record<string, unknown> }[] = []
   const control = controlLink(link, (event, data) => faults.push({ event, data }))
-  const message = { t: 'native.error', reason: big() } as unknown as Wire
+  const message = { t: 'unknown.kind', payload: big() } as unknown as Wire
 
   expect(control.send(message)).toBe(false)
   expect(sent).toEqual([])
   expect(faults[0]).toMatchObject({ event: 'control.frame.rejected' })
+})
+
+test('错误原因截短后仍送达——不能因为太长就把「发生了什么」整帧丢掉', () => {
+  const { sent, link } = fakeLink()
+  const control = controlLink(link)
+  const message = { t: 'native.error', reason: big() } as unknown as Wire
+
+  expect(control.send(message)).toBe(true)
+  expect(sent).toHaveLength(1)
+  expect(String((sent[0] as { reason?: unknown }).reason).length).toBeLessThan(big().length)
 })

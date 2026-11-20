@@ -160,8 +160,9 @@ function reduceOnce(message: Wire): Wire | undefined {
     if (keptRuns !== undefined) {
       return { ...record, runs: keptRuns, omittedRuns: (typeof record.omittedRuns === 'number' ? record.omittedRuns : 0) + (runs.length - keptRuns.length) } as unknown as Wire
     }
-    // welcome 是握手帧——最后剥 MCP 预检目录，保证它一定能送达。
+    // welcome 是握手帧——最后剥 MCP 预检目录、截拒绝原因，保证它一定能送达。
     if (Array.isArray(record.mcp) && record.mcp.length > 0) return { ...record, mcp: [] } as unknown as Wire
+    if (typeof record.refuse === 'string') return { ...record, refuse: clipText(record.refuse, CONTROL_PREVIEW_TEXT_BYTES) } as unknown as Wire
     return undefined
   }
 
@@ -178,6 +179,11 @@ function reduceOnce(message: Wire): Wire | undefined {
 
   if (record.t === 'line' && typeof record.text === 'string') {
     return { ...record, text: clipText(record.text, CONTROL_PREVIEW_TEXT_BYTES) } as unknown as Wire
+  }
+
+  // 错误原因也是必须送达的一种：截短可以，整帧丢掉用户就看不到发生了什么。
+  if (record.t === 'native.error' && typeof record.reason === 'string') {
+    return { ...record, reason: clipText(record.reason, CONTROL_PREVIEW_TEXT_BYTES) } as unknown as Wire
   }
 
   if (record.t === 'resumed' && record.snapshot !== null && typeof record.snapshot === 'object') {
