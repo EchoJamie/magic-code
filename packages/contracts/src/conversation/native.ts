@@ -81,8 +81,8 @@ export type NativeRequest =
 export type NativeResponse =
   | { readonly t: 'native.knowledge.result'; readonly request: string; readonly serviceInstance: string; readonly session: string; readonly knowledge?: import('./knowledge.ts').KnowledgePage; readonly error?: string }
   | { readonly t: 'native.memory.result'; readonly request: string; readonly serviceInstance: string; readonly session: string; readonly notes?: import('./notes.ts').NoteState; readonly material?: import('./memory.ts').MaterialPage; readonly error?: string }
-  | { readonly t: 'native.sessions.result'; readonly request: string; readonly serviceInstance: string; readonly sessions?: readonly NativeSession[]; readonly error?: string }
-  | { readonly t: 'native.history.result'; readonly request: string; readonly serviceInstance: string; readonly session: string; readonly entries?: readonly Entry[]; readonly events?: readonly KernelEvent[]; readonly next?: number; readonly done: boolean; readonly error?: string }
+  | { readonly t: 'native.sessions.result'; readonly request: string; readonly serviceInstance: string; readonly sessions?: readonly NativeSession[]; readonly total?: number; readonly truncated?: true; readonly error?: string }
+  | { readonly t: 'native.history.result'; readonly request: string; readonly serviceInstance: string; readonly session: string; readonly entries?: readonly Entry[]; readonly events?: readonly KernelEvent[]; readonly next?: number; readonly done: boolean; readonly truncated?: true; readonly error?: string }
   | { readonly t: 'native.session.managed'; readonly request: string; readonly serviceInstance: string; readonly results: readonly SessionManagementResult[] }
   | { readonly t: 'native.welcome'; readonly identity: ServiceIdentity; readonly projection: NativeProjection }
   | { readonly t: 'native.projection'; readonly projection: NativeProjection }

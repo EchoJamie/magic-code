@@ -114,18 +114,25 @@ describe('线上一条消息的完整性', () => {
 })
 
 describe('单条超限与发送积压分开判', () => {
-  test('单条超过预算 → 原因写 message-too-large，不冒充「对端不读」', async () => {
+  test('单条超限 → 只拒发这一帧，连接保持，下一帧照常可达', async () => {
     const faults: { event: string; data: Record<string, unknown> }[] = []
     const wire = await pair({ fault: (event, data) => faults.push({ event, data }) })
 
     try {
-      // 服务端发一条自己就超过预算的消息——这一次没有欠账，属于「单条太大」。
-      wire.server.send({ t: 'line', text: 'x'.repeat(WIRE_MESSAGE_BUDGET_BYTES + 1) })
+      const atClient: Wire[] = []
+      wire.client.onMessage(message => atClient.push(message))
 
-      await waitFor('服务端这一端断开', () => wire.server.closed)
+      // 服务端发一条自己就超过预算的消息——这一帧不写、不断连。
+      expect(wire.server.send({ t: 'line', text: 'x'.repeat(WIRE_MESSAGE_BUDGET_BYTES + 1) })).toBe(false)
+      expect(wire.server.closed).toBe(false)
       expect(faults).toHaveLength(1)
-      expect(faults[0]).toMatchObject({ event: 'link.terminated', data: { reason: 'message-too-large' } })
+      expect(faults[0]).toMatchObject({ event: 'link.frame.rejected', data: { reason: 'message-too-large' } })
       expect(Number(faults[0]?.data['bytes'])).toBeGreaterThan(WIRE_MESSAGE_BUDGET_BYTES)
+
+      // 下一条小消息照常送达——用户不能因为一条太大的消息就失去连接。
+      expect(wire.server.send({ t: 'line', text: '仍然可达' })).toBe(true)
+      await waitFor('下一帧到达', () => atClient.some(message => message.t === 'line' && message.text === '仍然可达'))
+      expect(wire.server.closed).toBe(false)
     } finally {
       wire.stop()
     }
