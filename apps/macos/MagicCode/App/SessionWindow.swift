@@ -21,6 +21,8 @@ import AppKit
     @Published private(set) var route: NoticeRoute?
     @Published private(set) var detailWork: NativeWork?
     @Published private(set) var done = false
+    /// 历史自动续读的次数——防止一条超限/坏帧引发无限重拉（2026-11-21）。
+    private var historyRetries = 0
     @Published var memoryFocus: String?
     @Published var memoryExpanded = false
     @Published private(set) var memory: NoteState?
@@ -123,7 +125,7 @@ import AppKit
         if route?.session != selected?.id { route = nil; detailWork = nil }
         resetMemory()
         inspectRequest = nil; readNotice = nil; memberSession = nil
-        entries = []; events = []; next = nil; done = false; historyError = nil; historyRequest = nil; reading = false; rename = nil; visibleNotice = nil
+        entries = []; events = []; next = nil; done = false; historyError = nil; historyRequest = nil; reading = false; historyRetries = 0; rename = nil; visibleNotice = nil
         detailWork = selection.count == 1 ? selection.first.flatMap { works[$0] } : nil
         inspectSelection()
         if historyExpanded, selected != nil { history() }
@@ -131,6 +133,7 @@ import AppKit
     }
     func history(refreshCurrent: Bool = false) {
         guard online, !reading, let session = selected?.id ?? route?.session else { return }
+        historyRetries += 1
         let request = UUID().uuidString; historyRequest = request; refreshingCurrent = refreshCurrent; reading = true; historyError = nil
         send?(.history(request: request, session: session, after: refreshCurrent ? nil : next, source: route?.notice.source ?? memberSession.map { AttentionSource(session: $0) }))
         expire(request)
@@ -306,7 +309,7 @@ import AppKit
                 selection.formIntersection(Set(rows.map(\.id)))
                 detailWork = selected.flatMap { works[$0.id] ?? (detailWork?.session == $0.id ? detailWork : nil) }
                 inspectSelection()
-                if historyExpanded && selected != nil && entries.isEmpty && !done && !reading { history() }
+                if historyExpanded && selected != nil && entries.isEmpty && !done && !reading && historyRetries < 3 && historyError == nil { history() }
             }
         case let .inspected(request, work, error):
             guard request == inspectRequest, online else { return }; inspectRequest = nil
@@ -314,13 +317,14 @@ import AppKit
             detailWork = work
             if route != nil {
                 archived = work.archived; selection = [work.session]; selectionAfterRefresh = selection
-                refresh(); if entries.isEmpty && events.isEmpty { next = nil; done = false; history() }
+                refresh(); if entries.isEmpty && events.isEmpty && historyRetries < 3 && historyError == nil { next = nil; done = false; history() }
             }
         case let .historyResult(request, service, session, entries, events, next, done, error):
             guard request == historyRequest, service == identity?.serviceInstance,
                   session == (selected?.id ?? route?.session), online else { return }
             historyRequest = nil; reading = false; historyError = error
             guard let entries else { return }
+            if !entries.isEmpty || done { historyRetries = 0 }
             if let events { self.events = events }
             self.entries += entries.filter { row in !self.entries.contains { $0.id == row.id } }
             if !refreshingCurrent { self.next = next; self.done = done }

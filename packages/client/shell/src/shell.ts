@@ -1325,6 +1325,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     rebuildEntries = [...rebuildEntries, ...historyEntries(data)]
     if (!data.done) return
+    /**
+     * 读取失败/降级时**不清屏**：已经收到的条目仍在，界面保留上一份内容并给一句
+     * 可重试的说明。2026-11-21 的教训是「用着用着突然不能用了」——历史读失败
+     * 不该等于历史消失。
+     */
+    if (data.error !== undefined && rebuildEntries.length === 0) {
+      rebuildFor = null
+      commit({ ...view, flash: data.error })
+      return
+    }
 
     rebuildEntries = [...rebuildEntries].sort((a,b)=>a.at-b.at||a.id-b.id)
     if (history.length === 0) {
@@ -1349,7 +1359,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       ...(data.timing === undefined ? {} : { timing: data.timing }),
       ...(data.messages === undefined ? {} : { messages: data.messages }),
     })
-    commit({ ...rebuilt, rows: [...rebuilt.rows, ...unconfirmed] })
+    commit({
+      ...rebuilt,
+      rows: [...rebuilt.rows, ...unconfirmed],
+      ...(data.truncated === true ? { flash: '记录过长，已显示部分内容' } : {}),
+    })
     rebuildFor = null
     rebuildEntries = []
 

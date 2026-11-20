@@ -490,7 +490,12 @@ struct JSONLines {
             let line = Data(buffer[..<end]); buffer.removeSubrange(...end)
             if !line.isEmpty { lines.append(line) }
         }
-        guard buffer.count <= 8 * 1024 * 1024 else { throw WireError.invalid("协议帧超过大小限制") }
+        // 超过大小上限的残行：丢掉它、继续解析后续帧——**不关连接**。
+        // 用户不能因为一条坏帧失去整个界面（2026-11-21 的 App 路径）。
+        if buffer.count > 8 * 1024 * 1024 {
+            buffer.removeAll(keepingCapacity: false)
+            fputs("magic: 丢弃一条超过大小限制的协议帧\n", stderr)
+        }
         return lines
     }
 }

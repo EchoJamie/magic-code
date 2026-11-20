@@ -60,12 +60,13 @@ final class ObserverConnection {
         let count = Darwin.read(fd, &buffer, buffer.count)
         if count < 0 && errno == EINTR { return }
         guard count > 0 else { fail("核心连接已断开"); return }
-        do {
-            for line in try lines.append(Data(buffer.prefix(count))) {
-                let message = try JSONDecoder().decode(NativeResponse.self, from: line)
-                MainRunLoop.deliver { [weak self] in self?.receive?(message) }
-            }
-        } catch { fail("核心协议无效：\(error.localizedDescription)") }
+        // 逐行解码：坏行/未知消息跳过，**不关连接**。只有 EOF 或读失败才断。
+        // 这样新增消息类型或一条损坏帧不会让整个窗口失去观察连接。
+        let parsed = (try? lines.append(Data(buffer.prefix(count)))) ?? []
+        for line in parsed {
+            guard let message = try? JSONDecoder().decode(NativeResponse.self, from: line) else { continue }
+            MainRunLoop.deliver { [weak self] in self?.receive?(message) }
+        }
     }
     private func fail(_ reason: String) {
         guard !closed else { return }
