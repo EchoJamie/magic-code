@@ -2,68 +2,70 @@ import type {
   ClientToManager,
   CollaborationCommand,
   Command,
-  Content,
   Entry,
   KernelEvent,
   StopScope,
   TurnTimingEvent,
   Wire,
 } from '@magic/contracts'
-import { isTurnTimingEvent, WIRE_MESSAGE_BUDGET_BYTES } from '@magic/contracts'
+import {
+  CONTROL_DIRECTORY_LIMIT,
+  CONTROL_FRAME_BUDGET_BYTES,
+  CONTROL_PREVIEW_TEXT_BYTES,
+  INPUT_PREVIEW_TEXT_BYTES,
+  isTurnTimingEvent,
+  pendingViews,
+} from '@magic/contracts'
 import { loadConfig, setPrefs } from '@magic/state'
-import { ARCHIVED_NOTE, backgroundOf, createWorkEnvironment, linkOf, memoryWorkspace, query as observe, readMemory, readMemorySource, readReferenceSessions, workspaceOf } from '@magic/host'
+import { ARCHIVED_NOTE, backgroundOf, controlLink, createWorkEnvironment, linkOf, memoryWorkspace, query as observe, readMemory, readMemorySource, readReferenceSessions, workspaceOf } from '@magic/host'
 import { bindSessionReferences, createPlanReader, readSessionDisplayHistory } from '@magic/conversation'
 import type { Socket } from 'bun'
 import { sendToExecutor as send, type Executor } from '../executor-control.ts'
+import { clipEntryForWire, clipTextBytes, clipValue, wireBytesOf } from '../wire-view.ts'
 import type { ClientConn } from '../connections.ts'
 import type { ManagerContext } from './context.ts'
 
 /**
- * 历史分批发给窗口的字节预算——单条消息预算的四分之一。
+ * 历史分批发给窗口的字节预算——产生侧单帧预算减去给末包元数据留的余量。
  *
  * 原先按「50 条一批」发：条数不是字节数。一批里只要有几条几十万字的工具结果，
  * 单条 `session.history` 就能逼近甚至超过连接层上限（与 2026-11-21 接续事故同形）。
- * 留四分之一是给末批随附的 inputs / timing / plan 留余量。
+ * 现在按整帧字节累计；单条再大也只占单帧预算的一半，装得进任何一批。
  */
-const HISTORY_BATCH_BYTES = WIRE_MESSAGE_BUDGET_BYTES / 4
+const HISTORY_BATCH_BYTES = CONTROL_FRAME_BUDGET_BYTES - 256 * 1024
 
 /** 单条历史记录装得下的预算——超过就裁正文（保留开头并注明），别让一条旧记录撑破连接。 */
-const HISTORY_ENTRY_BYTES = WIRE_MESSAGE_BUDGET_BYTES / 2
+const HISTORY_ENTRY_BYTES = CONTROL_FRAME_BUDGET_BYTES / 2
 
-const historyEncoder = new TextEncoder()
-const TRUNCATED_MARK = '\n[记录过大，显示已截断]'
+/** 末包随附的元数据上限——inputs 最近 20 条、timing 最近 1000 条、messages 最近 50 条。 */
+const HISTORY_META_INPUTS = 20
+const HISTORY_META_TIMING = 1_000
+const HISTORY_META_MESSAGES = 50
+const HISTORY_META_COMPACTIONS = 20
 
-function wireBytesOf(value: unknown): number {
-  return historyEncoder.encode(JSON.stringify(value)).byteLength
+/** welcome 里最多带多少条未读提醒——其余由后续读取补，不能压住握手帧。 */
+const WELCOME_NOTICE_LIMIT = 20
+
+/** 目录视图：active 在首位，超出上限的会话由后续分页/搜索补。 */
+function directoryView<T extends { readonly id: string }>(sessions: readonly T[], active: string): readonly T[] {
+  const head = sessions.find(one => one.id === active)
+  return [
+    ...(head === undefined ? [] : [head]),
+    ...sessions.filter(one => one.id !== active),
+  ].slice(0, CONTROL_DIRECTORY_LIMIT)
 }
 
-/** 按 UTF-8 字节裁文本——逐码点收，不切坏多字节字符；截断处留一句说明。 */
-function clipTextBytes(text: string, maxBytes: number): string {
-  if (historyEncoder.encode(text).byteLength <= maxBytes) return text
-  const room = Math.max(0, maxBytes - historyEncoder.encode(TRUNCATED_MARK).byteLength)
-  let used = 0
-  let out = ''
-  for (const char of text) {
-    const bytes = historyEncoder.encode(char).byteLength
-    if (used + bytes > room) break
-    out += char
-    used += bytes
-  }
-  return `${out}${TRUNCATED_MARK}`
-}
-
-function clipContent(content: Content, maxBytes: number): Content {
-  return 'text' in content ? { text: clipTextBytes(content.text, maxBytes) } : content
-}
-
-/** 历史阅读（展示层）的单条预算：正文与工具输出各分一半。 */
-function clipEntryForWire(entry: Entry, maxBytes: number): Entry {
-  if (wireBytesOf(entry) <= maxBytes) return entry
-  const half = Math.max(1, Math.floor(maxBytes / 2))
-  const content = clipContent(entry.content, half)
-  const payload = entry.payload
-  if (entry.kind !== 'tool-result' || payload === undefined || !('output' in payload)) return { ...entry, content }
-  return { ...entry, content, payload: { ...payload, output: clipContent(payload.output, half) } }
+/**
+ * welcome 的提醒视图：条数有上限、正文按预算截断。
+ *
+ * 提醒的 `detail` 可能是助手最终回复的全文（`notices.ts` 的完成提醒）；
+ * 握手帧必须**按构造**装得下，不能等 `wire` 兜底。
+ */
+function welcomeNotices<T extends { readonly detail?: string }>(notices: readonly T[]): readonly T[] {
+  return notices.slice(0, WELCOME_NOTICE_LIMIT).map(one => {
+    if (one.detail === undefined) return one
+    return { ...one, detail: clipTextBytes(one.detail, CONTROL_PREVIEW_TEXT_BYTES) }
+  })
 }
 
 /** 客户端命令的受理、路由与回执。 */
@@ -77,11 +79,12 @@ export function installCommands(ctx: ManagerContext): void {
      * **这条连接上的坏事要留痕**（D75）：`terminate` 那一路对端只看到「没原因」，
      * 而这一层原先是**一处都不写**——「连不上却查不到」正是这么来的。
      */
-    const link = linkOf<Wire>(socket, {
+    const rawLink = linkOf<Wire>(socket, {
       fault: (event, data) => diagnosticLog.write('error', event, {
         ...identity,
         ...(typeof data['reason'] === 'string' ? { reason: data['reason'] } : {}),
         ...(typeof data['bytes'] === 'number' ? { bytes: data['bytes'] } : {}),
+        ...(typeof data['kind'] === 'string' ? { kind: data['kind'] } : {}),
       }),
       closed: (detail) => diagnosticLog.write(
         // 对端先断且没给原因：**warn**——这就是「连不上」最常见的那一形
@@ -90,6 +93,17 @@ export function installCommands(ctx: ManagerContext): void {
         { ...identity, by: detail.by, ...(detail.reason === undefined ? {} : { reason: detail.reason }) },
       ),
     })
+    /**
+     * **唯一出口**（2026-11-21）：所有写给客户端/观察者的帧都经这道门面。
+     * 超预算时按类型降级（目录/历史/输入/投影减半、welcome 先剥提醒），
+     * 降不动就拒发这一帧——**连接保持**。没有这道门面，任何漏改的产生点
+     * 都会再次把「连接」变成「一条消息的人质」。
+     */
+    const link = controlLink(rawLink, (event, data) => diagnosticLog.write('warn', event, {
+      ...identity,
+      ...(typeof data['kind'] === 'string' ? { kind: data['kind'] } : {}),
+      ...(typeof data['bytes'] === 'number' ? { bytes: data['bytes'] } : {}),
+    }))
     if (!ctx.available) { link.close(); return }
     /** 这条连接立起来的时候是谁的——`hello` 那一刻定下，之后不再变。 */
     let greeted = false
@@ -148,8 +162,9 @@ export function installCommands(ctx: ManagerContext): void {
             mcp: ctx.probed,
             // 开屏那张摘要据它说「这一摊有几项在跑」——**接上就读得到**，不必先问一次
             runs: ctx.rows(),
-            // 汇总只读；具体事项另行确认已读。
-            notices: store.attention.list().filter((one) => one.unread),
+            // 汇总只读；具体事项另行确认已读。条数与正文都要有上限——
+            // welcome 是握手帧，不能等 wire 的绝对上限来兜。
+            notices: welcomeNotices(store.attention.list().filter((one) => one.unread)),
           })
           if (message.openRequest !== undefined) ctx.native.attached(message.openRequest, message.session ?? null)
 
@@ -193,16 +208,21 @@ export function installCommands(ctx: ManagerContext): void {
 
   async function catalog(conn: ClientConn, archived = false): Promise<void> {
     try {
-      const sessions = await ctx.nativeSessions({ archived })
+      const all = await ctx.nativeSessions({ archived })
       if (conn.link.closed) return
+      const active = conn.selectedSession ?? ''
+      const sessions = directoryView(all, active)
       conn.link.send({
         t: 'ev', gen: null, event: {
-          id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'session.state',
-          data: { active: conn.selectedSession ?? '', sessions },
+          id: 0, turn: null, at: now(), session: active, kind: 'session.state',
+          data: {
+            active, sessions,
+            ...(all.length > sessions.length ? { total: all.length, truncated: true as const } : {}),
+          },
         }
       })
       if (conn.selectedSession !== null) { const session = conn.selectedSession; conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'session.changed', data: { session: workRoot(session), archived: isArchived(session), canArchive: ctx.sessions.canArchive(session), terminalOpen: ctx.terminalClients(session).length > 0 } } }) }
-      if (conn.selectedSession !== null) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: conn.selectedSession, kind: 'input.pending', data: { inputs: store.serviceFor(conn.selectedSession).inputs.list() } } })
+      if (conn.selectedSession !== null) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: conn.selectedSession, kind: 'input.pending', data: { inputs: pendingViews(store.serviceFor(conn.selectedSession).inputs.list()) } } })
     } catch { if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session: conn.selectedSession ?? '', kind: 'session.state', data: { active: conn.selectedSession ?? '', sessions: [], note: '无法读取会话目录' } } }) }
   }
 
@@ -228,9 +248,31 @@ export function installCommands(ctx: ManagerContext): void {
         ? [] : store.collaboration.listMessages(agent.agentId)
       const plan = await createPlanReader({ records: store.serviceFor(session), session }).readPlan()
       const send = (done: boolean): void => {
+        /**
+         * 末包的元数据也要有上限——`inputs` 是该会话所有 `input.local` 的全文，
+         * `timing` 随 turn 数线性增长，`messages` 来自无 LIMIT 的协作消息列表
+         * （2026-11-21 审计：只给 entries 分批，末包单独就能复现 P0）。
+         */
+        const meta = done ? {
+          inputs: inputs.slice(-HISTORY_META_INPUTS).map(event => ({
+            ...event,
+            data: { ...event.data, text: clipTextBytes(event.data.text, INPUT_PREVIEW_TEXT_BYTES) },
+          })),
+          timing: timing.slice(-HISTORY_META_TIMING),
+          ...(plan === undefined ? {} : { plan: clipValue(plan, CONTROL_PREVIEW_TEXT_BYTES) as NonNullable<typeof plan> }),
+          compactions: compactEvents.slice(-HISTORY_META_COMPACTIONS),
+          ...(messages.length === 0 ? {} : { messages: messages.slice(-HISTORY_META_MESSAGES) }),
+          ...(inputs.length > HISTORY_META_INPUTS
+            || timing.length > HISTORY_META_TIMING
+            || compactEvents.length > HISTORY_META_COMPACTIONS
+            || messages.length > HISTORY_META_MESSAGES
+            ? { truncated: true as const }
+            : {}),
+        } : {}
         conn.link.send({
           t: 'ev', gen: null, event: {
-            id: 0, turn: null, at: now(), session, kind: 'session.history', data: { session, entries, done, ...(done ? { inputs, timing, plan, compactions: compactEvents, ...(messages.length === 0 ? {} : { messages }) } : {}) },
+            id: 0, turn: null, at: now(), session, kind: 'session.history',
+            data: { session, entries, done, ...meta },
           }
         })
         entries = []
@@ -238,15 +280,26 @@ export function installCommands(ctx: ManagerContext): void {
       }
       for await (const raw of readSessionDisplayHistory(store, session)) {
         if (!connections.historyCurrent(conn, revision)) return
-        // **按字节分类**（2026-11-21）：条数只是上限之一；单条超预算先裁正文。
-        const entry = clipEntryForWire(raw, HISTORY_ENTRY_BYTES)
-        const bytes = wireBytesOf(entry)
+        // **按字节分类**（2026-11-21）：条数只是上限之一；单条超预算先裁全部字段。
+        let entry = clipEntryForWire(raw, HISTORY_ENTRY_BYTES)
+        let bytes = wireBytesOf(entry)
+        // 裁剪后仍装不下一批：再降一档，别让门面来砍。
+        while (bytes > HISTORY_BATCH_BYTES) {
+          const tighter = clipEntryForWire(entry, Math.max(1, Math.floor(bytes / 2)))
+          const next = wireBytesOf(tighter)
+          if (next >= bytes) break
+          entry = tighter
+          bytes = next
+        }
         if (entries.length > 0 && batchBytes + bytes > HISTORY_BATCH_BYTES) send(false)
         entries.push(entry)
         batchBytes += bytes
         if (entries.length === 50) send(false)
       }
       if (connections.historyCurrent(conn, revision)) {
+        // 条目与 meta 分开：先发最后一批 entries，再发空条目的 done 帧——
+        // 末包再大也不会把「读完了」这件事挤掉。
+        if (entries.length > 0) send(false)
         send(true)
         const notice = ctx.reconcileNotice(workRoot(session))
         if (conn.selectedSession === session && notice?.unread) conn.link.send({ t: 'notice', notice })
@@ -472,7 +525,7 @@ export function installCommands(ctx: ManagerContext): void {
           }
         }
       }
-      conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session, kind: 'input.pending', data: { inputs: inputs.list(), ...(note === undefined ? {} : { note }) } } })
+      conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session, kind: 'input.pending', data: { inputs: pendingViews(inputs.list()), ...(note === undefined ? {} : { note }) } } })
       return
     }
     // 当前会话是子会话时，输入只发给这条子会话；入口会话默认只给入口自己（不再广播给成员）。

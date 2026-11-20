@@ -70,6 +70,7 @@ import type {
   UserInput,
   UsedSkill,
 } from '@magic/contracts'
+import { pendingViews } from '@magic/contracts'
 import type { Compactor } from './compact.ts'
 import { assembleContext, rawTextOf } from './context.ts'
 import { KNOWLEDGE_MATERIAL_TOOLS, knowledgeOutputReferences } from './knowledge-material.ts'
@@ -345,7 +346,7 @@ export async function prepareInput(
       }
       acceptedEntry = entryId
       runtime.sink.emit(runtime.stamper.stamp('message.user', { entry: entryId }))
-      if(input.ref!==undefined)runtime.sink.emit(runtime.stamper.stamp('input.pending',{inputs:runtime.records.inputs.list()}))
+      if(input.ref!==undefined)runtime.sink.emit(runtime.stamper.stamp('input.pending',{inputs:pendingViews(runtime.records.inputs.list())}))
       try { await accepted?.(entryId) }
       catch (error) {
         refuse(runtime, input, `输入已保存，但共同补充未能发布（${messageOf(error)}）；未继续执行，原稿保留`)
@@ -850,7 +851,7 @@ async function runTurn(
           owed = false
           const acceptedInputs = runtime.records.inputs.included(userEntries)
           for (const input of acceptedInputs) runtime.sink.emit(runtime.stamper.stamp('input.settled', {ref:input.ref,ok:true,stage:'included'}))
-          if(acceptedInputs.length>0)runtime.sink.emit(runtime.stamper.stamp('input.pending',{inputs:runtime.records.inputs.list()}))
+          if(acceptedInputs.length>0)runtime.sink.emit(runtime.stamper.stamp('input.pending',{inputs:pendingViews(runtime.records.inputs.list())}))
           runtime.collaboration?.requested(included)
           announce.flush()
         }

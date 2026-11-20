@@ -4,6 +4,7 @@ import type {
   StopPhase,
   StopScope,
 } from '@magic/contracts'
+import { pendingViews } from '@magic/contracts'
 import {
   ARCHIVED_NOTE,
   actionOf,
@@ -265,7 +266,7 @@ export function installLifecycle(ctx: ManagerContext): void {
             ...event, data: { ...settled, ...(owner.ref === undefined ? {} : { ref: owner.ref }) },
           }
         })
-        owner.conn.link.send({ t: 'ev', gen: null, event: { session: owner.target, id: 0, at: now(), turn: null, kind: 'input.pending', data: { inputs: store.serviceFor(owner.target).inputs.list() } } })
+        owner.conn.link.send({ t: 'ev', gen: null, event: { session: owner.target, id: 0, at: now(), turn: null, kind: 'input.pending', data: { inputs: pendingViews(store.serviceFor(owner.target).inputs.list()) } } })
         return
       }
     }

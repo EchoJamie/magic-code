@@ -2,12 +2,23 @@ import { captureCollaborationNative, mergeCollaborationNative, projectWorks, run
 import { STORED_RUNS_LIMIT } from '@magic/host'
 import { readSessionCatalog } from '@magic/conversation'
 import { loadConfig } from '@magic/state'
+import { CONTROL_PREVIEW_TEXT_BYTES } from '@magic/contracts'
+import { clipTextBytes } from '../wire-view.ts'
 import type { StoredRun } from '@magic/host'
 import type { RunRow } from '@magic/contracts'
 import type { NativeSession, NativeWork } from '@magic/contracts'
 import type { ClientConn } from '../connections.ts'
 import { writeRuns } from '../run-store.ts'
 import { RUNS_PUSH_MS, RUNS_SAVE_MS, type ManagerContext, type NativeSessionsQuery } from './context.ts'
+
+/**
+ * 推给窗口的运行行上限——**展示**用，不 policing 落盘。
+ *
+ * `lastRuns` 随本进程跑过的会话增长且无淘汰；全量推会让 welcome 与每 100ms 的
+ * runs 帧持续变大（2026-11-21 的同类形状）。超出的行仍可用 `/ps` 之外的方式查，
+ * 但不能把连接压住。
+ */
+const RUNS_VIEW_LIMIT = 200
 
 /** 运行事实、会话目录与界面偏好——同一份数据既推给窗口也落盘。 */
 export function installProjection(ctx: ManagerContext): void {
@@ -34,7 +45,18 @@ export function installProjection(ctx: ManagerContext): void {
       out.push(runRowOf(run))
     }
 
-    return out
+    return out.slice(0, RUNS_VIEW_LIMIT).map(trimRunRow)
+  }
+
+  /** 运行行的自由文本也可能很长（供应商错误、进度描述）——展示只留一段。 */
+  function trimRunRow(row: RunRow): RunRow {
+    return {
+      ...row,
+      ...(row.action === undefined ? {} : { action: clipTextBytes(row.action, CONTROL_PREVIEW_TEXT_BYTES) }),
+      ...(row.progress === undefined ? {} : { progress: { ...row.progress, what: clipTextBytes(row.progress.what, CONTROL_PREVIEW_TEXT_BYTES) } }),
+      ...(row.output === undefined ? {} : { output: { ...row.output, sample: clipTextBytes(row.output.sample, CONTROL_PREVIEW_TEXT_BYTES) } }),
+      ...(row.reason === undefined ? {} : { reason: clipTextBytes(row.reason, CONTROL_PREVIEW_TEXT_BYTES) }),
+    }
   }
 
   function pushRuns(immediate = false): void {
