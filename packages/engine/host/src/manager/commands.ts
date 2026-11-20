@@ -300,12 +300,13 @@ export function installCommands(ctx: ManagerContext): void {
         const outcome = await setPrefs({ path: loaded.path, expectedStamp: loaded.stamp, request: command })
         if (outcome.ok) ctx.publishPreferences(conn)
         const config = outcome.ok ? loadConfig({ magic: options.magic }).config : loaded.config
-        const changed = [command.statusLine === undefined ? '' : '状态行', command.reducedMotion === undefined ? '' : '动效', command.turnDuration === undefined ? '' : '本轮耗时'].filter(Boolean).join(' · ')
+        const changed = [command.statusLine === undefined ? '' : '状态行', command.reducedMotion === undefined ? '' : '动效', command.turnDuration === undefined ? '' : '本轮耗时', command.voice === undefined ? '' : '语音输入'].filter(Boolean).join(' · ')
         conn.link.send({
           t: 'ev', gen: null, event: {
             id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'prefs.state', data: {
               ...(config.statusLine === undefined ? {} : { statusLine: config.statusLine }),
               turnDuration: config.turnDuration ?? 'elapsed', reducedMotion: config.motion?.reduced === true,
+              voice: config.experimental?.voice === true,
               note: outcome.ok ? `已更新：${changed}` : `${changed}没改成——${outcome.reason}`,
             }
           }

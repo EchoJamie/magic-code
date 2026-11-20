@@ -126,12 +126,16 @@ async function ensureBinary(directory: string): Promise<{ path: string } | { rea
  * 而那个位会把输入法组字的键也送进来（空格不选候选）。改成**本机只读监听**：
  * `CGEvent.tapCreate(.listenOnly)` 只看不改、不吞键，也不记录输入内容。
  *
+ * ⚠️ **这一侧听见的是「整台机器」**（D75）：同一下右 ⌥ 会被**每个** Magic 窗口的监听听到。
+ * 助手把一次轻点报成**两半**（`down` / `up`），配对与「哪一屏拿焦点」都归外壳判
+ * （见 `focus.ts`）——这里只如实转手，不做判断。
+ *
  * 首次启用要「输入监控」权限（系统设置 › 隐私与安全性 › 输入监控）；没有权限时
  * 助手起不来、打印一行错误就退出——这一版先不把它接进界面提示。
  *
  * 返回退订函数（TUI 收摊时调，助手随之结束）。
  */
-export function startVoiceHotkey(onTap: () => void, options: { readonly directory: string }): () => void {
+export function startVoiceHotkey(onTap: (phase: 'down' | 'up') => void, options: { readonly directory: string }): () => void {
   let child: ChildProcessWithoutNullStreams | null = null
   let stopped = false
 
@@ -150,7 +154,9 @@ export function startVoiceHotkey(onTap: () => void, options: { readonly director
         const line = buffer.slice(0, newline).trim()
         buffer = buffer.slice(newline + 1)
         newline = buffer.indexOf('\n')
-        if (line.includes('"hotkey"')) onTap()
+        if (!line.includes('"hotkey"')) continue
+        // 老助手只报「按完了」（没有 `phase`）：当松开那一半转手——配对规则见 `focus.ts`。
+        onTap(/"phase"\s*:\s*"down"/.test(line) ? 'down' : 'up')
       }
     })
     // stderr 只留作诊断：界面这一版不展示（见上面那条注）。

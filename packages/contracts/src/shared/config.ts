@@ -277,6 +277,10 @@ export type MagicConfig = {
    * **界面动效**（U112）——见 `MotionConfig`。**键缺省＝按常态（有动效）**。
    */
   readonly motion?: MotionConfig
+  /**
+   * **实验性功能**（D75）——见 `ExperimentalConfig`。**键缺省＝全关**（不配也能用）。
+   */
+  readonly experimental?: ExperimentalConfig
 }
 
 /**
@@ -327,6 +331,26 @@ export type StatusLineConfig = {
 export type MotionConfig = {
   /** 减少动效——缺省 `false`（照常动）。 */
   readonly reduced?: boolean
+}
+
+/**
+ * **实验性功能那一组**（`MagicConfig.experimental` · D75）——`/config` 里单独一栏
+ * 「实验性功能」，`/config` 只能在这儿开关。
+ *
+ * 为什么单开一组：这些能力**默认关**、边界明确、随时可能改口径或不做了——混在常态设置里，
+ * 用户会把它们当承诺。一组之下逐项开关，也便于将来加第二、第三项。
+ *
+ * ⚠️ **键缺省＝全关**：没配过配置的人一个实验性能力都不该被打开。
+ */
+export type ExperimentalConfig = {
+  /**
+   * **语音输入（右 ⌥）**——缺省 `false`（关）。
+   *
+   * 边界（D75 / U135）：**只覆盖本机 Ghostty**。它靠终端的焦点上报（DECSET 1004）判
+   * 「这一屏有没有焦点」——不报焦点的终端（macOS Terminal.app、Linux console…）里
+   * 这一项开了也不会响应（判不出来就不触发）。权限另算：要「输入监控」。
+   */
+  readonly voice?: boolean
 }
 
 

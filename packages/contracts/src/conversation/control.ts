@@ -502,6 +502,8 @@ export type PrefsSetRequest = {
   readonly statusLine?: StatusLineConfig
   readonly turnDuration?: import('../shared/config.ts').TurnDurationMode
   readonly reducedMotion?: boolean
+  /** 实验性 · 语音输入开关（`MagicConfig.experimental.voice` · D75）。 */
+  readonly voice?: boolean
 }
 
 export type Command = import('./background.ts').BackgroundCommandRequest

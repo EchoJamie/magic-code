@@ -27,8 +27,13 @@ export type ConfigItem = {
 
   /** 选定之后进哪一项——落在 `PickerRow.value` 上（与 `modelActionRows` 同一姿势）。 */
   readonly key: 'model'
-  | 'mcp' | 'web' | 'paths' | 'statusLine' | 'motion' | 'turnDuration'
+  | 'mcp' | 'web' | 'paths' | 'statusLine' | 'motion' | 'turnDuration' | 'voice'
   readonly name: string
+  /**
+   * **归在哪一组**（`PickerRow.group`）——只有**实验性功能**这一组有值：那几项默认关、
+   * 边界明确、随时可能改口径，单列一栏（D75）。常态设置不给这一格（不加组头）。
+   */
+  readonly group?: string
 }
 
 export const CONFIG_ITEMS: readonly ConfigItem[] = [
@@ -39,6 +44,8 @@ export const CONFIG_ITEMS: readonly ConfigItem[] = [
   { key: 'motion', name: '减少动效' },
   { key: 'turnDuration', name: '本轮耗时' },
   { key: 'paths', name: '数据目录与工作区根' },
+  // —— 实验性功能（D75）：默认关、边界写在 meta 里（`仅 Ghostty`）——
+  { key: 'voice', name: '语音输入', group: '实验性功能' },
 ]
 
 /** 名称那一格最宽是几个字——补齐全靠它（见 `paddedLabel`）。 */
@@ -141,6 +148,8 @@ export function configRows(input: {
   readonly statusLine: StatusLineConfig | undefined
   readonly turnDuration?: 'elapsed' | 'active'
   readonly reducedMotion: boolean
+  /** 实验性 · 语音输入开着没有（`view.voiceEnabled` · D75）——缺省＝关。 */
+  readonly voice?: boolean
 
   /** 正在筛的词——空串＝全表。 */
   readonly filter: string
@@ -152,12 +161,15 @@ export function configRows(input: {
     paths: configPathsValue(input.paths),
     statusLine: configStatusLineValue(input.statusLine),
     motion: input.reducedMotion ? '已开' : '已关',
+    // 实验性那一项：值 ＋ 边界（不写边界，用户会以为哪儿都能用）
+    voice: input.voice ? '已开 · 仅 Ghostty' : '已关 · 仅 Ghostty',
     turnDuration: input.turnDuration === 'active' ? '扣除等待用户' : '完整经过时间',
   }
   const needle = input.filter.trim().toLowerCase()
   return CONFIG_ITEMS.filter((item) => hits(needle, item.name, values[item.key])).map((item) => ({
     label: paddedLabel(item.name),
-    meta: `${values[item.key]} · ${(item.key === 'motion' || item.key === 'turnDuration') ? 'Enter 切换' : item.key === 'paths' ? 'Enter 查看路径' : 'Enter 进入'}`,
+    ...(item.group === undefined ? {} : { group: item.group }),
+    meta: `${values[item.key]} · ${(item.key === 'motion' || item.key === 'turnDuration' || item.key === 'voice') ? 'Enter 切换' : item.key === 'paths' ? 'Enter 查看路径' : 'Enter 进入'}`,
     // 这一屏没有「当前那一条」这回事（四行都是入口，不是候选项）
     current: false,
     value: item.key,

@@ -200,6 +200,8 @@ async function offlineSettings(): Promise<number> {
     transport: terminalSettings({ send() { throw new Error('离线设置不执行运行命令') }, subscribe() { return () => {} } }, magic, workspace, undefined, true),
     copyText: writeClipboardText, magicBase: magic.base, dataDir: magic.base, home: magic.home, workspaceRoots: workspace.roots(),
     statusLine: loaded.config.statusLine, reducedMotion: loaded.config.motion?.reduced === true,
+    // 实验性 · 语音输入（D75）——缺省关；离线设置里也能开关（写盘由设置那一跳负责）
+    voiceEnabled: loaded.config.experimental?.voice === true,
     turnDuration: loaded.config.turnDuration,
     receipts: ['本地设置：/model 管理模型与连接，/config 查看配置。保存不启动 Engine；退出后运行 magic 开始工作。'],
   })

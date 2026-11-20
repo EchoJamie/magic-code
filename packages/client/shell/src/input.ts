@@ -1,3 +1,5 @@
+import { stripFocusReports } from './focus.ts'
+
 /** 外壳认得的按键——组件把 Ink 的 `(input, key)` 收窄成这个（多出来的都算 `other`）。 */
 export type ShellKey =
   | { readonly kind: 'char'; readonly char: string }
@@ -63,6 +65,10 @@ export function toShellKeys(
     readonly tab?: boolean
   },
 ): readonly ShellKey[] {
+  // **焦点上报**（DECSET 1004 · D75）——`CSI I` / `CSI O`。Ink 剥了 ESC，交上来的就是
+  // `[I` / `[O`；落到最后那一支会变成两个**正文字母**（`[` 与 `I`），草稿里凭空多一串。
+  // 认键之前先剥（只剥行首那几条，见 `stripFocusReports`），后面的分支一个都不用改。
+  input = stripFocusReports(input)
   if (key.return === true && key.meta === true) return [{kind:'alt+enter'}]
   if (key.ctrl === true && input === 'p') return [{ kind: 'ctrl+p' }]
   if (key.ctrl === true && input === 'n') return [{ kind: 'ctrl+n' }]

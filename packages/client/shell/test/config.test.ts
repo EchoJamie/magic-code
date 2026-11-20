@@ -173,6 +173,7 @@ describe('`/config` · 开屏', () => {
       '减少动效',
       '本轮耗时',
       '数据目录与工作区根',
+      '语音输入', // D75 · 实验性功能那一组
     ])
     expect(statusHintOf(stage)).toBe('')
   })
@@ -266,7 +267,8 @@ describe('`/config` · 筛', () => {
     expect(hintOf(stage)).toBe('筛选「外」——接着打收窄，退格删一个字\n↑↓ 选择 · 输入筛词 · Esc 返回')
     stage.press(BACKSPACE)
 
-    expect(labelsOf(stage)).toHaveLength(7)
+    // 七项常态设置 ＋ 实验性功能那一组下的「语音输入」（D75）
+    expect(labelsOf(stage)).toHaveLength(8)
     expect(hintOf(stage)).toBe(HINT_PICKER_CONFIG)
     expect(statusHintOf(stage)).toBe('') // 抽屉照旧开着
   })
@@ -294,7 +296,8 @@ describe('`/config` · 筛', () => {
 
     // 再开一次 ⇒ 全表（开一屏就是一屏新，筛词不跟着活下来）
     open(stage)
-    expect(labelsOf(stage)).toHaveLength(7)
+    // 七项常态设置 ＋ 实验性功能那一组下的「语音输入」（D75）
+    expect(labelsOf(stage)).toHaveLength(8)
     expect(hintOf(stage)).toBe(HINT_PICKER_CONFIG)
   })
 })
@@ -374,7 +377,8 @@ describe('`/config` · 选中即进那一屏', () => {
 
     stage.press(LEFT)
     expect(pickerOf(stage)).toEqual(expect.objectContaining({ source: 'config' }))
-    expect(labelsOf(stage)).toHaveLength(7)
+    // 七项常态设置 ＋ 实验性功能那一组下的「语音输入」（D75）
+    expect(labelsOf(stage)).toHaveLength(8)
   })
 })
 
@@ -435,9 +439,21 @@ describe('`/config` · 那一格写什么（纯函数）', () => {
       .toBe('还没配置 · Fetch 提炼 未配置 · Enter 进入')
   })
 
-  test('筛词空＝全表（七行）；筛不中＝空表（退到空就是全表）', () => {
-    expect(configRows(base)).toHaveLength(7)
+  test('筛词空＝全表（八行）；筛不中＝空表（退到空就是全表）', () => {
+    expect(configRows(base)).toHaveLength(8)
     expect(configRows({ ...base, filter: '没有这一项' })).toEqual([])
+  })
+
+  test('实验性功能那一组：语音输入**缺省关**，值那一格写着边界（仅 Ghostty）', () => {
+    const voice = configRows(base).find((row) => row.value === 'voice')
+    expect(voice?.group).toBe('实验性功能')
+    expect(voice?.label.trim()).toBe('语音输入')
+    expect(voice?.meta).toBe('已关 · 仅 Ghostty · Enter 切换')
+
+    const on = configRows({ ...base, voice: true }).find((row) => row.value === 'voice')
+    expect(on?.meta).toBe('已开 · 仅 Ghostty · Enter 切换')
+    // 常态那几项**不带组头**（分组只属于实验性那一栏）
+    expect(configRows(base).filter((row) => row.group === '实验性功能')).toHaveLength(1)
   })
 
   test('每一行都**担保只占一行**（长值由渲染层截断——账与屏才不会分家）', () => {

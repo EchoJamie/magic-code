@@ -96,6 +96,8 @@ export async function terminalOptions(inputs: TerminalInputs): Promise<RunTuiOpt
     transport: terminalSettings(clientTransport(client), inputs.magic, workspaceOf(loaded, cwd), inputs.switch),
     statusLine: loaded.config.statusLine,
     turnDuration: loaded.config.turnDuration ?? 'elapsed', reducedMotion: loaded.config.motion?.reduced === true,
+    // 实验性 · 语音输入（D75）——**缺省关**；`/config` 里那一按改的是配置文件，此后这一格随它走
+    voiceEnabled: loaded.config.experimental?.voice === true,
     detached: (listener) => client.onDetached(listener),
     ...(inputs.reopen === undefined ? {} : { reopen: inputs.reopen }),
     // **没有 `boot`**：恢复是**执行者**那一头的事（它在装配之后、收第一条命令之前跑完）。

@@ -874,6 +874,62 @@ describe('停止、后台命令与接着交代（真窗口）', () => {
   }, 120_000)
 })
 
+/**
+ * **实验性 · 语音输入**（D75）——开关在 `/config` 里，落到终端字节上才算数。
+ *
+ * 量的是完整那条链：`/config` 一按 → `prefs.set` → 引擎写盘 → `prefs.state` 回来 →
+ * 外壳那一格变 → `run.ts` 才开焦点上报（`\x1b[?1004h`）。**缺省关**时一个字节都不该有；
+ * 退出时还要把模式复原（`\x1b[?1004l`），别留给下一个程序。
+ *
+ * ⚠️ 只判字节，不等那条本机助手编出来：上报是**一开就写**的，助手编译要几秒，与这一条无关。
+ */
+test('实验性 · 语音输入：缺省不接（无焦点上报）；`/config` 里一开就发 `?1004h`，退出复原 `?1004l`', async () => {
+  const runs = runArtifacts('magic-d75-voice-runs-')
+  const fixture = startFixture({ turns: [] })
+  const sandbox = createSandbox({ baseURL: fixture.baseURL })
+  const host = await startResidentHost(sandbox, join(runs, 'host'))
+  let window: UiSession | undefined
+
+  try {
+    window = await createUiSession({ label: '语音开关', artifacts: runs, sandbox, fixture })
+
+    // ① 缺省关：配置里没写 experimental ——一个焦点上报都不发
+    expect(window.rawText()).not.toContain('\u001b[?1004h')
+
+    // ② `/config` → 筛「语音」→ 回车＝开
+    await window.send('/config')
+    await window.key('enter')
+    await window.wait({ text: '语音输入' })
+    // 分组头也在屏上（实验性那一栏单列一组——不是混在常态设置里）
+    await window.wait({ text: '实验性功能' })
+    await window.send('语音')
+    await window.wait({ text: '已关 · 仅 Ghostty' })
+    await window.key('enter')
+    // 落定读数回来之后那一格才变（不是按下去就变）
+    await window.wait({ text: '已开 · 仅 Ghostty' })
+
+    // ③ 真开了：终端收到焦点上报的开模式
+    expect(window.rawText()).toContain('\u001b[?1004h')
+
+    // ④ 退出复原——照产品的方式退（空闲连按两次 ctrl+c，1 秒内），再判那个复原字节。
+    // ⚠️ **判的是字节不是退出方式**：被 SIGKILL 掉的进程写不出 `?1004l`——
+    //    所以这两个字节本身就是「收尾走到了」的凭据。
+    await window.key('esc')
+    await window.key('ctrl+c')
+    await Bun.sleep(120)
+    await window.key('ctrl+c')
+    await window.close({ graceMs: 8_000 })
+    expect(window.rawText()).toContain('\u001b[?1004l')
+    window = undefined
+  } finally {
+    await window?.close().catch(() => {})
+    await host.close()
+    await fixture.stop()
+    await sandbox.dispose()
+    if (process.env['MAGIC_CLI_EVIDENCE'] === undefined) removeDir(runs)
+  }
+}, 120_000)
+
 /** 命令行里带那一段的进程号（`pgrep -f` 按整条命令行找——那一段是随机的，撞不上别人的）。 */
 async function pidsOf(mark: string): Promise<readonly number[]> {
   const proc = Bun.spawn(['pgrep', '-f', mark], { stdout: 'pipe', stderr: 'ignore' })

@@ -719,6 +719,13 @@ export type ShellView = {
 
   readonly turnDuration: 'elapsed' | 'active'
   readonly reducedMotion: boolean
+  /**
+   * **实验性 · 语音输入开着没有**（D75）——缺省 `false`（关）。
+   *
+   * 它只管「右 ⌥ 那一跳要不要接」：关着时监听器不起、焦点上报也不开
+   * （见 `run.ts` 的 `applyVoice`）。录音中那一格是 `view.voice`（两件不同的事）。
+   */
+  readonly voiceEnabled: boolean
 
   readonly workspace: string | null
 }
@@ -729,6 +736,7 @@ export type CreateViewInput = {
   readonly statusLine?: StatusLineConfig | undefined
   readonly turnDuration?: 'elapsed' | 'active' | undefined
   readonly reducedMotion?: boolean | undefined
+  readonly voiceEnabled?: boolean | undefined
   readonly workspace?: string | null | undefined
 }
 
@@ -788,6 +796,7 @@ export function createView(input: CreateViewInput = {}): ShellView {
     statusLine: input.statusLine,
     turnDuration: input.turnDuration ?? 'elapsed',
     reducedMotion: input.reducedMotion === true,
+    voiceEnabled: input.voiceEnabled === true,
     workspace: input.workspace ?? null,
   }
 }

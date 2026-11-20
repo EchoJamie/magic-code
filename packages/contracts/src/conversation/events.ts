@@ -1012,6 +1012,8 @@ export type EventDataOf = {
     readonly turnDuration?: import('../shared/config.ts').TurnDurationMode
     /** 减少动效（`MagicConfig.motion.reduced`）——缺省＝没开。 */
     readonly reducedMotion?: boolean
+    /** 实验性 · 语音输入（`MagicConfig.experimental.voice`）——缺省＝关（D75）。 */
+    readonly voice?: boolean
     /** 一句话说明——只在有事要说时给（没写成的缘由 / 写成了哪几格）。 */
     readonly note?: string
   }

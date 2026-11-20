@@ -11,7 +11,7 @@ import type {
   StatusLineConfig,
   StatusLineCell,
   MotionConfig,
-
+  ExperimentalConfig,
   McpConfig,
   McpServerConfig,
   ModelLimits,
@@ -592,6 +592,19 @@ export function webReferenceProblem(config: Pick<MagicConfig, 'providers' | 'web
   return undefined
 }
 
+/**
+ * **实验性那一组**（D75）——逐项布尔开关；**没写就是关**。
+ *
+ * 与别段同一姿势：认不得的键不参与行为，写错的类型当场报（不猜）。
+ */
+function asExperimental(value: unknown, path: string): ExperimentalConfig {
+  const raw = asObject(value, path, 'experimental')
+  if (raw['voice'] !== undefined && typeof raw['voice'] !== 'boolean') {
+    throw new ConfigError(path, 'experimental.voice 须是布尔值')
+  }
+  return raw['voice'] === undefined ? {} : { voice: raw['voice'] as boolean }
+}
+
 function asMotion(value: unknown, path: string): MotionConfig {
   const raw = asObject(value, path, 'motion')
   if (raw['reduced'] !== undefined && typeof raw['reduced'] !== 'boolean') {
@@ -695,6 +708,7 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
   if (raw.logLevel !== undefined && !isLogLevel(raw.logLevel)) throw new ConfigError(path, 'logLevel 须是 error / warn / info / debug / trace')
   if (raw.turnDuration !== undefined && raw.turnDuration !== 'elapsed' && raw.turnDuration !== 'active') throw new ConfigError(path, 'turnDuration 须是 elapsed / active')
   const motion = raw['motion'] === undefined ? undefined : asMotion(raw['motion'], path)
+  const experimental = raw['experimental'] === undefined ? undefined : asExperimental(raw['experimental'], path)
 
   return {
     path,
@@ -718,6 +732,7 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
       ...(raw.debugMode === undefined ? {} : { debugMode: raw.debugMode as boolean }),
       ...(raw.logLevel === undefined ? {} : { logLevel: raw.logLevel as import('@magic/contracts').LogLevel }),
       ...(motion === undefined ? {} : { motion }),
+      ...(experimental === undefined ? {} : { experimental }),
       ...(raw.turnDuration === undefined ? {} : { turnDuration: raw.turnDuration as 'elapsed' | 'active' }),
     },
     providerId,

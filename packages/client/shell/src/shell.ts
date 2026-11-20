@@ -268,6 +268,9 @@ export type ShellOptions = {
 
   readonly reducedMotion?: boolean | undefined
 
+  /** 实验性 · 语音输入（D75）——缺省关；此后随 `prefs.state` 走。 */
+  readonly voiceEnabled?: boolean | undefined
+
   readonly inputReady?: boolean | undefined
 
   readonly receipts?: readonly string[] | undefined
@@ -310,8 +313,13 @@ export type VoiceInput = {
     readonly onFinal: (text: string) => void
     readonly onError: (code: string, message?: string) => void
   }): { readonly stop: () => void; readonly cancel: () => void }
-  /** 听「右 ⌥ 单独按一下」；返回退订（TUI 收摊时调）。 */
-  listen(onTap: () => void): () => void
+  /**
+   * 听「右 ⌥ 单独按一下」；返回退订（TUI 收摊时调）。
+   *
+   * ⚠️ **一次轻点报成两半**（D75）：`down` 是按下、`up` 是松开。配对与「哪一屏拿焦点」
+   * 由外壳判（`focus.ts`）：这一侧听见的是**整台机器**，每个窗口都会收到同一下。
+   */
+  listen(onTap: (phase: 'down' | 'up') => void): () => void
 }
 
 /** sudo 密码通道（U129）——**只传密码，不落任何事件 / 记录**。 */
@@ -433,6 +441,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
         statusLine: options.statusLine,
         reducedMotion: options.reducedMotion,
+        voiceEnabled: options.voiceEnabled,
         turnDuration: options.turnDuration,
         workspace: workspaceLabelOf(options.workspaceRoots),
       }),
@@ -1145,6 +1154,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         ...view,
         statusLine: event.data.statusLine,
         reducedMotion: event.data.reducedMotion === true,
+        // 实验性那几项：**回话里没带就按关**（缺省＝关，见 `ExperimentalConfig`）
+        voiceEnabled: event.data.voice === true,
         turnDuration: event.data.turnDuration ?? 'elapsed',
       })
       if (held === 'statusline') openStatusLinePicker(picked(view)?.value === undefined ? 0 : view.dock.kind === 'picker' ? view.dock.picker.selected : 0)
@@ -1646,6 +1657,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     statusLine: view.statusLine,
     reducedMotion: view.reducedMotion,
+    voice: view.voiceEnabled,
     turnDuration: view.turnDuration,
     filter: configQuery,
   })
@@ -1727,6 +1739,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const toggleReducedMotion = (): void => {
     const next = !view.reducedMotion
     send({ type: 'prefs.set', reducedMotion: next })
+  }
+
+  /**
+   * **实验性 · 语音输入**（D75）——开了才接「右 ⌥ 那一跳」（监听器与焦点上报）。
+   *
+   * ⚠️ 生效**不重启界面**：落定读数经 `prefs.state` 回来（`view.voiceEnabled`），
+   *    `run.ts` 那一侧据此起停——屏上这一格与真正接没接，永远取自同一处。
+   */
+  const toggleVoiceInput = (): void => {
+    send({ type: 'prefs.set', voice: !view.voiceEnabled })
   }
 
   const refreshConfigPicker = (): void => {
@@ -3125,6 +3147,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
             enterLayer()
           }
           toggleReducedMotion()
+          return NONE
+        }
+        if (row.value === 'voice') {
+          if (view.dock.kind === 'picker' && view.dock.picker.source === 'config') enterLayer()
+          toggleVoiceInput()
           return NONE
         }
 

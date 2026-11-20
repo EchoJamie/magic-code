@@ -95,7 +95,7 @@ export function installProjection(ctx: ManagerContext): void {
     for (const conn of clients.values()) if (conn !== except) conn.link.send({
       t: 'ev', gen: null, event: {
         id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'prefs.state', data: {
-          ...(config.statusLine === undefined ? {} : { statusLine: config.statusLine }), turnDuration: config.turnDuration ?? 'elapsed', reducedMotion: config.motion?.reduced === true,
+          ...(config.statusLine === undefined ? {} : { statusLine: config.statusLine }), turnDuration: config.turnDuration ?? 'elapsed', reducedMotion: config.motion?.reduced === true, voice: config.experimental?.voice === true,
         }
       }
     })
