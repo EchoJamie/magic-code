@@ -45,7 +45,12 @@ export function installProjection(ctx: ManagerContext): void {
       out.push(runRowOf(run))
     }
 
-    return out.slice(0, RUNS_VIEW_LIMIT).map(trimRunRow)
+    return out
+  }
+
+  /** 线上视图：有界、自由文本裁短——`rows()` 本身保持完整，内部判定不受展示上限影响。 */
+  function runsView(): readonly RunRow[] {
+    return rows().slice(0, RUNS_VIEW_LIMIT).map(trimRunRow)
   }
 
   /** 运行行的自由文本也可能很长（供应商错误、进度描述）——展示只留一段。 */
@@ -78,7 +83,7 @@ export function installProjection(ctx: ManagerContext): void {
 
     ctx.native.changed()
     for (const conn of clients.values()) ctx.publishBackground(conn)
-    const payload = rows()
+    const payload = runsView()
     for (const conn of clients.values()) conn.link.send({ t: 'runs', rows: payload })
   }
 
@@ -184,6 +189,7 @@ export function installProjection(ctx: ManagerContext): void {
   }
 
   ctx.rows = rows
+  ctx.runsView = runsView
   ctx.pushRuns = pushRuns
   ctx.saveRuns = saveRuns
   ctx.publishPreferences = publishPreferences

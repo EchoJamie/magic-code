@@ -151,7 +151,7 @@ export function installCommands(ctx: ManagerContext): void {
             base: options.magic.base,
             mcp: ctx.probed,
             // 开屏那张摘要据它说「这一摊有几项在跑」——**接上就读得到**，不必先问一次
-            runs: ctx.rows(),
+            runs: ctx.runsView(),
             // 汇总只读；具体事项另行确认已读。条数与正文都要有上限——
             // welcome 是握手帧，不能等 wire 的绝对上限来兜。
             notices: welcomeNotices(store.attention.list().filter((one) => one.unread)),
