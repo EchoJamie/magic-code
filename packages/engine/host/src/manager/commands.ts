@@ -125,33 +125,21 @@ export function installCommands(ctx: ManagerContext): void {
             diagnosticLog.write('warn', 'client.refused', { ...identity, reason: 'identity-mismatch' })
             link.send({ t: 'line', text: 'App 与终端版本或来源不同，请退出原版后重试' }); link.close(); return
           }
+          /**
+           * **找不到会话不再拒绝握手**（2026-11-21 可用性底线）：
+           * `magic resume` 收的 id 可能过期/拼错；为这一条把整条连接关掉，
+           * 用户看到的就是「用着用着突然不能用了」。改为正常欢迎 + 一句提示，
+           * 选中位落回空会话，用户可以直接 /resume 选别的。
+           */
+          const missing = message.session !== undefined &&
+            (!store.hasSession(message.session) || (isArchived(message.session) && !message.reattach))
           const conn = connections.create({
             link: link as unknown as import('@magic/host').Link<ClientToManager>,
-            selectedSession: message.session ?? null,
+            selectedSession: missing ? null : message.session ?? null,
             cwd: message.cwd,
             switch: message.switch,
           })
           client = conn
-
-          if (message.session !== undefined && (!store.hasSession(message.session) || (isArchived(message.session) && !message.reattach))) {
-            link.send({
-              t: 'welcome',
-              identity,
-              conn: conn.id,
-              base: options.magic.base,
-              // 回绝这一条不必等预检（它连不上就是连不上，与外部工具无关）
-              mcp: ctx.probed,
-              // 这一条**不是给窗口的读数**（连接当场就关了）——给一份空的，形态上照旧
-              runs: [],
-              notices: [],
-              refuse: isArchived(message.session) ? ARCHIVED_NOTE :
-                `没有这条会话：${message.session}——` +
-                `magic resume 收的是会话 id（/resume 那张列表里那串）；库里没有它，本次一步都没走`,
-            })
-            diagnosticLog.write('info', 'client.refused', { ...identity, session: message.session, reason: 'unknown-or-archived' })
-            link.close()
-            return
-          }
 
           connections.accept(conn)
           diagnosticLog.write('info', 'client.connected', { ...identity, conn: conn.id, ...(message.session === undefined ? {} : { session: message.session }) })
@@ -169,6 +157,19 @@ export function installCommands(ctx: ManagerContext): void {
             notices: welcomeNotices(store.attention.list().filter((one) => one.unread)),
           })
           if (message.openRequest !== undefined) ctx.native.attached(message.openRequest, message.session ?? null)
+
+          if (missing && message.session !== undefined) {
+            link.send({
+              t: 'line',
+              text: isArchived(message.session) ? ARCHIVED_NOTE :
+                `没有这条会话：${message.session}——` +
+                `magic resume 收的是会话 id（/resume 那张列表里那串）；库里没有它，本次一步都没走。` +
+                '仍可以 /resume 选别的会话，或直接开始新会话。',
+            })
+            diagnosticLog.write('info', 'client.missing-session', { ...identity, session: message.session })
+            void ctx.catalog(conn)
+            return
+          }
 
           // 已在运行则接回；完成的会话只读历史，直到下一次明确输入。
           if (message.session !== undefined) {

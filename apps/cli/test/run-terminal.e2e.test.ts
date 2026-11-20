@@ -113,7 +113,7 @@ describe('终端是客户端', () => {
     }
   }, 120_000)
 
-  test('`resume` 打错一个字母——经管理者那条路照样报错退场（不静默开一条空的）', async () => {
+  test('`resume` 打错一个字母——提示后窗口仍可用，不静默开一条空的', async () => {
     const runs = runArtifacts('magic-u48-typo-runs-')
     const fixture = startFixture({ turns: [] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
@@ -127,19 +127,21 @@ describe('终端是客户端', () => {
         sandbox,
         fixture,
         argv: ['resume', 's-typo'],
-        // 这一趟**画不出一帧**（没接上就退了）——故不等首帧
-        skipReady: true,
       })
 
-      const closed = await window.close({ graceMs: 8_000 })
-      expect(closed.exit.by).toBe('app') // 自己退的
-      expect(closed.exit.code).toBe(1)
-
+      // 2026-11-21：会话 id 找不到不再拒握手并关连接——窗口照常可用，只给一句提示。
+      const deadline = Date.now() + 5_000
+      while (!window.rawText().includes('没有这条会话') && Date.now() < deadline) await Bun.sleep(50)
       const said = window.rawText()
       expect(said).toContain('没有这条会话')
       expect(said).toContain('s-typo')
 
-      // **一个会话都没开**——「报错不降级」在这一条路上也是结构上的
+      await window.quit()
+      const closed = await window.close({ graceMs: 8_000 })
+      expect(closed.exit.by).toBe('app') // 自己退的，不是被管理者踢掉
+      expect(closed.exit.code).toBe(0)
+
+      // **一个会话都没开**——提示归提示，不静默开一条空的
       const db = readDatabase(join(sandbox.dataDir, 'records.db'))
       try {
         expect(db.sessions.length).toBe(0)
