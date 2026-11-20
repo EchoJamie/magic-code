@@ -253,6 +253,15 @@ export const OUTPUT_NO_MATCH = '[无命中]'
 /** 命中取满上限——**可能**还有更多（至多这么多条，不是说「就这么多」）。 */
 export const cappedOutput = (limit: number): string => `[命中达到上限 ${limit}——可能还有更多]`
 
+/**
+ * 命中文本超过**字节**上限——与条数上限分开说。
+ *
+ * 条数管「看几条」，字节管「一次能看多少」：一行 5.7MB 的 JSON 也能算「一条命中」，
+ * 只卡条数等于没卡（2026-11-21 事故的来源）。给出口而不只是说「截断了」。
+ */
+export const outputBytesTruncated = (limit: number): string =>
+  `[输出已截断：超过 ${limit} 字节——用更窄的 pattern 或指定 path 缩小范围]`
+
 // —— `edit` 的四条「不改」——
 
 /** 待替换文本不在文件里——失配即报，**不猜**（猜＝改错地方还说自己改了）。 */
