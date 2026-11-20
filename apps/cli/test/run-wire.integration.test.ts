@@ -4,7 +4,9 @@ import { describe, expect, test } from 'bun:test'
 import { join } from 'node:path'
 import type { Socket } from 'bun'
 import { linkOf, socketHandlers } from '@magic/host'
+import type { LinkHooks } from '@magic/host'
 import type { Wire } from '@magic/contracts'
+import { WIRE_MESSAGE_BUDGET_BYTES } from '@magic/contracts'
 import { removeDir, tempDir } from './tmp.ts'
 
 /** 等一个条件成立（默认 5 秒）——轮询是用例的事，产品那几跳都是事件驱动的。 */
@@ -22,7 +24,7 @@ async function waitFor(what: string, ok: () => boolean, timeoutMs = 5_000): Prom
  * 走的是**真** `Bun.listen` / `Bun.connect`：这一条量的正是「socket 写出去多少」这件事，
  * 换成一对内存里的假 socket 就把要验的那个机制整个换掉了。
  */
-async function pair(): Promise<{
+async function pair(hooks?: LinkHooks): Promise<{
   readonly client: ReturnType<typeof linkOf<Wire>>
   readonly server: ReturnType<typeof linkOf<Wire>>
   readonly received: Wire[]
@@ -36,7 +38,7 @@ async function pair(): Promise<{
   const listener = Bun.listen({
     unix: path,
     socket: socketHandlers((socket) => {
-      server = linkOf<Wire>(socket as Socket<unknown>)
+      server = linkOf<Wire>(socket as Socket<unknown>, hooks)
       server.onMessage((message) => received.push(message))
     }),
   })
@@ -105,6 +107,25 @@ describe('线上一条消息的完整性', () => {
       await waitFor('两边各收到一条', () => wire.received.length >= 1 && atClient.length >= 1)
       expect(wire.received).toEqual([fromClient])
       expect(atClient).toEqual([fromServer])
+    } finally {
+      wire.stop()
+    }
+  })
+})
+
+describe('单条超限与发送积压分开判', () => {
+  test('单条超过预算 → 原因写 message-too-large，不冒充「对端不读」', async () => {
+    const faults: { event: string; data: Record<string, unknown> }[] = []
+    const wire = await pair({ fault: (event, data) => faults.push({ event, data }) })
+
+    try {
+      // 服务端发一条自己就超过预算的消息——这一次没有欠账，属于「单条太大」。
+      wire.server.send({ t: 'line', text: 'x'.repeat(WIRE_MESSAGE_BUDGET_BYTES + 1) })
+
+      await waitFor('服务端这一端断开', () => wire.server.closed)
+      expect(faults).toHaveLength(1)
+      expect(faults[0]).toMatchObject({ event: 'link.terminated', data: { reason: 'message-too-large' } })
+      expect(Number(faults[0]?.data['bytes'])).toBeGreaterThan(WIRE_MESSAGE_BUDGET_BYTES)
     } finally {
       wire.stop()
     }

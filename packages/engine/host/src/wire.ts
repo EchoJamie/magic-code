@@ -1,5 +1,5 @@
 import type { Socket } from 'bun'
-import { decodeNativeMessage } from '@magic/contracts'
+import { decodeNativeMessage, WIRE_MESSAGE_BUDGET_BYTES, WIRE_SEND_BACKLOG_BYTES } from '@magic/contracts'
 import type { Wire } from '@magic/contracts'
 export type { Wire, ClientToManager, ManagerToClient, ExecutorToManager, ManagerToExecutor, McpProbeRow } from '@magic/contracts'
 
@@ -166,14 +166,31 @@ export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>, hooks?: 
 
       const bytes = encoder.encode(wire)
       // 已开始写的帧必须补完；尚未写出的完整投影只保留最新一份。
-      if (message.t === 'native.projection' && pending.length > 0 && bytes.length <= 8 * 1024 * 1024) {
+      if (message.t === 'native.projection' && pending.length > 0 && bytes.length <= WIRE_MESSAGE_BUDGET_BYTES) {
         projection = bytes
         return true
       }
-      if (pending.length + bytes.length + (projection?.length ?? 0) > 8 * 1024 * 1024) {
-        hooks?.fault?.('link.terminated', { reason: 'send-backlog', bytes: pending.length + bytes.length })
+      /**
+       * **两件事分开判**（2026-11-21 接续事故）：
+       * - 这一条**自己**超过单条预算——产生侧的错，不能伪装成「对端不读」；
+       * - 欠账超过发送预算——对端确实没在收，这才是积压保护该管的那一形。
+       *
+       * 无论哪一种，reason 与字节数都要交给 `hooks.fault`（它会进诊断日志）；
+       * 单条超限且当前没有欠账时，再尽力给对端留一句能读的话——此时发送缓冲
+       * 往往还是空的，这一句真能送出去。
+       */
+      const oversize = bytes.length > WIRE_MESSAGE_BUDGET_BYTES
+      if (oversize || pending.length + bytes.length + (projection?.length ?? 0) > WIRE_SEND_BACKLOG_BYTES) {
+        const reason = oversize ? 'message-too-large' : 'send-backlog'
+        hooks?.fault?.('link.terminated', { reason, bytes: pending.length + bytes.length })
+        if (oversize && pending.length === 0 && projection === undefined) {
+          try {
+            socket.write(encoder.encode(`${JSON.stringify({ t: 'line', text: '一条消息超过大小上限，连接已断开' })}\n`))
+            socket.flush()
+          } catch { /* 尽力而为——送不出去也不改变这一步的结论 */ }
+        }
         try { socket.terminate() } catch {}
-        settle(new Error('客户端未及时接收数据，请重新连接以读取快照'))
+        settle(new Error(oversize ? '一条消息超过大小上限，连接已断开' : '客户端未及时接收数据，请重新连接以读取快照'))
         return false
       }
       pending = pending.length === 0 ? bytes : concat(pending, bytes)
@@ -215,7 +232,7 @@ export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>, hooks?: 
   ;(socket as Socket<LinkSlot>).data = {
     chunk: (bytes) => {
       buffered += decoder.decode(bytes, { stream: true })
-      if (buffered.length > 8 * 1024 * 1024) {
+      if (buffered.length > WIRE_MESSAGE_BUDGET_BYTES) {
         hooks?.fault?.('link.terminated', { reason: 'receive-buffer', bytes: buffered.length })
         socket.terminate()
         settle(new Error('消息过大'))
