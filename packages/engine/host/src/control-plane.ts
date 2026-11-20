@@ -81,7 +81,7 @@ function reduceOnce(message: Wire): Wire | undefined {
     switch (event.kind) {
       case 'session.state': {
         const sessions = Array.isArray(data?.sessions) ? data.sessions : []
-        const kept = half(sessions)
+        const kept = half(sessions) ?? (sessions.length > 0 ? [] : undefined)
         if (kept === undefined) return undefined
         return {
           ...record,
@@ -90,7 +90,7 @@ function reduceOnce(message: Wire): Wire | undefined {
       }
       case 'input.pending': {
         const inputs = Array.isArray(data?.inputs) ? data.inputs : []
-        const kept = half(inputs)
+        const kept = half(inputs) ?? (inputs.length > 0 ? [] : undefined)
         if (kept === undefined) return undefined
         return {
           ...record,
@@ -147,7 +147,7 @@ function reduceOnce(message: Wire): Wire | undefined {
 
   if (record.t === 'welcome') {
     const notices = Array.isArray(record.notices) ? record.notices : []
-    const keptNotices = half(notices)
+    const keptNotices = half(notices) ?? (notices.length > 0 ? [] : undefined)
     if (keptNotices !== undefined) {
       return {
         ...record,
@@ -156,9 +156,13 @@ function reduceOnce(message: Wire): Wire | undefined {
       } as unknown as Wire
     }
     const runs = Array.isArray(record.runs) ? record.runs : []
-    const keptRuns = half(runs)
-    if (keptRuns === undefined) return undefined
-    return { ...record, runs: keptRuns, omittedRuns: (typeof record.omittedRuns === 'number' ? record.omittedRuns : 0) + (runs.length - keptRuns.length) } as unknown as Wire
+    const keptRuns = half(runs) ?? (runs.length > 0 ? [] : undefined)
+    if (keptRuns !== undefined) {
+      return { ...record, runs: keptRuns, omittedRuns: (typeof record.omittedRuns === 'number' ? record.omittedRuns : 0) + (runs.length - keptRuns.length) } as unknown as Wire
+    }
+    // welcome 是握手帧——最后剥 MCP 预检目录，保证它一定能送达。
+    if (Array.isArray(record.mcp) && record.mcp.length > 0) return { ...record, mcp: [] } as unknown as Wire
+    return undefined
   }
 
   if (record.t === 'runs' && Array.isArray(record.rows)) {
@@ -193,7 +197,7 @@ function reduceOnce(message: Wire): Wire | undefined {
 
   if (record.t === 'native.projection' && record.projection !== null && typeof record.projection === 'object') {
     const works = Array.isArray(record.projection.works) ? record.projection.works : []
-    const kept = half(works)
+    const kept = half(works) ?? (works.length > 0 ? [] : undefined)
     if (kept === undefined) return undefined
     return {
       ...record,
@@ -206,7 +210,7 @@ function reduceOnce(message: Wire): Wire | undefined {
 
   if (record.t === 'native.welcome' && record.projection !== null && typeof record.projection === 'object') {
     const works = Array.isArray(record.projection.works) ? record.projection.works : []
-    const kept = half(works)
+    const kept = half(works) ?? (works.length > 0 ? [] : undefined)
     if (kept === undefined) return undefined
     return {
       ...record,
@@ -218,9 +222,16 @@ function reduceOnce(message: Wire): Wire | undefined {
   }
 
   if (record.t === 'native.history.result' && Array.isArray(record.entries)) {
-    const kept = half(record.entries)
+    const kept = half(record.entries) ?? (record.entries.length > 0 ? [] : undefined)
     if (kept === undefined) return undefined
     return { ...record, entries: kept, done: false, truncated: true, ...(kept.length === 0 ? {} : { next: (kept.at(-1) as { id?: number } | undefined)?.id }) } as unknown as Wire
+  }
+
+  if (record.t === 'native.inspected' && record.work !== null && typeof record.work === 'object') {
+    const work = record.work
+    const notice = work.currentNotice
+    if (notice === null || typeof notice !== 'object' || typeof notice.detail !== 'string') return undefined
+    return { ...record, work: { ...work, currentNotice: clipDetail(notice) } } as unknown as Wire
   }
 
   return undefined
