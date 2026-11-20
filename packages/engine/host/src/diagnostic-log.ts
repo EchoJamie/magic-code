@@ -8,7 +8,23 @@ function logFailure(error: unknown): string {
 import { LOG_LEVELS, isLogLevel, type LogLevel } from '@magic/contracts'
 
 /** Only structural identifiers enter files. Text, errors, config and wire payloads do not. */
-export type LogFields = Partial<Record<'hostInstance' | 'serviceInstance' | 'session' | 'run' | 'request', string>> & { count?: number; debugMode?: boolean; previousDebugMode?: boolean; logLevel?: LogLevel; previousLogLevel?: LogLevel; settingSource?: 'app' | 'cli' | 'config' }
+export type LogFields = Partial<Record<'hostInstance' | 'serviceInstance' | 'session' | 'run' | 'request', string>> & {
+  count?: number
+  /**
+   * **连接这一层的诊断位**（D75 补）：`conn` 是窗口编号、`bytes` 是涉事字节数、
+   * `by` 说谁先断、`reason` 只放**短码**（`identity-mismatch` / `send-backlog` 一类，
+   * 不放正文）——日志里不留内容这条规矩不变。
+   */
+  bytes?: number
+  conn?: number
+  by?: 'local' | 'peer'
+  reason?: string
+  debugMode?: boolean
+  previousDebugMode?: boolean
+  logLevel?: LogLevel
+  previousLogLevel?: LogLevel
+  settingSource?: 'app' | 'cli' | 'config'
+}
 export class DiagnosticLog {
   readonly directory: string
   private level: LogLevel

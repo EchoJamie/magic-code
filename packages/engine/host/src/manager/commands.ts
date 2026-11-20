@@ -24,7 +24,23 @@ export function installCommands(ctx: ManagerContext): void {
   const { workRoot, isArchived, manageSession } = sessions
 
   function accept(socket: Socket<unknown>): void {
-    const link = linkOf<Wire>(socket)
+    /**
+     * **这条连接上的坏事要留痕**（D75）：`terminate` 那一路对端只看到「没原因」，
+     * 而这一层原先是**一处都不写**——「连不上却查不到」正是这么来的。
+     */
+    const link = linkOf<Wire>(socket, {
+      fault: (event, data) => diagnosticLog.write('error', event, {
+        ...identity,
+        ...(typeof data['reason'] === 'string' ? { reason: data['reason'] } : {}),
+        ...(typeof data['bytes'] === 'number' ? { bytes: data['bytes'] } : {}),
+      }),
+      closed: (detail) => diagnosticLog.write(
+        // 对端先断且没给原因：**warn**——这就是「连不上」最常见的那一形
+        detail.by === 'peer' && detail.reason === undefined ? 'warn' : 'info',
+        detail.by === 'peer' && detail.reason === undefined ? 'link.closed.silent' : 'link.closed',
+        { ...identity, by: detail.by, ...(detail.reason === undefined ? {} : { reason: detail.reason }) },
+      ),
+    })
     if (!ctx.available) { link.close(); return }
     /** 这条连接立起来的时候是谁的——`hello` 那一刻定下，之后不再变。 */
     let greeted = false
@@ -41,6 +57,7 @@ export function installCommands(ctx: ManagerContext): void {
         if (message.t === 'hello') {
           if (ctx.stopped) { link.send({ t: 'line', text: 'Magic Code 正在退出' }); link.close(); return }
           if (message.protocol !== identity.protocol || message.version !== identity.version || message.source !== identity.source) {
+            diagnosticLog.write('warn', 'client.refused', { ...identity, reason: 'identity-mismatch' })
             link.send({ t: 'line', text: 'App 与终端版本或来源不同，请退出原版后重试' }); link.close(); return
           }
           const conn = connections.create({
@@ -66,11 +83,13 @@ export function installCommands(ctx: ManagerContext): void {
                 `没有这条会话：${message.session}——` +
                 `magic resume 收的是会话 id（/resume 那张列表里那串）；库里没有它，本次一步都没走`,
             })
+            diagnosticLog.write('info', 'client.refused', { ...identity, session: message.session, reason: 'unknown-or-archived' })
             link.close()
             return
           }
 
           connections.accept(conn)
+          diagnosticLog.write('info', 'client.connected', { ...identity, conn: conn.id, ...(message.session === undefined ? {} : { session: message.session }) })
 
           link.send({
             t: 'welcome',
@@ -114,7 +133,13 @@ export function installCommands(ctx: ManagerContext): void {
         diagnosticLog.write('error', 'client.operation.failed', identity)
       }
     })
-    link.onClose(() => { if (client !== undefined) ctx.dropConnection(client.id) })
+    link.onClose((error) => {
+      if (client === undefined) return
+      diagnosticLog.write(error === undefined ? 'warn' : 'info', error === undefined ? 'client.closed.silent' : 'client.closed', {
+        ...identity, conn: client.id, ...(error === undefined ? {} : { reason: error.message.slice(0, 120) }),
+      })
+      ctx.dropConnection(client.id)
+    })
   }
 
   async function catalog(conn: ClientConn, archived = false): Promise<void> {

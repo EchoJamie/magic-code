@@ -64,7 +64,22 @@ const LINKS = new WeakMap<Socket<unknown>, Link>()
  *
  * 两处各写一份的代价是「服务端那条路忘了回报 `close`」这类只在一边出现的毛病。
  */
-export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>): Link<In> {
+/**
+ * **这一层要知道的坏事往哪写**（D75 排查补：原先一处都不写）。
+ *
+ * `wire.ts` 是引擎与终端**共用**的传输层，它自己不知道身份——故由造连接的人给一个汇：
+ * 引擎那边写进诊断日志（`manager` / `executor` 分量），终端那边可以不给。
+ *
+ * 两条级别定死：**`terminate` 是 error**（连接被我们硬砍，对端只会看到「没原因」），
+ * **`close` 是 info**（正常收尾）；对端先断且没给 error 的那一形由调用方按 warn 记
+ * ——那正是「连不上却查不到」的那一类。
+ */
+export type LinkHooks = {
+  readonly fault?: (event: string, data: Record<string, unknown>) => void
+  readonly closed?: (detail: { readonly by: 'local' | 'peer'; readonly reason?: string }) => void
+}
+
+export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>, hooks?: LinkHooks): Link<In> {
   const existing = LINKS.get(socket)
   if (existing !== undefined) return existing as Link<In>
 
@@ -84,6 +99,9 @@ export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>): Link<In
   let pending: Uint8Array = EMPTY_BYTES
   let projection: Uint8Array | undefined
 
+  /** 是不是我们自己关的（`close()` 那一路）——判「谁先断」用。 */
+  let ending = false
+
   const settle = (error?: Error): void => {
     if (closed) return
     closed = true
@@ -91,6 +109,7 @@ export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>): Link<In
     // 整条消息，它那一侧的断句本来就会把它认成坏行，与「这条连接断了」是同一件事）。
     pending = EMPTY_BYTES
     projection = undefined
+    hooks?.closed?.({ by: ending ? 'local' : 'peer', ...(error === undefined ? {} : { reason: error.message }) })
     for (const listener of [...closeListeners]) listener(error)
     closeListeners = []
     listeners = []
@@ -152,6 +171,7 @@ export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>): Link<In
         return true
       }
       if (pending.length + bytes.length + (projection?.length ?? 0) > 8 * 1024 * 1024) {
+        hooks?.fault?.('link.terminated', { reason: 'send-backlog', bytes: pending.length + bytes.length })
         try { socket.terminate() } catch {}
         settle(new Error('客户端未及时接收数据，请重新连接以读取快照'))
         return false
@@ -175,6 +195,7 @@ export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>): Link<In
     },
 
     close() {
+      ending = true
       try {
         socket.end()
       } catch {
@@ -194,7 +215,12 @@ export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>): Link<In
   ;(socket as Socket<LinkSlot>).data = {
     chunk: (bytes) => {
       buffered += decoder.decode(bytes, { stream: true })
-      if (buffered.length > 8 * 1024 * 1024) { socket.terminate(); settle(new Error('消息过大')); return }
+      if (buffered.length > 8 * 1024 * 1024) {
+        hooks?.fault?.('link.terminated', { reason: 'receive-buffer', bytes: buffered.length })
+        socket.terminate()
+        settle(new Error('消息过大'))
+        return
+      }
 
       let at = buffered.indexOf('\n')
       while (at !== -1) {
