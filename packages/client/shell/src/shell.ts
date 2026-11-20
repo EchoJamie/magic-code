@@ -36,6 +36,7 @@ import {
   memberRows,
   memberState,
   messageRows,
+  workTabs,
 } from './boards/conversation/collaboration.ts'
 import { lineSpan, stepLeft, stepRight } from './components/composer.ts'
 import type { DraftRef } from './components/inline.ts'
@@ -2034,19 +2035,27 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const openCollaboration = (selected?: string): void => {
     const snapshot = view.collaboration
     const member = currentMember(view)
+    /**
+     * **工作级那几条**——独立成一组（`工作级`），与成员行之间只隔一组头，不画线。
+     *
+     * `停止整件工作` 走 `danger`（不可逆：铺不开回收）；`明确继续整件工作` 走 `wait`
+     * （先核对停点）。两处都是「按下去有后果」的，颜色替用户先看一眼。
+     */
+    const workRow = (value: string, label: string, meta = '', tone?: 'run' | 'wait' | 'danger' | 'idle') =>
+      ({ ...collaborationRow(value, label, meta, tone), group: '工作级' })
     const rows = [
       ...(snapshot?.collaboration ? memberRows(snapshot, view.sessionId) : []),
-      ...(snapshot?.collaboration ? [collaborationRow('whole', '回到主会话', '恢复入口草稿；输入只发给入口自己'),
-        collaborationRow('broadcast', '向所有成员补充', '共同要求送达相关成员'),
-      collaborationRow('constraints', '共同补充的带入情况'),
-      collaborationRow('default-model', '后续派生的默认模型', '按需配置'),
-      collaborationRow('stop-work', '停止整件工作', '覆盖全部成员及继续委派'),
-      ...(snapshot.collaboration.state === 'stopped' ? [collaborationRow('resume-work', '明确继续整件工作', '先核对停点')] : [])] : []),
+      ...(snapshot?.collaboration ? [workRow('whole', '回到主会话', '恢复入口草稿；输入只发给入口自己'),
+        workRow('broadcast', '向所有成员补充', '共同要求送达相关成员'),
+        workRow('constraints', '共同补充的带入情况'),
+        workRow('default-model', '后续派生的默认模型', '按需配置'),
+        workRow('stop-work', '停止整件工作', '覆盖全部成员及继续委派', 'danger'),
+        ...(snapshot.collaboration.state === 'stopped' ? [workRow('resume-work', '明确继续整件工作', '先核对停点', 'wait')] : [])] : []),
     ]
     // 从子会话打开时主会话在列表里并预选（Enter 返回）；在主会话时它不出现。
     const preselected = selected ?? (member === undefined ? undefined : snapshot?.collaboration?.coordinatorId)
     commit(openPicker(view, {
-      source: 'collaboration', title: '[协作] 整件工作 · 子会话', rows,
+      source: 'collaboration', title: '整件工作 · 子会话', tabs: workTabs('collaboration'), rows,
       selected: Math.max(0, rows.findIndex(row => row.value === preselected)),
       hint: `${snapshot?.collaboration ? '浏览列表不切输入 · Enter 进入子会话或执行操作' : '没有协作成员'}\nTab/Shift+Tab 切换 · ↑↓ 选择 · Enter 打开 · Esc 返回`,
     }))
@@ -3424,7 +3433,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (word === '/ps') {
       if (arg) return only(appendReceipt(cleared, '用法：/ps'))
       collaborationQuery = {}
-      return only(openPicker(cleared, { source: 'collaboration', title: '[协作] 整件工作 · 子会话  │  后台命令', rows: [], selected: 0, hint: '正在读取 · Tab/Shift+Tab 切换 · Esc 返回' }), { type: 'collaboration.read' }, { type: 'background.list' })
+      return only(openPicker(cleared, { source: 'collaboration', title: '整件工作', tabs: workTabs('collaboration'), rows: [], selected: 0, hint: '正在读取 · Tab/Shift+Tab 切换 · Esc 返回' }), { type: 'collaboration.read' }, { type: 'background.list' })
     }
 
     if (word === '/resume') {

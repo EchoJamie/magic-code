@@ -232,6 +232,14 @@ export type PickerRow = {
   readonly faint?: boolean
   readonly oneLine?: boolean
   /**
+   * **语义色**（只给「面板式」那几屏用，见 `Picker.tabs`）——**只表状态，不做装饰**：
+   * `run` 正在跑（状态位呼吸）· `wait` 在等你 · `danger` 不可逆或已受阻 · `idle` 普通。
+   *
+   * 不给就是「无所谓」：面板式里按 `idle` 画（名称正常色、meta 压暗），
+   * 别的抽屉一律不看这一格。
+   */
+  readonly tone?: 'run' | 'wait' | 'danger' | 'idle'
+  /**
    * **必留的那一段**（`oneLine` 行用）——它是 `meta` 的**前缀**（如 MCP 那行的状态说法、
    * 连接那行的连接名）。
    *
@@ -288,6 +296,14 @@ export type Picker = {
 
   readonly memory?: import('./boards/records/memory-picker.ts').MemoryPage
   readonly title?: string
+  /**
+   * **页签**（`Tab` 那两屏：协作 ↔ 后台命令）——`active` 那一段铺**反白块**（底色表「你在哪一页」），
+   * 其余留白；`title` 挪到同一行的右边，当面包屑（如「整件工作 · 子会话」）。
+   *
+   * 给了这一格，这一屏按**面板式**排版：页签行 ＋ 一行留白 ＋ 两列对齐的行
+   * （名称在左、状态在右，靠**位置**分组，不画线）；不给，则照原样画（其余抽屉先不动）。
+   */
+  readonly tabs?: readonly { readonly label: string; readonly active: boolean }[]
   readonly rows: readonly PickerRow[]
   readonly selected: number
   /** 关联记录在原交互层内阅读，不换会话、不抄进原会话日志。 */

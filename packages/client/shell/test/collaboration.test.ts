@@ -3,12 +3,13 @@ import { createElement as h } from 'react'
 import { renderToString } from 'ink'
 import type { CollaborationView } from '@magic/contracts'
 import { createShell, type Shell, type ShellOptions } from '../src/shell.ts'
-import { AppView } from '../src/components/app.ts'
+import { AppView, dockHeightOf } from '../src/components/app.ts'
 import { logLines } from '../src/components/log.ts'
-import { collaborationSummary, currentMember, memberRows, memberState } from '../src/boards/conversation/collaboration.ts'
+import { collaborationSummary, currentMember, memberRows, memberState, workTabs } from '../src/boards/conversation/collaboration.ts'
+import { displayWidth } from '../src/components/lines.ts'
 import { createSpyTransport } from './fakes.ts'
 import { event } from './events.ts'
-import { plain } from './screen.ts'
+import { plain, show } from './screen.ts'
 import { collaborationFixture, memberEntries, memberMessages, memberSessionView, nestedFixture, originEntries } from './collaboration-fixture.ts'
 
 const shells: Shell[] = []
@@ -401,4 +402,83 @@ test('从子会话退出时给出主会话的恢复命令', () => {
   expect(note).toContain('恢复此会话')
   expect(note).toContain(`'origin'`)
   expect(note).not.toContain(`'member'`)
+})
+
+// ══ 面板式那一屏（`Tab`）——底色、位置、留白各管一件事，不画线 ═════════
+
+/**
+ * **「不像字符画」那三件真东西**，各断一条：底色（页签与焦点）、位置（两列对齐）、
+ * 留白（页签之后那一行）。
+ *
+ * 为什么不量「有没有边框 / 分隔线」：这一屏**本来就不该有**——层次由底色与留白立起来，
+ * 画上线反而把「一屏浮在正文之上」变成「又一段正文」。故这里反过来量：**一条线都没有**。
+ *
+ * 色那条路必须走真终端（`show`）：帧文本那条路先剥 ANSI（D17），色到那里是量不到的。
+ */
+test('面板式：页签铺反白块、选中行整行底色、状态右对齐；账与屏同源', async () => {
+  const stage = collaborationStage()
+  stage.key('tab')
+  const view = stage.view()
+  const columns = 100
+  const rows = 30
+  const frame = await show([view], { columns, rows })
+  const dock = frame.dock
+
+  // 页签那一行：两段同名标签在，标题退到右边当面包屑
+  const tabLine = dock.find((line) => line.text.includes('协作') && line.text.includes('后台命令'))
+  expect(tabLine).toBeDefined()
+  expect(tabLine!.text).toContain('整件工作 · 子会话')
+
+  // 当前那一段铺反白块，另一段不铺（底色表「你在哪一页」）
+  const tabs = frame.cellsOf(tabLine!.row)
+  const columnOf = (part: string) => displayWidth(tabLine!.text.slice(0, tabLine!.text.indexOf(part)))
+  expect(tabs[columnOf('协作')]?.bg).toBe('#d8dce4')
+  expect(tabs[columnOf('后台命令')]?.bg).toBe(null)
+
+  // 页签与列表之间留一行白——层次靠这个空行，不靠分隔线
+  const after = dock.slice(dock.indexOf(tabLine!) + 1)
+  expect(after[0]?.text.trim()).toBe('')
+
+  // 选中那一条：整行铺底色（左右各留一格外边距），左端是 `❯`
+  const selected = dock.find((line) => line.text.includes('❯'))
+  expect(selected).toBeDefined()
+  const cells = frame.cellsOf(selected!.row)
+  expect(cells.slice(1, columns - 1).every((cell) => cell.bg === '#1b2530')).toBe(true)
+
+  // 没选中的行不铺底色（底色只表焦点，不是装饰）
+  const work = dock.find((line) => line.text.includes('回到主会话'))
+  expect(work).toBeDefined()
+  expect(frame.cellsOf(work!.row).every((cell) => cell.bg === null)).toBe(true)
+
+  // 位置：状态靠右对齐——有 meta 的行都收在同一列（右边留一格外边距）
+  for (const line of [selected!, work!]) expect(displayWidth(line.text.trimEnd())).toBe(columns - 1)
+
+  // **一条分隔线都不画**（`─` 只该出现在记录区与交互区那两条界上）
+  expect(dock.slice(dock.indexOf(tabLine!)).some((line) => line.text.includes('──'))).toBe(false)
+
+  // 账与屏同源（U31 那一族的老病：矮终端上真光标高一行）
+  expect(dock.length).toBe(dockHeightOf(view, columns, rows))
+})
+
+test('面板式：按 Tab 切到后台那一屏，页签同构、只换点亮的那一段', () => {
+  const stage = collaborationStage()
+  stage.key('tab')
+  const before = stage.view().dock
+  if (before.kind !== 'picker') throw new Error('协作那一屏没打开')
+  expect(before.picker.tabs).toEqual(workTabs('collaboration'))
+
+  stage.key('tab')
+  const after = stage.view().dock
+  if (after.kind !== 'picker') throw new Error('后台那一屏没打开')
+  expect(after.picker.tabs).toEqual(workTabs('background'))
+  // 两屏页签**同一副样子**：只有 `active` 换了位置
+  expect(after.picker.tabs?.map((tab) => tab.label)).toEqual(before.picker.tabs?.map((tab) => tab.label))
+
+  // 不可逆的工作级动作带语义色；成员在跑的那一行标 `run`（状态位走呼吸）
+  stage.key('tab')
+  const list = stage.view().dock
+  if (list.kind !== 'picker') throw new Error('协作那一屏没打开')
+  const rows = new Map(list.picker.rows.map((row) => [row.value, row] as const))
+  expect(rows.get('stop-work')?.tone).toBe('danger')
+  expect(rows.get('worker')?.tone).toBe('run')
 })

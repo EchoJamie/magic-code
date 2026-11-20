@@ -3,9 +3,20 @@ import { sanitizeForDisplay } from '@magic/contracts'
 import type { PickerRow, ShellStatus, ShellView } from '../../view.ts'
 
 const clean = (text: string): string => sanitizeForDisplay(text).replace(/\s+/g, ' ').trim()
-export const collaborationRow = (value: string, label: string, meta = ''): PickerRow => ({
+export const collaborationRow = (value: string, label: string, meta = '', tone?: PickerRow['tone']): PickerRow => ({
   value, label: clean(label), meta: clean(meta), current: false, oneLine: true,
+  ...(tone === undefined ? {} : { tone }),
 })
+/**
+ * **工作那两屏的页签**（`Tab` 在「协作 ↔ 后台命令」之间切）——两屏同构，当前那一段铺反白块。
+ *
+ * 为什么收在一处：两屏的页签**必须是同一副样子**，否则按 Tab 时整行跳变（改造前就是这样：
+ * 一屏叫 `[协作] 整件工作 · 子会话`，另一屏叫 `协作成员  │  [后台命令]`，方括号还落在不同位置）。
+ */
+export const workTabs = (active: 'collaboration' | 'background'): readonly { readonly label: string; readonly active: boolean }[] => [
+  { label: '协作', active: active === 'collaboration' },
+  { label: '后台命令', active: active === 'background' },
+]
 export const delegationState: Record<Delegation['state'], string> = {
   queued: '待接下', clarification: '需要澄清', accepted: '已接下', rejected: '已拒绝',
   delivered: '已回报，待核验', received: '结果已收下', cancelled: '已撤回',
@@ -31,6 +42,29 @@ export function memberState(member: CollaborationMemberView): string {
   if (member.runtime?.lastTurn === 'error') return '上一轮出错，待处理'
   if (member.delegation !== undefined) return `${delegationState[member.delegation.state]}${member.delegation.reason ? `：${member.delegation.reason}` : ''}`
   return member.agent.reachability === 'historical' ? '记录可查看' : '当前空闲'
+}
+
+/**
+ * **成员那一行的语义色**（面板式里才用）——与 `memberState` 同一套先后：先报「要你」，
+ * 再报「停了 / 断了」，最后才是「在跑」。
+ *
+ * 它只管**颜色与那个状态位**，不改任何文案：屏上说的话仍旧出自 `memberState` 一处。
+ */
+function memberTone(member: CollaborationMemberView): 'run' | 'wait' | 'danger' | 'idle' {
+  if (consultationEnded(member)) return 'idle'
+  if (member.pendingDecisions > 0) return 'wait'
+  if (member.runtime?.state === 'stopping') return 'run'
+  if (member.agent.reachability === 'suspended') return 'danger'
+  if (member.waiting?.state === 'waiting') return 'run'
+  if (member.waiting?.state === 'expired') return 'danger'
+  if (member.delegation?.state === 'clarification') return 'wait'
+  if (member.runtime?.backgroundWaiting) return 'run'
+  if (member.runtime?.state === 'running') return 'run'
+  if (member.runtime?.state === 'unknown') return 'danger'
+  if (member.runtime?.state === 'stopped') return 'danger'
+  if (member.runtime?.lastTurn === 'error') return 'danger'
+  if (member.delegation?.state === 'rejected') return 'wait'
+  return 'idle'
 }
 
 export function collaborationSummary(snapshot: CollaborationView | undefined): string | undefined {
@@ -141,6 +175,7 @@ export function memberRows(snapshot: CollaborationView, currentSession?: Session
         : `由 ${nameOf(one.agent.createdBy)} 派生`
       return collaborationRow(
         one.agent.agentId, one.agent.name, `${memberState(one)} · ${origin} · ${one.delegation?.scope ?? one.agent.role}`,
+        memberTone(one),
       )
     })
 }
