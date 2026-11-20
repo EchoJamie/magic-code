@@ -370,7 +370,13 @@ test('原生停止绑定当前输入代次，旧菜单不误停下一轮，同�
     link.send({ t: 'hello', role: 'client', protocol: started.manager.identity.protocol, version: started.manager.identity.version, source: started.manager.identity.source, cwd: '/tmp', session: 'history-session' })
     await waitFor(() => chunks.some((one) => one.done))
     expect(active).toContain('history-session')
-    expect(chunks.map((one) => [one.entries.length, one.done])).toEqual([[50, false], [6, true]])
+    /**
+     * 原锚：`[[50,false],[6,true]]`——末包把最后一批条目与 meta 装在同一帧。
+     * 为何变：末包拆成「最后一批 entries（done:false）」＋「空 entries 的 done 帧
+     * （inputs/timing/plan/…）」——否则 meta 会把末帧撑过单帧预算（2026-11-21）。
+     * 新锚：`[[50,false],[6,false],[0,true]]`；条目总数与内容不变。
+     */
+    expect(chunks.map((one) => [one.entries.length, one.done])).toEqual([[50, false], [6, false], [0, true]])
     expect(chunks.flatMap((one) => one.entries)).toEqual(expected)
     chunks.length = 0
     // 两个同一读取在途的请求只回一份，不能把旧半批拼进新整批。
