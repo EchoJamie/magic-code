@@ -105,8 +105,15 @@ async function reclaimed(f: StopRuntime, owned: readonly OwnedProcess[], atStop:
   f.client.send({ type: 'session.open', session: memberSession })
   f.client.send({ type: 'history.read', session: memberSession })
   await f.wait('停止后的子会话历史', () => f.events.slice(historyStart).some(one => one.kind === 'session.history' && one.data.session === memberSession && one.data.done))
-  const history = f.events.slice(historyStart).flatMap(one => one.kind === 'session.history' && one.data.session === memberSession && one.data.done ? [one.data] : [])[0]
-  expect(history?.entries.length).toBeGreaterThan(0)
+  /**
+   * 原锚：只取 `done` 那一块的 entries（末包带最后一批条目）。
+   * 为何变：末包拆成「最后一批条目（done:false）」＋「空条目的 done 帧」，
+   * 否则 inputs/timing/plan 会把末帧撑过单帧预算（2026-11-21）。
+   * 新锚：把该会话所有分块的 entries 拼起来，条目总数不变。
+   */
+  const blocks = f.events.slice(historyStart).flatMap(one =>
+    one.kind === 'session.history' && one.data.session === memberSession ? [one.data] : [])
+  expect(blocks.flatMap(block => block.entries).length).toBeGreaterThan(0)
   await Bun.sleep(200) // 仅检查迟到帧/多余调用；停止证明来自 onExit、原账本与进程组探针。
   expect(f.calls).toHaveLength(atStop.calls)
   expect({ calls: f.calls.length, launches: f.launches.length }).toEqual(before)
