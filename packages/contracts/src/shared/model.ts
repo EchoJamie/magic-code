@@ -327,8 +327,8 @@ export type ProviderModelOverride = {
   readonly capabilities?: ModelCapabilities
 }
 
-/** 工作选择标识；实际连接与型号只在配置和运行事实中出现。 */
-export type ModelChoice = 'default' | 'cantrip' | 'spell' | 'arcane'
+/** 工作档位标识；实际连接与型号只在配置和运行事实中出现。Default 不是档位——它是记录（`defaultTier`），指向其中一档。 */
+export type ModelChoice = 'cantrip' | 'spell' | 'arcane'
 
 /**
  * **Models.dev 里的一条候选**——用户手动检索、对位自己那条连接上的原始型号时看的就是它。

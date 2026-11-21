@@ -243,11 +243,16 @@ export type MagicConfig = {
   readonly logLevel?: LogLevel
   readonly agentRoles?: Readonly<Record<string, AgentRoleConfig>>
   readonly models?: {
-    readonly default?: ModelRef
     readonly cantrip?: ModelRef
     readonly spell?: ModelRef
     readonly arcane?: ModelRef
   }
+  /**
+   * **开局档位记录**（2026-11-22 裁定）——/model 每次切档都更新这条记录；
+   * 新会话与未指定档位的工作落在它指向的档上（省掉每次开局调档）。
+   * 缺省＝`cantrip`（最低档）。
+   */
+  readonly defaultTier?: 'cantrip' | 'spell' | 'arcane'
   readonly providers: Readonly<Record<string, ProviderConfig>>
   /** 网页服务连接（U94）——见 `WebConfig`；键缺省＝两项网页工具都不可用。 */
   readonly web?: WebConfig

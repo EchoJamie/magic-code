@@ -236,9 +236,8 @@ export async function configureModel(input: {
   readonly request: ModelConfigureRequest
 }): Promise<SaveOutcome> {
   const { choice, provider, model, initialize } = input.request
-  if (!['default', 'cantrip', 'spell', 'arcane'].includes(choice)) return { ok: false, reason: '未知模型选择' }
+  if (!['cantrip', 'spell', 'arcane'].includes(choice)) return { ok: false, reason: '未知模型档位' }
   if (typeof model !== 'string' || model.trim() === '') return { ok: false, reason: '请选择实际型号' }
-  if (initialize === true && choice !== 'default') return { ok: false, reason: '首次初始化只能保存 Default' }
   return editConfigFile({
     path: input.path,
     ...(input.expectedStamp === undefined ? {} : { expectedStamp: input.expectedStamp }),
@@ -248,7 +247,7 @@ export async function configureModel(input: {
       const value = raw['models']
       if (value !== undefined && (typeof value !== 'object' || value === null || Array.isArray(value))) return { ok: false, reason: 'models 须是对象，请先修复配置' }
       for (const [key, mapping] of Object.entries(value ?? {})) {
-        if (!['default', 'cantrip', 'spell', 'arcane'].includes(key) || typeof mapping !== 'object' || mapping === null || Array.isArray(mapping)
+        if (!['cantrip', 'spell', 'arcane'].includes(key) || typeof mapping !== 'object' || mapping === null || Array.isArray(mapping)
           || Object.keys(mapping).some(field => !['provider', 'model'].includes(field))
           || typeof mapping.provider !== 'string' || !Object.hasOwn(providersOf(raw), mapping.provider)
           || typeof mapping.model !== 'string' || mapping.model.trim() === '') return { ok: false, reason: 'models 内容无效，请先修复配置' }
@@ -256,7 +255,11 @@ export async function configureModel(input: {
       const configuredModels = { ...(value as Record<string, unknown> | undefined) }
       const mapping = { provider, model }
       configuredModels[choice] = mapping
-      if (initialize === true) for (const tier of ['cantrip', 'spell', 'arcane']) if (!Object.hasOwn(configuredModels, tier)) configuredModels[tier] = mapping
+      if (initialize === true) {
+        // 首次落地：三档缺的用这条补齐，开局档位记录指向最低档（Cantrip）。
+        for (const tier of ['cantrip', 'spell', 'arcane']) if (!Object.hasOwn(configuredModels, tier)) configuredModels[tier] = mapping
+        if (typeof raw['defaultTier'] !== 'string' || !['cantrip', 'spell', 'arcane'].includes(raw['defaultTier'])) (raw as Record<string, unknown>)['defaultTier'] = 'cantrip'
+      }
       return { ok: true, raw: { ...raw, models: configuredModels } }
     },
   })
