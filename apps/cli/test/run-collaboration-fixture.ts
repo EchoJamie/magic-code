@@ -42,7 +42,11 @@ export function callKindOf(body: Record<string, unknown>): CallKind {
   const system = messages.filter(one => one.role === 'system')
     .map(one => typeof one.content === 'string' ? one.content : JSON.stringify(one.content)).join('\n')
   if (system.includes('Arcane 只读顾问')) return 'advisor'
-  if (system.includes('单机开发智能体')) return 'agent'
+  // ⚠️ 认**段结构**（`## 身份` 是冻结的四段之一），不认身份段的具体措辞——
+  // 措辞属实现级、随内核迭代（2026-11-21 身份段从「单机开发智能体」改成搭档，
+  // 认措辞的写法当场把主 Agent 判成 internal，咨询用例全线等不到结果）。
+  // 内部调用（压缩交接 · 接续准备）的系统提示不进四段模板，故不命中。
+  if (system.includes('## 身份')) return 'agent'
   return 'internal'
 }
 
