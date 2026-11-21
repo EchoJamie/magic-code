@@ -53,7 +53,7 @@ test('TS 与 Swift 按同一文件格式交叉编辑，字段校验、凭据隐�
   const actions: SettingsAction[] = [
     { type: 'provider.save', provider: 'local', baseURL: 'http://localhost:9010/custom/v1', auth: 'none', protocol: 'responses' },
     { type: 'model.override', provider: 'local', model: '原始型号/Case-Sensitive', override: { limits: { maxContextTokens: 40000, maxInputTokens: 32000, maxOutputTokens: 8000 }, reasoningSupport: { disable: true, default: 'on', levels: ['minimal', 'low', 'private'], budget: { minTokens: 1024 } } } },
-    { type: 'model.configure', provider: 'local', model: '原始型号/Case-Sensitive', choice: 'default', initialize: true },
+    { type: 'model.configure', provider: 'local', model: '原始型号/Case-Sensitive', choice: 'cantrip', initialize: true },
     { type: 'role.save', id: 'review', role: { name: '审查', instructions: '只检查指定内容', tools: [], model: { choice: 'spell', reasoning: { mode: 'off' } } } },
     { type: 'mcp.save', name: 'local', server: { command: 'echo', args: ['中文'] }, secrets: { PRIVATE_TOKEN: 'MCP_SECRET_SENTINEL' } },
     { type: 'sources.set', source: 'rules.sources', paths: ['~/规则', '/tmp/来源'] },
@@ -113,7 +113,7 @@ test('角色保存两端一致：能力与可解析性不拦，结构冲突两�
     // 档位未配置、chat=false／思考未知、官方适配不可解析——两端都照存。
     for (const action of [
       { type: 'role.save', id: 'future', role: { name: '先定义', instructions: '稍后补模型', model: { choice: 'cantrip' } } },
-      { type: 'role.save', id: 'chatless', role: { name: '无对话', instructions: '先存模板', model: { choice: 'default', reasoning: { mode: 'level', level: 'xhigh' } } } },
+      { type: 'role.save', id: 'chatless', role: { name: '无对话', instructions: '先存模板', model: { choice: 'cantrip', reasoning: { mode: 'level', level: 'xhigh' } } } },
       { type: 'role.save', id: 'unlisted', role: { name: '未列型号', instructions: '稍后核对', model: { choice: 'spell', reasoning: { mode: 'off' } } } },
     ] as SettingsAction[]) {
       const before = readFileSync(g.configPath, 'utf8')
@@ -127,7 +127,7 @@ test('角色保存两端一致：能力与可解析性不拦，结构冲突两�
     // 缺档位与未知思考模式这类结构冲突——两端都拒，且不落盘。
     for (const action of [
       { type: 'role.save', id: 'bad', role: { name: '缺档位', instructions: '只写思考', model: { reasoning: { mode: 'off' } } } },
-      { type: 'role.save', id: 'bad', role: { name: '未知思考', instructions: '拼错模式', model: { choice: 'default', reasoning: { mode: 'telepathy' } } } },
+      { type: 'role.save', id: 'bad', role: { name: '未知思考', instructions: '拼错模式', model: { choice: 'cantrip', reasoning: { mode: 'telepathy' } } } },
     ] as unknown as SettingsAction[]) {
       const before = readFileSync(g.configPath, 'utf8')
       await expect(settings.apply(action, configStamp(g.configPath))).rejects.toThrow()
@@ -189,7 +189,7 @@ test('原生保存不再因协议兼容或对话能力拒绝：官方提示外�
     const saved = await native({ type: 'provider.save', provider: 'ds', vendor: 'deepseek', region: 'official', protocol: 'responses' })
     expect(saved.error).toBeUndefined(); expect(saved.saved).toBe(true)
     // 型号不在官方提示里也不再抛「模型不支持所选官方协议或区域」——映射照旧落盘。
-    const mapped = await native({ type: 'model.configure', provider: 'ds', model: 'deepseek-v4-pro', choice: 'default' })
+    const mapped = await native({ type: 'model.configure', provider: 'ds', model: 'deepseek-v4-pro', choice: 'cantrip' })
     expect(mapped.error).toBeUndefined(); expect(mapped.saved).toBe(true)
     // 型号明确不支持对话也不再拦保存。
     const overridden = await native({ type: 'model.override', provider: 'ds', model: 'deepseek-v4-pro', override: { capabilities: { chat: false } } })
@@ -398,7 +398,7 @@ test('原生保存不再因协议兼容或对话能力拒绝：官方提示外�
     const saved = await native({ type: 'provider.save', provider: 'ds', vendor: 'deepseek', region: 'official', protocol: 'responses' })
     expect(saved.error).toBeUndefined(); expect(saved.saved).toBe(true)
     // 型号不在官方提示里也不再抛「模型不支持所选官方协议或区域」——映射照旧落盘。
-    const mapped = await native({ type: 'model.configure', provider: 'ds', model: 'deepseek-v4-pro', choice: 'default' })
+    const mapped = await native({ type: 'model.configure', provider: 'ds', model: 'deepseek-v4-pro', choice: 'cantrip' })
     expect(mapped.error).toBeUndefined(); expect(mapped.saved).toBe(true)
     // 型号明确不支持对话也不再拦保存（请求时再明确说明）。
     const overridden = await native({ type: 'model.override', provider: 'ds', model: 'deepseek-v4-pro', override: { capabilities: { chat: false } } })

@@ -157,7 +157,7 @@ export function createScriptedKernel(options: ScriptedKernelOptions = {}): Scrip
   const onInput = (text: string): void => {
     script([
       () => emit('turn.start', {}),
-      () => emit('model.call.start', { choice: 'default', model: SCRIPT_MODEL }),
+      () => emit('model.call.start', { choice: 'cantrip', model: SCRIPT_MODEL }),
       () => emit('model.delta', { channel: 'thinking', text: '先看看工作区。' }),
       () => emit('model.delta', { channel: 'text', text: `收到：「${text}」。我跑一下 ——` }),
       () => emit('model.delta', { channel: 'toolcall', name: 'exec', id: 'tc_1', text: '{"cmd":"ls"' }),

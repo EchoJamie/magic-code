@@ -561,7 +561,7 @@ export function createModelSettings(ui: {
       : ui.view.collaboration?.members.find(one => one.agent.agentId === collaborationModel?.member)?.agent.name ?? '该成员'
 
   const modelPickerHint = (note: string): string => {
-    if (modelScope === 'default' && ui.view.configuredModels.default === undefined) return [
+    if (Object.keys(ui.view.configuredModels).length === 0) return [
       '使用此模型开始：设为默认，并先用于尚未配置的三个能力档位，之后可分别调整', note,
     ].filter(Boolean).join('\n')
     const same = modelScope === 'session' && ui.view.configuredModels.cantrip !== undefined
@@ -761,7 +761,7 @@ export function createModelSettings(ui: {
       if (modelScope !== 'session') {
         if (mappingSave !== null) return true
         const choice = modelScope
-        const first = choice === 'default' && ui.view.configuredModels.default === undefined
+        const first = Object.keys(ui.view.configuredModels).length === 0
         mappingSave = first ? 'start' : 'update'
         send({
           type: 'model.configure',
@@ -827,7 +827,7 @@ export function createModelSettings(ui: {
         } else if (!visible) {
           refreshModelPicker(event.data.note ?? '')
         }
-        if (start && event.data.saved === true && !ui.chooseInWindow({ choice: 'default' })) send({ type: 'model.switch', choice: 'default' })
+        if (start && event.data.saved === true && !ui.chooseInWindow({ choice: 'cantrip' })) send({ type: 'model.switch', choice: 'cantrip' })
         if (event.data.note !== undefined) receipt(event.data.note)
       } else if (intent === 'model') {
         openModelPicker(event.data.note ?? '')

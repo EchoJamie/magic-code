@@ -27,7 +27,7 @@ function outcomesOf(events: readonly KernelEvent[]): Map<string, boolean> {
 for (const state of ['accepted', 'queued', 'stopped'] as const) test(`显式read角色的普通成员经完整协作链读取三种知识并维护自身记忆，生命周期 ${state}`, async () => {
   const stage = makeStage({ config: { agentRoles: { reader: { name: '查证', instructions: '只读核对业务材料', tools: ['read'] } } } })
   const store = createRecordsStore({ dataDir: stage.dataDir, workspace: [realpathSync(stage.workspace)] })
-  const model = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'default' as const, provider: 'test', model: 'test' }
+  const model = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'cantrip' as const, provider: 'test', model: 'test' }
   const rootSource = store.serviceFor('origin').appendEntry({ kind: 'user', content: { text: '用户原工作证据' }, at: 1 })
   const origin = { sessionId: 'origin', entryId: rootSource }
   const root = store.collaboration.registerAgent({ operationId: 'root', sessionId: 'origin', name: '入口', role: '', model, at: 1 })

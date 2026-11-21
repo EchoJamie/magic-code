@@ -463,7 +463,7 @@ describe('运行时切换 · 命令面（补锚：结果即事件）', () => {
       expect(events.map((event) => event.kind)).not.toContain('error')
 
       // 没成 ＝ 原选原样保留（切不动就不动）：注册表仍指 alpha
-      expect(assembly.models?.current()).toEqual({ choice: 'default', provider: 'alpha', model: 'alpha-1', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' })
+      expect(assembly.models?.current()).toEqual({ choice: 'cantrip', provider: 'alpha', model: 'alpha-1', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' })
     } finally {
       land.dispose()
     }

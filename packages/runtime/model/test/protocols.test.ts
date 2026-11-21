@@ -142,7 +142,7 @@ test('注册表按当前配置重新解析来源，旧记录里的协议与地�
   const providers = { local: config }
   const requests: string[] = []
   const registry = createModelRegistry({ providers, stamper: makeTestStamper(), fetch: async url => { requests.push(String(url)); return sse(chunks('chat-completions', false)) } })
-  expect(registry.use({ choice: 'default', provider: 'local', model: 'exact' }).ok).toBe(true)
+  expect(registry.use({ choice: 'cantrip', provider: 'local', model: 'exact' }).ok).toBe(true)
   const previous = registry.current()!
   // 配置换了协议：下一次请求按新协议组装，旧记录里的 protocol 只作诊断。
   providers.local = { ...config, protocol: 'responses' }
@@ -273,7 +273,7 @@ test('在飞的请求按启动时资料结束，下一次请求按当前资料�
   const registry = createModelRegistry({ providers: { local: { baseURL: 'http://local/v1', protocol: 'chat-completions', auth: 'none' } }, stamper: makeTestStamper(),
     modelInfoOf: (_provider, model) => ({ ...known, id: model }), fetch: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return sse(chunks('chat-completions', false)) },
   })
-  expect(registry.use({ choice: 'default', provider: 'local', model: 'exact' }).ok).toBe(true)
+  expect(registry.use({ choice: 'cantrip', provider: 'local', model: 'exact' }).ok).toBe(true)
   // 这一趟先起（规格在 `stream()` 那一刻捕获），随后缓存里的资料变了。
   const inFlight = registry.stream({ messages: [{ role: 'user', content: 'hi' }] })
   known = { id: 'exact', limits: { maxContextTokens: 9000, maxOutputTokens: 800 }, capabilities: { image: true } }

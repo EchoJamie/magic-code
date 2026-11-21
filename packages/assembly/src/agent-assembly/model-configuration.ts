@@ -36,6 +36,7 @@ export function createModelConfiguration(input: {
   let providerBook: Readonly<Record<string, ProviderConfig>> = loaded.config.providers
 
   let configuredModels: MagicConfig['models'] = loaded.config.models
+  let defaultTier: MagicConfig['defaultTier'] = loaded.config.defaultTier
 
   /** 网页服务引用（U94）——与连接表一起按配置水位刷新。 */
   let webConfig: MagicConfig['web'] = loaded.config.web
@@ -92,6 +93,7 @@ export function createModelConfiguration(input: {
     const previous = providerBook
     providerBook = reloaded.config.providers
     configuredModels = reloaded.config.models
+    defaultTier = reloaded.config.defaultTier
     webConfig = reloaded.config.web
     configStamp = stamp
     // 先发布新快照，避免 drop 读取连接时重入；同步作废在途位，异步收妥缓存文件。
@@ -264,6 +266,7 @@ export function createModelConfiguration(input: {
     providerBook = next
     const reloaded = loadConfig({ path: loaded.path, magic }).config
     configuredModels = reloaded.models
+    defaultTier = reloaded.defaultTier
     webConfig = reloaded.web
 
     modelInfo.drop(provider)
@@ -276,6 +279,7 @@ export function createModelConfiguration(input: {
     info: modelInfo,
     get providers() { return providerBook },
     get configured() { return configuredModels },
+  get defaultTier() { return defaultTier },
     get stamp() { return configStamp },
     sync: syncProviderBook,
     registry: registryOf,

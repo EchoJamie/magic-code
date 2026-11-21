@@ -14,7 +14,7 @@ test('39KB协作正文与27未决点经过真实工作循环：一次简报、�
   const stage = makeStage()
   const seeded = createRecordsStore({ dataDir: stage.dataDir, workspace: [realpathSync(stage.workspace)] })
   const origin = { sessionId: 'origin', entryId: seeded.serviceFor('origin').appendEntry({ kind: 'user', content: { text: '始终只读检查，禁止写入' }, at: 1 }) }
-  const model = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'default' as const, provider: 'test', model: 'test' }
+  const model = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'cantrip' as const, provider: 'test', model: 'test' }
   const coordinator = seeded.collaboration.registerAgent({ operationId: 'root', sessionId: 'origin', name: '入口', role: '', model, at: 1 })
   seeded.collaboration.openCollaboration(coordinator.agentId, { operationId: 'open', origin, at: 1 })
   const member = seeded.collaboration.spawn(coordinator.agentId, { operationId: 'spawn', sessionId: 'researcher', name: '研究', role: '', model,

@@ -28,7 +28,7 @@ test('六类设置的实际配置消费：连接/映射/材料/角色/根/呈现
   const g = setup()
   writeFileSync(g.config, JSON.stringify({ dataDir: g.dataDir, untouched: { keep: 1 } }))
   await g.apply({ type: 'provider.save', provider: 'ds', vendor: 'deepseek', apiKey: 'SENTINEL_PROVIDER_KEY' })
-  await g.apply({ type: 'model.configure', choice: 'default', provider: 'ds', model: 'deepseek-v4-pro', initialize: true })
+  await g.apply({ type: 'model.configure', choice: 'cantrip', provider: 'ds', model: 'deepseek-v4-pro', initialize: true })
   await g.apply({ type: 'model.configure', choice: 'arcane', provider: 'ds', model: 'deepseek-flash' })
   await g.apply({ type: 'model.override', provider: 'ds', model: 'deepseek-v4-pro', override: { limits: { maxContextTokens: 256000 }, capabilities: { image: false } } })
   await g.apply({ type: 'role.save', id: 'reviewer', role: { name: '审查者', instructions: '只读审查', tools: [], model: { choice: 'arcane', reasoning: { mode: 'default' } } } })
@@ -39,7 +39,7 @@ test('六类设置的实际配置消费：连接/映射/材料/角色/根/呈现
   await g.apply({ type: 'workspace.set', roots: [g.workspace] })
   await g.apply({ type: 'prefs.set', statusLine: { cells: ['workspace', 'model', 'reasoning', 'context', 'session'], color: false }, reducedMotion: true })
   const loaded = loadConfig({ magic: g.context.magic }), config = loaded.config
-  expect(config.models?.default?.model).toBe('deepseek-v4-pro'); expect(config.models?.spell?.model).toBe('deepseek-v4-pro'); expect(config.models?.arcane?.model).toBe('deepseek-flash')
+  expect(config.models?.cantrip?.model).toBe('deepseek-v4-pro'); expect(config.models?.spell?.model).toBe('deepseek-v4-pro'); expect(config.models?.arcane?.model).toBe('deepseek-flash')
   const picked = resolveModelChoice({ providers: config.providers, configuredModels: config.models, config: config.agentRoles?.reviewer?.model })
   expect(picked.ok && picked.selection.model).toBe('deepseek-flash')
   expect(config.agentRoles?.reviewer?.tools).toEqual([])
@@ -105,13 +105,13 @@ test('无效字段与数据责任拒写；角色工具缺省/空列表、清除�
   expect(readFileSync(g.config, 'utf8')).toBe(before)
   expect('canChangeData' in await g.settings.read()).toBe(false)
   expect(readFileSync(g.config, 'utf8')).toBe(before)
-  await g.apply({ type: 'provider.save', provider: 'ds', vendor: 'deepseek' }); await g.apply({ type: 'model.configure', choice: 'default', provider: 'ds', model: 'deepseek-v4-pro' })
+  await g.apply({ type: 'provider.save', provider: 'ds', vendor: 'deepseek' }); await g.apply({ type: 'model.configure', choice: 'cantrip', provider: 'ds', model: 'deepseek-v4-pro' })
   await expect(g.apply({ type: 'provider.remove', provider: 'ds' })).rejects.toThrow('引用')
   await g.apply({ type: 'role.save', id: 'a', role: { name: '角色', instructions: '只读', tools: [] } })
   expect(loadConfig({ magic: g.context.magic }).config.agentRoles?.a?.tools).toEqual([])
   await g.apply({ type: 'role.save', id: 'a', role: { name: '角色', instructions: '只读' } })
   expect(loadConfig({ magic: g.context.magic }).config.agentRoles?.a?.tools).toBeUndefined()
-  await g.apply({ type: 'model.clear', choice: 'default' }); await g.apply({ type: 'provider.remove', provider: 'ds' })
+  await g.apply({ type: 'model.clear', choice: 'cantrip' }); await g.apply({ type: 'provider.remove', provider: 'ds' })
   expect('canChangeData' in await g.settings.read()).toBe(false)
 })
 
@@ -124,26 +124,25 @@ test('角色保存只判结构与明显冲突：档位未配置、地址不可�
       unlisted: { vendor: 'no-such-vendor' },
     },
     models: {
-      default: { provider: 'local', model: 'chatless' },
       spell: { provider: 'unlisted', model: 'mystery' },
     },
   }))
   // 档位未配置：先定义角色、后补模型。
   await g.apply({ type: 'role.save', id: 'future', role: { name: '先定义', instructions: '稍后补模型', model: { choice: 'cantrip' } } })
   // chat=false 与思考能力未知：保存不拦，创建或真实请求时再解析。
-  await g.apply({ type: 'role.save', id: 'chatless', role: { name: '无对话', instructions: '先存模板', model: { choice: 'default', reasoning: { mode: 'level', level: 'xhigh' } } } })
+  await g.apply({ type: 'role.save', id: 'chatless', role: { name: '无对话', instructions: '先存模板', model: { choice: 'cantrip', reasoning: { mode: 'level', level: 'xhigh' } } } })
   // 官方供应商适配无法解析（地址来源不可确定）：同样照存。
   await g.apply({ type: 'role.save', id: 'unlisted', role: { name: '未列型号', instructions: '稍后核对', model: { choice: 'spell', reasoning: { mode: 'off' } } } })
   const roles = loadConfig({ magic: g.context.magic }).config.agentRoles
   expect(roles?.future?.model).toEqual({ choice: 'cantrip' })
-  expect(roles?.chatless?.model).toEqual({ choice: 'default', reasoning: { mode: 'level', level: 'xhigh' } })
+  expect(roles?.chatless?.model).toEqual({ choice: 'cantrip', reasoning: { mode: 'level', level: 'xhigh' } })
   expect(roles?.unlisted?.model).toEqual({ choice: 'spell', reasoning: { mode: 'off' } })
 
   // 结构、枚举、类型这些明显冲突仍拒绝，且不落盘。
   const before = readFileSync(g.config, 'utf8')
   await expect(g.apply({ type: 'role.save', id: 'bad', role: { name: '缺档位', instructions: '只写思考', model: { reasoning: { mode: 'off' } } } })).rejects.toThrow('明确选择')
   await expect(g.apply({ type: 'role.save', id: 'bad', role: { name: '未知档位', instructions: '拼错枚举', model: { choice: 'bogus' } as never } })).rejects.toThrow()
-  await expect(g.apply({ type: 'role.save', id: 'bad', role: { name: '未知思考', instructions: '拼错模式', model: { choice: 'default', reasoning: { mode: 'telepathy' } } as never } })).rejects.toThrow()
+  await expect(g.apply({ type: 'role.save', id: 'bad', role: { name: '未知思考', instructions: '拼错模式', model: { choice: 'cantrip', reasoning: { mode: 'telepathy' } } as never } })).rejects.toThrow()
   expect(readFileSync(g.config, 'utf8')).toBe(before)
 })
 

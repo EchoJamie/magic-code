@@ -50,9 +50,9 @@ test('读取时补充精确型号，原始列表不增加条目；供应商逐�
   expect(info.capabilities?.tools).toBe(false)
   expect(modelSpecOf(config, id, info)).toMatchObject({ maxOutputTokens: 4096, inputBudget: 895_904 })
   for (const unknown of [`${id}-Preview`, id.toLowerCase(), 'toString', 'constructor', '__proto__']) expect(service.model('mm', unknown)).toBeUndefined()
-  expect(selectModel({ providers: { mm: config }, modelInfoOf: () => info }, { choice: 'default', provider: 'mm', model: id, reasoning: { mode: 'level', level: 'high' } }).ok).toBe(true)
-  expect(selectModel({ providers: { mm: config }, modelInfoOf: () => info }, { choice: 'default', provider: 'mm', model: id, reasoning: { mode: 'off' } }).ok).toBe(false)
-  expect(selectModel({ providers: { mm: config } }, { choice: 'default', provider: 'mm', model: '新正式型号' }).ok).toBe(true)
+  expect(selectModel({ providers: { mm: config }, modelInfoOf: () => info }, { choice: 'cantrip', provider: 'mm', model: id, reasoning: { mode: 'level', level: 'high' } }).ok).toBe(true)
+  expect(selectModel({ providers: { mm: config }, modelInfoOf: () => info }, { choice: 'cantrip', provider: 'mm', model: id, reasoning: { mode: 'off' } }).ok).toBe(false)
+  expect(selectModel({ providers: { mm: config } }, { choice: 'cantrip', provider: 'mm', model: '新正式型号' }).ok).toBe(true)
 })
 
 test('接口明确给出的思考字段优先，其余字段保留目录值', () => {

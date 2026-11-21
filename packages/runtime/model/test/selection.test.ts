@@ -8,7 +8,7 @@ const providers: Record<string, ProviderConfig> = {
   mm: { vendor: 'minimax', protocol: 'chat-completions', apiKey: 'local-mm' },
   missing: { vendor: 'deepseek', protocol: 'chat-completions' },
 }
-const defaults: AgentModelConfig = { protocol: 'chat-completions', endpoint: 'https://api.deepseek.com', choice: 'default', provider: 'ds', model: 'deepseek-flash', reasoning: { mode: 'level', level: 'high' } }
+const defaults: AgentModelConfig = { protocol: 'chat-completions', endpoint: 'https://api.deepseek.com', choice: 'cantrip', provider: 'ds', model: 'deepseek-flash', reasoning: { mode: 'level', level: 'high' } }
 const known = (_p: string, m: string): ModelInfo | undefined => ['deepseek-flash', 'MiniMax-M3'].includes(m) ? { id: m, reasoning: { disable: true, levels: ['low', 'high', 'max'] } } : undefined
 const registry = (modelInfoOf: (p: string, m: string) => ModelInfo | undefined = known) => createModelRegistry({
   providers, stamper: makeTestStamper(), env: {}, modelInfoOf,
@@ -126,10 +126,10 @@ describe('完整选择的校验与原子提交', () => {
 test('对话能力不再是硬闸门：选择照旧成立，能力留给真实请求解析', () => {
   // 模型资料明确 `chat == false` 不再阻断选择。
   expect(selectModel({ providers, modelInfoOf: () => ({ id: 'deepseek-v4-pro', capabilities: { chat: false } }) },
-    { choice: 'default', provider: 'ds', model: 'deepseek-v4-pro', reasoning: { mode: 'default' } }).ok).toBe(true)
+    { choice: 'cantrip', provider: 'ds', model: 'deepseek-v4-pro', reasoning: { mode: 'default' } }).ok).toBe(true)
   // 用户能力覆盖里写死 `chat == false` 同样不再阻断。
   expect(selectModel({ providers: { ds: { ...providers.ds, modelOverrides: { 'deepseek-v4-pro': { capabilities: { chat: false } } } } } },
-    { choice: 'default', provider: 'ds', model: 'deepseek-v4-pro', reasoning: { mode: 'default' } }).ok).toBe(true)
+    { choice: 'cantrip', provider: 'ds', model: 'deepseek-v4-pro', reasoning: { mode: 'default' } }).ok).toBe(true)
 })
 
 test('有效思考支持与实际映射同源，协议不能表达的用户声明不开放', async () => {

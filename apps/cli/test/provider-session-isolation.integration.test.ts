@@ -29,7 +29,7 @@ function fixture(background = false) {
   } })
   const endpoint = `http://127.0.0.1:${server.port}`
   const selections = {
-    a: { choice: 'default' as const, provider: 'service-a', model: 'A/Exact:2026', protocol: 'chat-completions' as const, endpoint: `${endpoint}/service-a/v1` },
+    a: { choice: 'cantrip' as const, provider: 'service-a', model: 'A/Exact:2026', protocol: 'chat-completions' as const, endpoint: `${endpoint}/service-a/v1` },
     b: { choice: 'spell' as const, provider: 'service-b', model: 'B/Exact:2026', protocol: 'chat-completions' as const, endpoint: `${endpoint}/service-b/v2` },
   }
   const stage = makeStage({ config: {

@@ -17,7 +17,7 @@ function fixture() {
   const records = store.collaboration
   const service = store.serviceFor('origin')
   const origin = { sessionId: 'origin', entryId: service.appendEntry({ kind: 'user', content: { text: '共同用户要求：仅核对，不修改业务' }, at: 1 }) }
-  const model = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'default' as const, provider: 'test', model: 'test' }
+  const model = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'cantrip' as const, provider: 'test', model: 'test' }
   const coordinator = records.registerAgent({ operationId: 'identity', sessionId: 'origin', name: '入口', role: '', model, at: 2 })
   const collaboration = records.openCollaboration(coordinator.agentId, { operationId: 'open', origin, at: 3 })
   const change = { id: 'K', expectedRevision: 0, scope: { kind: 'project' as const, workspace }, topic: '已有经验', terms: [], conclusion: OLD,

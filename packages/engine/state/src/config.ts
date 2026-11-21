@@ -519,15 +519,23 @@ function asMcpConfig(value: unknown, path: string): McpConfig {
 
 
 function asModelChoice(value: unknown, path: string, field: string): ModelChoice {
-  if (typeof value !== 'string' || !['default', 'cantrip', 'spell', 'arcane'].includes(value)) {
-    throw new ConfigError(path, `${field} 只能选择 default / cantrip / spell / arcane`)
+  if (typeof value !== 'string' || !['cantrip', 'spell', 'arcane'].includes(value)) {
+    throw new ConfigError(path, `${field} 只能选择 cantrip / spell / arcane`)
   }
   return value as ModelChoice
 }
 
 function asModels(value: unknown, path: string, providers: MagicConfig['providers']): NonNullable<MagicConfig['models']> {
   const raw = asObject(value, path, 'models')
-  return Object.fromEntries(Object.entries(raw).map(([key, value]) => {
+  // **旧配置迁移**（2026-11-22 裁定：Default 不是档位）：旧形的 `models.default` 映射
+  // 作**缺省种子**补进缺失的三档，然后从键里退场——读时迁移，下次保存自然落盘。
+  const legacyRaw = raw['default']
+  const legacy = legacyRaw !== undefined && legacyRaw !== null && typeof legacyRaw === 'object' && !Array.isArray(legacyRaw)
+    && typeof (legacyRaw as Record<string, unknown>)['provider'] === 'string' && typeof (legacyRaw as Record<string, unknown>)['model'] === 'string'
+    ? legacyRaw as { readonly provider: string; readonly model: string }
+    : undefined
+  const entries = Object.entries(raw).filter(([key]) => key !== 'default')
+  const parsed = Object.fromEntries(entries.map(([key, value]) => {
     const choice = asModelChoice(key, path, `models.${key}`)
     const field = `models.${choice}`
     const item = asObject(value, path, field)
@@ -537,6 +545,10 @@ function asModels(value: unknown, path: string, providers: MagicConfig['provider
     if (!Object.hasOwn(providers, provider)) throw new ConfigError(path, `${field}.provider 指向未知连接「${provider}」`)
     return [choice, { provider, model }]
   }))
+  if (legacy !== undefined) {
+    for (const tier of ['cantrip', 'spell', 'arcane'] as const) if (parsed[tier] === undefined) parsed[tier] = { provider: legacy.provider, model: legacy.model }
+  }
+  return parsed
 }
 
 /** 读取已保存的界面配置；缺省保持默认，坏值沿用配置加载错误出口。 */
@@ -664,9 +676,12 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
   }
 
   const configuredModels = raw['models'] === undefined ? undefined : asModels(raw['models'], path, providers)
+  // 开局档位记录（2026-11-22 裁定）：/model 切档时更新；新会话与未指定档位的工作落在它指向的档。
+  const defaultTier = raw['defaultTier'] === undefined ? undefined : asModelChoice(raw['defaultTier'], path, 'defaultTier')
   // 网页服务（U94）——引用一条已有的 DeepSeek 官方连接；不另存凭据。
   const web = raw['web'] === undefined ? undefined : asWeb(raw['web'], path)
-  const providerId = configuredModels?.default?.provider
+  const providerId = configuredModels === undefined ? undefined
+    : configuredModels[defaultTier ?? 'cantrip']?.provider
   const provider = providerId === undefined ? undefined : providers[providerId]
   const agentRoles = raw['agentRoles'] === undefined ? undefined : asAgentRoles(raw['agentRoles'], path, home)
 
@@ -714,6 +729,7 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
     path,
     config: {
       ...(configuredModels === undefined ? {} : { models: configuredModels }),
+      ...(defaultTier === undefined ? {} : { defaultTier }),
       providers,
       ...(web === undefined ? {} : { web }),
       ...(workspaceRoots === undefined ? {} : { workspaceRoots }),
@@ -756,8 +772,10 @@ export function describeConfig(loaded: LoadedConfig): string {
   const keyFrom = loaded.provider.apiKey?.trim()
     ? '配置文件'
     : `环境变量 ${apiKeyEnvVarOf(loaded.providerId)}`
-  // 型号可能还没选过（新接入的连接）——那就不印那一格，不写「（undefined）」
-  const model = loaded.config.models?.default?.model === undefined ? '' : `（${loaded.config.models?.default?.model}）`
+  // 型号可能还没选过（新接入的连接）——那就不印那一格，不写「（undefined）」。
+  // 开局档位记录指向的档的型号（Default 不是档位，是这条记录本身）。
+  const bootTier = loaded.config.defaultTier ?? 'cantrip'
+  const model = loaded.config.models?.[bootTier]?.model === undefined ? '' : `（${loaded.config.models?.[bootTier]?.model}）`
 
   return (
     `配置 ${loaded.path} · 供应商 ${loaded.providerId}${model}` +

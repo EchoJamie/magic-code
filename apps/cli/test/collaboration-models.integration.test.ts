@@ -57,9 +57,9 @@ function setup(rolePatch: Partial<AgentRoleConfig> = {}, image?: boolean) {
   writeFileSync(configPath, JSON.stringify(config))
   const store = createRecordsStore({ dataDir, workspace: [realpathSync(workspace)] })
   const origin = { sessionId: 'origin', entryId: store.serviceFor('origin').appendEntry({ kind: 'user', content: { text: '原始目标' }, at: 1 }) }
-  const coordinator = store.collaboration.registerAgent({ operationId: 'register', sessionId: 'origin', name: '入口', role: '', model: { choice: 'default', provider: 'ds', model: 'entry-model', protocol: 'chat-completions', endpoint: providers.ds.baseURL, reasoning: { mode: 'off' } }, at: 2 })
+  const coordinator = store.collaboration.registerAgent({ operationId: 'register', sessionId: 'origin', name: '入口', role: '', model: { choice: 'cantrip', provider: 'ds', model: 'entry-model', protocol: 'chat-completions', endpoint: providers.ds.baseURL, reasoning: { mode: 'off' } }, at: 2 })
   const collaboration = store.collaboration.openCollaboration(coordinator.agentId, { operationId: 'open', origin, at: 3 })
-  const { agent, delegation } = store.collaboration.spawn(coordinator.agentId, { operationId: 'spawn', sessionId: 'member', name: '成员', role: 'reader', responsibility: 'PERSISTED_RESPONSIBILITY', model: { choice: 'default', provider: 'mm', model: 'member-model', protocol: 'chat-completions', endpoint: providers.mm.baseURL, reasoning: { mode: 'default' } }, body: [{ kind: 'text', text: '按职责审查' }], scope: '只读工作', source: origin, authorization: [origin], at: 4 })
+  const { agent, delegation } = store.collaboration.spawn(coordinator.agentId, { operationId: 'spawn', sessionId: 'member', name: '成员', role: 'reader', responsibility: 'PERSISTED_RESPONSIBILITY', model: { choice: 'cantrip', provider: 'mm', model: 'member-model', protocol: 'chat-completions', endpoint: providers.mm.baseURL, reasoning: { mode: 'default' } }, body: [{ kind: 'text', text: '按职责审查' }], scope: '只读工作', source: origin, authorization: [origin], at: 4 })
   store.collaboration.respondToDelegation(agent.agentId, { operationId: 'accept', delegationId: delegation.delegationId, response: 'accept', at: 5 })
   const open = (session = 'member', coordinate = true, collaborationChanged?: () => void) => assemble({
     cwd: changed, session, magic, config: loadConfig({ path: configPath, magic }),
@@ -180,7 +180,7 @@ describe('成员主机装配', () => {
         const after = JSON.parse(db.query<{ data: string }, [string]>('SELECT data FROM ledger_members WHERE session = ?').get('member')!.data)
         expect(Object.hasOwn(after.model, missing)).toBe(false)
         expect(f.store.collaboration.getAgent(f.agent.agentId)?.model).toMatchObject({
-          choice: 'default', provider: 'mm', model: 'member-model',
+          choice: 'cantrip', provider: 'mm', model: 'member-model',
         })
       } finally { db.close(); f.close() }
     }
@@ -257,7 +257,7 @@ describe('成员主机装配', () => {
     const f = setup()
     const peer = f.store.collaboration.spawn(f.coordinator.agentId, {
       operationId: 'spawn-peer', sessionId: 'peer', name: '另一成员', role: 'reader', responsibility: '独立审查',
-      model: { choice: 'default', provider: 'ds', model: 'peer-model', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'level', level: 'high' } },
+      model: { choice: 'cantrip', provider: 'ds', model: 'peer-model', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'level', level: 'high' } },
       body: [{ kind: 'text', text: '检查另一部分' }], scope: '只读工作',
       source: f.collaboration.origin, authorization: [f.collaboration.origin], at: 6,
     })
@@ -333,10 +333,10 @@ describe('成员主机装配', () => {
       }
       const update = app.records.collaboration.updateAgent
       app.records.collaboration.updateAgent = () => { throw new Error('模拟持久更新失败') }
-      expect(app.applyModel({ choice: 'default', provider: 'ds', model: 'another', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'off' } }).ok).toBe(false)
+      expect(app.applyModel({ choice: 'cantrip', provider: 'ds', model: 'another', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'off' } }).ok).toBe(false)
       expect(app.models).toBe(before)
       app.records.collaboration.updateAgent = update
-      const changed = { choice: 'default' as const, provider: 'ds', model: 'another', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'off' as const } }
+      const changed = { choice: 'cantrip' as const, provider: 'ds', model: 'another', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'off' as const } }
       expect(app.applyModel(changed).ok).toBe(true)
       expect(f.store.collaboration.getAgent(f.agent.agentId)?.model).toEqual(changed)
       app.close()
@@ -361,7 +361,7 @@ describe('成员主机装配', () => {
     const shell = attachShell(app.shell)
     try {
       await app.ready(); await app.boot()
-      const model = { choice: 'default' as const, provider: 'ds', model: 'committed', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'off' as const } }
+      const model = { choice: 'cantrip' as const, provider: 'ds', model: 'committed', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'off' as const } }
       expect(app.applyModel(model)).toEqual({ ok: true, selection: model })
       expect(app.models?.current()).toEqual(model)
       expect(f.store.collaboration.getAgent(f.agent.agentId)?.model).toEqual(model)
@@ -558,7 +558,7 @@ describe('manager 模型预检只读已有缓存', () => {
       configuration.models.default = { provider: 'ds', model: 'deepseek-flash' }
       writeFileSync(f.configPath, JSON.stringify(configuration))
       await cache.replace(snapshot, cacheAccessFor({ provider: 'ds', configPath: f.configPath, apiKey: f.providers.ds.apiKey, processToken: 'test' }))
-      const defaults = { choice: 'default' as const, provider: 'ds', model: 'deepseek-flash', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'level' as const, level: 'high' } }
+      const defaults = { choice: 'cantrip' as const, provider: 'ds', model: 'deepseek-flash', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'level' as const, level: 'high' } }
       await expect(resolveManagedModel({ environment: {}, magic: f.magic, defaults })).rejects.toThrow('不支持思考档位')
       expect(await resolveManagedModel({ environment: {}, magic: f.magic, defaults, model: { reasoning: { mode: 'level', level: 'low' } } })).toEqual({ ...defaults, reasoning: { mode: 'level', level: 'low' } })
       await expect(resolveManagedModel({ environment: {}, magic: f.magic, defaults, role: 'unknown' })).rejects.toThrow('未知角色')

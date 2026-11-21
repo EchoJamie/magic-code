@@ -54,7 +54,7 @@ describe('无执行者的真实只读目录', () => {
     try {
       const models = await answer({ type: 'model.list' }, g.context, 'model.catalog')
       expect(models.entries.map((row) => row.provider)).toEqual(['ds'])
-      expect(models.current).toEqual({ choice: 'default' as const, provider: 'ds', model: 'deepseek-flash', protocol: 'responses', endpoint: 'https://api.deepseek.com' })
+      expect(models.current).toEqual({ choice: 'cantrip' as const, provider: 'ds', model: 'deepseek-flash', protocol: 'responses', endpoint: 'https://api.deepseek.com' })
       const providers = await answer({ type: 'provider.list' }, g.context, 'provider.catalog')
       expect(providers.vendors.length).toBeGreaterThan(0)
       expect(providers.entries).toEqual(models.entries)
@@ -121,7 +121,7 @@ describe('无执行者的真实只读目录', () => {
     await cache.replace({ provider: 'ds', scope: 'deepseek@https://api.deepseek.com#chat-completions', fetchedAt: 1,
       models: [{ id: 'deepseek-flash', reasoning: { levels: ['low'], disable: false } }],
     }, access)
-    const selection = { choice: 'default' as const, provider: 'ds', model: 'deepseek-flash', protocol: 'chat-completions' as const, endpoint: 'https://api.deepseek.com', reasoning: { mode: 'level' as const, level: 'low' } }
+    const selection = { choice: 'cantrip' as const, provider: 'ds', model: 'deepseek-flash', protocol: 'chat-completions' as const, endpoint: 'https://api.deepseek.com', reasoning: { mode: 'level' as const, level: 'low' } }
     const context = { ...g.context, selection }
     const before = bytesUnder(g.root)
     const fetch = spyOn(globalThis, 'fetch').mockImplementation((() => { throw new Error('观察切换不能联网') }) as unknown as typeof globalThis.fetch)
@@ -132,7 +132,7 @@ describe('无执行者的真实只读目录', () => {
       expect((await answer({ type: 'model.list' }, { ...context, switch: { reasoning: { mode: 'level', level: 'low' } } }, 'model.catalog')).current).toEqual(selection)
       expect((await answer({ type: 'model.list' }, { ...context, switch: { choice: 'cantrip' } }, 'model.catalog')).current).toEqual({ choice: 'cantrip' as const, provider: 'mm', model: 'deepseek-flash', protocol: 'chat-completions', endpoint: 'http://unreachable/mm' })
       expect((await answer({ type: 'model.list' }, { ...context, switch: { choice: 'spell' } }, 'model.catalog')).current).toEqual({ choice: 'spell' as const, provider: 'ds', model: 'deepseek-v4-pro', protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' })
-      expect(selection).toEqual({ choice: 'default' as const, provider: 'ds', model: 'deepseek-flash', protocol: 'chat-completions' as const, endpoint: 'https://api.deepseek.com', reasoning: { mode: 'level', level: 'low' } })
+      expect(selection).toEqual({ choice: 'cantrip' as const, provider: 'ds', model: 'deepseek-flash', protocol: 'chat-completions' as const, endpoint: 'https://api.deepseek.com', reasoning: { mode: 'level', level: 'low' } })
       expect((await answer({ type: 'model.list' }, context, 'model.catalog')).current).toEqual(selection)
       expect(bytesUnder(g.root)).toEqual(before)
       expect(fetch).not.toHaveBeenCalled()
@@ -162,7 +162,7 @@ describe('无执行者的真实只读目录', () => {
     const g = ground()
     writeFileSync(join(g.base, 'config.json'), '{broken')
     for (const command of [
-      { type: 'session.list' }, { type: 'history.read' }, { type: 'model.switch', choice: 'default' },
+      { type: 'session.list' }, { type: 'history.read' }, { type: 'model.switch', choice: 'cantrip' },
       { type: 'mcp.reconnect', server: 'real' }, { type: 'input.submit', text: '明确输入' },
     ] satisfies Command[]) expect(await query(command, g.context)).toBeUndefined()
     await expect(query({ type: 'model.list' }, g.context)).rejects.toThrow('config.json')

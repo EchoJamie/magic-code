@@ -17,12 +17,11 @@ const providers = {
   aux: { vendor: 'deepseek', protocol: 'chat-completions' as const, apiKey: 'local-aux', baseURL: 'https://aux.example/v1' },
 }
 const configuredModels = {
-  default: { provider: 'main', model: 'deepseek-flash' },
   cantrip: { provider: 'aux', model: 'deepseek-flash' },
   spell: { provider: 'main', model: 'deepseek-v4-pro' },
   arcane: { provider: 'main', model: 'deepseek-flash' },
 } satisfies NonNullable<MagicConfig['models']>
-const defaults: AgentModelConfig = { protocol: 'chat-completions', endpoint: providers.main.baseURL, choice: 'default', provider: 'main', model: 'deepseek-flash', reasoning: { mode: 'level', level: 'high' } }
+const defaults: AgentModelConfig = { protocol: 'chat-completions', endpoint: providers.main.baseURL, choice: 'cantrip', provider: 'main', model: 'deepseek-flash', reasoning: { mode: 'level', level: 'high' } }
 
 const isPreparation = (body: Record<string, any>): boolean => body.messages?.[0]?.content?.startsWith('你是这次交接的记录者') === true
 
@@ -55,13 +54,13 @@ describe('统一模型配置与执行选择', () => {
     const root = tempDir('u113-save-')
     try {
       const path = writeConfig(root, { providers, models: { arcane: configuredModels.arcane }, permissions: { rules: [] }, marker: '保留' })
-      expect((await configureModel({ path, request: { choice: 'default', provider: 'main', model: 'deepseek-flash', initialize: true } }))).toEqual({ ok: true })
+      expect((await configureModel({ path, request: { choice: 'cantrip', provider: 'main', model: 'deepseek-flash', initialize: true } }))).toEqual({ ok: true })
       const first = JSON.parse(readFileSync(path, 'utf8'))
-      expect(first.models).toEqual({ default: configuredModels.default, cantrip: configuredModels.default, spell: configuredModels.default, arcane: configuredModels.arcane })
-      expect((await configureModel({ path, request: { choice: 'default', provider: 'aux', model: 'other' } }))).toEqual({ ok: true })
+      expect(first.models).toEqual({ default: configuredModels.cantrip, cantrip: configuredModels.cantrip, spell: configuredModels.cantrip, arcane: configuredModels.arcane })
+      expect((await configureModel({ path, request: { choice: 'cantrip', provider: 'aux', model: 'other' } }))).toEqual({ ok: true })
       const saved = JSON.parse(readFileSync(path, 'utf8'))
       expect(saved.models.default).toEqual({ provider: 'aux', model: 'other' })
-      expect(saved.models.cantrip).toEqual(configuredModels.default)
+      expect(saved.models.cantrip).toEqual(configuredModels.cantrip)
       expect(saved.marker).toBe('保留')
       expect(saved.permissions).toEqual({ rules: [] })
       expect(loadConfig({ path, magic: magicAt(root) }).config.models).toEqual(saved.models)
@@ -74,7 +73,7 @@ describe('统一模型配置与执行选择', () => {
       for (const config of [
         { providers: { main: { ...providers.main, model: 'raw' } } },
         { providers: { main: { ...providers.main, modelOverrides: { 'deepseek-flash': { reasoning: { mode: 'off' } } } } } },
-        { providers, models: { wrong: configuredModels.default } },
+        { providers, models: { wrong: configuredModels.cantrip } },
         { providers, models: { default: { provider: 'missing', model: 'raw' } } },
         { providers, agentRoles: { worker: { name: '执行', instructions: '执行', model: { provider: 'main', model: 'raw' } } } },
       ]) {
@@ -84,7 +83,7 @@ describe('统一模型配置与执行选择', () => {
         expect(readFileSync(path, 'utf8')).toBe(before)
       }
       const path = writeConfig(root, { providers, models: [] })
-      expect((await configureModel({ path, request: { choice: 'default', ...configuredModels.default } })).ok).toBe(false)
+      expect((await configureModel({ path, request: { choice: 'cantrip', ...configuredModels.cantrip } })).ok).toBe(false)
     } finally { removeDir(root) }
   })
 
@@ -94,7 +93,7 @@ describe('统一模型配置与执行选择', () => {
     expect(() => parseArgs(['--provider', 'main'])).toThrow('不认得')
     expect(() => parseArgs(['--model', 'Spell'])).toThrow('只能选择')
     expect(resolveModelChoice({ providers, configuredModels: {}, config: { choice: 'cantrip' } })).toEqual({ ok: false, reason: 'Cantrip 尚未配置；请在 /model → 模型档位 中设置' })
-    for (const config of [{ provider: 'main', model: 'deepseek-flash' }, { choice: 'default', provider: 'main' }]) {
+    for (const config of [{ provider: 'main', model: 'deepseek-flash' }, { choice: 'cantrip', provider: 'main' }]) {
       expect(resolveModelChoice({ providers, configuredModels, config: config as ModelSwitchRequest }).ok).toBe(false)
     }
   })
@@ -104,8 +103,8 @@ describe('统一模型配置与执行选择', () => {
     const changed = { ...configuredModels, default: configuredModels.cantrip }
     const reasoning = resolveModelChoice({ providers, modelInfoOf, configuredModels: changed, defaults, config: { reasoning: { mode: 'off' } } })
     expect(reasoning).toEqual({ ok: true, selection: { ...defaults, reasoning: { mode: 'off' } } })
-    const chosen = resolveModelChoice({ providers, configuredModels: changed, defaults, config: { choice: 'default' } })
-    expect(chosen).toEqual({ ok: true, selection: { choice: 'default', ...configuredModels.cantrip, protocol: 'chat-completions', endpoint: providers.aux.baseURL } })
+    const chosen = resolveModelChoice({ providers, configuredModels: changed, defaults, config: { choice: 'cantrip' } })
+    expect(chosen).toEqual({ ok: true, selection: { choice: 'cantrip', ...configuredModels.cantrip, protocol: 'chat-completions', endpoint: providers.aux.baseURL } })
     const options = { providers, modelInfoOf, stamper: makeTestStamper(), env: {} }
     const first = createAgentModels({ options, configuredModels, defaults })
     const second = createAgentModels({ options, configuredModels, defaults, config: { choice: 'cantrip' } })
@@ -116,7 +115,7 @@ describe('统一模型配置与执行选择', () => {
     const resumed = createModelRegistry(options)
     expect(resumed.use(first.selection)).toEqual({ ok: true, selection: defaults })
     const created = createAgentModels({ options, configuredModels: changed, defaults: first.selection })
-    expect(created.ok && created.selection).toEqual({ choice: 'default', ...configuredModels.cantrip, protocol: 'chat-completions', endpoint: providers.aux.baseURL })
+    expect(created.ok && created.selection).toEqual({ choice: 'cantrip', ...configuredModels.cantrip, protocol: 'chat-completions', endpoint: providers.aux.baseURL })
     expect(resolveModelChoice({ providers, configuredModels, defaults, role: { choice: 'spell' }, config: { choice: 'cantrip' } })).toEqual({ ok: true, selection: { choice: 'cantrip', ...configuredModels.cantrip, protocol: 'chat-completions', endpoint: providers.aux.baseURL } })
     expect(resolveModelChoice({ providers, configuredModels: { cantrip: configuredModels.cantrip }, defaults, role: { choice: 'spell' }, config: { choice: 'cantrip' } })).toEqual({ ok: true, selection: { choice: 'cantrip', ...configuredModels.cantrip, protocol: 'chat-completions', endpoint: providers.aux.baseURL } })
   })
@@ -136,11 +135,11 @@ describe('统一模型配置与执行选择', () => {
       expect(assembly.models?.current()).toEqual(before)
       await shell.submit('原成员继续')
       expect(wire.seen.map(one => one.url)).toEqual(['https://main.example/v1/chat/completions', 'https://main.example/v1/chat/completions'])
-      expect(assembly.switchModel({ choice: 'default' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
       await shell.submit('明确应用新配置')
       expect(wire.seen.at(-1)?.url).toBe('https://aux.example/v1/chat/completions')
       expect(wire.seen.every(one => one.body.model === 'deepseek-flash')).toBe(true)
-      expect(assembly.models?.current()).toEqual({ choice: 'default', ...configuredModels.cantrip, protocol: 'chat-completions', endpoint: providers.aux.baseURL })
+      expect(assembly.models?.current()).toEqual({ choice: 'cantrip', ...configuredModels.cantrip, protocol: 'chat-completions', endpoint: providers.aux.baseURL })
     } finally { shell.dispose(); assembly.close(); stage.dispose() }
   })
 
@@ -165,7 +164,7 @@ describe('统一模型配置与执行选择', () => {
         expect(database.entries.some(one => one.kind === 'continuation')).toBe(false)
       } finally { database.close() }
       expect(eventsOfKind(shell.events, 'context.compacted').length).toBeGreaterThan(0)
-      expect(assembly.models?.current()).toEqual({ choice: 'default', ...configuredModels.default, protocol: 'chat-completions', endpoint: providers.main.baseURL })
+      expect(assembly.models?.current()).toEqual({ choice: 'cantrip', ...configuredModels.cantrip, protocol: 'chat-completions', endpoint: providers.main.baseURL })
     } finally { shell.dispose(); assembly.close(); stage.dispose() }
   }, 10000)
 
@@ -187,7 +186,7 @@ describe('统一模型配置与执行选择', () => {
         expect(db.entries.filter(one => one.kind === 'summary')).toEqual([])
       } finally { db.close() }
       expect(eventsOfKind(shell.events, 'context.compacted')).toEqual([])
-      expect(app.models?.current()).toEqual({ choice: 'default', ...configuredModels.default, protocol: 'chat-completions', endpoint: providers.main.baseURL })
+      expect(app.models?.current()).toEqual({ choice: 'cantrip', ...configuredModels.cantrip, protocol: 'chat-completions', endpoint: providers.main.baseURL })
     } finally { shell.dispose(); app.close(); stage.dispose() }
   })
 
@@ -212,7 +211,7 @@ describe('统一模型配置与执行选择', () => {
       } finally { db.close() }
       expect(wire.seen.filter(one => isPreparation(one.body))).toHaveLength(1)
       expect(wire.seen.every(one => one.url.includes('main.example'))).toBe(true)
-      expect(app.models?.current()).toEqual({ choice: 'default', ...configuredModels.default, protocol: 'chat-completions', endpoint: providers.main.baseURL })
+      expect(app.models?.current()).toEqual({ choice: 'cantrip', ...configuredModels.cantrip, protocol: 'chat-completions', endpoint: providers.main.baseURL })
     } finally { shell.dispose(); app.close(); stage.dispose() }
   })
 

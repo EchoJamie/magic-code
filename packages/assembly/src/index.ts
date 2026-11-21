@@ -348,7 +348,7 @@ export function assemble(options: AssembleOptions): Assembly {
     if (startup !== undefined && savedAgent === undefined) {
       throw new Error('该工作缺少已保存的模型组合，无法按历史接回——请在 /model 为该工作选择默认模型或档位后继续；历史记录已保留')
     }
-    const initial = savedAgent === undefined ? resolveModelChoice({ providers: modelSource.providers, configuredModels: modelSource.configured, modelInfoOf: modelSource.knownModel }) : { ok: true as const, selection: savedAgent.model }
+    const initial = savedAgent === undefined ? resolveModelChoice({ providers: modelSource.providers, configuredModels: modelSource.configured, defaultTier: modelSource.defaultTier, modelInfoOf: modelSource.knownModel }) : { ok: true as const, selection: savedAgent.model }
     initialModels = modelSource.registry(initial.ok ? initial.selection : undefined, forwardStamper)
   }
 
@@ -681,7 +681,7 @@ export function assemble(options: AssembleOptions): Assembly {
   }
 
   const refreshModels = async (provider?: string): Promise<void> => {
-    const target = provider ?? modelsOf()?.current()?.provider ?? modelSource.configured?.default?.provider
+    const target = provider ?? modelsOf()?.current()?.provider ?? modelSource.configured?.[modelSource.defaultTier ?? 'cantrip']?.provider
     if (target === undefined) {
       listModels('还没有可刷新的连接——先接入一个供应商')
       return

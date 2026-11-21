@@ -44,8 +44,8 @@ export const modelLabel = (choice: ModelChoice): string => choice[0]!.toUpperCas
 
 export function modelSettingsRows(entries: readonly ModelCatalogRow[], configuredModels: NonNullable<MagicConfig['models']>, current: ModelSelectionRef | ModelRef | null = null, target = '当前工作'): readonly PickerRow[] {
   return [
-    ...(['default', 'cantrip', 'spell', 'arcane'] as const).map(choice => ({
-      label: `${choice === 'default' ? '默认模型' : '模型档位'} · ${modelLabel(choice)}`,
+    ...(['cantrip', 'spell', 'arcane'] as const).map(choice => ({
+      label: `模型档位 · ${modelLabel(choice)}`,
       meta: configuredModels[choice] === undefined ? '尚未配置' : `${configuredModels[choice]!.provider} · ${configuredModels[choice]!.model}`,
       value: `edit:${choice}`,
       current: false,
@@ -64,7 +64,7 @@ export function modelSettingsRows(entries: readonly ModelCatalogRow[], configure
 }
 
 export function modelChoiceRows(configuredModels: NonNullable<MagicConfig['models']>, current: ModelRef | null): readonly PickerRow[] {
-  return (['default', 'cantrip', 'spell', 'arcane'] as const).map(choice => ({
+  return (['cantrip', 'spell', 'arcane'] as const).map(choice => ({
     label: modelLabel(choice),
     value: choice,
     current: current !== null && 'choice' in current && current.choice === choice,

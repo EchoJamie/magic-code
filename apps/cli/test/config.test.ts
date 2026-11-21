@@ -37,7 +37,7 @@ describe('形制照读（字面冻结）', () => {
     expect(loaded.providerId).toBe('minimax')
     // `provider` 可缺（U41：还没配过缺省连接的配置就是这样）——本用例的配置里它该在，
     // 故 `!` 是断言本身的一部分，不是绕过检查
-    expect(loaded.config.models?.default?.model).toBe('MiniMax-M3')
+    expect(loaded.config.models?.cantrip?.model).toBe('MiniMax-M3')
     expect(loaded.provider!.baseURL).toBe('https://api.minimaxi.com/v1')
     expect(Object.keys(loaded.config.providers)).toEqual(['minimax'])
   })

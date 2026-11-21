@@ -101,7 +101,7 @@ function conn(
 function open(stage: Stage, entries: readonly ModelCatalogRow[], current?: ModelRef): void {
   stage.type('/model ')
   stage.press({ kind: 'enter' })
-  stage.feed([event('model.catalog', { entries, configuredModels: current === undefined ? {} : { default: current }, ...(current === undefined ? {} : { current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', ...current } }) })])
+  stage.feed([event('model.catalog', { entries, configuredModels: current === undefined ? {} : { cantrip: current }, ...(current === undefined ? {} : { current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip', ...current } }) })])
   stage.press({ kind: 'enter' }) // Default 映射编辑：实际型号只在配置层展示
 }
 
@@ -306,7 +306,7 @@ describe('③ 选定＝换模型，**不是发送**', () => {
 
     expect(sent(stage)).toEqual([
       { type: 'model.list' },
-      { type: 'model.configure', choice: 'default', provider: 'personal', model: 'MiniMax-Text-01', initialize: true },
+      { type: 'model.configure', choice: 'cantrip', provider: 'personal', model: 'MiniMax-Text-01', initialize: true },
     ])
     expect(stage.commands().some((one) => one.type === 'input.submit' && one.local !== true)).toBe(false)
     expect(stage.shell.getView().dock.kind).toBe('picker')
@@ -318,7 +318,7 @@ describe('③ 选定＝换模型，**不是发送**', () => {
     stage.press({ kind: 'enter' })
 
     const before = stage.shell.getView().settled.length
-    stage.feed([event('model.switched', { choice: 'default', ok: true, provider: 'personal', model: 'MiniMax-M3' })])
+    stage.feed([event('model.switched', { choice: 'cantrip', ok: true, provider: 'personal', model: 'MiniMax-M3' })])
 
     expect(stage.shell.getView().settled.length).toBe(before + 1)
     expect(stage.shell.getView().status.model).toBe('Default')
@@ -725,10 +725,10 @@ describe('⑨ 换模型**不动用户默认**（两件事分开）', () => {
     stage.feed([event('session.state', { active: 'fixture', sessions: [{ archived: false, id: 'fixture', title: '夹具会话', at: 1 }] })])
     stage.type('/model ')
     stage.press({ kind: 'enter' })
-    stage.feed([event('model.catalog', { entries: [], configuredModels: { default: { provider: 'personal', model: 'MiniMax-M3' } } })])
+    stage.feed([event('model.catalog', { entries: [], configuredModels: { cantrip: { provider: 'personal', model: 'MiniMax-M3' } } })])
     for (let i = 0; i < 4; i++) stage.press({ kind: 'down' })
     stage.press({ kind: 'enter' })
     stage.press({ kind: 'enter' })
-    expect(sent(stage)).toEqual([{ type: 'model.list' }, { type: 'model.switch', choice: 'default' }])
+    expect(sent(stage)).toEqual([{ type: 'model.list' }, { type: 'model.switch', choice: 'cantrip' }])
   })
 })

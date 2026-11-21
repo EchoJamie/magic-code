@@ -36,7 +36,7 @@ test('原生保存后新成员采用新档位与独立思考，入口和已有�
     link.send({ t: 'native.runtime.read', request: runtimeRequest })
     await f.wait('运行责任', () => responses.some(v => v.t === 'native.runtime.result' && v.request === runtimeRequest && v.canChangeData === false))
     expect((await request({ type: 'model.configure', choice: 'spell', provider: 'controlled', model: 'descendant-model' })).error).toBeUndefined()
-    expect((await request({ type: 'model.configure', choice: 'default', provider: 'controlled', model: 'descendant-model' })).error).toBeUndefined()
+    expect((await request({ type: 'model.configure', choice: 'cantrip', provider: 'controlled', model: 'descendant-model' })).error).toBeUndefined()
     expect((await request({ type: 'role.save', id: 'reviewer', role: { name: '审查者', instructions: '根据实际依据审查', tools: [], model: { choice: 'spell', reasoning: { mode: 'off' } } } })).error).toBeUndefined()
     expect((await request({ type: 'prefs.set', reducedMotion: true })).error).toBeUndefined()
     await f.wait('动态偏好采用', () => f.events.some(e => e.kind === 'prefs.state' && e.data.reducedMotion))

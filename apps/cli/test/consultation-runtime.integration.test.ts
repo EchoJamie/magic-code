@@ -262,7 +262,7 @@ test('咨询在途映射稳定，下次新咨询读取新映射，主 reasoning 
       { choice: 'arcane', provider: 'second', model: 'changed-model', protocol: 'chat-completions', endpoint: config.providers.second.baseURL, reasoning: { mode: 'default' } },
     ])
     expect(f.requests('changed-model')[0]?.body.thinking).not.toEqual({ type: 'disabled' })
-    expect(f.store.collaboration.getAgent(main.agentId)!.model.choice).toBe('default')
+    expect(f.store.collaboration.getAgent(main.agentId)!.model.choice).toBe('cantrip')
     expect(f.errors).toEqual([])
   } finally { pending.release(); await f.close() }
 }, 20000)

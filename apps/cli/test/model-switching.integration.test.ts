@@ -23,7 +23,7 @@ test('真实成员在途切换保住旧请求，下一请求采用新档位；�
     await f.wait('下一请求采用 Arcane', () => f.requests('descendant-model').length === 1)
     await f.wait('新请求结束', () => f.manager.runs().find(one => one.session === member.sessionId)?.state === 'idle')
     expect(f.requests('member-model')).toHaveLength(1)
-    expect(f.store.collaboration.getAgent(f.collaboration()!.coordinatorId)?.model.choice).toBe('default')
+    expect(f.store.collaboration.getAgent(f.collaboration()!.coordinatorId)?.model.choice).toBe('cantrip')
     expect(f.errors).toEqual([])
     expect(f.events.filter(one => one.kind === 'error')).toEqual([])
   } finally { held.release(); await f.close() }

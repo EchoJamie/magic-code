@@ -9,7 +9,7 @@ function settings(configured = true, stage = createStage()) {
   // 由 `model-choice` 末尾与 `shell.test` 的「还没有会话」用例守。
   if (stage.shell.getView().sessionId === null) stage.feed([event('session.state', { active: 'fixture', sessions: [{ archived: false, id: 'fixture', title: '夹具会话', at: 1 }] })])
   stage.type('/model '); stage.press({ kind: 'enter' })
-  stage.feed([event('model.catalog', { entries, configuredModels: configured ? configuredModels : {}, ...(configured ? { current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', ...pair } as const } : {}) })])
+  stage.feed([event('model.catalog', { entries, configuredModels: configured ? configuredModels : {}, ...(configured ? { current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip', ...pair } as const } : {}) })])
   return stage
 }
 function pick(stage: ReturnType<typeof createStage>, value: string) {
@@ -38,10 +38,10 @@ test('首次明确使用才初始化；保存成功回执后才应用 Default，
   pick(stage, 'edit:default')
   expect(picker(stage).hint).toContain('使用此模型开始')
   stage.press({ kind: 'enter' })
-  expect(stage.commands().at(-1)).toEqual({ type: 'model.configure', choice: 'default', ...pair, initialize: true })
+  expect(stage.commands().at(-1)).toEqual({ type: 'model.configure', choice: 'cantrip', ...pair, initialize: true })
   expect(stage.commands().some(one => one.type === 'model.switch')).toBe(false)
   stage.feed([event('model.catalog', { entries, configuredModels, note: '已保存 Default', saved: true })])
-  expect(stage.commands().at(-1)).toEqual({ type: 'model.switch', choice: 'default' })
+  expect(stage.commands().at(-1)).toEqual({ type: 'model.switch', choice: 'cantrip' })
   const failed = settings(false); pick(failed, 'edit:default'); failed.press({ kind: 'enter' })
   failed.feed([event('model.catalog', { entries, configuredModels: {}, note: '配置保存失败' })])
   expect(failed.commands().some(one => one.type === 'model.switch')).toBe(false)
@@ -146,7 +146,7 @@ test.each([false, true])('原映射页同步保存只关闭原页，仅首次 De
     expect(stage.shell.getView().dock.kind).toBe('input')
     expect(stage.shell.getView().configuredModels).toEqual(configuredModels)
     expect(stage.commands().filter(command => command.type === 'model.switch')).toEqual(configured ? [] : [
-      { type: 'model.switch', choice: 'default' },
+      { type: 'model.switch', choice: 'cantrip' },
     ])
   } finally {
     replying.mockRestore()
@@ -199,7 +199,7 @@ test('编辑全局映射时，状态行思考仍来自当前工作的有效选�
   stage.feed([event('model.catalog', {
     entries,
     configuredModels: { ...configuredModels, cantrip: pair },
-    current: { ...pair, choice: 'default', protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', reasoning: { mode: 'level', level: 'high' } },
+    current: { ...pair, choice: 'cantrip', protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', reasoning: { mode: 'level', level: 'high' } },
   })])
   pick(stage, 'edit:cantrip')
   stage.feed([event('provider.catalog', { entries, vendors: [] })])

@@ -283,7 +283,7 @@ describe('读数 3 · 模型条目表', () => {
         { provider: 'beta', baseURL: 'https://beta.example/v1', keySource: 'config' },
 
       ])
-      expect(catalog.data.current).toEqual({ choice: 'default' as const, provider: 'alpha', model: 'alpha-1', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' })
+      expect(catalog.data.current).toEqual({ choice: 'cantrip' as const, provider: 'alpha', model: 'alpha-1', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' })
       expect(catalog.data.note).toBeUndefined()
 
       // 换过之后，「当前」跟着走
@@ -339,7 +339,7 @@ describe('读数 3 · 模型条目表', () => {
       const catalog = await askCatalog(handle)
 
       expect(catalog.data.entries).toHaveLength(2)
-      expect(catalog.data.current).toEqual({ choice: 'default' as const, provider: 'alpha', model: 'alpha-1', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' })
+      expect(catalog.data.current).toEqual({ choice: 'cantrip' as const, provider: 'alpha', model: 'alpha-1', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' })
 
       handle.dispose()
       assembly.close()

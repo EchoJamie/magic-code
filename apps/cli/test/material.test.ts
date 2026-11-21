@@ -96,7 +96,7 @@ test('所选知识仅开放具体证据与后续分页，不开放同项目其�
 test('授权读取跨会话协作材料时，以来源收件身份解释正文，不借用浏览者身份', async () => {
   const base = makeFauxRecords()
   const actor: AgentIdentity = { agentId: 'source-receiver', sessionId: 'source', name: '来源成员', role: '',
-    model: { protocol: 'chat-completions', endpoint: 'http://fixture.invalid', choice: 'default', provider: 'fixture', model: 'fixture' },
+    model: { protocol: 'chat-completions', endpoint: 'http://fixture.invalid', choice: 'cantrip', provider: 'fixture', model: 'fixture' },
     workspace: ['/workspace'], collaborationId: 'work', reachability: 'active', at: 1 }
   const reads: string[] = []
   const records: RecordsService = { ...base,

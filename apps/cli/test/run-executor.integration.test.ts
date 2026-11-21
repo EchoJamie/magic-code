@@ -83,7 +83,7 @@ function seedSession(g: Ground, session: string, title: string): void {
     const at = Date.now()
     records.collaboration.registerAgent({
       operationId: `seed-${session}`, sessionId: session, name: title, role: '', at,
-      model: { choice: 'default', provider: 'x', model: 'm', protocol: 'chat-completions', endpoint: g.fixture.baseURL },
+      model: { choice: 'cantrip', provider: 'x', model: 'm', protocol: 'chat-completions', endpoint: g.fixture.baseURL },
     })
     records.setSessionTitle(session, title, at)
   } finally { records.close() }

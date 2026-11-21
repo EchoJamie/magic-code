@@ -340,8 +340,8 @@ describe('通道回环——命令进 · 事件出', () => {
       { type: 'collaboration.stop', delegation: 42 },
       { type: 'collaboration.stop' },
       { type: 'collaboration.resume' },
-      { type: 'collaboration.configure', member: 'worker', model: { choice: 'default', reasoning: { mode: 'default' } } },
-      { type: 'collaboration.configure', model: { choice: 'default' } },
+      { type: 'collaboration.configure', member: 'worker', model: { choice: 'cantrip', reasoning: { mode: 'default' } } },
+      { type: 'collaboration.configure', model: { choice: 'cantrip' } },
     ]
     for (const command of requests) shell.send(command)
     expect(commands).toEqual([...requests])

@@ -1079,7 +1079,7 @@ describe('调用设置与容量', () => {
 
     // 注册表那一格：**它本来就对**（漏的是往网关那一跳）
     expect(registry.capacityOf('ds', 'deepseek-flash')?.inputBudget).toBe(8_000)
-    expect(registry.use({ choice: 'default', provider: 'ds', model: 'deepseek-flash' }).ok).toBe(true)
+    expect(registry.use({ choice: 'cantrip', provider: 'ds', model: 'deepseek-flash' }).ok).toBe(true)
 
     const { events } = await drain(
       registry.stream({  messages: [{ role: 'user', content: '嗨' }] }),

@@ -268,7 +268,7 @@ describe('④ `/config`：门 → 进那一项自己那一屏', () => {
       } satisfies ModelInfoRead,
     },
   ]
-  const CURRENT = { protocol: 'chat-completions' as const, endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' }
+  const CURRENT = { protocol: 'chat-completions' as const, endpoint: 'https://fixture.invalid/v1', choice: 'cantrip' as const, provider: 'minimax', model: 'MiniMax-M3' }
 
   /** 开那一扇门：打 `/config` ＋ 回车 → 内核回三份读数（U71）。 */
   function openConfig(stage: Stage): void {

@@ -4,6 +4,7 @@ import type { AgentModelConfig, AgentRoleConfig, MagicHome, ModelSwitchRequest, 
 import { createModelInfoService, createModelRegistry, createModelGateway, modelSpecOf, resolveConnection, resolveApiKey, selectModel } from '@magic/model'
 import type { ModelRegistry, ModelRegistryOptions, ModelSelection, ModelSwitchResult } from '@magic/model'
 import { loadConfig } from '@magic/state'
+import type { ModelChoice } from '@magic/contracts'
 import { cacheAccessFor } from './cache-access.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
 import { createModelsDevResource } from './models-dev-resource.ts'
@@ -12,6 +13,8 @@ import { createModelsDevResource } from './models-dev-resource.ts'
 export function resolveModelChoice(input: {
   readonly providers: Readonly<Record<string, ProviderConfig>>
   readonly configuredModels?: NonNullable<MagicConfig['models']>
+  /** 开局档位记录（config 的 defaultTier）——新会话与未指定档位的工作落在它指向的档。缺省＝cantrip。 */
+  readonly defaultTier?: ModelChoice
   readonly defaults?: AgentModelConfig
   readonly newAgent?: boolean
   readonly role?: ModelSwitchRequest
@@ -28,23 +31,24 @@ export function resolveModelChoice(input: {
   }
   for (const request of [input.config?.choice === undefined ? input.role : undefined, input.config]) {
     if (request === undefined) continue
-    for (const key of Object.keys(request)) if (!['choice', 'reasoning'].includes(key)) return { ok: false, reason: `模型选择不接受 ${key}；请选择 Default、Cantrip、Spell 或 Arcane` }
-    if (request.choice === undefined && request.reasoning === undefined) return { ok: false, reason: '请选择默认模型或模型档位，或设置思考等级' }
+    for (const key of Object.keys(request)) if (!['choice', 'reasoning'].includes(key)) return { ok: false, reason: `模型选择不接受 ${key}；请选择 Cantrip、Spell 或 Arcane` }
+    if (request.choice === undefined && request.reasoning === undefined) return { ok: false, reason: '请选择模型档位，或设置思考等级' }
     if (request.choice !== undefined) {
-      if (!['default', 'cantrip', 'spell', 'arcane'].includes(request.choice)) return { ok: false, reason: '未知模型选择；只能选择 default / cantrip / spell / arcane' }
+      if (!['cantrip', 'spell', 'arcane'].includes(request.choice)) return { ok: false, reason: '未知模型档位；只能选择 cantrip / spell / arcane' }
       const mapping = input.configuredModels?.[request.choice]
-      if (mapping === undefined) return { ok: false, reason: `${labelOf(request.choice)} 尚未配置；请在 /model → ${request.choice === 'default' ? '默认模型' : '模型档位'} 中设置` }
+      if (mapping === undefined) return { ok: false, reason: `${labelOf(request.choice)} 尚未配置；请在 /model → 模型档位 中设置` }
       const changed = selection?.provider !== mapping.provider || selection.model !== mapping.model
       selection = { choice: request.choice, ...mapping, ...(request.reasoning === undefined
         ? changed ? {} : selection?.reasoning === undefined ? {} : { reasoning: selection.reasoning }
         : { reasoning: request.reasoning }) }
     } else if (selection !== undefined) selection = { ...selection, reasoning: request.reasoning }
-    else return { ok: false, reason: '当前还没有模型；请先在 /model 选择默认模型或模型档位' }
+    else return { ok: false, reason: '当前还没有模型；请先在 /model 选择模型档位' }
   }
   if (selection === undefined) {
-    const choice = input.newAgent ? input.defaults?.choice ?? 'default' : 'default'
+    // 未指定档位 ⇒ 落在**开局档位记录**指向的档（缺省 cantrip）——新会话从上次的地方继续。
+    const choice = input.newAgent ? input.defaults?.choice ?? input.defaultTier ?? 'cantrip' : input.defaultTier ?? 'cantrip'
     const mapping = input.configuredModels?.[choice]
-    if (mapping === undefined) return { ok: false, reason: `${labelOf(choice)} 尚未配置；请在 /model → ${choice === 'default' ? '默认模型' : '模型档位'} 中设置` }
+    if (mapping === undefined) return { ok: false, reason: `${labelOf(choice)} 尚未配置；请在 /model → 模型档位 中设置` }
     selection = { choice, ...mapping }
   }
   return selectModel({ providers: input.providers, modelInfoOf: input.modelInfoOf }, selection)
@@ -111,7 +115,7 @@ async function managedModelContext(magic: MagicHome, environment: Readonly<Recor
 /** 协调者只读已配置的档位及已知能力；不发分类或模型请求。 */
 export async function managedModelChoices(magic: MagicHome, environment: Readonly<Record<string, string>>) {
   const { loaded, info } = await managedModelContext(magic, environment)
-  return (['default', 'cantrip', 'spell', 'arcane'] as const).map(choice => {
+  return (['cantrip', 'spell', 'arcane'] as const).map(choice => {
     const mapping = loaded.config.models?.[choice]
     if (mapping === undefined) return { choice, configured: false }
     const known = info.model(mapping.provider, mapping.model)

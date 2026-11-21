@@ -56,7 +56,7 @@ test('空闲会话主动压缩：断开继续，重连同请求不重放，摘�
     const brief = `## 目标与阶段\n继续已存工作\n## 证据位置\n${originalIds.slice(0, 4).map(id => `${session}#${id}`).join('\n')}`
     turns.push({ kind: 'text', text: brief, chunks: 1, chunkDelayMs: 0, beforeChunk: async () => { summaryReached = true; await summaryGate } })
     store.collaboration.registerAgent({ operationId: 'seed-agent', sessionId: session, name: '已存工作', role: '',
-      model: { protocol: 'chat-completions', endpoint: fixture.baseURL, choice: 'default', provider: 'local', model }, at: 1,
+      model: { protocol: 'chat-completions', endpoint: fixture.baseURL, choice: 'cantrip', provider: 'local', model }, at: 1,
     })
     const launcher = createAgentLauncher()
     const started = await startManager({ paths, magic, stopGraceMs: 1_000, stopKillMs: 1_000, launch: {
@@ -169,7 +169,7 @@ test('成员忙时主动压缩固定提交目标，切回整体后查询和取�
   })
   try {
     const model = { protocol: 'chat-completions' as const, endpoint: (JSON.parse(await Bun.file(join(f.magic.base, 'config.json')).text()).providers.controlled.baseURL as string),
-      choice: 'default' as const, provider: 'controlled', model: 'entry-model' }
+      choice: 'cantrip' as const, provider: 'controlled', model: 'entry-model' }
     const rootRecords = f.store.serviceFor('origin')
     const origin = { sessionId: 'origin', entryId: rootRecords.appendEntry({ kind: 'user', at: 1, content: { text: '整体原始要求' } }) }
     const coordinator = f.store.collaboration.registerAgent({ operationId: 'root', sessionId: 'origin', name: '整体', role: '', model, at: 1 })

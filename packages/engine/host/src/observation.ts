@@ -186,7 +186,7 @@ export async function readModelCatalog(loaded: LoadedConfig, magic: MagicHome, s
   })
   await info.warmup() // 仅读缓存并核接入范围；peek 不会触发刷新。
   const picked = request === undefined && selection !== undefined ? { ok: true as const, selection } : resolveModelChoice({
-    providers, configuredModels: loaded.config.models, defaults: selection,
+    providers, configuredModels: loaded.config.models, defaultTier: loaded.config.defaultTier, defaults: selection,
     config: request, modelInfoOf: (provider, model) => info.model(provider, model)
   })
   if (request !== undefined && !picked.ok) throw new Error(picked.reason)

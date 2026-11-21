@@ -132,7 +132,7 @@ export function createSettings(context: SettingsContext) {
           if (!selected.ok) throw new Error(selected.reason)
         }
         if (action.type === 'provider.save') for (const model of Object.keys(config.providers[action.provider]?.modelOverrides ?? {})) {
-          const selected = selectModel({ providers: config.providers }, { choice: 'default', provider: action.provider, model })
+          const selected = selectModel({ providers: config.providers }, { choice: 'cantrip', provider: action.provider, model })
           if (!selected.ok) throw new Error(selected.reason)
         }
       }

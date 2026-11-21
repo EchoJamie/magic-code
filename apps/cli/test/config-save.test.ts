@@ -261,7 +261,7 @@ describe('移除与设为默认', () => {
     try {
       const provider = { vendor: 'deepseek', modelOverrides: { old: { limits: { maxInputTokens: 128 } } } }
       const path = writeConfig(dir, { providers: { a: provider }, models: { cantrip: { provider: 'a', model: 'old' } } })
-      expect((await configureModel({ path, request: { choice: 'default', provider: 'a', model: 'new' } }))).toEqual({ ok: true })
+      expect((await configureModel({ path, request: { choice: 'cantrip', provider: 'a', model: 'new' } }))).toEqual({ ok: true })
       expect(PROVIDERS_OF(path)['a']).toEqual(provider)
       expect(READ(path)['models']).toEqual({ default: { provider: 'a', model: 'new' }, cantrip: { provider: 'a', model: 'old' } })
     } finally { removeDir(dir) }

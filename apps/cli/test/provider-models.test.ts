@@ -166,7 +166,7 @@ describe('一条连接的闭环', () => {
       // —— ② 选择：**实际出站的 model 与选择一致** ——
       expect(
         await chooseModel(assembly, 'deepseek-v4-pro'),
-      ).toEqual({ ok: true, selection: { choice: 'default', provider: 'ds', model: 'deepseek-v4-pro', protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' } })
+      ).toEqual({ ok: true, selection: { choice: 'cantrip', provider: 'ds', model: 'deepseek-v4-pro', protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' } })
 
       await shell.submit('嗨')
 
@@ -191,7 +191,7 @@ describe('一条连接的闭环', () => {
 
       // —— ⑤ 保存默认：这一下**才**写配置（与换当前分开） ——
       const saved = waitFor(shell, 'model.catalog')
-      shell.send({ type: 'model.configure', choice: 'default', provider: 'ds', model: 'deepseek-v4-pro' })
+      shell.send({ type: 'model.configure', choice: 'cantrip', provider: 'ds', model: 'deepseek-v4-pro' })
       await saved
 
       const after = JSON.parse(readFileSync(land.configPath, 'utf8')) as {
@@ -292,14 +292,14 @@ describe('一条连接的闭环', () => {
       expect(renamed.data.entries[0]?.name).toBe('我的 DeepSeek')
       expect(assembly.models).toBe(bound)
       // **当前仍是 pro**——保存配置不重建或替换当前绑定
-      expect(renamed.data.current).toEqual({ choice: 'default' as const, provider: 'ds', model: 'deepseek-v4-pro', protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' })
+      expect(renamed.data.current).toEqual({ choice: 'cantrip' as const, provider: 'ds', model: 'deepseek-v4-pro', protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' })
 
       // ② 把 flash 保存为**默认**——那是「以后用哪个」，不是「现在换到哪个」
       const saved = waitFor(shell, 'model.catalog')
-      shell.send({ type: 'model.configure', choice: 'default', provider: 'ds', model: 'deepseek-flash' })
+      shell.send({ type: 'model.configure', choice: 'cantrip', provider: 'ds', model: 'deepseek-flash' })
       const afterDefault = await saved
 
-      expect(afterDefault.data.current).toEqual({ choice: 'default' as const, provider: 'ds', model: 'deepseek-v4-pro', protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' })
+      expect(afterDefault.data.current).toEqual({ choice: 'cantrip' as const, provider: 'ds', model: 'deepseek-v4-pro', protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' })
       // 而配置里确实换成了 flash（两件事分开，各自都做对了）
       const onDisk = JSON.parse(readFileSync(land.configPath, 'utf8')) as {
         models: { default?: { model: string } }
@@ -308,7 +308,7 @@ describe('一条连接的闭环', () => {
       expect(assembly.models).toBe(bound)
       await shell.submit('保存后仍用已有绑定')
       expect(vendor.calls.findLast(call => call.url.endsWith('/chat/completions'))?.body?.['model']).toBe('deepseek-v4-pro')
-      expect(assembly.switchModel({ choice: 'default' })).toEqual({ ok: true, selection: { choice: 'default', provider: 'ds', model: 'deepseek-flash', protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' } })
+      expect(assembly.switchModel({ choice: 'cantrip' })).toEqual({ ok: true, selection: { choice: 'cantrip', provider: 'ds', model: 'deepseek-flash', protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' } })
       await shell.submit('明确切换后采用新映射')
       expect(vendor.calls.findLast(call => call.url.endsWith('/chat/completions'))?.body?.['model']).toBe('deepseek-flash')
 
@@ -454,7 +454,7 @@ describe('一条连接的闭环', () => {
         shell.send({ type: 'model.list' })
         return armed
       })()
-      expect(catalog.data.current).toEqual({ choice: 'default' as const, provider: 'ds', model: 'deepseek-v4-pro', protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' })
+      expect(catalog.data.current).toEqual({ choice: 'cantrip' as const, provider: 'ds', model: 'deepseek-v4-pro', protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' })
       expect(catalog.data.currentInputBudget).toBe(30_000 - 1_000)
       expect(Object.hasOwn(catalog.data.entries[0] ?? {}, 'contextWindow')).toBe(false)
 
@@ -675,10 +675,10 @@ async function chooseModel(app: ReturnType<typeof assemble>, model: string) {
   const shell = attachShell(app.shell)
   try {
     const saved = waitFor(shell, 'model.catalog')
-    shell.send({ type: 'model.configure', choice: 'default', provider: 'ds', model })
+    shell.send({ type: 'model.configure', choice: 'cantrip', provider: 'ds', model })
     const result = await saved
     expect(result.data.saved).toBe(true)
     expect(result.data.note).toContain('已有 Agent 的选择保留')
-    return app.switchModel({ choice: 'default' })
+    return app.switchModel({ choice: 'cantrip' })
   } finally { shell.dispose() }
 }

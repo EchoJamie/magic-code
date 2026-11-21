@@ -476,8 +476,8 @@ export function routesCarryModelSwitch(): void {
  * 成了带选中、没成只带缘由；两件的可选性把这件事说清楚。
  */
 export function modelSwitchedPayloadShape(): void {
-  const done: EventDataOf['model.switched'] = { choice: 'default', ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' }
-  const refused: EventDataOf['model.switched'] = { choice: 'default', ok: false, reason: '未知条目「nowhere」' }
+  const done: EventDataOf['model.switched'] = { choice: 'cantrip', ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' }
+  const refused: EventDataOf['model.switched'] = { choice: 'cantrip', ok: false, reason: '未知条目「nowhere」' }
   void done
   void refused
 }
@@ -525,7 +525,7 @@ export function readoutsShape(): void {
       { provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } },  },
       { provider: 'local', cache: { snapshot: { provider: 'local', scope: 'fixture', fetchedAt: 1, models: [{ id: 'qwen3' }] } },  },
     ],
-    current: { choice: 'default' as const, provider: 'local', model: 'qwen3', protocol: 'responses', endpoint: 'http://localhost:8000/v1' },
+    current: { choice: 'cantrip' as const, provider: 'local', model: 'qwen3', protocol: 'responses', endpoint: 'http://localhost:8000/v1' },
   }
   // 没有注册表的那一次装配——空表 ＋ 一句说明（空表本身合法，两者不混作一谈）
   const empty: EventDataOf['model.catalog'] = { entries: [], note: '本次装配没有供应商注册表' }

@@ -8,11 +8,11 @@ const collaborationEntries: readonly Entry[] = [
 ]
 export const collaborationFixture: CollaborationView = {
   originSession: 'origin',
-  collaboration: { collaborationId: 'work', originSessionId: 'origin', origin: { sessionId: 'origin', entryId: 1 }, coordinatorId: 'coordinator', defaultModel: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', provider: 'local', model: 'mini' }, state: 'open', at: 0 },
+  collaboration: { collaborationId: 'work', originSessionId: 'origin', origin: { sessionId: 'origin', entryId: 1 }, coordinatorId: 'coordinator', defaultModel: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip', provider: 'local', model: 'mini' }, state: 'open', at: 0 },
   members: [
-    { agent: { agentId: 'coordinator', sessionId: 'origin', name: '协调', role: '整合结果', model: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', at: 0 },
+    { agent: { agentId: 'coordinator', sessionId: 'origin', name: '协调', role: '整合结果', model: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', at: 0 },
       runtime: { session: 'origin', state: 'idle', since: 0, startedAt: 0, workspace: ['/project'], holds: true }, pendingDecisions: 0 },
-    { agent: { agentId: 'worker', sessionId: 'member', name: '实现', role: '调整校验', model: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', createdBy: 'coordinator', at: 0 },
+    { agent: { agentId: 'worker', sessionId: 'member', name: '实现', role: '调整校验', model: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', createdBy: 'coordinator', at: 0 },
       runtime: { session: 'member', state: 'running', action: '检查回调兼容', since: 0, startedAt: 0, workspace: ['/project'], holds: true }, pendingDecisions: 0,
       delegation: { delegationId: 10, collaborationId: 'work', delegatorId: 'coordinator', assigneeId: 'worker', source: { messageId: 10 }, authorization: [], scope: '回调校验', state: 'accepted', at: 0 } },
   ],
@@ -50,7 +50,7 @@ export const nestedFixture: CollaborationView = {
   ...collaborationFixture,
   members: [
     ...collaborationFixture.members,
-    { agent: { agentId: 'descendant', sessionId: 'child', name: '复核', role: '复核结果', model: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', createdBy: 'worker', at: 0 },
+    { agent: { agentId: 'descendant', sessionId: 'child', name: '复核', role: '复核结果', model: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', createdBy: 'worker', at: 0 },
       pendingDecisions: 0,
       delegation: { delegationId: 12, collaborationId: 'work', delegatorId: 'worker', assigneeId: 'descendant', source: { messageId: 12 }, authorization: [], scope: '复核结论', state: 'accepted', at: 0 } },
   ],

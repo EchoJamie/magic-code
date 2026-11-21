@@ -58,7 +58,7 @@ const ENTRIES: readonly ModelCatalogRow[] = [
   },
 ]
 
-const CURRENT: ModelSelectionRef = { protocol: 'chat-completions' as const, endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' }
+const CURRENT: ModelSelectionRef = { protocol: 'chat-completions' as const, endpoint: 'https://fixture.invalid/v1', choice: 'cantrip' as const, provider: 'minimax', model: 'MiniMax-M3' }
 
 const MCP: EventDataOf['mcp.catalog'] = {
   servers: [
@@ -218,7 +218,7 @@ describe('`/config` · 开屏', () => {
     stage.press(ESC)
     // 「此刻走哪一条」是内核的读数（`model.catalog` 的 `current`）——换过之后它变了，
     // 而 `/config` 每次开屏**现问一次**，故那一格跟着变（不是开局那一份的陈账）
-    open(stage, { current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', provider: 'deepseek', model: 'deepseek-chat' } })
+    open(stage, { current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip', provider: 'deepseek', model: 'deepseek-chat' } })
     expect(valueOf(stage, '模型与连接')).toBe('DeepSeek Chat · 深度求索 · Enter 进入')
   })
 

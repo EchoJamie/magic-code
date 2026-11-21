@@ -29,7 +29,7 @@ for (const limited of [false, true]) test(`可信用途优先于普通全工具�
     origin: { name: '发起角色', instructions: '查证', ...(limited ? { tools: ['read'] } : {}) } } } })
   const store = createRecordsStore({ dataDir: stage.dataDir, workspace: [realpathSync(stage.workspace)] })
   const r = store.collaboration
-  const model = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'default' as const, provider: 'test', model: 'test' }
+  const model = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'cantrip' as const, provider: 'test', model: 'test' }
   const entryId = store.serviceFor('origin').appendEntry({ kind: 'user', content: { text: '用户原工作' }, at: 1 })
   const root = r.registerAgent({ operationId: 'root', sessionId: 'origin', name: '原工作', role: 'origin', model, at: 1 })
   const origin = { sessionId: 'origin', entryId }
@@ -96,7 +96,7 @@ test('普通角色仅开放read时仍可实际维护自身记忆，业务写入�
   const store = createRecordsStore({ dataDir: stage.dataDir, workspace: [realpathSync(stage.workspace)] })
   store.serviceFor('reader').appendEntry({ kind: 'user', content: { text: '只读要求' }, at: 1 })
   store.collaboration.registerAgent({ operationId: 'reader', sessionId: 'reader', name: '查证', role: 'reader',
-    model: { protocol: 'chat-completions', endpoint: 'https://models.example/v1', choice: 'default', provider: 'test', model: 'test' }, at: 1 })
+    model: { protocol: 'chat-completions', endpoint: 'https://models.example/v1', choice: 'cantrip', provider: 'test', model: 'test' }, at: 1 })
   store.close()
   writeFileSync(join(stage.workspace, 'probe.txt'), '原值')
   const app = stage.assemble({ session: 'reader', turns: [{ toolCalls: [

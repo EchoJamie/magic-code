@@ -33,7 +33,7 @@ test('自定义无认证无需列表，手填长型号与覆盖离线保存，�
     limits: { maxInputTokens: 32000, maxOutputTokens: 8000, maxContextTokens: 40000 }, capabilities: { image: false, tools: true },
   } })
   await g.apply({ type: 'model.configure', choice: 'arcane', provider: 'local', model: '另一型号' })
-  await g.apply({ type: 'model.configure', choice: 'default', provider: 'local', model, initialize: true })
+  await g.apply({ type: 'model.configure', choice: 'cantrip', provider: 'local', model, initialize: true })
   const snapshot = await g.settings.read()
   expect(snapshot.configuration.providers).toMatchObject({ local: { auth: 'none', keySource: 'none', keyConfigured: false } })
   expect(JSON.stringify(snapshot)).not.toContain('ENV_SENTINEL')
@@ -48,7 +48,7 @@ test('自定义无认证无需列表，手填长型号与覆盖离线保存，�
 test('官方协议不再按型号拦：照旧落盘；改名不锁定自动选择', async () => {
   const g = setup()
   await g.apply({ type: 'provider.save', provider: 'ds', vendor: 'deepseek' })
-  await g.apply({ type: 'model.configure', choice: 'default', provider: 'ds', model: 'deepseek-v4-pro' })
+  await g.apply({ type: 'model.configure', choice: 'cantrip', provider: 'ds', model: 'deepseek-v4-pro' })
   // 改名不动协议（不锁定自动选择）。
   await g.apply({ type: 'provider.save', provider: 'ds', name: '更名' })
   expect(g.raw().providers.ds.protocol).toBeUndefined()
@@ -64,7 +64,7 @@ test('对话能力明确不支持也不拦保存与映射', async () => {
   await g.apply({ type: 'provider.save', provider: 'local', baseURL: 'http://127.0.0.1:9000/v1', auth: 'none', protocol: 'chat-completions' })
   await g.apply({ type: 'model.override', provider: 'local', model, override: { capabilities: { chat: false } } })
   // 保存前的预检不再因 `chat` 能力拒绝——映射照旧落盘。
-  await g.apply({ type: 'model.configure', choice: 'default', provider: 'local', model })
+  await g.apply({ type: 'model.configure', choice: 'cantrip', provider: 'local', model })
   expect(g.raw().models.default).toEqual({ provider: 'local', model })
   expect(g.raw().providers.local.modelOverrides[model].capabilities).toEqual({ chat: false })
   expect(g.requests()).toBe(0)
@@ -127,7 +127,7 @@ test('改协议或地址后下一次请求按当前配置组装，不必重新�
     await shell.submit('第三句')
     expect(seen.at(-1)).toBe('http://localhost:9001/new/responses')
     expect(assembly.models?.current()?.endpoint).toBe('http://localhost:9001/new')
-    expect(assembly.models?.current()).toMatchObject({ choice: 'default', provider: 'local', model: 'raw' })
+    expect(assembly.models?.current()).toMatchObject({ choice: 'cantrip', provider: 'local', model: 'raw' })
   } finally { shell.dispose(); assembly.close(); stage.dispose() }
 })
 
@@ -147,9 +147,9 @@ test('设置读面只开放当前协议能表达的思考形态，保留用户�
 test('管理读面保留已有 Agent 的实际组合，不用已修改的服务地址重解释', async () => {
   const g = setup()
   await g.apply({ type: 'provider.save', provider: 'local', baseURL: 'http://localhost:8000/v1', auth: 'none', protocol: 'responses' })
-  await g.apply({ type: 'model.configure', choice: 'default', provider: 'local', model: 'm' })
-  const selection = { choice: 'default' as const, provider: 'local', model: 'm', protocol: 'responses' as const, endpoint: 'http://localhost:8000/v1' }
+  await g.apply({ type: 'model.configure', choice: 'cantrip', provider: 'local', model: 'm' })
+  const selection = { choice: 'cantrip' as const, provider: 'local', model: 'm', protocol: 'responses' as const, endpoint: 'http://localhost:8000/v1' }
   await g.apply({ type: 'provider.save', provider: 'local', baseURL: 'http://localhost:9000/v2', auth: 'none', protocol: 'messages' })
   expect((await g.settings.catalog(selection)).current).toEqual(selection)
-  expect((await g.settings.catalog(selection, { choice: 'default' })).current).toEqual({ ...selection, protocol: 'messages', endpoint: 'http://localhost:9000/v2' })
+  expect((await g.settings.catalog(selection, { choice: 'cantrip' })).current).toEqual({ ...selection, protocol: 'messages', endpoint: 'http://localhost:9000/v2' })
 })

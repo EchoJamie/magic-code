@@ -17,7 +17,7 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
     session = event.session
     if (event.kind === 'model.catalog') selection = event.data.current
     if (event.kind === 'model.switched' && event.data.ok && event.data.provider && event.data.model && event.data.protocol && event.data.endpoint) selection = {
-      choice: event.data.choice ?? selection?.choice ?? 'default', provider: event.data.provider, model: event.data.model,
+      choice: event.data.choice ?? selection?.choice ?? 'cantrip', provider: event.data.provider, model: event.data.model,
       protocol: event.data.protocol, endpoint: event.data.endpoint,
       ...(event.data.reasoning === undefined ? {} : { reasoning: event.data.reasoning }),
     }
@@ -68,7 +68,7 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
         case 'provider.save': case 'provider.remove': case 'model.configure': case 'model.override': case 'prefs.set': action = command; break
         case 'web.configure': action = { type: 'web.configure', provider: command.provider, ...(command.expectedStamp === undefined ? {} : { expectedStamp: command.expectedStamp }) }; break
         case 'model.refresh': {
-          const provider = command.provider ?? selection?.provider ?? loadConfig({ magic }).config.models?.default?.provider
+          const provider = command.provider ?? selection?.provider ?? loadConfig({ magic }).config.models?.[loadConfig({ magic }).config.defaultTier ?? 'cantrip']?.provider
           if (!provider) throw new Error('尚未选择可刷新的供应商')
           action = { type: 'model.refresh', provider }; break
         }

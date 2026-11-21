@@ -77,10 +77,10 @@ describe('/model 集中编辑', () => {
     pick(stage, 'save'); expect(writes(stage).at(-1)).toEqual({ type: 'model.override', provider: 'local', model, override: { limits: { maxContextTokens: 32768 }, capabilities: { image: true, tools: false } }, expectedStamp: 'initial' })
     const entries = [{ ...entry, modelOverrides: { [model]: { limits: { maxContextTokens: 32768 } } } }]
     stage.feed([event('model.catalog', { entries, saved: true, stamp: 'saved', configuredModels: {} })])
-    pick(stage, 'edit:default'); expect(picker(stage).rows.some(one => one.pick?.model === model)).toBe(true)
+    pick(stage, 'edit:cantrip'); expect(picker(stage).rows.some(one => one.pick?.model === model)).toBe(true)
     stage.feed([event('model.catalog', { entries, stamp: 'saved', configuredModels: {} })])
     expect(picker(stage).rows.some(one => one.pick?.model === model)).toBe(true)
-    pick(stage, `local ${model}`); expect(writes(stage).at(-1)).toMatchObject({ type: 'model.configure', provider: 'local', model, choice: 'default', initialize: true, expectedStamp: 'saved' })
+    pick(stage, `local ${model}`); expect(writes(stage).at(-1)).toMatchObject({ type: 'model.configure', provider: 'local', model, choice: 'cantrip', initialize: true, expectedStamp: 'saved' })
     expect(stage.commands().some(one => one.type === 'model.switch')).toBe(false)
     stage.feed([event('model.catalog', { entries, saved: false, note: '冲突' })]); expect(picker(stage).source).toBe('model')
   })
@@ -142,8 +142,8 @@ describe('/model 集中编辑', () => {
   test('编辑已有覆盖可删除，恢复来源不改映射', () => {
     const stage = createStage(); const ref = { provider: 'local', model: 'm' }
     stage.type('/model '); stage.press({ kind: 'enter' })
-    stage.feed([event('model.catalog', { entries: [{ ...entry, modelOverrides: { m: { capabilities: { image: false } } } }], configuredModels: { default: ref }, stamp: 'initial' })])
-    pick(stage, 'edit:default'); stage.press({ kind: 'right' }); pick(stage, 'edit-info'); pick(stage, 'remove-override')
+    stage.feed([event('model.catalog', { entries: [{ ...entry, modelOverrides: { m: { capabilities: { image: false } } } }], configuredModels: { cantrip: ref }, stamp: 'initial' })])
+    pick(stage, 'edit:cantrip'); stage.press({ kind: 'right' }); pick(stage, 'edit-info'); pick(stage, 'remove-override')
     expect(writes(stage).at(-1)).toEqual({ type: 'model.override', ...ref, override: null, expectedStamp: 'initial' })
     expect(stage.commands().some(one => one.type === 'model.configure')).toBe(false)
   })
@@ -152,7 +152,7 @@ describe('/model 集中编辑', () => {
     const stage = createStage(); const ref = { provider: 'local', model: 'm' }
     stage.feed([event('session.state', { active: 'fixture', sessions: [{ archived: false, id: 'fixture', title: '夹具会话', at: 1 }] })])
     stage.type('/model '); stage.press({ kind: 'enter' })
-    stage.feed([event('model.catalog', { entries: [{ ...entry, effectiveReasoning: { m: { budget: { minTokens: 1024, maxTokens: 4096 } } }, modelOverrides: { m: { reasoningSupport: { budget: { minTokens: 1024, maxTokens: 4096 } } } } }], current: { ...ref, choice: 'default', protocol: 'messages', endpoint: entry.baseURL! }, configuredModels: { default: ref } })])
+    stage.feed([event('model.catalog', { entries: [{ ...entry, effectiveReasoning: { m: { budget: { minTokens: 1024, maxTokens: 4096 } } }, modelOverrides: { m: { reasoningSupport: { budget: { minTokens: 1024, maxTokens: 4096 } } } } }], current: { ...ref, choice: 'cantrip', protocol: 'messages', endpoint: entry.baseURL! }, configuredModels: { cantrip: ref } })])
     pick(stage, 'reasoning'); pick(stage, 'budget'); stage.type('0'); stage.press({ kind: 'enter' })
     expect(stage.shell.getView().dock.kind).toBe('prompt'); expect(stage.commands().some(one => one.type === 'model.switch')).toBe(false)
     stage.press({ kind: 'backspace' }); stage.type('2048'); stage.press({ kind: 'enter' })
@@ -172,7 +172,7 @@ describe('/model 集中编辑', () => {
     const stage = createStage(); const ref = { provider: 'local', model: 'm' }
     const source = { ...entry, cache: { snapshot: { provider: 'local', scope: 'fixture', fetchedAt: 1, models: [{ id: 'm', reasoning: { levels: ['供应商原始档位'] } }] } }, modelOverrides: { m: { reasoningSupport: { levels: ['任意私有档位'], disable: true } } } }
     stage.type('/model '); stage.press({ kind: 'enter' })
-    const current = { ...ref, choice: 'default' as const, protocol: 'responses' as const, endpoint: entry.baseURL! }
+    const current = { ...ref, choice: 'cantrip' as const, protocol: 'responses' as const, endpoint: entry.baseURL! }
     stage.feed([event('model.catalog', { entries: [source], current })]); pick(stage, 'reasoning')
     expect(picker(stage).rows.map(one => one.value)).toEqual(['default'])
     stage.feed([event('model.catalog', { entries: [{ ...source, effectiveReasoning: { m: { disable: true, levels: ['low'] } } }], current })])

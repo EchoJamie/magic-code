@@ -32,7 +32,7 @@ test('显式刷新真实本地列表，保存映射与偏好后仍能读取缓�
   await g.settings.read(); expect(requests).toBe(0)
   await g.apply({ type: 'model.refresh', provider: 'local' }); expect(requests).toBe(1)
   expect(JSON.stringify(await g.settings.read())).toContain('deepseek-v4-pro')
-  await g.apply({ type: 'model.configure', choice: 'default', provider: 'local', model: 'deepseek-v4-pro' })
+  await g.apply({ type: 'model.configure', choice: 'cantrip', provider: 'local', model: 'deepseek-v4-pro' })
   await g.apply({ type: 'prefs.set', reducedMotion: true })
   const after = await g.settings.read(); expect(JSON.stringify(after.catalog)).toContain('deepseek-v4-pro'); expect(JSON.stringify(after)).not.toContain('SENTINEL_REFRESH'); expect(requests).toBe(1)
 })

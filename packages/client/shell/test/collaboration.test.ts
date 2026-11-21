@@ -26,7 +26,7 @@ export function collaborationStage(options: Omit<ShellOptions, 'magicBase'> = {}
   const shell = createShell({ ...spy.transport, send(command) {
     spy.transport.send(command)
     if (command.type === 'collaboration.read') spy.emit(event('collaboration.view', snapshot()))
-    if (command.type === 'model.list') spy.emit(event('model.catalog', { entries: [{ provider: 'local' }], configuredModels: { default: { provider: 'local', model: 'mini' } }, current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'local', model: 'mini' } }))
+    if (command.type === 'model.list') spy.emit(event('model.catalog', { entries: [{ provider: 'local' }], configuredModels: { cantrip: { provider: 'local', model: 'mini' } }, current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip' as const, provider: 'local', model: 'mini' } }))
     if (command.type === 'session.open') {
       active = command.session === 'member' ? 'member' : 'origin'
       spy.emit(event('session.state', { active, sessions: [{ archived: false, id: 'origin', title: '修复回调', at: 0 }, { archived: false, id: 'member', at: 0 }] }, { session: active }))
@@ -321,7 +321,7 @@ test('子会话复用现有会话模型入口，只换这个成员的模型', ()
   dock = app.view().dock
   if (dock.kind !== 'picker') throw new Error('模型档位没有打开')
   app.pick('default')
-  expect(app.spy.commands.at(-1)).toMatchObject({ type: 'collaboration.configure', member: 'worker', model: { choice: 'default' } })
+  expect(app.spy.commands.at(-1)).toMatchObject({ type: 'collaboration.configure', member: 'worker', model: { choice: 'cantrip' } })
 })
 
 test('协作实时消息追加到子会话正文，同一 messageId 不重复', () => {

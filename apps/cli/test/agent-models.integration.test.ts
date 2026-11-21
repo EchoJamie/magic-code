@@ -26,7 +26,7 @@ function endpoint() {
   const configuredModels = { default: { provider: 'ds', model: 'same' }, cantrip: { provider: 'mm', model: 'same' }, spell: { provider: 'missing', model: 'same' }, arcane: { provider: 'ds', model: 'hold' } }
   return { seen, providers, configuredModels, held, entered, close() { held.resolve(); server.stop(true) } }
 }
-const defaults = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'default' as const, provider: 'ds', model: 'same', reasoning: { mode: 'level' as const, level: 'high' } }
+const defaults = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'cantrip' as const, provider: 'ds', model: 'same', reasoning: { mode: 'level' as const, level: 'high' } }
 const reviewer: AgentRoleConfig = { name: '审查', instructions: '只给证据和结论', model: { reasoning: { mode: 'off' } } }
 const request = { model: 'ignored-by-registry', messages: [{ role: 'user' as const, content: '受控端点测试' }] }
 
@@ -75,11 +75,11 @@ describe('本地 HTTP：成员独立配置与真实出站', () => {
       expect(preview.ok).toBe(true)
       expect(a.models.current()).toBe(before)
       expect(e.seen.length).toBe(2)
-      expect(a.models.use({ ...a.models.current()!, choice: 'default', reasoning: { mode: 'level', level: 'low' } }).ok).toBe(true)
+      expect(a.models.use({ ...a.models.current()!, choice: 'cantrip', reasoning: { mode: 'level', level: 'low' } }).ok).toBe(true)
       await Promise.all([drainStream(a.models.stream(request)), drainStream(b.models.stream(request))])
       expect(e.seen.findLast(one => one.route.startsWith('/ds'))!.body['reasoning_effort']).toBe('low')
       expect(b.models.current()).toEqual({ choice: 'cantrip' as const, provider: 'mm', model: 'same', protocol: 'chat-completions', endpoint: e.providers.mm!.baseURL!, reasoning: { mode: 'default' } })
-      expect(a.models.use({ choice: 'default', provider: 'mm', model: 'alternate' }).ok).toBe(true)
+      expect(a.models.use({ choice: 'cantrip', provider: 'mm', model: 'alternate' }).ok).toBe(true)
       await drainStream(a.models.stream(request))
       expect(e.seen.at(-1)?.body['model']).toBe('alternate')
       expect(e.seen.at(-1)?.body['reasoning_effort']).toBeUndefined()
@@ -98,7 +98,7 @@ describe('本地 HTTP：成员独立配置与真实出站', () => {
       const abort = new AbortController()
       const running = drainStream(a.models.stream(request, { signal: abort.signal }))
       await e.entered.promise
-      expect(a.models.use({ ...a.models.current()!, choice: 'default', model: 'next', reasoning: { mode: 'off' } }).ok).toBe(true)
+      expect(a.models.use({ ...a.models.current()!, choice: 'cantrip', model: 'next', reasoning: { mode: 'off' } }).ok).toBe(true)
       abort.abort()
       const independent = await drainStream(b.models.stream(request))
       expect(independent.result.aborted).toBe(false)
@@ -117,7 +117,7 @@ describe('本地 HTTP：成员独立配置与真实出站', () => {
     try {
       const a = createAgentModels({ configuredModels: e.configuredModels, defaults, options: { providers: e.providers, stamper: makeTestStamper(), retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 } } })
       if (!a.ok) throw new Error(a.reason)
-      expect(a.models.use({ ...a.models.current()!, choice: 'default', model: 'reject', reasoning: { mode: 'level', level: 'high' } }).ok).toBe(true)
+      expect(a.models.use({ ...a.models.current()!, choice: 'cantrip', model: 'reject', reasoning: { mode: 'level', level: 'high' } }).ok).toBe(true)
       const result = await drainStream(a.models.stream(request))
       expect(result.result.error?.message).toContain('受控端点拒绝')
       expect(a.models.current()?.model).toBe('reject')
