@@ -18,16 +18,16 @@ import { wrap, PALETTE } from './lines.ts'
  *   器不动——它们不需要「你在哪一页」这个概念，改了只是顺手，不是这一轮的事。
  */
 
-export type PickerItem =
+type PickerItem =
   | { readonly kind: 'head'; readonly key: string; readonly head: string; readonly faint: boolean }
   | { readonly kind: 'row'; readonly key: string; readonly row: PickerRow; readonly index: number }
   | { readonly kind: 'notice'; readonly key: string; readonly text: string }
   | { readonly kind: 'detail'; readonly key: string; readonly text: string }
 export type PickerLayout = { readonly items: readonly PickerItem[]; readonly above: number; readonly below: number; readonly height: number; readonly detailTop: number; readonly detailSize: number; readonly detailTotal: number }
 export type PickerProps = { readonly picker: Picker; readonly columns: number; readonly rows?: number; readonly now?: number | null }
-export function maxPickerLines(rows: number): number { return Math.max(1, Math.floor(rows / 2)) }
+function maxPickerLines(rows: number): number { return Math.max(1, Math.floor(rows / 2)) }
 /** 面板式那面旗——`tabs` 给了就是（见文件头「两套排版」）。 */
-export const panelOf = (picker: Picker): boolean => picker.tabs !== undefined
+const panelOf = (picker: Picker): boolean => picker.tabs !== undefined
 export function titleLines(picker: Picker, columns: number): number {
   // 面板式里标题挪到**页签那一行的右边**当面包屑（`tabRow`），不另占行。
   if (panelOf(picker) || picker.title === undefined) return 0

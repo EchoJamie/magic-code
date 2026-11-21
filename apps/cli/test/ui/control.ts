@@ -87,19 +87,6 @@ export type ControlRequest = {
   readonly files?: Readonly<Record<string, string>>
 }
 
-/** 一条答复——`ok` 为假时 `error.kind` 说清是哪一类（助手据此决定下一步）。 */
-export type ControlReply =
-  | { readonly id: number | string; readonly ok: true; readonly [key: string]: unknown }
-  | {
-      readonly id: number | string
-      readonly ok: false
-      readonly error: {
-        readonly kind: 'timeout' | 'bad-request' | 'no-session' | 'failed'
-        readonly message: string
-        readonly [key: string]: unknown
-      }
-    }
-
 export type ControlOptions = {
   /** 产物根——`start` 没另给的话用它。 */
   readonly artifacts?: string

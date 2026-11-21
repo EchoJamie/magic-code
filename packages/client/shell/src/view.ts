@@ -167,12 +167,12 @@ export function isSessionRow(row: LogRow): boolean {
   return row.kind === 'user' || row.kind === 'assistant' || row.kind === 'thinking' || row.kind === 'tool'
 }
 
-export type PlanProjection = PlanSnapshot
+type PlanProjection = PlanSnapshot
 
-export const PLAN_TOOLS: ReadonlySet<string> = new Set(['plan_read', 'plan_update', 'history_read'])
+const PLAN_TOOLS: ReadonlySet<string> = new Set(['plan_read', 'plan_update', 'history_read'])
 
 /** 这个工具名是不是那三个辅助工具之一（参数由调用方给**注册名**，不是给显示名）。 */
-export function quietTool(name: string): boolean {
+function quietTool(name: string): boolean {
   return PLAN_TOOLS.has(name)
 }
 
@@ -471,7 +471,7 @@ export const HINT_LOST = '/connect 重连 · ctrl+r 刷新 · ctrl+c 退出'
 
 export const HINT_WORKING = 'Esc 停止 · ctrl+c 停或离开'
 /** 退避中右位提示（后段动态：`1.6s 后重发 · 不用管`）。 */
-export const HINT_RETRYING_TAIL = '后重发 · 不用管'
+const HINT_RETRYING_TAIL = '后重发 · 不用管'
 export const HINT_BOOTING = '启动中——恢复跑完才受理输入'
 /** 临时层提示留在菜单；纯列表支持 ← 返回，字段保留光标编辑。 */
 export const HINT_PICKER = '↑↓ 选择 · Enter 选定 · ← / Esc 返回'
@@ -488,7 +488,7 @@ export const HINT_PICKER_SESSION = '↑↓ 选择 · 打字筛选 · Ctrl+G 操�
 /** 设置筛词原位编辑；Esc 退当前层。 */
 export const HINT_PICKER_CONFIG = '↑↓ 选择 · 输入筛词 · Esc 返回'
 
-export const HINT_PICKER_TASK = '↑↓ 选 · 回车 定 · esc 返回'
+const HINT_PICKER_TASK = '↑↓ 选 · 回车 定 · esc 返回'
 
 export const STOP_KEYS_HINT = 'ctrl+x 停 · ctrl+w 只停这一轮'
 
@@ -812,7 +812,7 @@ export function workspaceLabelOf(roots: readonly string[] | undefined): string |
 
 export type SkillsCatalog = EventDataOf['skills.catalog']
 
-export type PathsCatalog = EventDataOf['paths.catalog']
+type PathsCatalog = EventDataOf['paths.catalog']
 
 // ══ 归约（事件 → 一屏）═══════════════════════════════════════════════
 

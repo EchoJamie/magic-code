@@ -54,7 +54,7 @@ import { hostDiscoveryPath } from '@magic/host'
 export const REPO_ROOT = resolve(import.meta.dir, '../../../..')
 
 /** 产物根缺省落这儿（`.gitignore` 已忽略）——**给人看的东西不进临时目录**。 */
-export const DEFAULT_ARTIFACTS_ROOT = join(REPO_ROOT, '.ui-runs')
+const DEFAULT_ARTIFACTS_ROOT = join(REPO_ROOT, '.ui-runs')
 
 /** 闭集：认得的键。**不在表内即报错**（绝不猜——猜错＝判据验的不是那件事）。 */
 const KEYS: Record<string, string> = {
@@ -191,7 +191,7 @@ export type WaitCondition =
    */
   | { readonly writtenFrame: number }
 
-export type WaitOptions = {
+type WaitOptions = {
   /** 超时（毫秒）——**必须有界**；缺省 8 秒（真模型那条路要等流式收尾）。 */
   readonly timeoutMs?: number
 }
@@ -207,13 +207,13 @@ export type WaitOptions = {
  * 没等到就**超时留档**：抛 `UiWaitTimeout`（条件 · 等了多久 · 此刻的屏 · 现场目录），
  * 由调用方看着办——要再试一次的，自己决定是接着敲、还是换个判据。
  */
-export type WriteUntil = {
+type WriteUntil = {
   readonly until: WaitCondition
   /** 等多久（缺省 2500ms；真模型那条路给大一点）。 */
   readonly timeoutMs?: number
 }
 
-export type WaitResult = {
+type WaitResult = {
   readonly ok: true
   /** 命中的条件描述（人读的一句话）。 */
   readonly matched: string
@@ -340,7 +340,7 @@ export type UiSession = {
 }
 
 /** 一趟运行的底细——读到的是**当场**的值（不是收尾时补的）。 */
-export type SessionFacts = {
+type SessionFacts = {
   readonly pid: number
   readonly runDir: string
   readonly checkout: string
@@ -1181,7 +1181,7 @@ function longestDashRun(line: string): number {
  * 分隔线），它与折行段在字节上无从区分，会被当成上游而拒——这是这一层判据的固有边界，
  * 写进 `研发/界面验收工具` 的限度里。
  */
-export function hasFreshFrame(bytes: string, columns: number): boolean {
+function hasFreshFrame(bytes: string, columns: number): boolean {
   if (!Number.isInteger(columns) || columns <= 0) return false
   const needle = '─'.repeat(columns)
 
@@ -1205,7 +1205,7 @@ export function hasFreshFrame(bytes: string, columns: number): boolean {
 }
 
 /** 条件的一句话（错误消息、步骤时间线、帧标签都用它）。 */
-export function describeCondition(condition: WaitCondition): string {
+function describeCondition(condition: WaitCondition): string {
   if ('text' in condition) return `出现「${condition.text}」`
   if ('absent' in condition) return `不再出现「${condition.absent}」`
   if ('writtenFrame' in condition) return `改窗之后应用按 ${condition.writtenFrame} 列画出完整一帧`

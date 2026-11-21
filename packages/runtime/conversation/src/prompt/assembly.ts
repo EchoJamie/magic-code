@@ -144,7 +144,7 @@ function assertVars(vars: PromptVars): void {
  * 环境注入块——标题 + 逐项一行。
  * 值**按原样呈现**（不修剪）：校验只拒绝空白，不改造调用方给的内容。
  */
-export function renderEnvironment(vars: PromptVars): PromptBlock {
+function renderEnvironment(vars: PromptVars): PromptBlock {
   assertVars(vars)
 
   const body = PROMPT_RUNTIME_VARS.map((name) => `- ${RUNTIME_VAR_LABELS[name]}：${vars[name]}`).join(

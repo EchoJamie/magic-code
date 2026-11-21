@@ -68,4 +68,4 @@ python3 -B scripts/macos/verify.py '/path/to/Debug/Magic Code.app'
 
 ## Wire
 
-TS 权威定义在 `packages/contracts/src/native.ts`；Swift 与 TS 共用 `tests/fixtures/native-wire/*.json`。合法样本保持形状，非法字段及未知变体拒绝。当前 family 为 `NativeRequest`、`NativeResponse`、`HostDiscovery`、`SettingsRequest`、`SettingsResult`；不保留旧 App 宿主生命协议。
+TS 权威定义在 `packages/contracts/src/conversation/native.ts`；Swift 与 TS 共用 `tests/fixtures/native-wire/*.json`。合法样本保持形状，非法字段及未知变体拒绝。当前 family 为 `NativeRequest`、`NativeResponse`、`HostDiscovery`、`SettingsRequest`、`SettingsResult`；不保留旧 App 宿主生命协议。

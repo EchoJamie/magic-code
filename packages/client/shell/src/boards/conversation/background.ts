@@ -4,7 +4,7 @@ import { collaborationRow, workTabs } from './collaboration.ts'
 import type { Picker } from '../../view.ts'
 
 export const backgroundKey = (target: BackgroundTarget): string => JSON.stringify([target.execution, target.session, target.id])
-export const backgroundState = (command: BackgroundCommand): string => command.state === 'stopping' ? '停止中' : command.state === 'unconfirmed' ? '停止未确认' : '运行中'
+const backgroundState = (command: BackgroundCommand): string => command.state === 'stopping' ? '停止中' : command.state === 'unconfirmed' ? '停止未确认' : '运行中'
 export function backgroundPicker(view: BackgroundView | undefined, selected?: string): Picker {
   const rows = (view?.commands ?? []).map(command => collaborationRow(backgroundKey(command), command.command,
     `${command.member ? `${command.member} · ` : ''}${backgroundState(command)} · ${command.id}`,

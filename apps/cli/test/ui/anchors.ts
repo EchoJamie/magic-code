@@ -31,7 +31,7 @@ import type { UiAnchors } from './driver.ts'
  * 出包面里没有这个常量（它是 `status.ts` 拼出来的），故按**字面量**锚在这里——
  * 改了它，真帧套件会红，不会静默过期。
  */
-export const MAGIC_IDLE_MARK = '○ 空闲'
+const MAGIC_IDLE_MARK = '○ 空闲'
 
 /**
  * **起手那道闸**在该宽度上等不等得到——**40 是量出来的**，不是拍的。
@@ -45,7 +45,7 @@ export const MAGIC_IDLE_MARK = '○ 空闲'
  * 低于它的那一档**不是「闸开了」**：驱动会记一步 `ready-gate-absent`，明说这一趟没有闸
  * （见 `driver.ts`·`waitForFrame`）——**不假装等到**。
  */
-export const READY_MIN_COLUMNS = 40
+const READY_MIN_COLUMNS = 40
 
 /**
  * **状态行那一格**（左下最后一行，U54）——判据落到**那一格**上，不落到全屏。

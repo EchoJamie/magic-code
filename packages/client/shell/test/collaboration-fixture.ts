@@ -1,6 +1,6 @@
 import type { CollaborationView, Entry } from '@magic/contracts'
 
-export const collaborationEntries: readonly Entry[] = [
+const collaborationEntries: readonly Entry[] = [
   { id: 30, kind: 'user', at: 1, content: { text: '保持公共接口兼容，检查回调校验。' } },
   { id: 32, kind: 'tool-call', at: 2, content: { text: '' }, payload: { id: 'call-fixture-1', name: 'exec', args: { command: 'bun test callback.test.ts' } } },
   { id: 33, kind: 'tool-result', at: 3, content: { text: '3 pass · 回调兼容测试通过' }, payload: { ok: true, output: { text: '3 pass · 回调兼容测试通过' } } },

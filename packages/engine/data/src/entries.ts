@@ -190,11 +190,11 @@ export function isToolResultEntry(entry: Entry): entry is ToolResultEntry {
 
 // —— 形态判据（无 `as`：靠 `unknown` 收窄，故外部数据进来也站得住）——
 
-export function isToolCallPayload(payload: unknown): payload is ToolCallPayload {
+function isToolCallPayload(payload: unknown): payload is ToolCallPayload {
   return isRecord(payload) && typeof payload['id'] === 'string' && payload['id'].length > 0 && typeof payload['name'] === 'string' && isRecord(payload['args'])
 }
 
-export function isToolResultPayload(payload: unknown): payload is ToolResultPayload {
+function isToolResultPayload(payload: unknown): payload is ToolResultPayload {
   if (!isRecord(payload)) return false
   if (typeof payload['ok'] !== 'boolean' || !isContent(payload['output'])) return false
   if (payload['knowledge'] !== undefined && !isKnowledgeReferences(payload['knowledge'])) return false
@@ -222,7 +222,7 @@ export function isToolResultPayload(payload: unknown): payload is ToolResultPayl
  * 前者＝没有目标（清单上那一行不出现），后者＝有一句目标。因此这里放行**两种**形状，
  * 与 `plan` 那一位同一姿势（只增不改的兼容位：U90 之前写下的笔记里压根没有这个键）。
  */
-export function isPlanNote(value: unknown): value is PlanNote {
+function isPlanNote(value: unknown): value is PlanNote {
   if (!isRecord(value)) return false
   if (typeof value['notes'] !== 'string') return false
 
@@ -238,7 +238,7 @@ export function isPlanNote(value: unknown): value is PlanNote {
 }
 
 /** 步骤状态——词表就是那三格（`PlanStepStatus` 的运行时对照）。 */
-export function isPlanStepStatus(value: unknown): boolean {
+function isPlanStepStatus(value: unknown): boolean {
   return value === 'pending' || value === 'in_progress' || value === 'completed'
 }
 
@@ -252,7 +252,7 @@ function isKnowledgeReferences(value: unknown): boolean {
 }
 
 /** 思考协议数据与实际提供的知识引用各自可选；知识元数据不伪造思考。 */
-export function isAssistantPayload(payload: unknown): payload is AssistantPayload {
+function isAssistantPayload(payload: unknown): payload is AssistantPayload {
   if (!isRecord(payload)) return false
   if (Object.keys(payload).some((key) => !['reasoning', 'reasoningState', 'knowledge'].includes(key))) return false
   const knowledge = payload['knowledge']
@@ -270,7 +270,7 @@ export function isAssistantPayload(payload: unknown): payload is AssistantPayloa
     && (state['details'] === undefined || (Array.isArray(state['details']) && state['details'].every(isRecord)))
 }
 
-export function isContent(value: unknown): value is Content {
+function isContent(value: unknown): value is Content {
   return isRecord(value) && (typeof value['text'] === 'string' || typeof value['blob'] === 'string')
 }
 
@@ -292,7 +292,7 @@ export function isContent(value: unknown): value is Content {
  * - `skills`（U33 旧形）：**按绑定时序、没有位置**。旧记录照读；旧调用方
  *   （无人值守脚本的 `{ skills }`）递进来的那一份也照旧落在这儿——**不替它编一个 `at`**。
  */
-export function isUserPayload(payload: unknown): payload is UserPayload {
+function isUserPayload(payload: unknown): payload is UserPayload {
   if (!isRecord(payload)) return false
   if (Object.keys(payload).some((key) => key !== 'skills' && key !== 'refs' && key !== 'notice' && key !== 'background' && key !== 'handoff')) {
     return false

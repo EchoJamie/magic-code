@@ -12,7 +12,7 @@ import type { AdoptedRun } from './background.ts'
  * - `total`——**每个通道读到的原始字节数**（含移交前那一段）。回执里那份 `seen` 只含头部
  *   一半（尾巴要等流结束才吐），移交发生在流还在跑的时候，靠它判断「有没有丢一段」。
  */
-export type DrainTee = {
+type DrainTee = {
   current?: (chunk: Uint8Array) => void
   total?: (channel: OutputDelta['channel'], chunk: Uint8Array) => void
   /** 已经把**多少字节**变成正文吐给回执（含尾巴那一份；后半段的正文不是 byte 数能反推的）。 */

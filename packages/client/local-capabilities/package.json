@@ -8,9 +8,6 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "dependencies": {
-    "@magic/contracts": "workspace:*"
-  },
   "devDependencies": {
     "@magic/resources": "workspace:*"
   }

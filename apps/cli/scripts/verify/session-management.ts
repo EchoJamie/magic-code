@@ -10,9 +10,8 @@ import { createUiSession, type UiSession } from '../../test/ui/driver.ts'
 import { createSandbox } from '../../test/ui/sandbox.ts'
 import { startFixture } from '../../test/ui/fixture.ts'
 import { startResidentHost } from '../../test/resident-host-fixture.ts'
-import { connectManager, type ManagerClient } from '../../src/run/client.ts'
+import { connectManager, hostDiscoveryPath, type ManagerClient } from '@magic/host'
 import { readEngineState } from '@magic/host'
-import { hostDiscoveryPath } from '../../src/run/host-discovery.ts'
 
 for (const columns of [100, 200]) {
   const artifacts = mkdtempSync(join(tmpdir(), 'u123-pty-'))

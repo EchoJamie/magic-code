@@ -14,21 +14,13 @@
  */
 
 export { PROMPT_SECTIONS } from './structure.ts'
-export type { PromptSectionId, PromptRuntimeVar } from './structure.ts'
+export type { PromptRuntimeVar } from './structure.ts'
 
-export {
-  HEADING_PREFIX,
-  PROMPT_SECTION_TITLES,
-  renderSection,
-  renderSections,
-  sectionHeading,
-} from './sections.ts'
-export type { PromptSection } from './sections.ts'
+export { sectionHeading } from './sections.ts'
 
 export {
   BACKGROUND_BLOCK_ID,
   BACKGROUND_HEADING,
-  BLOCK_SEPARATOR,
   ENVIRONMENT_BLOCK_ID,
   ENVIRONMENT_HEADING,
   PROJECT_RULES_BLOCK_ID,
@@ -39,13 +31,10 @@ export {
   SKILLS_HEADING,
   buildPromptBlocks,
   buildSystemPrompt,
-  renderEnvironment,
   splitSystemPrompt,
 } from './assembly.ts'
-export type { PromptBlock, PromptBlockId, PromptVars } from './assembly.ts'
+export type { PromptBlockId, PromptVars } from './assembly.ts'
 
 export { renderProjectRulesBlock, withProjectRules } from './rules.ts'
 
-export { renderSkillsBlock, withSkillsCatalog } from './skills.ts'
-
-export { renderBackgroundBlock, withBackgroundRuns } from './background.ts'
+export { withBackgroundRuns } from './background.ts'

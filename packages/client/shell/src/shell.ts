@@ -337,7 +337,7 @@ export type SudoFeed = {
   answer(requestId: string, password: string | null): void
 }
 
-export type SudoFeedEvent =
+type SudoFeedEvent =
   | { readonly kind: 'request'; readonly requestId: string; readonly command: string }
   | { readonly kind: 'settled'; readonly requestId: string }
 
@@ -398,19 +398,19 @@ const STREAMING: ReadonlySet<EventKind> = new Set<EventKind>(['model.delta', 'to
  * 故它自己那一截要从「有没有别的话」这笔账里去掉——不去掉的话，`/pdf` 单独一条会被
  * 当成「说了点什么」而直接发出去（一次一个字都没有的交代）。
  */
-export function spokenOf(draft: string, refs: readonly DraftRef[], word: string): string {
+function spokenOf(draft: string, refs: readonly DraftRef[], word: string): string {
   const spoken = bodyOf(draft, refs)
 
   return spoken.startsWith(word) ? spoken.slice(word.length) : spoken
 }
 
-export function submittable(draft: string, refs: readonly DraftRef[]): boolean {
+function submittable(draft: string, refs: readonly DraftRef[]): boolean {
   if (bodyOf(draft, refs).trim() !== '') return true
 
   return refs.some((ref) => ref.kind !== 'skill')
 }
 
-export function bodyOf(draft: string, refs: readonly DraftRef[]): string {
+function bodyOf(draft: string, refs: readonly DraftRef[]): string {
   let out = ''
   let cursor = 0
 

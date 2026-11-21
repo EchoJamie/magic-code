@@ -23,12 +23,12 @@
  * **不静默截断后宣称验证通过**。
  */
 
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { VtCursor } from './vt.ts'
 
 /** 原始字节的缺省上限（8 MiB）——够一次界面验收跑完，又不至于把仓库撑爆。 */
-export const RAW_LIMIT_BYTES = 8 * 1024 * 1024
+const RAW_LIMIT_BYTES = 8 * 1024 * 1024
 
 /**
  * 一帧（写进 `frames/*.json` 的那份）——**够画出这一屏**，且与尺寸无关地自洽。
@@ -385,9 +385,4 @@ export function summarizeRun(runDir: string): string {
     // 读不动就照实说读不动——**不编一个看起来正常的摘要**
     return `（${runDir} 的 run.json 读不动——这份现场不能当证据使）`
   }
-}
-
-/** 整块删掉一次运行（清场用——**只在明确要删时才调**）。 */
-export function removeRun(runDir: string): void {
-  rmSync(runDir, { recursive: true, force: true })
 }

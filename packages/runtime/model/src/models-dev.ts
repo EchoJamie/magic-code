@@ -16,7 +16,7 @@ export type ModelsDevCatalog = Readonly<Record<string, {
   readonly models: Readonly<Record<string, ModelInfo>>
 }>>
 export type ModelsDevSnapshot = { readonly fetchedAt: number; readonly providers: ModelsDevCatalog }
-export type ModelsDevRead = { readonly snapshot?: ModelsDevSnapshot; readonly failure?: string }
+type ModelsDevRead = { readonly snapshot?: ModelsDevSnapshot; readonly failure?: string }
 /** 文件实现由装配注入；读取只访问本地资源，刷新不携带供应商凭据。 */
 export type ModelsDevResource = {
   read(): ModelsDevRead

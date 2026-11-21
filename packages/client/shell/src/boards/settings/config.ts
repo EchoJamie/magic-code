@@ -23,7 +23,7 @@ export type ConfigPaths = {
 }
 
 /** `/config` 那一屏的一项——**顺序即屏上的顺序**（设计里就是这么排的）。 */
-export type ConfigItem = {
+type ConfigItem = {
 
   /** 选定之后进哪一项——落在 `PickerRow.value` 上（与 `modelActionRows` 同一姿势）。 */
   readonly key: 'model'
@@ -36,7 +36,7 @@ export type ConfigItem = {
   readonly group?: string
 }
 
-export const CONFIG_ITEMS: readonly ConfigItem[] = [
+const CONFIG_ITEMS: readonly ConfigItem[] = [
   { key: 'model', name: '模型与连接' },
   { key: 'mcp', name: '外部工具' },
   { key: 'web', name: '网页查询与搜索' },
@@ -209,9 +209,6 @@ export function configHint(input: {
     : `筛选「${input.filter}」——接着打收窄，退格删一个字`
 }
 
-/** 第 4 项那一屏的抬头（纯输出那一块的头一行）。 */
-export const CONFIG_PATHS_TITLE = '数据与工作区根'
-
 /**
  * **第 4 项自己那一屏**——数据目录与工作区根，**两个完整值**（不缩、不截）。
  *
@@ -288,7 +285,7 @@ export function configPathLines(paths: ConfigPaths): readonly string[] {
  * 只列了**可挑**的那几格，而「① 状态永不省」与「看不见的裸奔是最坏的一形」是既有的
  * 两条硬规矩（规划侧 2026-10-01 裁定：状态是这一行的锚，永远第一位、不可去）。
  */
-export const STATUS_LINE_CELLS: readonly {
+const STATUS_LINE_CELLS: readonly {
   readonly key: StatusLineCell
   readonly name: string
 

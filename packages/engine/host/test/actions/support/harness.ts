@@ -42,10 +42,10 @@ export const SESSION = 's-recovery'
 export const T0 = 1_700_000_000_000
 
 /** 工作区根——权限与沙箱共用同一份（契约：越界判据两处同源）。 */
-export const ROOTS: PermissionContext = { roots: ['/w'], declaredRoots: ['/w'], defaultRoot: '/w' }
+const ROOTS: PermissionContext = { roots: ['/w'], declaredRoots: ['/w'], defaultRoot: '/w' }
 
 /** 缺省工具规格——与 `@magic/faux` 骨架同形。 */
-export const EXEC_SPEC: ToolSpec = {
+const EXEC_SPEC: ToolSpec = {
   name: 'exec',
   summary: '命令执行（经沙箱 · 工作目录约束）',
   parameters: {},

@@ -36,10 +36,10 @@ const FOCUS_IN = '\u001b[I'
 const FOCUS_OUT = '\u001b[O'
 
 /** 此刻的状态：`unknown` ＝ 终端还没报过（不支持，或者刚开模式）。 */
-export type TerminalFocus = 'in' | 'out' | 'unknown'
+type TerminalFocus = 'in' | 'out' | 'unknown'
 
 /** 那一下轻点的两半——按下与松开（**同一个窗口**才算一次）。 */
-export type FocusPhase = 'down' | 'up'
+type FocusPhase = 'down' | 'up'
 
 export type FocusGate = {
   /** 把 stdin 的原始字节喂进来（**认这些字节，不消费**——Ink 那一头照旧读同一份）。 */

@@ -13,7 +13,7 @@ export const TEST_AT = 1_700_000_000_000
 let sequence = 0
 
 /** 下一个记录 id——测试内递增，跨用例不重置（只用于区分，不用于断言绝对值的场合）。 */
-export function nextId(): number {
+function nextId(): number {
   sequence += 1
   return sequence
 }

@@ -183,7 +183,7 @@ export function toShellKeys(
  * 带 `\n` ⇒ 那一下仍然不提交（**与今天一样，不是新坏**）。要更宽只剩「问终端 bracketed paste
  * 开没开」（`CSI ? 2004 $ p`）那一条路——多数终端根本不答，还多一次开机时序的赌，故不做。
  */
-export function trailingEnterOf(input: string): string | null {
+function trailingEnterOf(input: string): string | null {
   if (input.length < 2 || !input.endsWith('\r')) return null
   if (input.includes('\n')) return null
   if (input.slice(0, -1).includes('\r')) return null

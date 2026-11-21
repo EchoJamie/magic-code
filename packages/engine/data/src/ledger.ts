@@ -12,7 +12,7 @@ import type { SessionId, Timestamp, TurnId } from '@magic/contracts'
 import { randomUUID } from 'node:crypto'
 
 export type LedgerId = string
-export type LedgerEntryId = number
+type LedgerEntryId = number
 
 export type Ledger = {
   readonly id: LedgerId

@@ -5,7 +5,7 @@ export const protocols: readonly { id: ModelProtocol; label: string }[] = [
   { id: 'responses', label: 'Responses' }, { id: 'messages', label: 'Anthropic Messages' }, { id: 'chat-completions', label: 'Chat Completions' },
 ]
 export const protocolLabel = (value: string): string => protocols.find(one => one.id === value)?.label ?? '未选择协议'
-export type ProtocolResolution = { readonly protocol: ModelProtocol; readonly fallback: boolean }
+type ProtocolResolution = { readonly protocol: ModelProtocol; readonly fallback: boolean }
 
 /**
  * 该型号实际会用的协议——**显示与请求共用这一个解析**（D62）。
@@ -13,7 +13,7 @@ export type ProtocolResolution = { readonly protocol: ModelProtocol; readonly fa
  * 显式协议 → 官方提示里第一个支持该型号的协议 → 固定优先级兜底。
  * 自定义连接没写协议时返回 `undefined`（＝还没选，不伪造默认值）。
  */
-export function effectiveProtocolResolution(entry: ModelCatalogRow | undefined, vendor: VendorInfo | undefined, model: string): ProtocolResolution | undefined {
+function effectiveProtocolResolution(entry: ModelCatalogRow | undefined, vendor: VendorInfo | undefined, model: string): ProtocolResolution | undefined {
   if (entry?.protocol !== undefined) return { protocol: entry.protocol, fallback: false }
   if (entry?.vendor === undefined || vendor === undefined) return undefined
   const supported = vendor.protocols.find(one => one.models === undefined || one.models.includes(model))
@@ -43,14 +43,14 @@ export function protocolDisplay(entry: ModelCatalogRow | undefined, vendor: Vend
  *
  * 不再返回「自动」：界面与保存都落到一个具体协议。
  */
-export function defaultProtocolOf(vendor: VendorInfo | undefined, models: readonly string[] = []): ModelProtocol | undefined {
+function defaultProtocolOf(vendor: VendorInfo | undefined, models: readonly string[] = []): ModelProtocol | undefined {
   if (vendor === undefined) return 'responses'
   if (models.length === 0) return vendor.protocols[0]?.id
   return (vendor.protocols.find(one => one.models === undefined || models.every(model => one.models!.includes(model)))
     ?? vendor.protocols.find(one => one.models === undefined || models.some(model => one.models!.includes(model)))
     ?? vendor.protocols[0])?.id
 }
-export type Field = { key: string; label: string; secret?: boolean; choices?: readonly { id: string; label: string }[] }
+type Field = { key: string; label: string; secret?: boolean; choices?: readonly { id: string; label: string }[] }
 export type ModelEditor = {
   kind: 'provider' | 'model'; provider: string; model?: string; vendor?: VendorInfo; original?: ModelCatalogRow
   models?: readonly string[]; values: Record<string, string>; fields: readonly Field[]; override?: ProviderModelOverride

@@ -52,7 +52,7 @@ const SCOPE_KEY = {
   description: '搜索起点——相对按工作区默认根；工作区外目标需明确授权；缺省＝工作区根',
 } as const
 
-export const GREP_PARAMETERS = {
+const GREP_PARAMETERS = {
   type: 'object',
   /**
    * **两个键各是什么，描述里就写清**（D64）——实测里模型把路径与模式传反，
@@ -73,7 +73,7 @@ export const GREP_PARAMETERS = {
   additionalProperties: false,
 } as const
 
-export const GLOB_PARAMETERS = {
+const GLOB_PARAMETERS = {
   type: 'object',
   description:
     '按文件名匹配（`*` 不跨目录、`**` 递归——如 `**/*.ts`）。只列文件，不列目录；结果有上限。',
@@ -85,7 +85,7 @@ export const GLOB_PARAMETERS = {
   additionalProperties: false,
 } as const
 
-export const LS_PARAMETERS = {
+const LS_PARAMETERS = {
   type: 'object',
   description: '列目录——目录带尾斜杠，文件带字节数。',
   properties: {

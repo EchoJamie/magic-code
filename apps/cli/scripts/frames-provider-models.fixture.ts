@@ -36,7 +36,7 @@
  */
 
 /** 两家首批接入的供应商（`vendor` 字段的取值）。 */
-export type VendorId = 'minimax' | 'deepseek'
+type VendorId = 'minimax' | 'deepseek'
 
 /**
  * 一条模型——**字段名即供应商原始字段**（`id` 必有，其余原样带回）。
@@ -44,7 +44,7 @@ export type VendorId = 'minimax' | 'deepseek'
  * 夹具不替它们归一：归一归模型域的适配，夹具只负责「供应商是这么说的」。
  * 要验「未知字段保持未知」，就在这儿**少给几格**（如 DeepSeek 的列表只有 `id`/`object`/`owned_by`）。
  */
-export type ModelSpec = {
+type ModelSpec = {
   readonly id: string
   readonly owned_by?: string
   readonly created?: number
@@ -57,7 +57,7 @@ export type ModelSpec = {
  *
  * 「刷新之后新增可选」正是靠它：第一次回两个，第二次回三个。
  */
-export type ListTurn =
+type ListTurn =
   | {
       readonly kind: 'ok'
       readonly models: readonly ModelSpec[]
@@ -73,7 +73,7 @@ export type ListTurn =
   | { readonly kind: 'slow'; readonly ms: number }
 
 /** 聊天那一头的一回合（OpenAI 兼容 SSE）——形状照仓里那台共用夹具（`test/ui/fixture.ts`）。 */
-export type ChatTurn =
+type ChatTurn =
   | {
       readonly kind: 'text'
       readonly text: string
@@ -98,7 +98,7 @@ function pick<T>(turns: readonly T[] | undefined, index: number, fallback: T): T
 }
 
 /** 夹具收到的一次 HTTP 请求——**判据的物证**（脱敏：只记凭据对不对，不记 key）。 */
-export type ProviderRequest = {
+type ProviderRequest = {
   readonly n: number
   readonly method: string
   /** 去掉前缀之后的端点（`/models` · `/models/<id>` · `/chat/completions`）。 */
@@ -171,7 +171,7 @@ const DEFAULT_MODELS: Readonly<Record<VendorId, readonly ModelSpec[]>> = {
 }
 
 /** 端点分派——**照后缀认**（理由见文件头）。 */
-export function endpointOf(pathname: string): { readonly endpoint: string; readonly model: string } {
+function endpointOf(pathname: string): { readonly endpoint: string; readonly model: string } {
   const at = pathname.indexOf('/models')
   if (at !== -1) {
     const rest = pathname.slice(at + '/models'.length)

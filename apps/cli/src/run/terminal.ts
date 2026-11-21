@@ -203,7 +203,7 @@ export function clientTransport(client: ManagerClient): ControlTransport {
  * - 缺 key 时**不抛**（返回 `undefined`）：今天装配期缺 key 会响亮地抛，而那一跳现在
  *   归执行者——窗口这一侧拦下来只会把「谁该报这句错」搞反。执行者那一边照旧会报。
  */
-export function startupRegistry(inputs: RegistryInputs): ModelRegistry | undefined {
+function startupRegistry(inputs: RegistryInputs): ModelRegistry | undefined {
   const { loaded, switch: request } = inputs
   let registry: ModelRegistry
   try {
@@ -235,7 +235,7 @@ export function startupRegistry(inputs: RegistryInputs): ModelRegistry | undefin
 }
 
 /** `startupRegistry` 要的那几件——`TerminalInputs` 的一个子集（开屏那一格只需要它们）。 */
-export type RegistryInputs = {
+type RegistryInputs = {
   readonly loaded: LoadedConfig
   readonly switch?: ModelSwitchRequest | undefined
   /** 模型信息缓存的读数（见 `TerminalInputs.modelInfo`）。 */

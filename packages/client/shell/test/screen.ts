@@ -41,7 +41,7 @@ import type { Cell, ScreenOptions } from './terminal.ts'
 import type { Screen } from './terminal.ts'
 
 // 转出去——用它的用例只需认 `screen.ts` 一个入口
-export type { Cell, Screen, ScreenOptions }
+export type { Cell, ScreenOptions }
 
 // —— 一 · 帧文本：先归一化 ——
 
@@ -128,7 +128,7 @@ export type Frame = {
   has(needle: string): boolean
 }
 
-export type Line = { readonly row: number; readonly text: string }
+type Line = { readonly row: number; readonly text: string }
 
 const DEFAULT_SCREEN: ScreenOptions = { columns: 200, rows: 40 }
 

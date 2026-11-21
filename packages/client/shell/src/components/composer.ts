@@ -132,7 +132,7 @@ const PAD = 1
 const PROMPT = '› '
 const INDENT = '  '
 /** 内容可用宽度（列）——Ink 给这个盒子的文字算的宽度就是这个。 */
-export function contentWidthOf(columns: number): number {
+function contentWidthOf(columns: number): number {
   return Math.max(1, columns - 2 * PAD)
 }
 
@@ -195,7 +195,7 @@ export function clip(text: string, width: number): string {
 }
 
 /** 画出来的**一行**：行首那一段（上色）＋ 正文（已折；续行没有行首那一段）。 */
-export type ComposerRow = {
+type ComposerRow = {
   /** 行首那一段（`› ` 或悬挂缩进的 `  `）——**上色**的那一段；续行是空串。 */
   readonly prefix: string
   /** 行首之后的正文。 */

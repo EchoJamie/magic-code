@@ -30,7 +30,7 @@ const BLOBS = 'blobs'
 const RUNS = 'runs.json'
 const LOCK = '.records.lock'
 
-export const BACKUP_DIR = 'backup'
+const BACKUP_DIR = 'backup'
 
 /** 读 schema 版本；库不存在或读不出都返回 undefined。 */
 function schemaVersionOf(path: string): string | undefined {
@@ -178,12 +178,7 @@ export function acquireDataLock(dataDir: string): () => void {
  * 备份目录——与运行目录分开，且每个数据目录一份（不落到共享父目录里）。
  * `.magic` → `.magic-backup/0.1.0-<时间>/`。
  */
-export function backupDirOf(dataDir: string, now: number): string {
+function backupDirOf(dataDir: string, now: number): string {
   const trimmed = dataDir.length > 1 ? dataDir.replace(/\/+$/, '') : dataDir
   return join(dirname(trimmed), `${basename(trimmed)}-${BACKUP_DIR}`, `0.1.0-${stampOf(now)}`)
-}
-
-/** 旧数据是否已移走（测试与诊断用；不看内容）。 */
-export function legacyDataPresent(dataDir: string): boolean {
-  return existsSync(join(dataDir, DATABASE)) && schemaVersionOf(join(dataDir, DATABASE)) !== '2'
 }

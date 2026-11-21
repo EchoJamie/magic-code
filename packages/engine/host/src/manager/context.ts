@@ -124,7 +124,7 @@ export type NativeSessionsQuery = {
   ids?: readonly string[]
 }
 
-export type ManagerRuntime = {
+type ManagerRuntime = {
   read(): Promise<{
     canChangeData: boolean
     mcp: { session: string; gen: number | null; servers: readonly McpCatalogRow[] }[]

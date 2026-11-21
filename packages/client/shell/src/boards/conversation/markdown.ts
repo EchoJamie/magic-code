@@ -17,7 +17,7 @@
 import { PALETTE, displayWidth } from '../../components/lines.ts'
 
 /** 显示行里的一段（同段一个颜色）——与 `components/log.ts` 的 `Segment` 同形（那边只当它是色段）。 */
-export type MdSegment = {
+type MdSegment = {
   readonly text: string
   readonly color?: string
   readonly bold?: boolean

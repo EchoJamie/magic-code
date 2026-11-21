@@ -1,4 +1,4 @@
-import type { ModelRequest, ModelGateway, EventStamper, KernelEvent, Entry } from '@magic/contracts'
+import type { ModelRequest, ModelGateway, EventStamper, KernelEvent } from '@magic/contracts'
 import { createFauxGateway, type FauxTurn } from '@magic/faux'
 import { createRecordsStore } from '@magic/data'
 import { createWorkingNotes, createWorkspaceService, createSandbox } from '@magic/resources'
@@ -73,15 +73,5 @@ export function notesFixture(options: {
   return { dir, session, store, records, notes, service, requests, events, stamper, sink,
     compact: (id = 'compact', signal = new AbortController().signal) => service.compact({ requestId: id }, signal, () => {}),
     async close() { await service.shutdown(); store.close(); removeDir(dir) },
-  }
-}
-
-export function continuationCounts(entries: readonly Entry[], requests: readonly ModelRequest[]) {
-  const messages = entries.flatMap(entry => entry.kind === 'continuation' && entry.payload && 'message' in entry.payload ? [entry.payload] : [])
-  return {
-    contexts: new Set(messages.map(row => row.preparation)).size,
-    requests: requests.length,
-    saves: messages.filter(({ message }) => message.role === 'tool' && (message.name === 'write' || message.name === 'edit') && message.ok).length,
-    coverages: entries.filter(entry => entry.kind === 'summary' && entry.payload && 'notesSaved' in entry.payload && entry.payload.notesSaved).length,
   }
 }

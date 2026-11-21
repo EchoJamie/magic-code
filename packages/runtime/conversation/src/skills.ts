@@ -43,7 +43,7 @@ export type SkillsDelivery = {
 }
 
 /** 取主文的结果——判别式（失败位借 `SkillRead` 的措辞：指得出是谁、为什么）。 */
-export type SkillLoad =
+type SkillLoad =
   | { readonly ok: true; readonly used: readonly UsedSkillEntry[] }
   | { readonly ok: false; readonly reason: string }
 

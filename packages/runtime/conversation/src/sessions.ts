@@ -96,7 +96,7 @@ export type SessionInstance = {
  *
  * 缺省＝这一条命令不可用（照实回一句，不假装导出了）。
  */
-export type SaveImage = (file: {
+type SaveImage = (file: {
   readonly name: string
   readonly mime: string
   readonly bytes: Uint8Array

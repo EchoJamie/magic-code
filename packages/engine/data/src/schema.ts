@@ -17,7 +17,7 @@
  */
 import type { Database } from 'bun:sqlite'
 
-export const SCHEMA_VERSION = '2'
+const SCHEMA_VERSION = '2'
 
 export const SESSIONS_TABLE = 'sessions'
 export const TURNS_TABLE = 'turns'
@@ -37,7 +37,7 @@ export const SESSION_WORKSPACE_COLUMN = 'workspace'
 
 /** id 空间在 `records_meta` 里的键（预留水位——见 `ids.ts`）。 */
 export const NEXT_ID_KEY = 'next_id'
-export const SCHEMA_VERSION_KEY = 'schema_version'
+const SCHEMA_VERSION_KEY = 'schema_version'
 
 /** 具名参数——`bun:sqlite` 收 `Record<string, 标量>`。 */
 export type NamedParams = Record<string, string | number | null>

@@ -135,6 +135,3 @@ export const MARKS = {
    */
   warn: '!',
 } as const
-
-/** 记号的取值。 */
-export type MarkName = keyof typeof MARKS

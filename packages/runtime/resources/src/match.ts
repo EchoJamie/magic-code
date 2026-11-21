@@ -22,7 +22,7 @@ import { readText } from './files.ts'
 import { assertIdentity, assertTarget, inspectTarget } from './workspace.ts'
 
 /** 命中上限缺省——条（实现级常量；`grep` 的「输出截断」按它）。 */
-export const DEFAULT_MAX_RESULTS = 200
+const DEFAULT_MAX_RESULTS = 200
 
 /**
  * 单个文件的搜索上限——字节。

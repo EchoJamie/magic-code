@@ -12,7 +12,7 @@ import type { Content, Entry } from '@magic/contracts'
 
 const encoder = new TextEncoder()
 
-export const TRUNCATED_MARK = '\n[记录过大，显示已截断]'
+const TRUNCATED_MARK = '\n[记录过大，显示已截断]'
 
 /** 一帧序列化后的 UTF-8 字节数（与 wire 的量法一致）。 */
 export function wireBytesOf(value: unknown): number {
@@ -38,7 +38,7 @@ export function clipTextBytes(text: string, maxBytes: number): string {
   return `${out}${TRUNCATED_MARK}`
 }
 
-export function clipContent(content: Content, maxBytes: number): Content {
+function clipContent(content: Content, maxBytes: number): Content {
   return 'text' in content ? { text: clipTextBytes(content.text, maxBytes) } : content
 }
 

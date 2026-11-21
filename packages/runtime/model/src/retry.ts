@@ -64,7 +64,7 @@ export const DEFAULT_RETRY_POLICY: RetryPolicy = {
 /** 等一会儿——注入点（测试不真等）。`signal` 中止即 reject（抛 AbortError）。 */
 export type Sleeper = (delayMs: number, signal?: AbortSignal | undefined) => Promise<void>
 
-export const realSleep: Sleeper = (delayMs, signal) =>
+const realSleep: Sleeper = (delayMs, signal) =>
   new Promise<void>((resolve, reject) => {
     if (signal?.aborted === true) {
       reject(abortDuringBackoff())

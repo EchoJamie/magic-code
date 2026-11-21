@@ -14,10 +14,10 @@ import { PROMPT_SECTIONS } from './structure.ts'
 import type { PromptSectionId } from './structure.ts'
 
 /** 标题行前缀——markdown 二级标题。 */
-export const HEADING_PREFIX = '## '
+const HEADING_PREFIX = '## '
 
 /** 段的标题（**边界锚**）。 */
-export const PROMPT_SECTION_TITLES: Readonly<Record<PromptSectionId, string>> = {
+const PROMPT_SECTION_TITLES: Readonly<Record<PromptSectionId, string>> = {
   identity: '身份',
   conduct: '行为规范',
   tools: '工具使用指引',
@@ -158,7 +158,7 @@ export type PromptSection = {
 }
 
 /** 渲染一段——标题行 + 正文。 */
-export function renderSection(id: PromptSectionId, purpose?: 'consultation', consultationAvailable = false): PromptSection {
+function renderSection(id: PromptSectionId, purpose?: 'consultation', consultationAvailable = false): PromptSection {
   const heading = sectionHeading(id)
   const sectionBody = purpose === 'consultation' ? CONSULTATION_BODIES[id] : SECTION_BODIES[id] + (id === 'conduct' && consultationAvailable ? '\n' + CONSULTATION_HINT : '')
   return { id, heading, body: sectionBody, text: `${heading}\n${sectionBody}` }

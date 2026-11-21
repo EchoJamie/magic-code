@@ -55,7 +55,7 @@ function commandOf(command: string): string {
  * 返回 `undefined` 与返回一个空块是两件不同的事：前者＝这一轮**不提后台这件事**
  * （原行为一字不动），后者＝每轮钉一句空话。工单要的是前者。
  */
-export function renderBackgroundBlock(
+function renderBackgroundBlock(
   running: readonly BackgroundRunning[],
 ): PromptBlock | undefined {
   if (running.length === 0) return undefined
@@ -90,6 +90,3 @@ export function withBackgroundRuns(base: string, running: readonly BackgroundRun
   const block = renderBackgroundBlock(running)
   return block === undefined ? base : `${base}${BLOCK_SEPARATOR}${block.text}`
 }
-
-/** 块的标识与标题——归 `./assembly.ts` 持有（块词汇一处，见其注）。 */
-export { BACKGROUND_BLOCK_ID, BACKGROUND_HEADING } from './assembly.ts'

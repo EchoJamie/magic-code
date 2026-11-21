@@ -63,14 +63,14 @@ import { isInside } from './workspace.ts'
  * 大小没谱——没有上限就是一条被人无意中拖住整轮的路。三个数各管一件事：
  * 单份多大 · 一共几份 · 一共多大。数值本身是**实现级常量**（方向已有，量级归实现）。
  */
-export type RulesLimits = {
+type RulesLimits = {
   readonly maxDocuments: number
   readonly maxDocumentBytes: number
   readonly maxTotalBytes: number
 }
 
 /** 缺省上限——够任何讲道理的规约树，又能在一瞬间扫完。 */
-export const DEFAULT_RULES_LIMITS: RulesLimits = {
+const DEFAULT_RULES_LIMITS: RulesLimits = {
   maxDocuments: 64,
   maxDocumentBytes: 128 * 1024,
   maxTotalBytes: 512 * 1024,

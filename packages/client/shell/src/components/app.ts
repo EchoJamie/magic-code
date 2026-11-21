@@ -38,7 +38,7 @@ import { planBudgetOf, planBlockOf, planScrolled } from '../boards/conversation/
 import type { PlanBlock } from '../boards/conversation/plan.ts'
 import type { Shell } from '../shell.ts'
 import { toShellKeys, type ShellKey } from '../input.ts'
-export { toShellKeys, trailingEnterOf } from '../input.ts'
+export { toShellKeys } from '../input.ts'
 import type { CompletionState, LogRow, ShellView } from '../view.ts'
 import {
   HINT_EXIT_ARMED,
@@ -368,7 +368,7 @@ function pageOf(view: ShellView): string {
  * 晚一步（比如放进 `useEffect` 等重绘之后）就是另一种结果：新一页的头几行先写出去，
  * 再被这一串一并推进 scrollback，屏上剩下空页。
  */
-export function flipBytes(rows: number): string {
+function flipBytes(rows: number): string {
   return '\n'.repeat(Math.max(1, Math.floor(rows))) + '\u001b[H'  // CSI H ＝ 光标归位
 }
 

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignore": ["playground/**"],
+  "ignoreBinaries": ["pbcopy", "swiftc"],
+  "ignoreDependencies": ["@magic/cli"],
+  "workspaces": {
+    ".": {
+      "entry": [
+        "scripts/**/*.{ts,mjs}"
+      ]
+    },
+    "apps/cli": {
+      "entry": [
+        "scripts/verify/**/*.ts",
+        "scripts/bench-*.ts",
+        "test/support/*.ts",
+        "test/*-child.ts"
+      ]
+    },
+    "packages/client/shell": {
+      "entry": [
+        "scripts/verify/**/*.ts",
+        "scripts/bench-*.ts"
+      ]
+    },
+    "packages/runtime/mcp": {
+      "entry": [
+        "test/support/*.ts"
+      ]
+    }
+  }
+}

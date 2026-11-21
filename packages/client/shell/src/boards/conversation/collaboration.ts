@@ -17,7 +17,7 @@ export const workTabs = (active: 'collaboration' | 'background'): readonly { rea
   { label: '协作', active: active === 'collaboration' },
   { label: '后台命令', active: active === 'background' },
 ]
-export const delegationState: Record<Delegation['state'], string> = {
+const delegationState: Record<Delegation['state'], string> = {
   queued: '待接下', clarification: '需要澄清', accepted: '已接下', rejected: '已拒绝',
   delivered: '已回报，待核验', received: '结果已收下', cancelled: '已撤回',
 }

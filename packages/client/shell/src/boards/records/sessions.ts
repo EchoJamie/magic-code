@@ -41,7 +41,7 @@ export function inActiveSection(state: RunState): boolean {
 }
 
 /** 六行状态的字面——**列表与详情念的是这一份**（设计那张表左栏的词）。 */
-export function runStateLabel(state: RunState): string {
+function runStateLabel(state: RunState): string {
   switch (state) {
     case 'running':
       return '执行中'

@@ -66,7 +66,7 @@ export type Step = ControlRequest & {
 }
 
 /** 步骤文件（对象形）。数组形也收——那就是 `steps` 本身。 */
-export type StepFile = {
+type StepFile = {
   /** 产物标签（进目录名）。 */
   readonly label?: string
   /** 产物根。 */
@@ -77,7 +77,7 @@ export type StepFile = {
 }
 
 /** 一个窗口的落点（`start` 那一步的答复里带着）——报告里逐个列出来。 */
-export type SessionDir = {
+type SessionDir = {
   readonly session: string
   readonly runDir: string
   readonly pid: number

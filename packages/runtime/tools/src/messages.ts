@@ -134,9 +134,6 @@ export const OUTPUT_SUDO_CANCELED = '已取消 sudo 认证——命令未执行'
 export const sudoAuthFailedOutput = (detail?: string): string =>
   `sudo 认证没通过——命令未执行${detail === undefined || detail.trim() === '' ? '' : `（${detail.trim()}）`}；可以再发起一次重试`
 
-/** 认证成功、但 `sudo -n` 执行时时间戳已失效（极少见）——说清是哪一截没成。 */
-export const sudoTimestampLostOutput = 'sudo 认证已通过，但执行时系统时间戳已失效——命令未执行；请重新发起一次'
-
 // —— `exec` 的后台那一形（U70）——
 
 /**

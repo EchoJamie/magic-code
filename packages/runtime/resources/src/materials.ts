@@ -74,7 +74,7 @@ export type MaterialsOptions = {
  * **图片的合计上限照旧**（`DEFAULT_IMAGE_TOTAL_BYTES`）——那一条守的是「一次请求带着
  * 几十兆字节出门」，而图片仍是引用即进。
  */
-export const DEFAULT_MATERIAL_BYTES = 64 * 1024
+const DEFAULT_MATERIAL_BYTES = 64 * 1024
 
 /**
  * **一张图的上限**——**字节**（实现级常量）。
@@ -84,7 +84,7 @@ export const DEFAULT_MATERIAL_BYTES = 64 * 1024
  * 超过就**整条不跑并说清**（不静默截断——切一半的图送出去，对面要么报错要么看见半张，
  * 两种都比当场说清坏）。要送更大的图＝先压小（那是用户手上做得到的事）。
  */
-export const DEFAULT_IMAGE_BYTES = 5 * 1024 * 1024
+const DEFAULT_IMAGE_BYTES = 5 * 1024 * 1024
 
 /**
  * 一次交代里**图片的合计上限**——**字节**（实现级常量）。
@@ -94,10 +94,10 @@ export const DEFAULT_IMAGE_BYTES = 5 * 1024 * 1024
  *
  * 20 MiB ≈ 四张顶格的图：够「这几张截图一起看」，再多就不是一次性交代该有的量了。
  */
-export const DEFAULT_IMAGE_TOTAL_BYTES = 20 * 1024 * 1024
+const DEFAULT_IMAGE_TOTAL_BYTES = 20 * 1024 * 1024
 
 /** 目录清单最多列几项——超出的**如实报数**（`omitted`），不静默少列。 */
-export const DEFAULT_DIR_ENTRIES = 200
+const DEFAULT_DIR_ENTRIES = 200
 
 /** 路径候选最多列几条（`@` 那一栏是「边打边认」的辅助，不是浏览面——同 `MAX_CANDIDATES` 的姿势）。 */
 export const DEFAULT_CANDIDATES = 30

@@ -30,7 +30,7 @@ import type { OwnedTransport } from './connection.ts'
 const GONE = '连不上了'
 
 /** 终止会话那一步的上限（毫秒）——收尾不许把退出挂住。 */
-export const HTTP_TERMINATE_TIMEOUT_MS = 2_000
+const HTTP_TERMINATE_TIMEOUT_MS = 2_000
 
 export type HttpConnectionOptions = {
   readonly fetch?: ((input: string | URL, init?: RequestInit) => Promise<Response>) | undefined

@@ -1,6 +1,6 @@
 import Foundation
 
-// Codable adapter for packages/contracts/src/native.ts; no fallback wire versions.
+// Codable adapter for packages/contracts/src/conversation/native.ts; no fallback wire versions.
 struct ServiceIdentity: Codable, Equatable {
     let `protocol`: Int
     let version: String

@@ -22,7 +22,7 @@ import { assemble, loadConfig } from '../src/index.ts'
 import { magicAt, removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 /** 一段「交代一件事、它跑一条命令」的 Faux 脚本——冒烟的标准剧本。 */
-export const SMOKE_TURNS: readonly FauxTurn[] = [
+const SMOKE_TURNS: readonly FauxTurn[] = [
   {
     toolCalls: [{ name: 'exec', args: { description: '测试命令', command: 'echo hello-magic' } }],
     usage: { inputTokens: 11, outputTokens: 3 },
@@ -132,7 +132,7 @@ export function kindTrail(events: readonly KernelEvent[]): string[] {
 
 // —— 独立验证：直读库表（不经 API 回读闭环）——
 
-export type RawEntry = {
+type RawEntry = {
   readonly id: number
   readonly session: string
   readonly kind: string
@@ -143,7 +143,7 @@ export type RawEntry = {
   readonly at: number
 }
 
-export type RawEvent = {
+type RawEvent = {
   readonly id: number
   readonly session: string
   readonly turn: number | null

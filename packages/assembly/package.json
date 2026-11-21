@@ -19,7 +19,6 @@
     "@magic/resources": "workspace:*",
     "@magic/state": "workspace:*",
     "@magic/tools": "workspace:*",
-    "@magic/transport": "workspace:*",
-    "undici": "7.29.1"
+    "@magic/transport": "workspace:*"
   }
 }

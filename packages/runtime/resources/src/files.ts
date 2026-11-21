@@ -99,7 +99,7 @@ export async function openTarget(target: ResolvedPath, mode: 'read' | 'write' | 
 }
 
 /** 路径仍指向打开的那一个文件；文件身份与裁决前快照一致。 */
-export async function verifyHandle(target: ResolvedPath, handle: FileHandle): Promise<void> {
+async function verifyHandle(target: ResolvedPath, handle: FileHandle): Promise<void> {
   assertTarget(target.absolute)
   const opened = identityOf(await handle.stat({ bigint: true }))
   const current = identityOf(await stat(target.absolute, { bigint: true }))

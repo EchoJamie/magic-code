@@ -51,7 +51,7 @@ import { refused, reasonOf, rowOf } from './toolkit.ts'
  * 原来那两格只有工作笔记能用，普通文件一传就拒——于是读大文件只能绕去 `exec` 的
  * `sed` / `head`：同一个地址要两份换算（`grep` 报行号，`read` 却只认字符位置）。
  */
-export const READ_PARAMETERS = {
+const READ_PARAMETERS = {
   type: 'object',
   description: '读取文件。按行分段：from 从第几行起（1 起），lines 最多读多少行；都不给就从头读到本次上限。普通文件与工作笔记同一套。回执末尾给出本次的行范围与下一段的 from（读到头就不给）。单行本身超出上限时另行说明。',
   properties: {
@@ -140,7 +140,7 @@ export function defineReadTool(): ToolDefinition {
 
 // ══ write ═════════════════════════════════════════════════════════════
 
-export const WRITE_PARAMETERS = {
+const WRITE_PARAMETERS = {
   type: 'object',
   description:
     '新建或整写一个文件（**覆盖**已有内容，不是追加）。覆盖是必闸操作。不会自动建上级目录。',
@@ -196,7 +196,7 @@ export function defineWriteTool(): ToolDefinition {
 
 // ══ edit ══════════════════════════════════════════════════════════════
 
-export const EDIT_PARAMETERS = {
+const EDIT_PARAMETERS = {
   type: 'object',
   description:
     '串替换编辑：old 必须在文件中**唯一**出现，否则整个调用不改动文件并报错（要改多处就先给足上下文、逐个改）。',

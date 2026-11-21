@@ -45,7 +45,7 @@ const HIDE_CURSOR = '\u001b[?25l'
 const SHOW_CURSOR = '\u001b[?25h'
 
 /** 复用 Node 的流式解键器；未知控制序列丢弃，Esc 由解键器判定。 */
-export function createScreenKeyParser(onKey: (key: ScreenKey) => void) {
+function createScreenKeyParser(onKey: (key: ScreenKey) => void) {
   const stream = new PassThrough()
   emitKeypressEvents(stream)
   stream.on('keypress', (text: string | undefined, key: Key) => {

@@ -99,7 +99,7 @@ export function modelRows(
   return [...rows, ...(entries.length ? [{ label: '手动填写模型', meta: '无需列表命中', value: 'manual', current: false, oneLine: true }] : []), ...modelActionRows(entries)]
 }
 
-export function modelActionRows(entries: readonly ModelCatalogRow[]): readonly PickerRow[] {
+function modelActionRows(entries: readonly ModelCatalogRow[]): readonly PickerRow[] {
   const rows: PickerRow[] = [
     { label: '连接供应商', meta: '', current: false, value: 'connect', oneLine: true, pinned: true },
   ]
@@ -186,7 +186,7 @@ export function manageMetaOf(entry: ModelCatalogRow, vendors: readonly VendorInf
  * 认证来处那一句——**说清是哪儿来的**，不含糊说「已设置」（设计 · 维护连接）。
  * 两处都没有（这条连接还没有可用认证）＝**如实说没有**。
  */
-export function authLabelOf(entry: ModelCatalogRow): string {
+function authLabelOf(entry: ModelCatalogRow): string {
   if (entry.auth === 'none') return '认证：无需认证'
   if (entry.keySource === 'config') return '认证：配置文件'
   if (entry.keySource === 'env') return `认证：环境变量 ${apiKeyEnvVarOf(entry.provider)}`

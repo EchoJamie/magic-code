@@ -87,9 +87,6 @@ export function renderProjectRulesBlock(input: {
   }
 }
 
-/** 项目规约块的标识与标题——归 `./assembly.ts` 持有（块词汇一处，见其注）。 */
-export { PROJECT_RULES_BLOCK_ID, PROJECT_RULES_HEADING } from './assembly.ts'
-
 /**
  * 一条规约的摆法——**抬头说清「这条管到哪儿」，正文原样跟在后面**。
  *

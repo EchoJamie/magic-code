@@ -265,22 +265,6 @@ export function appendToolResultEntry(log: EntryLog, outcome: ToolOutcome, knowl
   })
 }
 
-/**
- * 摘要条目——压缩的产物（技术方案 · 上下文压缩：「旧段交模型生成摘要 → 以 `summary`
- * 条目入库」）。
- *
- * 它与别的条目**同待遇**：正文超阈值照样转 blob（摘要也可能是长的），时间戳照样取
- * `log.now`。**只增不改**——旧段那些条目一条都不动，这条只是追加在末尾（append-only 不破）。
- */
-export async function appendSummaryEntry(log: EntryLog, text: string): Promise<RecordId> {
-  return log.records.appendEntry({
-    kind: 'summary',
-    content: await contentOf(text, log),
-    ...turnField(log),
-    at: log.now(),
-  })
-}
-
 /** 正文 → 内容——超阈值转 blob（规则 ②：大负载落 blob）；**写权唯一归记录域**（经其公开面）。 */
 async function contentOf(text: string, log: EntryLog): Promise<Content> {
   if (text.length <= log.blobThreshold) return { text }

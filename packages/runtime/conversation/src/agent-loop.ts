@@ -216,7 +216,7 @@ export type LoopRuntime = {
  * 一轮的收场。
  * `reason` 进 `turn.end`；`continues` ＝本轮请求了工具且都处置完——**须再开一轮**。
  */
-export type TurnOutcome = {
+type TurnOutcome = {
   readonly reason: TurnEndReason
   readonly continues: boolean
 }
@@ -596,7 +596,7 @@ function withPlan(runtime: LoopRuntime, base: string): string {
  * 取**引用**那一趟不带这一位，故「后续引用不重复报整项技能」是结构上就成立的。
  */
 /** 一次交代的技能回执账——见 `createAnnouncer`。 */
-export type Announcer = {
+type Announcer = {
   /** 工具取到一份技能主文——记着，等它进了下一趟请求、那趟真回来了再报。 */
   deliver(skill: UsedSkill): void
   /** 一趟请求真回来了——把该报的报掉（报过的身份不再报）。 */
