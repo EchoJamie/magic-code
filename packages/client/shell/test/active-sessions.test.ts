@@ -106,11 +106,11 @@ describe('列表的分段与次序', () => {
       '/w/mine',
     ])
     expect(said.map((row) => row.label)).toEqual([
-      '等你答复那条',
-      '在跑那条',
-      '别处那条',
-      '闲下来那条',
-      '停过那条',
+      '等你答复那条 s-need',
+      '在跑那条 s-run',
+      '别处那条 s-other',
+      '闲下来那条 s-idle',
+      '停过那条 s-gone',
     ])
   })
 
@@ -126,15 +126,15 @@ describe('列表的分段与次序', () => {
 
   test('「只看本工作区」把别的项目那一段收掉（**活跃那段也一样**）', () => {
     expect(rows('here').map((row) => row.label)).toEqual([
-      '等你答复那条',
-      '在跑那条',
-      '闲下来那条',
-      '停过那条',
+      '等你答复那条 s-need',
+      '在跑那条 s-run',
+      '闲下来那条 s-idle',
+      '停过那条 s-gone',
     ])
   })
 
   test('按名字筛——只剩对得上的（活跃段与历史段一起筛）', () => {
-    expect(rows('all', '在跑').map((row) => row.label)).toEqual(['在跑那条'])
+    expect(rows('all', '在跑').map((row) => row.label)).toEqual(['在跑那条 s-run'])
     expect(rows('all', '不存在')).toEqual([])
   })
 

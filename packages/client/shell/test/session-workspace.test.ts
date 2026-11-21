@@ -32,16 +32,15 @@ describe('会话候选辨认', () => {
     { id: 'source-b-456', title: '认证调查😀', workspace: ['/work/项目甲'], at: 2, archived: true },
     { id: 'source-c-789', title: '认证调查😀', workspace: ['/work/项目乙'], at: 3, archived: false },
   ]
-  test('同名同工作区补充身份与活动，同名不同工作区仍按真实范围分组', () => {
+  test('同名同工作区也能辨认：会话 id 每行可见，详情只说有内容的', () => {
     const rows = sessionRows({ catalog, active: null, runs: [], scope: 'all', query: '认证' })
     expect(rows.map(row => row.value)).toEqual(catalog.map(session => session.id))
-    expect(rows[0]?.meta).toContain('source-a')
-    expect(rows[1]?.meta).toContain('source-b')
-    expect(rows[0]?.detail).toContain('会话身份：source-a-123')
-    expect(rows[1]?.detail).toContain('状态：已归档')
-    expect(rows[0]?.detail?.some(text => text.startsWith('最近活动：'))).toBe(true)
+    // 会话 id 每行都带（不只在重名时）——身份是给人引用与核对的事实。
+    expect(rows[0]?.label).toContain('source-a')
+    expect(rows[1]?.label).toContain('source-b')
+    // 详情只说有内容的：这两条没交代、没进展 ⇒ 详情为空，不铺「未记录」。
+    expect(rows[0]?.detail).toEqual([])
     expect(rows[0]?.group).not.toBe(rows[2]?.group)
-    expect(rows[2]?.detail?.some(text => text.startsWith('会话身份：'))).toBe(false)
   })
   test('中文工作区查询保留稳定身份，不以同标题匹配其他项目', () => {
     const rows = sessionRows({ catalog, active: null, runs: [], scope: 'all', query: '项目乙' })
