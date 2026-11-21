@@ -6,7 +6,7 @@ import { createPrompt, type Ask } from './prompt.ts'
 import { createMemoryPicker } from './boards/records/memory-picker.ts'
 import { createSessionPicker } from './boards/records/session-picker.ts'
 
-import { sanitizeForDisplay } from '@magic/contracts'
+import { sanitizeForDisplay, WIRE_MESSAGE_BUDGET_BYTES } from '@magic/contracts'
 import { dirname } from 'node:path'
 import { composerLayout } from './components/composer.ts'
 
@@ -2229,6 +2229,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
   const sendInput = (text: string, refs: readonly DraftRef[]): ShellEffect => {
     if (!connected) { commit(appendReceipt(view, 'Engine 未连接，草稿未发送。')); return NONE }
+    /**
+     * 一条消息装不下时**不能静默丢**：发送端会拒发（连接保持），但用户会以为
+     * 发出去了、界面停在「提交中」——那仍然是「突然不能用」。保留草稿、说清出口。
+     */
+    if (new TextEncoder().encode(text).byteLength > WIRE_MESSAGE_BUDGET_BYTES - 64 * 1024) {
+      commit({ ...view, flash: '这一句太长，单条消息装不下——请拆成几条，或用 @ 引用文件' })
+      return NONE
+    }
     // 咨询子会话只供查看；纠正与补充要给原工作。
     if (currentMember(view)?.agent.purpose === 'consultation') {
       commit(appendReceipt(view, '咨询子会话只供查看；相关纠正请补充给原工作'))
