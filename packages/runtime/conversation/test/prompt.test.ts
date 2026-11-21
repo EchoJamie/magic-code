@@ -182,6 +182,31 @@ describe('M04 · 缺失行为', () => {
   })
 })
 
+// —— ③′ 身份与交流（2026-11-21：不定工作流程，只引导交流方式） ——
+
+describe('身份与交流', () => {
+  const prompt = buildSystemPrompt(VARS)
+
+  test('身份是搭档，且明说不扩大权限', () => {
+    expect(prompt).toContain('在本机工作目录里干活的开发搭档，不是一件工具。')
+    expect(prompt).toContain('这个身份不扩大任何权限')
+    // 旧定位不再出现——「执行者在前」正是「急于动手、不吭声」的来由
+    expect(prompt).not.toContain('执行者，也是协作者')
+  })
+
+  test('交流按时机约定（开工 / 岔路 / 收尾 / 无事），不是工序清单', () => {
+    for (const line of ['开工一句：', '岔路一句：', '收尾一段：', '无事不发：']) {
+      expect(prompt).toContain(line)
+    }
+  })
+
+  test('压住表达与抢跑的两句旧口径不回潮', () => {
+    // 「结论与动作」把动作摆在说明之前；「不展开内部推理」直接要求思考不可见
+    expect(prompt).not.toContain('先给结论与动作')
+    expect(prompt).not.toContain('不展开内部推理')
+  })
+})
+
 // —— ④ 段边界（装配之逆） ——
 
 describe('M04 · 段边界', () => {
