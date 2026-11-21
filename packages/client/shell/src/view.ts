@@ -240,6 +240,13 @@ export type PickerRow = {
    */
   readonly tone?: 'run' | 'wait' | 'danger' | 'idle'
   /**
+   * 行首**状态记号**（可选）——面板式渲染时着色置于此行最前（色随 tone，`run` 走呼吸）。
+   *
+   * 由头（2026-11-22 · 协作面板改 Claude 式左流）：面板给人扫，状态靠**形＋色**一眼分类，
+   * 字只补必要的一句。字形取自 marks.ts 的白名单（面板不自带图标语言）。
+   */
+  readonly mark?: string
+  /**
    * **必留的那一段**（`oneLine` 行用）——它是 `meta` 的**前缀**（如 MCP 那行的状态说法、
    * 连接那行的连接名）。
    *
