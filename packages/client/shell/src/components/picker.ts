@@ -4,6 +4,7 @@ import type { Picker, PickerRow } from '../view.ts'
 import { groupHeads } from '../view.ts'
 import { breathColor, breathOf } from '../motion.ts'
 import { clip, inkWidth } from './composer.ts'
+import { MARKS } from '../boards/conversation/marks.ts'
 import { wrap, PALETTE } from './lines.ts'
 
 /**
@@ -150,11 +151,15 @@ function panelRow(item: { readonly row: PickerRow; readonly index: number }, pic
   const selected = item.index === picker.selected
   const { label, meta } = panelParts(item.row, columns)
   const tone = item.row.tone ?? 'idle'
-  const dot = meta === '' ? '' : tone === 'run' ? '● ' : tone === 'wait' ? '◐ ' : tone === 'danger' ? '⚠ ' : ''
+  // 行首状态记号（可选，形取自 marks.ts 白名单）与 meta 前的 tone 点共用一套语义色——
+  // `◐`/`⚠` 是脱队的老形，此役并回 marks 语言。
+  // 自带 mark 的行由**记号**占状态位（渲染在行首），meta 前不再另加点——一行一个形。
+  const dot = item.row.mark !== undefined ? '' : meta === '' ? '' : tone === 'run' ? `${MARKS.dot} ` : tone === 'wait' ? `${MARKS.ring} ` : tone === 'danger' ? `${MARKS.error} ` : ''
   const dotColor = tone === 'run'
     ? (now === null ? PALETTE.user : breathColor(PALETTE.user, breathOf(now)))
     : tone === 'wait' ? PALETTE.warn : PALETTE.danger
   const metaColor = tone === 'wait' ? PALETTE.warn : tone === 'danger' ? PALETTE.danger : tone === 'run' ? PALETTE.user : PALETTE.faint
+  const markColor = dotColor
   return h(Box, {
     key: `r:${item.index}`,
     backgroundColor: selected ? PALETTE.select : undefined,
@@ -162,6 +167,7 @@ function panelRow(item: { readonly row: PickerRow; readonly index: number }, pic
     width: Math.max(1, columns - 2),
   },
     h(Text, { color: selected ? PALETTE.user : PALETTE.faint }, selected ? '❯ ' : '  '),
+    item.row.mark === undefined ? null : h(Text, { color: markColor }, `${item.row.mark} `),
     h(Text, { bold: selected, color: item.row.faint ? PALETTE.faint : PALETTE.fg }, label),
     h(Box, { flexGrow: 1 }),
     dot === '' ? null : h(Text, { color: dotColor }, dot),

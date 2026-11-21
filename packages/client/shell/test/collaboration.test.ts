@@ -92,7 +92,11 @@ test('成员无 runtime 但 suspended 时不能显示当前空闲或仅已接下
     ...one, agent: { ...one.agent, reachability: 'suspended' }, runtime: undefined,
   })) }
   for (const member of snapshot.members) expect(memberState(member)).toBe('执行中断，待处理')
-  expect(memberRows(snapshot).every(one => one.meta?.includes('执行中断，待处理'))).toBe(true)
+  // 列表行：记号占状态位（▲ 出错），label 只放名字——状态词不上行。
+  for (const row of memberRows(snapshot)) {
+    expect(row.mark).toBe('▲')
+    expect(row.label).toBe(row.value === 'coordinator' ? '协调' : '实现')
+  }
   expect(collaborationSummary(snapshot)).not.toContain('暂无执行，结果待整合')
 })
 
@@ -106,23 +110,26 @@ test('closed 摘要不再把历史拒绝显示为当前受阻，成员原拒绝�
     delegations: rejected.delegations.map(one => ({ ...one, state: one.delegationId === 10 ? 'rejected' : 'cancelled' })),
   }
   expect(collaborationSummary(closed)).toBe('协作 · 已收尾，结果可查看')
-  expect(memberRows(closed).find(one => one.value === 'worker')?.meta).toContain('已拒绝：原范围无法承担')
+  // 行上记号（× 没成）＋名字 · 原因（原因=内容，不是状态词）；「已拒绝」由 × 说。
+  const rejectedRow = memberRows(closed).find(one => one.value === 'worker')
+  expect(rejectedRow?.mark).toBe('×')
+  expect(rejectedRow?.label).toBe('实现 · 原范围无法承担')
   const app = collaborationStage()
   app.spy.emit(event('collaboration.view', closed))
   expect(app.screen()).toContain('协作 · 已收尾，结果可查看')
   expect(app.screen()).not.toContain('受阻')
 })
 
-test('协作列表排除当前会话：主会话不出现，成员行平铺并标“由 xx 派生”', () => {
+test('协作列表排除当前会话：主会话不出现，成员行左流（记号 · 名字 · 现状）', () => {
   const app = collaborationStage()
   app.key('tab')
   const dock = app.view().dock
   if (dock.kind !== 'picker') throw new Error('没有协作列表')
   expect(dock.picker.rows.some(row => row.value === 'coordinator')).toBe(false)
   const worker = dock.picker.rows.find(row => row.value === 'worker')
-  expect(worker?.label).toBe('实现')
-  expect(worker?.meta).toContain('由 协调 派生')
-  expect(worker?.meta).toContain('回调校验')
+  expect(worker?.label).toBe('实现 · 检查回调兼容')
+  expect(worker?.mark).toBe('●')
+  expect(worker?.meta).toBe('')
   expect(memberRows(collaborationFixture, 'origin').some(row => row.value === 'coordinator')).toBe(false)
 })
 
@@ -223,12 +230,12 @@ test('从子会话仍能执行整件工作动作：共同补充、带入情况�
   expect(app.spy.commands.at(-1)).toEqual({ type: 'collaboration.stop' })
 })
 
-test('继续派生仍是平铺展示：子会话行只标“由 xx 派生”', () => {
+test('继续派生仍是平铺展示：行不缩进、不带派生语（嵌套关系在详情里说）', () => {
   const rows = memberRows(nestedFixture, 'origin')
   const descendant = rows.find(row => row.value === 'descendant')
+  expect(descendant?.mark).toBe('○')
   expect(descendant?.label).toBe('复核')
-  expect(descendant?.meta).toContain('由 实现 派生')
-  expect(descendant?.meta).not.toContain('主会话')
+  expect(descendant?.label).not.toContain('派生')
   expect(rows.every(row => !row.label.startsWith(' '))).toBe(true)
   expect(rows.some(row => row.value === 'coordinator')).toBe(false)
 })
@@ -251,7 +258,7 @@ test('子会话打开协作视图：当前子会话不在列表里，主会话�
   expect(dock.picker.rows.some(row => row.value === 'worker')).toBe(false)
   const selected = dock.picker.rows[dock.picker.selected]
   expect(selected?.value).toBe('coordinator')
-  expect(selected?.meta).toContain('主会话')
+  expect(selected?.label).toContain('协调')
   app.key('enter')
   expect(app.view().sessionId).toBe('origin')
   expect(app.view().collaboration?.originSession).toBe('origin')
@@ -327,6 +334,26 @@ test('协作实时消息追加到子会话正文，同一 messageId 不重复', 
   expect(rows).toHaveLength(1)
   app.spy.emit(event('collaboration.view', { ...memberSessionView, messages: [...memberMessages, fresh] }))
   expect([...app.view().settled, ...app.view().rows].filter(row => row.key === 'am:90')).toHaveLength(1)
+})
+
+test('协作消息是信封不是全文：收悉回执不上屏，长文标行数', () => {
+  const app = collaborationStage()
+  app.enter()
+  const long = Array.from({ length: 40 }, (_, i) => `工作单第 ${i + 1} 条`).join('\n')
+  const messages = [
+    ...memberMessages,
+    { messageId: 91, collaborationId: 'work', senderId: 'coordinator', recipients: ['worker'], purpose: 'delegation' as const, body: [{ kind: 'text' as const, text: long }], at: 2, withdrawn: false },
+    { messageId: 92, collaborationId: 'work', senderId: 'coordinator', recipients: ['worker'], purpose: 'receipt' as const, body: [], at: 3, withdrawn: false },
+  ] as const
+  app.spy.emit(event('collaboration.view', { ...memberSessionView, messages: [...messages] }))
+  const transcript = app.screen()
+  // 长文只给信封：抬头＋首行摘要＋行数，40 行原文不逐行铺屏。
+  expect(transcript).toContain('协调 · 委派')
+  expect(transcript).toContain('工作单第 1 条')
+  expect(transcript).toContain('全文 40 行')
+  expect(transcript).not.toContain('工作单第 40 条')
+  // 收悉回执整类不上屏。
+  expect(transcript).not.toContain('收悉')
 })
 
 test('默认模型配置只影响后续派生，不换当前成员', () => {
@@ -450,8 +477,11 @@ test('面板式：页签铺反白块、选中行整行底色、状态右对齐�
   expect(work).toBeDefined()
   expect(frame.cellsOf(work!.row).every((cell) => cell.bg === null)).toBe(true)
 
-  // 位置：状态靠右对齐——有 meta 的行都收在同一列（右边留一格外边距）
-  for (const line of [selected!, work!]) expect(displayWidth(line.text.trimEnd())).toBe(columns - 1)
+  // 位置：工作行（带 meta）状态靠右对齐——收在同一列（右边留一格外边距）；
+  // 成员行是 Claude 式左流（meta 为空），文本到内容为止，整行底色由 Box 铺满。
+  expect(displayWidth(work!.text.trimEnd())).toBe(columns - 1)
+  const selectedRow = dock.find((line) => line.text.includes('● 实现'))
+  expect(displayWidth(selectedRow!.text.trimEnd())).toBeLessThan(columns - 1)
 
   // **一条分隔线都不画**（`─` 只该出现在记录区与交互区那两条界上）
   expect(dock.slice(dock.indexOf(tabLine!)).some((line) => line.text.includes('──'))).toBe(false)
