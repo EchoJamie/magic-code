@@ -31,7 +31,7 @@ final class NativeSettings {
         }
         var configuration: [String: SettingsValue] = ["providers": .object(providers), "mcp": .object(["servers": .object(servers)]),
             "debugMode": raw.object["debugMode"] ?? .bool(false), "logLevel": raw.object["logLevel"] ?? .string("info"),
-            "statusLine": raw.object["statusLine"] ?? .object(["cells": .strings(["session", "context"]), "color": .bool(true)])]
+            "statusLine": raw.object["statusLine"] ?? .object(["cells": .strings(["session", "model", "context"]), "color": .bool(true)])]
         for key in ["models", "agentRoles", "rules", "skills", "motion"] { configuration[key] = raw.object[key] ?? .object([:]) }
         configuration["web"] = raw.object["web"] ?? .object([:])
         configuration["workspaceRoots"] = raw.object["workspaceRoots"]

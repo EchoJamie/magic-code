@@ -403,7 +403,7 @@ describe('换过模型之后的分母', () => {
     }
   })
 
-  test('**开机空态**：还没有用量就不报用量——不写一个伪造的 `0/…`', async () => {
+  test('**开机空态**：用量从 `0/窗口` 起（新会话一个 token 都没用）', async () => {
     const land = stage()
 
     try {
@@ -411,10 +411,10 @@ describe('换过模型之后的分母', () => {
       const shell = (await shellOf(assembly))
       const status = shell.getView().status
 
-      // 分母在（1M），但分子还没有 ⇒ ④ 整格不出现（`usageLabel` 直接返回 null）
+      // 分母在（1M），分子是**真读数 0**——`0/…` 不是编的（旧口径「整格不出现」随之作废）
       expect(status.window).toBe(995_904)
-      expect(status.usage).toBeNull()
-      expect(usageLabel(status.usage, status.window)).toBeNull()
+      expect(status.usage).toBe(0)
+      expect(usageLabel(status.usage, status.window)?.startsWith('0/')).toBe(true)
 
       shell.dispose()
       assembly.close()

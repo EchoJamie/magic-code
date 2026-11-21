@@ -1259,13 +1259,23 @@ function reduceSessionState(view: ShellView, data: SessionStateData, turn: PageT
     ?? member?.agent.name
     ?? (active === view.sessionId ? view.status.session : null)
 
+  /**
+   * ④ 那一格**跟着会话走**（2026-11-21 用户明示：新开一条会话那次用量报 `0/窗口`）：
+   *
+   * - **开一条新的**（`/clear`）⇒ 这一条**一个 token 都还没用**，故是 `0`——分母照旧取
+   *   当下那个模型的（不知道就退成只报已用量 `0`，**不编一个窗口**）；
+   * - **换到另一条**（`/resume` · 或壳没发过意图的切换）⇒ 那一条用了多少**这一侧不知道**，
+   *   故是 `null`（那一格整格省掉）——**绝不沿用上一条的读数**（那是把别人的账记在它头上）。
+   */
+  const usage = turn === 'new' ? 0 : null
+
   const base: ShellView = {
     ...view,
     sessionId: active,
     notice: active === view.sessionId ? view.notice : undefined,
     archived: data.sessions.find(row => row.id === active)?.archived ?? (active === view.sessionId && view.archived),
     catalog: data.sessions,
-    status: { ...view.status, session: title },
+    status: { ...view.status, session: title, ...(turned ? { usage } : {}) },
   }
 
   const after = turned

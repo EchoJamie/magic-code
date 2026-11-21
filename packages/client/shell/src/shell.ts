@@ -18,6 +18,7 @@ import type {
   Entry,
   EventKind,
   KernelEvent,
+  ModelChoice,
   RecordId,
   RunNotice,
   RunRow,
@@ -253,6 +254,13 @@ export type ShellOptions = {
   readonly reopen?: (() => Promise<void>) | undefined
 
   readonly contextWindow?: number | null | undefined
+  /**
+   * **开局落地的那一档模型**（`ModelChoice`）——状态行 ③ 开机那一格。
+   *
+   * 由装配从**与请求解析同一个来源**递进来（`terminal.ts` 的 `startupRegistry().current()`）；
+   * 不给 ＝ 这一步不知道 ⇒ 那一格整格省掉（不写「未知」——那是编一个词）。
+   */
+  readonly modelChoice?: ModelChoice | undefined
 
   readonly workspaceRoots?: readonly string[] | undefined
   /** 基础目录派生的实际数据目录，仅用于设置回显。 */
@@ -434,18 +442,30 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   //    放一次的东西」，都得另保一手才活得过 `rebuild`（那半由 `bannerFirst` 管）。
   //
   // ⚠️ **画哪一版由渲染层按列数定**（视图这层不知道列数）——见 `LogRow` 里 `banner` 那一支。
-  // 这里种的只有 ④ 的**开机那一格**（`contextWindow`）——此后的分母随事件来（见 `ShellOptions`）。
+  //
+  // 这里种的是状态行**开机就说得出的那三格**：④ 的分母（`contextWindow`）与模型
+  // （`modelChoice`，开局落地的那一档）由装配递进来（与请求解析**同一个来源**：
+  // `terminal.ts` 的 `startupRegistry().current()`）；已用量开机就是 `0`——这一条会话
+  // 一个 token 都还没用（`magic resume <id>` 那一趟是例外：那一条的账这一侧不知道，
+  // 照旧省掉那一格，见 `ShellOptions.openingSession`）。
+  const openedWindow = options.contextWindow ?? null
   let view = withBanner(
-    withContextWindow(
-      createView({
+    patchStatus(
+      withContextWindow(
+        createView({
 
-        statusLine: options.statusLine,
-        reducedMotion: options.reducedMotion,
-        voiceEnabled: options.voiceEnabled,
-        turnDuration: options.turnDuration,
-        workspace: workspaceLabelOf(options.workspaceRoots),
-      }),
-      options.contextWindow ?? null,
+          statusLine: options.statusLine,
+          reducedMotion: options.reducedMotion,
+          voiceEnabled: options.voiceEnabled,
+          turnDuration: options.turnDuration,
+          workspace: workspaceLabelOf(options.workspaceRoots),
+        }),
+        openedWindow,
+      ),
+      {
+        usage: options.openingSession === undefined ? 0 : null,
+        model: options.modelChoice === undefined ? null : modelLabel(options.modelChoice),
+      },
     ),
   )
 

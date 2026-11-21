@@ -305,11 +305,14 @@ export const STATUS_LINE_CELLS: readonly {
 /**
  * **没配过时那一条**（设计：「默认给一条（不配也能用）」）。
  *
- * 两格：**会话名 ＋ 上下文占用**。⛔ **默认不放「用哪个模型」**——那是**配置回显**
- * （设计那条边界：默认那条不放配置回显，用户**自己勾**才算他要的）；用量那一格也不是
- * 回显，它是**此刻的实况**（这一问花了多少上下文）。
+ * 三格：**会话名 ＋ 模型 ＋ 上下文占用**。
+ *
+ * ⚠️ **模型这一格改过口径**（2026-11-21 用户明示）：原规「默认那条不放配置回显（用哪个
+ * 模型），用户自己勾才算他要的」**随之作废**——理由是**新开一条会话时状态行得说清「用谁在
+ * 干活」**：那两格（会话名、上下文占用）都是「这一条会话的实况」，只有模型没写时，换会话
+ * 与清屏在屏上长得一模一样。用户仍可在 `/config` 里把它挑掉（`cells` 照旧可配）。
  */
-export const STATUS_LINE_DEFAULT: readonly StatusLineCell[] = ['session', 'context']
+export const STATUS_LINE_DEFAULT: readonly StatusLineCell[] = ['session', 'model', 'context']
 
 /** 那一行要摆哪几格——**没配过就是默认那条**（`cells: []` 是合法值，会**原样保留**）。 */
 export function statusLineCellsOf(config: StatusLineConfig | undefined): readonly StatusLineCell[] {

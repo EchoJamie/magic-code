@@ -158,20 +158,31 @@ describe('换过模型之后的分母', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════
-// 二 · 开机空态：一个字都不多
+// 二 · 开机空态：新会话从 `0/窗口` 起（2026-11-21 用户明示）
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('开机空态（不趁机扩张）', () => {
-  test('还没有用量：④ 整格不出现——**不写一个伪造的 `0/…`**', async () => {
+describe('开机空态（新会话从 0 起）', () => {
+  test('④ 从 `0/窗口` 起——这一条会话一个 token 都还没用（不空着）', async () => {
     const land = stage({ contextWindow: 1_000_000 })
 
     const frame = await land.screen()
 
     expect(frame.statusLine).toContain('○ 空闲')
-    expect(frame.statusLine).not.toContain('0/') // 没有分子可编
-    expect(frame.statusLine).not.toContain('1000k') // 有分母也不先摆出来
-    // ③ 也不凭空报（开机没有模型名——那是「配置」，不是「状态」）
+    // 分子是真读数（0），分母是开机那一格——`0/…` 不是编的（旧口径「④ 整格不出现」随之作废）
+    expect(frame.statusLine).toContain('0/1000k')
+    // ③ **没递 `modelChoice` 就不凭空报**（那是「配置」，得由装配转手进来，见下一条）
     expect(land.shell.getView().status.model).toBeNull()
+
+    land.shell.dispose()
+  })
+
+  test('③ 递了 `modelChoice` ⇒ 开机就在，且与 ④ 的分母同一个来源', async () => {
+    const land = stage({ contextWindow: 1_000_000, modelChoice: 'spell' })
+
+    const frame = await land.screen()
+
+    expect(frame.statusLine).toContain('Spell')
+    expect(frame.statusLine).toContain('0/1000k')
 
     land.shell.dispose()
   })

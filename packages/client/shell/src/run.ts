@@ -20,7 +20,7 @@ import { createElement as h } from 'react'
 import { createShell, type ShellOptions } from './shell.ts'
 import { openFocusReport } from './focus.ts'
 import { TuiApp } from './components/app.ts'
-import type { ControlTransport, RunNotice, SessionId, StopScope } from '@magic/contracts'
+import type { ControlTransport, ModelChoice, RunNotice, SessionId, StopScope } from '@magic/contracts'
 import type { RunFeed, ResumeFeed, StopReport, SudoFeed } from './shell.ts'
 
 /** 启动入参——传输由装配注入；`boot` 是「订阅之后、放开输入之前」那一跳。 */
@@ -49,6 +49,13 @@ export type RunTuiOptions = {
   readonly turnDuration?: 'elapsed' | 'active' | undefined
   readonly reducedMotion?: boolean | undefined
   readonly contextWindow?: number | null | undefined
+  /**
+   * **开局落地的那一档模型**（状态行 ③ 的开机那一格）。
+   *
+   * 与 `contextWindow` **同一个来源**（`terminal.ts` 的 `startupRegistry().current()`）：
+   * 那一位给分母，这一位给名字——两处各算一遍就会分叉。不给 ＝ 不知道 ⇒ 那一格省掉。
+   */
+  readonly modelChoice?: ModelChoice | undefined
   /**
    * **本进程的工作区**（U26）——`/resume` 那一屏据它认「别的项目」（分组头 ＋ 压暗）。
    * 装配把执行域的 `roots()` 递进来；**不给＝不知道自己在哪儿**（一组都不压暗）。
@@ -144,6 +151,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     reducedMotion: options.reducedMotion,
     turnDuration: options.turnDuration,
     contextWindow: options.contextWindow ?? null,
+    modelChoice: options.modelChoice,
     workspaceRoots: options.workspaceRoots,
     dataDir: options.dataDir,
     home: options.home,
