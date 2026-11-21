@@ -115,6 +115,8 @@ function reduceOnce(message: Wire): Wire | undefined {
               data: {
                 session: data.session, entries: [], done: true, truncated: true,
                 ...(data.next === undefined ? {} : { next: data.next }),
+                // 用量那两格是常数量级，**留着**——恢复会话时状态行 ④ 靠它（见契约）
+                ...(data.usage === undefined ? {} : { usage: data.usage }),
                 ...(entries.length === 0 ? {} : { next: (entries.at(-1) as { id?: number } | undefined)?.id }),
               },
             },

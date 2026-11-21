@@ -189,6 +189,33 @@ describe('开机空态（新会话从 0 起）', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════
+// 二之二 · 接回一条会话：④ 放回离开那一刻的读数（`session.history.usage`）
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('接回用量（`session.history.usage`）', () => {
+  test('末块给的用量补上那一格——恢复会话时状态行 ④ 回到离开那一刻', async () => {
+    const land = stage({ contextWindow: 1_000_000 })
+    // 换到另一条会话时那一格先省掉（见 `reduceSessionState`）；历史末块的用量把它补回来
+    land.feed([event('session.history', { session: 's1', entries: [], done: true, usage: { inputTokens: 3_100, contextWindow: 1_000_000 } })])
+
+    expect((await land.screen()).statusLine).toContain('3.1k/1000k')
+
+    land.shell.dispose()
+  })
+
+  test('已经在报的读数**不被历史盖掉**——旧账不压新账', async () => {
+    const land = stage({ contextWindow: 1_000_000 })
+    land.feed([used(), event('session.history', { session: 's1', entries: [], done: true, usage: { inputTokens: 9_900 } })])
+
+    const line = (await land.screen()).statusLine
+    expect(line).toContain('3.1k')
+    expect(line).not.toContain('9.9k')
+
+    land.shell.dispose()
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
 // 三 · 读面那一屏：分母按 `current` 给（**不拿某一行推算**）
 // ═══════════════════════════════════════════════════════════════════════
 

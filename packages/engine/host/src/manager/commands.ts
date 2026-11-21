@@ -239,10 +239,23 @@ export function installCommands(ctx: ManagerContext): void {
       const inputs: Extract<KernelEvent, { kind: 'input.local' }>[] = []
       const timing: TurnTimingEvent[] = []
       const compactEvents: Extract<KernelEvent, { kind: 'compact.state' }>[] = []
+      // **最后那一次调用的读数**（见 `session.history.usage`）——与在场时状态行 ④ 同一条规矩：
+      // 分子取 `model.usage` 的输入消耗，分母取 `model.call.start` 的预算（那一次没带预算就退回
+      // 用量事件自带的窗长）。两个都只在**末次**有效：往前那些是更早的账。
+      let lastUsage: { inputTokens?: number; contextWindow?: number } | undefined
+      let lastBudget: number | undefined
+      let started = false
       for await (const event of store.serviceFor(session).readEvents(session)) {
         if (event.kind === 'input.local') inputs.push(event)
         if (isTurnTimingEvent(event)) timing.push(event)
         if (event.kind === 'compact.state') compactEvents.push(event)
+        if (event.kind === 'model.call.start') { started = true; lastBudget = event.data.inputBudget }
+        if (event.kind === 'model.usage') lastUsage = { inputTokens: event.data.inputTokens, contextWindow: event.data.contextWindow }
+      }
+      const usage = lastUsage === undefined ? undefined : {
+        ...(lastUsage.inputTokens === undefined ? {} : { inputTokens: lastUsage.inputTokens }),
+        ...(started ? (lastBudget === undefined ? {} : { contextWindow: lastBudget })
+          : (lastUsage.contextWindow === undefined ? {} : { contextWindow: lastUsage.contextWindow })),
       }
       // 子会话正文里的 `agent-message` 条目只带引用；正文随末块交给外壳并入正文。
       const agent = store.collaboration.agentForSession(session)
@@ -264,6 +277,7 @@ export function installCommands(ctx: ManagerContext): void {
           timing: timing.slice(-HISTORY_META_TIMING),
           ...(plan === undefined ? {} : { plan: clipValue(plan, CONTROL_PREVIEW_TEXT_BYTES) as NonNullable<typeof plan> }),
           compactions: compactEvents.slice(-HISTORY_META_COMPACTIONS),
+          ...(usage === undefined ? {} : { usage }),
           ...(messages.length === 0 ? {} : { messages: messages.slice(-HISTORY_META_MESSAGES) }),
           ...(inputs.length > HISTORY_META_INPUTS
             || timing.length > HISTORY_META_TIMING

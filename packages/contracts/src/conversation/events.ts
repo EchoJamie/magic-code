@@ -616,6 +616,21 @@ export type EventDataOf = {
      * 讨论重读成员完整历史（D68 / U130）。主会话与普通会话不给。
      */
     readonly messages?: readonly AgentMessage[]
+    /**
+     * 这条会话**最近一次调用**留下的用量读数（末块才给）——恢复会话时状态行 ④ 要用的那一格。
+     *
+     * 来处是**落着库的** `model.usage` 事件（它不在不落库清单里），故这不是编的：它正是
+     * 用户离开这条会话那一刻屏上那个数。两格同源：
+     * - `inputTokens`＝最后一次 `model.usage` 的输入消耗；
+     * - `contextWindow`＝最后一次 `model.call.start` 的 `inputBudget`（分母跟着分子走，与
+     *   在场时那一格同一条规矩）；那一次没带预算时退回用量事件自带的窗长。
+     *
+     * 一次调用都没有（或供应商没上报）＝**不给这一位**——外壳照「不知道」办，不写 0。
+     */
+    readonly usage?: {
+      readonly inputTokens?: number
+      readonly contextWindow?: number
+    }
     /** **末块**为 `true`——外壳据此知道重建收尾了。 */
     readonly done: boolean
     /** 这一块被裁剪过（可选字段；旧端忽略）。 */

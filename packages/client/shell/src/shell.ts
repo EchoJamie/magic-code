@@ -1379,9 +1379,23 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       ...(data.timing === undefined ? {} : { timing: data.timing }),
       ...(data.messages === undefined ? {} : { messages: data.messages }),
     })
+    /**
+     * **接回这条会话的用量读数**（`session.history.usage`，末块给）——状态行 ④ 放回离开那一刻
+     * 那个数：`/resume` 与 `magic resume <id>` 换过去时那一格先按「不知道」省掉（见
+     * `reduceSessionState` 与开机那一格），这里补上。
+     *
+     * 已经在报的数是更新的现场（这一趟跑出来的），**不盖**——拿历史里那份旧读数盖回去就是
+     * 「用旧账压新账」。`0` 不算「已经报过」：那是开机／刚开一条新会话那一位（一个 token 都
+     * 还没用），真实调用报回来的分子不会是这个数。
+     */
+    const live = view.status.usage !== null && view.status.usage !== 0
+    const withUsage = live || data.usage === undefined ? rebuilt : patchStatus(rebuilt, {
+      ...(data.usage.inputTokens === undefined ? {} : { usage: data.usage.inputTokens }),
+      ...(data.usage.contextWindow === undefined ? {} : { window: data.usage.contextWindow }),
+    })
     commit({
-      ...rebuilt,
-      rows: [...rebuilt.rows, ...unconfirmed],
+      ...withUsage,
+      rows: [...withUsage.rows, ...unconfirmed],
       ...(data.truncated === true ? { flash: '记录过长，已显示部分内容' } : {}),
     })
     rebuildFor = null

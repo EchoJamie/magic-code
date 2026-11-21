@@ -314,14 +314,25 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
 
     const inputs: Extract<KernelEvent,{kind:'input.local'}>[] = []
     const timing: TurnTimingEvent[] = []
+    // **最后那一次调用的读数**（见 `session.history.usage`）——与在场时状态行 ④ 同一条规矩
+    let lastUsage: { inputTokens?: number; contextWindow?: number } | undefined
+    let lastBudget: number | undefined
+    let started = false
     for await (const event of deps.records.readEvents(target)) {
       if(event.kind==='input.local') inputs.push(event)
       if(isTurnTimingEvent(event)) timing.push(event)
+      if(event.kind==='model.call.start'){ started = true; lastBudget = event.data.inputBudget }
+      if(event.kind==='model.usage') lastUsage = { inputTokens: event.data.inputTokens, contextWindow: event.data.contextWindow }
+    }
+    const usage = lastUsage === undefined ? undefined : {
+      ...(lastUsage.inputTokens === undefined ? {} : { inputTokens: lastUsage.inputTokens }),
+      ...(started ? (lastBudget === undefined ? {} : { contextWindow: lastBudget })
+        : (lastUsage.contextWindow === undefined ? {} : { contextWindow: lastUsage.contextWindow })),
     }
 
     // 末块：`done: true`（一条都没有时也发——「这条会话是空的」是要说清楚的事实，
     // 否则外壳等不到收尾，屏上永远停在「正在重建」）
-    deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: true, inputs, timing, ...(deps.readPlan === undefined ? {} : { plan: await deps.readPlan(target) }) }))
+    deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: true, inputs, timing, ...(usage === undefined ? {} : { usage }), ...(deps.readPlan === undefined ? {} : { plan: await deps.readPlan(target) }) }))
     void seen
   }
 

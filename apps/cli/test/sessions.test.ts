@@ -357,6 +357,70 @@ describe('读面（`history.read` → `session.history`）', () => {
     }
   })
 
+  test('末块带上**这条会话最近一次调用的用量**——恢复会话时状态行 ④ 靠它', async () => {
+    // 窗长走用户声明（`providers.<id>.contextWindow` 已废，规格在 `modelOverrides` 里）
+    const stage = makeStage({
+      config: {
+        providers: {
+          minimax: {
+            baseURL: 'https://api.minimaxi.com/v1', apiKey: 'sk-test-not-a-real-key',
+            vendor: 'minimax', protocol: 'chat-completions',
+            modelOverrides: { 'MiniMax-M3': { limits: { maxContextTokens: 200_000 } } },
+          },
+        },
+      },
+    })
+    try {
+      const assembly = stage.assemble({ turns: [{ text: '好', usage: { inputTokens: 3_100, outputTokens: 40 } }] })
+      const handle = attach(assembly)
+      await handle.submit('第一句')
+
+      handle.send({ type: 'history.read' })
+      let last: Extract<KernelEvent, { kind: 'session.history' }>['data'] | undefined
+      await handle.until((event) => {
+        if (event.kind !== 'session.history') return false
+        last = event.data
+        return event.data.done
+      })
+
+      // 分子＝最后一次 `model.usage` 的输入消耗。
+      // ⚠️ **分母这一趟给不出来**：Faux 网关是替身，它盖的 `model.call.start` 不带
+      // `inputBudget`（那要注册表算容量，见 `window.test.ts`）——真网关那条路上分母是有的
+      // （真 CLI 探针：接回后恢复成 `1.0k/196k`；外壳按 `contextWindow` 填那一格另有用例）。
+      expect(last?.usage?.inputTokens).toBe(3_100)
+
+      handle.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('那一轮模型**没上报**用量 ⇒ 末块不给这一位（不写一个 0）', async () => {
+    const stage = makeStage()
+    try {
+      // Faux 这一轮不给 `usage` ⇒ 记录里没有 `model.usage` 事件（与「供应商没上报」同形）
+      const assembly = stage.assemble({ turns: PLAIN })
+      const handle = attach(assembly)
+      await handle.submit('第一句')
+
+      handle.send({ type: 'history.read' })
+      let last: Extract<KernelEvent, { kind: 'session.history' }>['data'] | undefined
+      await handle.until((event) => {
+        if (event.kind !== 'session.history') return false
+        last = event.data
+        return event.data.done
+      })
+      expect(last?.usage).toBeUndefined()
+
+      handle.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+
   test('空手问读面＝不推（还没有会话，也不为它开一张）', async () => {
     const stage = makeStage()
     try {
