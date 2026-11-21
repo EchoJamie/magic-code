@@ -1218,7 +1218,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         const label = turn.label
         turn = null
         if (label !== null && event.data.note === undefined && before !== event.data.active) {
-          commit(appendPageNote(view, `已切到 ${label}`))
+          // 页注说**会话名**（id 已在列表行上，切完的回执不再复读一遍）。
+          commit(appendPageNote(view, `已切到 ${nameOfSession(event.data.active)}`))
         }
       }
 
@@ -1460,7 +1461,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     const keep = push ? undefined : picked(view)?.value
     const rows = [collaborationRow('history', '查看记录'), ...(archived ? [] : [collaborationRow('rename', '改名')]),
       ...(archived ? [collaborationRow('restore', '恢复', '恢复后需另行接回或发送')] : connected && item?.canArchive === true ? [collaborationRow('archive', '归档')] : []),
-      ...(session === view.sessionId && archived ? [collaborationRow('draft', '查看／复制原草稿'), collaborationRow('sessions', '/resume · 切换其他会话')] : [])]
+      ...(session === view.sessionId && archived ? [collaborationRow('draft', '查看／复制原草稿')] : [])]
     if (push) enterLayer()
     commit(openPicker(view, { source: 'session-actions', title: `${nameOfSession(session)}${archived ? ' · 已归档' : ''}`,
       selected: Math.max(0, rows.findIndex(row => row.value === keep)), rows, hint: '↑↓ 选择 · Enter 执行 · Esc 返回' }))
@@ -3258,7 +3259,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         // 一个事件都不发（见 `conversation` 的 `run`）。故回执**这一侧当场给**
         // （等答复就是白等），页也不翻（没换记录区，翻了反而是「凭空清一屏」）。
         if (row.value === view.sessionId) {
-          commit(appendReceipt(closePicker(view), `已切到 ${row.label}`))
+          commit(appendReceipt(closePicker(view), `已切到 ${nameOfSession(row.value)}`))
           return NONE
         }
 

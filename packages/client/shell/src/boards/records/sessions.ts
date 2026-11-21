@@ -91,9 +91,12 @@ function activeMeta(row: RunRow, elsewhere: boolean): string {
   return [what, where].filter(piece => piece !== '').join(' · ')
 }
 
-function sessionDetails(session: SessionSummary, ambiguous: boolean): readonly string[] {
-  return [`会话：${session.title ?? '（无标题）'}`, `状态：${session.archived ? '已归档' : session.terminalOpen ? '终端已打开' : '普通'}`, `工作区：${session.workspace?.join(' · ') ?? '未记录'}`, `最近交代：${session.recentInput ?? '未记录'}`, `进展：${session.recentProgress ?? '未记录'}`,
-    ...(ambiguous ? [`最近活动：${new Date(session.at).toLocaleString()}`, `会话身份：${session.id}`] : [])]
+/** 选中行的详情——**只说有内容的**：最近交代与进展。状态、工作区、身份都在行与组头上。 */
+function sessionDetails(session: SessionSummary): readonly string[] {
+  return [
+    ...(session.recentInput !== undefined ? [`最近交代 · ${session.recentInput}`] : []),
+    ...(session.recentProgress !== undefined ? [`进展 · ${session.recentProgress}`] : []),
+  ]
 }
 
 export function sessionRows(input: SessionListInput): readonly PickerRow[] {
@@ -102,11 +105,11 @@ export function sessionRows(input: SessionListInput): readonly PickerRow[] {
   const needle = query.trim().toLowerCase()
 
   const titleOf = (session: SessionSummary): string => session.title ?? '（无标题）'
+  /** 会话 id 前 8 位**每行都带**——会话身份是给人引用与核对的事实（2026-11-22 裁定）。 */
+  const idOf = (session: SessionSummary): string => session.id.slice(0, 8)
   const visible = catalog.filter(
     (session) => needle === '' || [titleOf(session), ...(session.workspace ?? [])].some(text => text.toLowerCase().includes(needle)),
   )
-  const ambiguous = (session: SessionSummary): boolean => catalog.some(other =>
-    other.id !== session.id && titleOf(other) === titleOf(session) && identityOf(other.workspace) === identityOf(session.workspace))
 
   const isMine = (session: SessionSummary): boolean =>
     session.workspace !== undefined && mine !== null && identityOf(session.workspace) === mine
@@ -124,17 +127,16 @@ export function sessionRows(input: SessionListInput): readonly PickerRow[] {
       const row = runOf(runs, session.id) as RunRow
       const elsewhere = session.workspace !== undefined && mine !== null && !isMine(session)
       out.push({
-        label: titleOf(session),
+        label: `${titleOf(session)} ${idOf(session)}`,
         meta: [
           activeMeta(row, elsewhere),
           session.id === active ? '正在用' : '',
-          ambiguous(session) ? session.id.slice(0, 8) : '',
         ]
           .filter((piece) => piece !== '')
           .join(' · '),
         current: session.id === active,
         value: session.id,
-        detail: sessionDetails(session, ambiguous(session)),
+        detail: sessionDetails(session),
         group: ACTIVE_HEAD[state],
         // **一项一行**（设计 · 终端交互：「候选每项一行，名称/简述同排；窄窗先保住名称、
         // 再截断简述」）——窄窗下让**名称**活着，状态/动作被截
@@ -165,13 +167,13 @@ export function sessionRows(input: SessionListInput): readonly PickerRow[] {
     }
     const row = runOf(runs, session.id)
     group.rows.push({
-      label: titleOf(session),
-      meta: [row === undefined ? '' : runStateLabel(row.state), session.id === active ? '正在用' : '', ambiguous(session) ? session.id.slice(0, 8) : '']
+      label: `${titleOf(session)} ${idOf(session)}`,
+      meta: [row === undefined ? '' : runStateLabel(row.state), session.id === active ? '正在用' : '']
         .filter((piece) => piece !== '')
         .join(' · '),
       current: session.id === active,
       value: session.id,
-      detail: sessionDetails(session, ambiguous(session)),
+      detail: sessionDetails(session),
       oneLine: true,
     })
   }
