@@ -97,7 +97,8 @@ function parseSnapshot(text: string): ModelInfoSnapshot | undefined {
   return { provider, scope, fetchedAt, models: kept }
 }
 
-export function createFileModelInfoCache(dataDir: string): ModelInfoCache {
+export function createFileModelInfoCache(dataDir: string, options: { readonly lockWaitMs?: number } = {}): ModelInfoCache {
+  const lockWaitMs = options.lockWaitMs ?? MODEL_CACHE_LOCK_WAIT_MS
   const dir = join(dataDir, MODEL_CACHE_DIR)
 
   const pathOf = (providerId: string, accessId: string): string =>
@@ -132,7 +133,7 @@ export function createFileModelInfoCache(dataDir: string): ModelInfoCache {
     mkdirSync(dir, { recursive: true, mode: 0o700 })
 
     const lock = `${path}.lock`
-    const deadline = Date.now() + MODEL_CACHE_LOCK_WAIT_MS
+    const deadline = Date.now() + lockWaitMs
     for (;;) {
       try {
         closeSync(openSync(lock, 'wx'))

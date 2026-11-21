@@ -215,7 +215,8 @@ describe('范围隔离', () => {
   test('等不到锁**抛出**（写入失败看得见，不静默丢）', async () => {
     const dir = tempDataDir()
     try {
-      const cache = createFileModelInfoCache(dir)
+      // 等待上限注入成 50ms——判据咬的是「到点抛」的逻辑，不必真等产品的 2 秒
+      const cache = createFileModelInfoCache(dir, { lockWaitMs: 50 })
       // 别人先把锁占着不放（模拟另一个进程卡在写盘里）
       mkdirSync(join(dir, MODEL_CACHE_DIR), { recursive: true })
       writeFileSync(join(dir, MODEL_CACHE_DIR, `${fileNameOf('ds', 'cfg:one')}.lock`), '')

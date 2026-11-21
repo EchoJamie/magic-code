@@ -105,6 +105,8 @@ describe('接回（真窗口）', () => {
       windows.push(two)
       await two.wait({ text: 'u49-只跑一次' }, { timeoutMs: 20_000 })
       await two.wait({ text: '○ 空闲' })
+      // 过程流分块回放：空闲标记先到，工具回施行后到——数之前先等它真上屏（§4：等目标事实，不信「空闲」蕴含「画完」）
+      await two.wait({ text: '✓ exec(' }, { timeoutMs: 20_000 })
 
       expect(host.executorStarts()).toBe(1)
       expect(fixture.requests().length).toBe(2)

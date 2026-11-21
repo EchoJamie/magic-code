@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRecordsStore } from '@magic/data'
-import type { KernelEvent, RunNotice, NativeResponse } from '@magic/contracts'
+import type { KernelEvent, ManagerToClient, RunNotice, NativeResponse } from '@magic/contracts'
 import { connectManager } from '@magic/host'
 import type { ManagerClient } from '@magic/host'
 import { createAgentLauncher } from '@magic/host'
@@ -334,46 +334,30 @@ describe('一个窗口一条执行者', () => {
 })
 
 describe('独占与代次', () => {
-  test('过期连接携带旧代次的命令一律拒绝——且是有回声的拒绝', async () => {
-    const g = ground('stale')
+  test('旧视图的窗口交代新的一条：按会话状态起下一代——代次不再拦用户交代', async () => {
+    const g = ground('stale-statement', 'settled', [{ kind: 'text', text: '完成', chunks: 1, chunkDelayMs: 0 }])
     const manager = await standUp(g)
+    const session = 'aaaaaaaa-0000-0000-0000-000000000008'
+    seedSession(g, session, '旧视图那条')
 
     try {
-      // 一条**手搓的连接**：就是「别处一个旧窗口」的形态——它自己说一个号，
-      // 而那个号不是管理者此刻给它的那一个。
+      // 一条**手搓的连接**：hello 指着会话 S，然后谎报一个号——「窗口的世代视图落后于
+      // 管理者」那个结构性的窗口（真窗口拿的是刚结束那一代的号，与它同形）。
       const socket = await Bun.connect({
         unix: manager.socketPath,
         socket: socketHandlers(),
       })
       const link = linkOf(socket as never)
-      const lines: string[] = []
-      link.onMessage((message) => {
-        if ((message as { t: string }).t === 'line') {
-          lines.push((message as { text: string }).text)
-        }
-      })
-      link.send({ t: 'hello', role: 'client', protocol: manager.identity.protocol, version: manager.identity.version, source: manager.identity.source, cwd: g.ws, label: '旧窗口' })
+      const received: ManagerToClient[] = []
+      link.onMessage((message) => { received.push(message as ManagerToClient) })
+      link.send({ t: 'hello', role: 'client', protocol: manager.identity.protocol, version: manager.identity.version, source: manager.identity.source, cwd: g.ws, session, label: '旧视图窗口' })
+      await waitFor('welcome 到了', () => received.some(m => m.t === 'welcome'))
 
-      // ① 还没有目标时说一个号——那正是「旧窗口拿着上一代的号」的形态
-      link.send({ t: 'cmd', gen: 42, cmd: { type: 'input.submit', text: '旧代次不得执行' } })
-      await waitFor('旧号的命令被拒', () => lines.length > 0)
-      expect(lines[0]).toContain('已经不在了')
-      // **没有为它起执行者**——拒绝是真拒绝，不是「收下了另说」
-      expect(manager.executors().length).toBe(0)
-
-      // ② 窗口正常接上之后再拿旧号发——同样被拒
-      lines.length = 0
-      link.send({ t: 'cmd', gen: null, cmd: { type: 'input.submit', text: '受控待答' } })
-      await waitFor('正常那条起了执行者', () => manager.executors().length === 1)
-      const live = manager.executors()[0] as { readonly gen: number }
-      await waitFor('正常输入进入待答', () => manager.runs().some((row) => row.state === 'running'))
-
-      link.send({ t: 'cmd', gen: live.gen + 7, cmd: { type: 'input.submit', text: '旧代次不得执行' } })
-      await waitFor('旧号又被拒', () => lines.length > 0)
-      expect(lines[0]).toContain(`${live.gen + 7}`)
-      // 执行者一代都没多
-      expect(manager.executors().length).toBe(1)
-
+      // 交代按**会话状态**路由：没有活目标 ⇒ 「明确继续」起下一代并送达——
+      // 不拒绝、不要求重敲。TUI 交代的投递不需要向管理者报世代（队列归 TUI）。
+      link.send({ t: 'cmd', gen: 42, cmd: { type: 'input.submit', text: '旧视图的一条交代', ref: 'r-1' } })
+      await waitFor('下一代起了', () => manager.executors().length === 1)
+      await waitFor('交代真送进了模型', () => g.fixture.requests().some(r => r.path.endsWith('/chat/completions')))
       link.close()
     } finally {
       manager.stop('用例收尾')
@@ -382,7 +366,35 @@ describe('独占与代次', () => {
     }
   }, 60_000)
 
+  test('世代闸继续保护交互语境的命令：旧号的 model.switch 被拒', async () => {
+    const g = ground('stale-switch')
+    const manager = await standUp(g)
 
+    try {
+      // 没有目标时说一个号——换模型不是「新交代」，是交互语境里的动作：照旧被闸挡下
+      // （设计 · 状态可信度、独占与重新连接 ①），且是有回声的拒绝。
+      const socket = await Bun.connect({
+        unix: manager.socketPath,
+        socket: socketHandlers(),
+      })
+      const link = linkOf(socket as never)
+      const lines: string[] = []
+      link.onMessage((message) => {
+        if ((message as { t: string }).t === 'line') lines.push((message as { text: string }).text)
+      })
+      link.send({ t: 'hello', role: 'client', protocol: manager.identity.protocol, version: manager.identity.version, source: manager.identity.source, cwd: g.ws, label: '旧窗口' })
+      link.send({ t: 'cmd', gen: 42, cmd: { type: 'model.switch', choice: 'cantrip' } })
+      await waitFor('旧号的命令被拒', () => lines.length > 0)
+      expect(lines[0]).toContain('已经不在了')
+      expect(manager.executors().length).toBe(0)
+
+      link.close()
+    } finally {
+      manager.stop('用例收尾')
+      await manager.waitUntilExit()
+      await g.dispose()
+    }
+  }, 60_000)
 })
 
 /** 这一支要用的那条会话 id——形制与上面 `session.open` 那几条同。 */

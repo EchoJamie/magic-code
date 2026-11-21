@@ -642,7 +642,7 @@ describe('恢复', () => {
       expect(backfill).toMatchObject({ name: 'mcp__fake__echo', ok: false })
       expect(
         messages.map((m) => (m.role === 'tool' ? m.output : 'content' in m ? m.content : '')).join('\n'),
-      ).toContain('未自动重跑')
+      ).toContain('未重跑')
 
       shell.dispose()
       await resumed.shutdown()

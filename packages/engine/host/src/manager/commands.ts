@@ -478,7 +478,17 @@ export function installCommands(ctx: ManagerContext): void {
     }
     const originSession = conn.selectedSession
     const activeCollaboration = originSession == null ? undefined : store.collaboration.collaborationForSession(originSession)
-    if (gen !== null && (conn.target === undefined || gen !== conn.target.gen)) {
+    // 用户交代（新的一条交代 / 协作里的一句话 / 队列管理）**不验代次，按会话状态路由**：
+    // 无目标 → 明确继续起下一代；忙 → 既有的排队；刚完成 → 收旧起新——三条正路各按
+    // **会话此刻的状态**处理，本来就不需要窗口证明「它看到的是第几代」。世代视图是
+    // 尽力而为的异步推进，拿它拒绝新交代，等于把结构性的切换窗口变成「用户得重敲一遍」
+    // 的坑（2026-11-22 裁：输入队列归 TUI 内部，交代的投递不做世代校验）。
+    //
+    // 闸继续保护**其余命令**：那些是交互语境里的动作（对着某一代的提示作答、换目标、
+    // 停止）——旧视图下执行才会真的误操作新运行（设计 · 状态可信度、独占与重新连接 ①）。
+    // 拒绝是有回声的（一句 `line`）：静默丢弃会让窗口对着一个不动的屏发呆。
+    const statement = command.type === 'input.submit' || command.type === 'collaboration.input' || command.type === 'input.manage'
+    if (!statement && gen !== null && (conn.target === undefined || gen !== conn.target.gen)) {
       conn.link.send({
         t: 'line',
         text:
