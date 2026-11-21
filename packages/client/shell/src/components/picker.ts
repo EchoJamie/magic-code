@@ -180,7 +180,11 @@ export function PickerList({ picker, columns, rows = Number.POSITIVE_INFINITY, n
     if (item.kind === 'row') {
       if (panel) return panelRow(item, picker, columns, now)
       const selected = item.index === picker.selected
-      return h(Box, { key: item.key }, h(Text, { color: selected ? PALETTE.user : PALETTE.faint }, selected ? '›  ' : '   '), h(Text, { color: selected ? PALETTE.fg : item.row.current ? PALETTE.user : item.row.faint ? PALETTE.faint : PALETTE.dim, bold: selected || item.row.current }, rowText(item.row, columns)))
+      // 抽屉式同样认**行首记号**（色随 tone）——两个渲染分支说同一套记号语言。
+      const rowTone = item.row.tone ?? 'idle'
+      const mark = item.row.mark === undefined ? null
+        : h(Text, { color: rowTone === 'run' ? (now === null ? PALETTE.user : breathColor(PALETTE.user, breathOf(now))) : rowTone === 'wait' ? PALETTE.warn : rowTone === 'danger' ? PALETTE.danger : PALETTE.faint }, `${item.row.mark} `)
+      return h(Box, { key: item.key }, h(Text, { color: selected ? PALETTE.user : PALETTE.faint }, selected ? '›  ' : '   '), mark, h(Text, { color: selected ? PALETTE.fg : item.row.current ? PALETTE.user : item.row.faint ? PALETTE.faint : PALETTE.dim, bold: selected || item.row.current }, rowText(item.row, columns)))
     }
     if (item.kind === 'head') return h(Text, { key: item.key, color: item.faint ? PALETTE.faint : PALETTE.dim }, panel ? `  ${item.head}` : item.head)
     return h(Box, { key: item.key, paddingLeft: panel ? 2 : 3 }, h(Text, { color: PALETTE.faint }, item.text))
