@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdirSync, realpathSync, renameSync, symlinkSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runPathsOf } from '@magic/host'
+import { createRecordsStore } from '@magic/data'
 import { readDatabase } from './support.ts'
 import { REPO_ROOT, createUiSession } from './ui/index.ts'
 import type { Sandbox, UiSession } from './ui/index.ts'
@@ -351,6 +352,8 @@ describe('终端是客户端', () => {
 
 const SAID = '记一句短话'
 const REPLY = '好，记下了。'
+const SAID_AGAIN = '接着聊'
+const REPLY_AGAIN = '接着聊了。'
 
 describe('`resume` 接续（真窗口）', () => {
   async function withContent(
@@ -429,6 +432,100 @@ describe('`resume` 接续（真窗口）', () => {
 
       // 窗口走了 ⇒ 那一代也收（没有连接者、手上也没事）
       await waitFor('执行者收掉', async () => (await straysIn(sandbox)).executors.length === 0, 20_000)
+    } finally {
+      await window?.close().catch(() => {})
+      await host.close()
+      await fixture.stop()
+      await sandbox.dispose()
+      if (process.env['MAGIC_CLI_EVIDENCE'] === undefined) removeDir(runs)
+    }
+  }, 120_000)
+
+  /**
+   * **用户判据**（2026-11-21）：P0 不是「连接没断」，是「还能继续对话」。
+   * 接回一条已有历史的会话后，必须能再发一句、拿到模型回复、窗口仍可退出。
+   */
+  test('接续之后还能继续对话——发一句、收到回复，窗口与执行者都正常', async () => {
+    const runs = runArtifacts('magic-u53-resume-chat-')
+    const fixture = startFixture({ turns: [
+      { kind: 'text', text: REPLY },
+      { kind: 'text', text: REPLY_AGAIN },
+    ] })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    const host = await startResidentHost(sandbox, join(runs, 'host'))
+    let window: UiSession | undefined
+
+    try {
+      const id = await withContent(sandbox, fixture, runs)
+      expect(id).not.toBe('')
+      expect(fixture.requests()).toHaveLength(1)
+
+      window = await createUiSession({
+        label: '接续再聊', artifacts: runs, sandbox, fixture, argv: ['resume', id],
+      })
+      await window.wait({ text: REPLY }, { timeoutMs: 30_000 })
+
+      // 接回之后**继续对话**：这一句是本次 P0 的真正判据。
+      await window.send(SAID_AGAIN, { until: { text: SAID_AGAIN }, timeoutMs: 15_000 })
+      await window.key('enter')
+      await window.wait({ text: REPLY_AGAIN }, { timeoutMs: 30_000 })
+      expect(fixture.requests()).toHaveLength(2)
+      await window.wait({ text: '○ 空闲' }, { timeoutMs: 30_000 })
+
+      await window.quit()
+      const closed = await window.close({ graceMs: 8_000 })
+      expect(closed.exit.by).toBe('app')
+      expect(closed.exit.code).toBe(0)
+      window = undefined
+    } finally {
+      await window?.close().catch(() => {})
+      await host.close()
+      await fixture.stop()
+      await sandbox.dispose()
+      if (process.env['MAGIC_CLI_EVIDENCE'] === undefined) removeDir(runs)
+    }
+  }, 120_000)
+
+  /**
+   * **事故数据形状下的同一条判据**：9MB 历史记录接回后，仍要能发一句、收到回复。
+   */
+  test('9MB 历史会话接回后还能继续对话', async () => {
+    const runs = runArtifacts('magic-u53-resume-big-chat-')
+    const fixture = startFixture({ turns: [
+      { kind: 'text', text: REPLY },
+      { kind: 'text', text: REPLY_AGAIN },
+    ] })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    const host = await startResidentHost(sandbox, join(runs, 'host'))
+    let window: UiSession | undefined
+    try {
+      // 先用真窗口走一轮，确保这条会话有已保存的模型组合与历史。
+      const id = await withContent(sandbox, fixture, runs)
+      expect(fixture.requests()).toHaveLength(1)
+
+      // 再往同一条会话追加一条 9MB 记录（事故的数据形状）。
+      const store = createRecordsStore({ dataDir: sandbox.dataDir, workspace: [sandbox.workspace] })
+      const huge = 'x'.repeat(9 * 1024 * 1024)
+      store.serviceFor(id).appendEntry({
+        kind: 'tool-result', content: { text: huge }, payload: { ok: true, output: { text: huge } }, at: Date.now(),
+      })
+      store.close()
+
+      window = await createUiSession({
+        label: '大历史接续再聊', artifacts: runs, sandbox, fixture, argv: ['resume', id],
+      })
+      await window.wait({ text: REPLY }, { timeoutMs: 30_000 })
+
+      await window.send(SAID_AGAIN, { until: { text: SAID_AGAIN }, timeoutMs: 15_000 })
+      await window.key('enter')
+      await window.wait({ text: REPLY_AGAIN }, { timeoutMs: 30_000 })
+      expect(fixture.requests()).toHaveLength(2)
+      await window.wait({ text: '○ 空闲' }, { timeoutMs: 30_000 })
+
+      await window.quit()
+      const closed = await window.close({ graceMs: 8_000 })
+      expect(closed.exit.by).toBe('app')
+      window = undefined
     } finally {
       await window?.close().catch(() => {})
       await host.close()
