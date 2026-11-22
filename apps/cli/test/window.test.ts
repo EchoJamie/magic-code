@@ -80,7 +80,7 @@ function stage(): {
 
   const configPath = writeConfig(
     root,
-    validConfig({ dataDir: join(root, 'data'), models: {default: {provider: "mm", model: 'MiniMax-M3'}, cantrip: {provider: "mm2", model: 'MiniMax-M2'}, spell: {provider: "local", model: 'my-local-llama'}, arcane: {provider: 'mm-same', model: 'MiniMax-M2'}}, providers: PROVIDERS }),
+    validConfig({ dataDir: join(root, 'data'), models: {cantrip: {provider: "mm2", model: 'MiniMax-M2'}, spell: {provider: "local", model: 'my-local-llama'}, arcane: {provider: 'mm-same', model: 'MiniMax-M2'}}, providers: PROVIDERS }),
   )
 
   return {
@@ -129,13 +129,13 @@ const RESERVED_OUTPUT = 4_096
 
 describe('开机那一格的分母', () => {
   // 分母使用联合窗口减去本次实际预留的输出，与请求预算同源。
-  test('**已知模型**：配置里没声明，也有分母（本地资料命中 ⇒ M3 的联合窗口）', async () => {
+  test('**开机落在开局档位**：该档声明的窗长压过资料（32768 ⇒ 分母是它预留后的数）', async () => {
     const land = stage()
 
     try {
       const assembly = land.assemble()
-      // 这份配置只写了 endpoint / key / 模型名——窗长是我们已知的客观属性
-      expect((await assemblyTuiOptions(assembly)).contextWindow).toBe(1_000_000 - RESERVED_OUTPUT)
+      // 开局档位记录缺省指向 cantrip；cantrip 挂的 mm2/M2 声明了 32768 覆盖——声明的压过资料
+      expect((await assemblyTuiOptions(assembly)).contextWindow).toBe(32_768 - RESERVED_OUTPUT)
 
       assembly.close()
     } finally {
@@ -232,10 +232,10 @@ describe('换过模型之后的分母', () => {
       const shell = (await shellOf(assembly))
       await warm(assembly)
 
-      // 跑过一句之后 ③④ 都有数（M3 ⇒ 1M）
-      expect(shell.getView().status.model).toBe('Default')
-      // 分母是**有效输入预算**（窗长 − 本次预留输出）：1_000_000 − 4_096
-      expect(shell.getView().status.window).toBe(1_000_000 - RESERVED_OUTPUT)
+      // 跑过一句之后 ③④ 都有数（开局档 = cantrip ⇒ 声明的 32768）
+      expect(shell.getView().status.model).toBe('Cantrip')
+      // 分母是**有效输入预算**（窗长 − 本次预留输出）：32_768 − 4_096
+      expect(shell.getView().status.window).toBe(32_768 - RESERVED_OUTPUT)
 
       // 真换：经装配那一条产出路径（命令面同一条），事件当场到壳（进程内直连）
       expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
@@ -288,9 +288,9 @@ describe('换过模型之后的分母', () => {
 
       expect(assembly.switchModel({ choice: 'ghost' as never }).ok).toBe(false)
 
-      expect(shell.getView().status.model).toBe('Default')
-      // 分母是**有效输入预算**（窗长 − 本次预留输出）：1_000_000 − 4_096
-      expect(shell.getView().status.window).toBe(1_000_000 - RESERVED_OUTPUT)
+      expect(shell.getView().status.model).toBe('Cantrip')
+      // 分母是**有效输入预算**（窗长 − 本次预留输出）：32_768 − 4_096
+      expect(shell.getView().status.window).toBe(32_768 - RESERVED_OUTPUT)
 
       shell.dispose()
       assembly.close()
@@ -353,8 +353,8 @@ describe('换过模型之后的分母', () => {
 
       // 还没有会话就换——注册表照换，但**没有可落账之处 ⇒ 不发事件**（内核的明写规矩）
       expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
-      // 壳上还是开机那一格（M3 的 1M）——没人告诉过它换了
-      expect(shell.getView().status.window).toBe(995_904)
+      // 壳上还是开机那一格（cantrip 声明的 32768）——没人告诉过它换了
+      expect(shell.getView().status.window).toBe(32_768 - RESERVED_OUTPUT)
 
       await warm(assembly)
 
@@ -385,10 +385,10 @@ describe('换过模型之后的分母', () => {
       // 条目名落在原型上：如实报未知，读数原样
       const bogus = assembly.switchModel({ choice: 'toString' as never })
       expect(bogus.ok).toBe(false)
-      expect(bogus.ok === false ? bogus.reason : '').toContain('未知模型选择')
-      // 分母是**有效输入预算**（窗长 − 本次预留输出）：1_000_000 − 4_096
-      expect(shell.getView().status.window).toBe(1_000_000 - RESERVED_OUTPUT)
-      expect(shell.getView().status.model).toBe('Default')
+      expect(bogus.ok === false ? bogus.reason : '').toContain('未知模型档位')
+      // 分母是**有效输入预算**（窗长 − 本次预留输出）：32_768 − 4_096
+      expect(shell.getView().status.window).toBe(32_768 - RESERVED_OUTPUT)
+      expect(shell.getView().status.model).toBe('Cantrip')
 
       // 型号允许精确填写；没有对应资料就保持未知，不读取对象原型。
       expect((await chooseConfiguredModel(assembly, 'toString')).ok).toBe(true)
@@ -411,8 +411,8 @@ describe('换过模型之后的分母', () => {
       const shell = (await shellOf(assembly))
       const status = shell.getView().status
 
-      // 分母在（1M），分子是**真读数 0**——`0/…` 不是编的（旧口径「整格不出现」随之作废）
-      expect(status.window).toBe(995_904)
+      // 分母在（开局档的 32768），分子是**真读数 0**——`0/…` 不是编的（旧口径「整格不出现」随之作废）
+      expect(status.window).toBe(32_768 - RESERVED_OUTPUT)
       expect(status.usage).toBe(0)
       expect(usageLabel(status.usage, status.window)?.startsWith('0/')).toBe(true)
 
@@ -564,8 +564,8 @@ describe('真 `runTui` 那条路（接线在不在）', () => {
       await driver.submit('看下这个项目')
       driver.dispose()
 
-      // 分母＝**有效输入预算**（1M 的窗长 − 本次预留输出 4_096 ⇒ `996k`）
-      await until(tty, '3.1k/996k')
+      // 分母＝**有效输入预算**（开局档声明的 32768 − 4_096 ⇒ `29k`）
+      await until(tty, '3.1k/29k')
 
       // 真换（经装配那条产出路径）⇒ 屏上换成新模型那个数
       expect(assembly.switchModel({ choice: 'arcane' }).ok).toBe(true)

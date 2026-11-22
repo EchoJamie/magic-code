@@ -103,7 +103,7 @@ function stage(): {
 
   const configPath = writeConfig(
     root,
-    validConfig({ dataDir: join(root, 'data'), models: {default: {provider: "alpha", model: 'alpha-1'}, cantrip: {provider: "beta", model: 'beta-1'}, spell: {provider: "alpha", model: 'alpha-1'}, arcane: {provider: "alpha", model: 'alpha-1'}}, providers: TWO_PROVIDERS }),
+    validConfig({ dataDir: join(root, 'data'), models: {cantrip: {provider: "alpha", model: 'alpha-1'}, spell: {provider: "beta", model: 'beta-1'}, arcane: {provider: "alpha", model: 'alpha-1'}}, providers: TWO_PROVIDERS }),
   )
 
   return {
@@ -156,9 +156,9 @@ describe('运行时切换 · 会话中途', () => {
 
       await handle.submit('记住一个数：17')
       // **会话中途**——什么都没重建：同一个 assembly、同一个会话、同一张库
-      expect(assembly.switchModel({ choice: 'cantrip' })).toEqual({
+      expect(assembly.switchModel({ choice: 'spell' })).toEqual({
         ok: true,
-        selection: { choice: 'cantrip', provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' },
+        selection: { choice: 'spell', provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' },
       })
       await handle.submit('我刚才让你记的数是多少')
 
@@ -219,7 +219,7 @@ describe('运行时切换 · 会话中途', () => {
       await handle.submit('第一轮')
       const beforeSwitch = JSON.stringify(seen[0]?.messages)
 
-      assembly.switchModel({ choice: 'cantrip' })
+      assembly.switchModel({ choice: 'spell' })
       await handle.submit('第一轮')
 
       // 两轮的上下文同形（第二条请求＝同样的消息 ＋ 更长的历史）——切换动的是接缝下游
@@ -250,7 +250,7 @@ describe('运行时切换 · 还没有会话', () => {
       const off = assembly.shell.subscribe((event) => events.push(event))
 
       // 还没有任何交代——会话尚未建立
-      assembly.shell.send({ type: 'model.switch', choice: 'cantrip' })
+      assembly.shell.send({ type: 'model.switch', choice: 'spell' })
       const handle = attachShell(assembly.shell)
       await handle.submit('起个头')
       off()
@@ -279,12 +279,12 @@ describe('运行时切换 · 脚本步骤', () => {
       const assembly = land.assemble({ modelFetch: fetch })
       const handle = await runShellScript(
         assembly.shell,
-        { inputs: ['第一轮', { switch: { choice: 'cantrip' } }, '第二轮'] },
+        { inputs: ['第一轮', { switch: { choice: 'spell' } }, '第二轮'] },
         { onSwitch: request => assembly.switchModel(request) },
       )
 
       expect(handle.switches).toEqual([
-        { request: { choice: 'cantrip' }, selection: { choice: 'cantrip', provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' } },
+        { request: { choice: 'spell' }, selection: { choice: 'spell', provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' } },
       ])
       expect(seen.map((request) => request.model)).toEqual(['alpha-1', 'beta-1'])
       expect(startModels(handle.events)).toEqual(['alpha-1', 'beta-1'])
@@ -305,7 +305,7 @@ describe('运行时切换 · 脚本步骤', () => {
       const assembly = land.assemble({ modelFetch: fetch })
       const handle = await runShellScript(
         assembly.shell,
-        { inputs: ['第一轮', { switch: { choice: 'cantrip' } }, '第二轮'] },
+        { inputs: ['第一轮', { switch: { choice: 'spell' } }, '第二轮'] },
         { onSwitch: request => assembly.switchModel(request), boot: () => assembly.boot() },
       )
 
@@ -314,7 +314,7 @@ describe('运行时切换 · 脚本步骤', () => {
       expect(switched).toHaveLength(1)
       expect(switched[0]?.kind === 'model.switched' ? switched[0].data : undefined).toEqual({
         ok: true,
-        choice: 'cantrip',
+        choice: 'spell',
         provider: 'beta',
         model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1',
       })
@@ -340,7 +340,7 @@ describe('运行时切换 · 脚本步骤', () => {
           { inputs: ['第一轮', { switch: { choice: 'nowhere' as never } }, '第二轮'] },
           { onSwitch: request => assembly.switchModel(request) },
         ),
-      ).rejects.toThrow(/换模型不成功.*未知模型选择/)
+      ).rejects.toThrow(/换模型不成功.*未知模型档位/)
 
       // 第二轮没跑——只打了一次模型调用
       expect(seen).toHaveLength(1)
@@ -358,7 +358,7 @@ describe('运行时切换 · 脚本步骤', () => {
       const assembly = land.assemble({ modelFetch: fetch })
 
       await expect(
-        runShellScript(assembly.shell, { inputs: [{ switch: { choice: 'cantrip' } }] }),
+        runShellScript(assembly.shell, { inputs: [{ switch: { choice: 'spell' } }] }),
       ).rejects.toThrow(/没接「换模型」的落点/)
 
       assembly.close()
@@ -417,7 +417,7 @@ describe('运行时切换 · 命令面（补锚：结果即事件）', () => {
       const handle = attachShell(assembly.shell)
       await handle.submit('起个头')
 
-      assembly.shell.send({ type: 'model.switch', choice: 'cantrip' })
+      assembly.shell.send({ type: 'model.switch', choice: 'spell' })
       off()
       handle.dispose()
       assembly.close()
@@ -426,7 +426,7 @@ describe('运行时切换 · 命令面（补锚：结果即事件）', () => {
       expect(switched).toHaveLength(1)
       expect(switched[0]?.kind === 'model.switched' ? switched[0].data : undefined).toEqual({
         ok: true,
-        choice: 'cantrip',
+        choice: 'spell',
         provider: 'beta',
         model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1',
       })
@@ -458,7 +458,7 @@ describe('运行时切换 · 命令面（补锚：结果即事件）', () => {
       expect(switched).toHaveLength(1)
       const data = switched[0]?.kind === 'model.switched' ? switched[0].data : undefined
       expect(data?.ok).toBe(false)
-      expect(data?.reason).toContain('未知模型选择')
+      expect(data?.reason).toContain('未知模型档位')
       // 切的这半句是判据：兜底 kind 不再被这条命令占用
       expect(events.map((event) => event.kind)).not.toContain('error')
 
