@@ -195,10 +195,11 @@ function statusLines(view: ShellView, launchRoots?: readonly string[]): readonly
   const { status, sessionId, catalog, modelCurrent } = view
   const active = catalog.find(one => one.id === sessionId)
 
-  // 身份：id 前 8 位（/resume 同一约定）＋ 标题；还没有会话就如实说「新会话」。
+  // 身份：**完整 id 独占一行**（用户 2026-11-22 裁定——要能整段复制），标题另起一行；
+  // 还没有会话就如实说「新会话」。
   const identity = sessionId === null
-    ? '新会话'
-    : active?.title === undefined ? sessionId.slice(0, 8) : `${sessionId.slice(0, 8)} · ${active.title}`
+    ? ['新会话']
+    : [sessionId, ...(active?.title === undefined ? [] : [active.title])]
 
   // 工作区：会话**锚定的那组根**（[0]＝默认根；多根＝联合作用域，全列）；
   // 还没有会话 ⇒ 启动目录那组。旧账缺席（列加上之前落账的）＝不编，整行不出现。
@@ -226,7 +227,7 @@ function statusLines(view: ShellView, launchRoots?: readonly string[]): readonly
   ].filter(one => one !== undefined).join(' · ')
 
   return [
-    identity,
+    ...identity,
     workspace,
     model,
     metering,

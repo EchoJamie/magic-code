@@ -41,27 +41,28 @@ function statusRows(stage: ReturnType<typeof sessionStage>): readonly string[] {
   return row.lines
 }
 
-test('运行过的会话：四行＝身份（id 前 8 位·标题）/ 工作区全路径 / 模型组合 / 计量', () => {
+test('运行过的会话：完整 id 独占一行（可整段复制）、标题另起一行，其后工作区/模型组合/计量', () => {
   const rows = statusRows(sessionStage())
   expect(rows[0]).toBe('此刻')
-  expect(rows[1]).toBe('a1b2c3d4 · 修复时区处理…')
-  expect(rows[2]).toBe('/Users/jamie/namespace/github/magic-code')
+  expect(rows[1]).toBe('a1b2c3d4e5f6a7b8')
+  expect(rows[2]).toBe('修复时区处理…')
+  expect(rows[3]).toBe('/Users/jamie/namespace/github/magic-code')
   // 模型组合：档位 · 连接 / 型号 · 思考档（思考显示的就是值，不汉化、无前缀）
-  expect(rows[3]).toBe('Cantrip · minimax / MiniMax-M3 · high')
-  expect(rows[4]).toBe('输入 3.1k/30k')
+  expect(rows[4]).toBe('Cantrip · minimax / MiniMax-M3 · high')
+  expect(rows[5]).toBe('输入 3.1k/30k')
 })
 
 test('思考跟着默认走 ⇒ 显示供应商声明的默认档；没声明才说「默认」', () => {
   const stage = sessionStage()
   stage.feed([event('model.switched', { ok: true, choice: 'cantrip', provider: 'minimax', model: 'MiniMax-M3', protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1' })])
-  expect(statusRows(stage)[3]).toBe('Cantrip · minimax / MiniMax-M3 · high')
+  expect(statusRows(stage)[4]).toBe('Cantrip · minimax / MiniMax-M3 · high')
 
   const bare = createStage()
   bare.feed([
     event('session.state', { active: 'a1b2c3d4e5f6a7b8', sessions: [{ archived: false, id: 'a1b2c3d4e5f6a7b8', title: '修复时区处理…', at: 1 }] }),
     event('model.catalog', { entries: [{ provider: 'minimax' }], configuredModels: { cantrip: { provider: 'minimax', model: 'MiniMax-M3' } }, current }),
   ])
-  expect(statusRows(bare)[2]).toBe('Cantrip · minimax / MiniMax-M3 · 默认')
+  expect(statusRows(bare)[3]).toBe('Cantrip · minimax / MiniMax-M3 · 默认')
 })
 
 test('新会话：如实说「新会话」＋启动根；用量是**真零**（0/…不是编的）；没轮次不提时长', () => {
@@ -89,7 +90,7 @@ test('多根工作区全列（联合作用域）；旧账缺席＝整行不出�
     event('session.state', { active: 'a1b2c3d4e5f6a7b8', sessions: [{ archived: false, id: 'a1b2c3d4e5f6a7b8', title: '修复时区处理…', at: 1, workspace: ['/a', '/b'] }] }),
     event('model.catalog', { entries, configuredModels: { cantrip: { provider: 'minimax', model: 'MiniMax-M3' } }, current }),
   ])
-  expect(statusRows(stage)[2]).toBe('/a ＋ /b')
+  expect(statusRows(stage)[3]).toBe('/a ＋ /b')
 
   // 列加上之前落账的会话没有 workspace 字段＝无法知道，不编
   const legacy = createStage({ workspaceRoots: ['/a'] })
