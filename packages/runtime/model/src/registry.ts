@@ -168,7 +168,7 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
 
     stream(request: ModelRequest, streamOptions?: ModelStreamOptions): ModelStream {
       const current = active
-      if (current === undefined) return errorStream(stamper, '', '还没有有效模型选择——请在 /model 配置 Default 或模型档位')
+      if (current === undefined) return errorStream(stamper, '', '还没有有效模型选择——请在 /config · 模型与连接 配置模型档位，/model 切到档位')
       // 每一次请求边界都按当前配置重新解析来源；旧记录里的 protocol／endpoint 只作诊断。
       const providers = providersNow()
       const checked = selectModel({ providers, modelInfoOf: options.modelInfoOf }, current.selection)

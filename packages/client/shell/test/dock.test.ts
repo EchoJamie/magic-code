@@ -221,14 +221,14 @@ describe('slash 的两种走法', () => {
     //    候选**看不看得见**在那一支里分不出来（判据会假绿）。这一支 dock 仍是输入区。
     stage.type('/status')
     // 先确认候选**真的开着**——不然「提交后没有」可能是假绿（它本来就没开过）
-    expect((await stage.screen(WIDE)).has('查看会话、模型、用量与调用状态')).toBe(true)
+    expect((await stage.screen(WIDE)).has('查看会话、工作区、模型组合与用量')).toBe(true)
 
     stage.type(' ')
     stage.press({ kind: 'enter' })
 
     const frame = await stage.screen(WIDE)
 
-    expect(frame.has('查看会话、模型、用量与调用状态')).toBe(false) // 候选收起
+    expect(frame.has('查看会话、工作区、模型组合与用量')).toBe(false) // 候选收起
     // ⚠️ 同上一处：`record` → `content`（原锚 / 为何变 / 新锚 见上一处）
     expect(frame.content.some((line) => line.text !== '')).toBe(true) // 提交照旧生效（输出进了记录区）
     expect(frame.statusLine).not.toContain('Tab 补全') // 右位不再报补全键位

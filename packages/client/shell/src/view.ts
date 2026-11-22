@@ -371,10 +371,10 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: '/rename', summary: '修改当前会话名称' },
 
   { name: '/exit', summary: '停止当前工作并退出界面' },
-  { name: '/status', summary: '查看会话、模型、用量与调用状态' },
+  { name: '/status', summary: '查看会话、工作区、模型组合与用量' },
 
   { name: '/config', summary: '调整终端、模型与工具设置' },
-  { name: '/model', summary: '选择工作模型与思考等级' },
+  { name: '/model', summary: '切换模型档位（Cantrip / Spell / Arcane）' },
 
   { name: '/skills', summary: '浏览或搜索技能，选定后加入草稿' },
 

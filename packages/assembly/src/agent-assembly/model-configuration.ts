@@ -154,13 +154,13 @@ export function createModelConfiguration(input: {
     })
     if (selection !== undefined) {
       if (typeof selection.provider !== 'string' || selection.provider.trim() === '') {
-        throw new Error('这条工作保存的模型组合缺少连接（provider）——请在 /model 的接入设置里确认连接；历史记录已保留')
+        throw new Error('这条工作保存的模型组合缺少连接（provider）——请在 /config · 模型与连接 确认连接；历史记录已保留')
       }
       if (typeof selection.model !== 'string' || selection.model.trim() === '') {
-        throw new Error('这条工作保存的模型组合缺少模型（model）——请在 /model 为该连接设置精确型号；历史记录已保留')
+        throw new Error('这条工作保存的模型组合缺少模型（model）——请在 /config · 模型与连接 为该连接设置精确型号；历史记录已保留')
       }
       const result = registry.use(selection)
-      if (!result.ok) throw new Error(`这条工作保存的模型组合按当前配置接不回来：${result.reason}——请在 /model 检查这条工作的默认模型或档位与连接设置；历史记录已保留`)
+      if (!result.ok) throw new Error(`这条工作保存的模型组合按当前配置接不回来：${result.reason}——请在 /config · 模型与连接 检查档位映射与连接设置；历史记录已保留`)
     }
     return registry
   }

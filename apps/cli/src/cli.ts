@@ -120,7 +120,7 @@ export function parseArgs(argv: readonly string[]): Args {
     }
     if (arg === '--model') {
       const value = valueOf('--model', i)
-      if (!['default', 'cantrip', 'spell', 'arcane'].includes(value)) throw new Error('--model 只能选择 default / cantrip / spell / arcane；请在 /model 配置实际型号')
+      if (!['cantrip', 'spell', 'arcane'].includes(value)) throw new Error('--model 只能选择 cantrip / spell / arcane；档位映射在 /config · 模型与连接 配置')
       model = value as ModelChoice
       i += 1
       continue

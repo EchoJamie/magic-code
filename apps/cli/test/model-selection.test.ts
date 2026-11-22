@@ -89,12 +89,12 @@ describe('统一模型配置与执行选择', () => {
     } finally { removeDir(root) }
   })
 
-  test('CLI 只接受四个小写标识，供应商与原始型号在调用前被拒绝', () => {
+  test('CLI 只接受三个小写档位，供应商与原始型号在调用前被拒绝', () => {
     expect(parseArgs(['--model', 'spell']).switch).toEqual({ choice: 'spell' })
     expect(() => parseArgs(['--model', 'deepseek-flash'])).toThrow('只能选择')
     expect(() => parseArgs(['--provider', 'main'])).toThrow('不认得')
     expect(() => parseArgs(['--model', 'Spell'])).toThrow('只能选择')
-    expect(resolveModelChoice({ providers, configuredModels: {}, config: { choice: 'cantrip' } })).toEqual({ ok: false, reason: 'Cantrip 尚未配置；请在 /model → 模型档位 中设置' })
+    expect(resolveModelChoice({ providers, configuredModels: {}, config: { choice: 'cantrip' } })).toEqual({ ok: false, reason: 'Cantrip 尚未配置；请在 /config · 模型与连接 中设置' })
     for (const config of [{ provider: 'main', model: 'deepseek-flash' }, { choice: 'cantrip', provider: 'main' }]) {
       expect(resolveModelChoice({ providers, configuredModels, config: config as ModelSwitchRequest }).ok).toBe(false)
     }

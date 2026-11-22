@@ -9,7 +9,7 @@ const bodySchema = { type: 'array', minItems: 1, items: {
     ref: { type: 'object', properties: { sessionId: text, entryId: { type: 'integer', minimum: 1 } }, required: ['sessionId', 'entryId'], additionalProperties: false }, label: text },
   required: ['kind'], additionalProperties: false,
 } } as const
-const modelSchema = { type: 'object', properties: { choice: { enum: ['default', 'cantrip', 'spell', 'arcane'] },
+const modelSchema = { type: 'object', properties: { choice: { enum: ['cantrip', 'spell', 'arcane'] },
   reasoning: { type: 'object', properties: { mode: { enum: ['default', 'off', 'level', 'budget'] }, level: text, budgetTokens: { type: 'integer', minimum: 1 } }, required: ['mode'], additionalProperties: false },
 }, additionalProperties: false } as const
 
@@ -27,7 +27,7 @@ export function defineAgentTools(client: CollaborationClient): readonly ToolDefi
       { operationId: text, name: text, role: text, responsibility: text, scope: text, body: bodySchema, model: modelSchema, modelReason: text },
       ['operationId', 'name', 'responsibility', 'scope', 'body'], args => {
         const model = args.model
-        if (model !== undefined && (!object(model) || Object.keys(model).some(key => !['choice', 'reasoning'].includes(key)) || (model.choice !== undefined && !['default', 'cantrip', 'spell', 'arcane'].includes(String(model.choice))))) throw new Error('model 只接受配置的默认模型或模型档位，以及独立思考设置')
+        if (model !== undefined && (!object(model) || Object.keys(model).some(key => !['choice', 'reasoning'].includes(key)) || (model.choice !== undefined && !['cantrip', 'spell', 'arcane'].includes(String(model.choice))))) throw new Error('model 只接受模型档位（cantrip / spell / arcane）与独立思考设置')
         if (object(model) && model.choice !== undefined && optional(args, 'modelReason') === undefined) throw new Error('选择模型档位须说明与任务相关的 modelReason')
         return { action: 'spawn', operationId: required(args, 'operationId'), name: required(args, 'name'), responsibility: required(args, 'responsibility'), scope: required(args, 'scope'), body: body(args.body),
           ...(optional(args, 'role') === undefined ? {} : { role: optional(args, 'role')! }),

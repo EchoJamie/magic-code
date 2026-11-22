@@ -53,7 +53,7 @@ export function modelSettingsRows(entries: readonly ModelCatalogRow[], configure
     })),
     {
       label: `${target} · 选择模型`,
-      meta: current !== null && 'choice' in current ? `当前 ${modelLabel(current.choice as ModelChoice)}；选择只影响此对象` : '尚未选择；Default 或三个能力档位',
+      meta: current !== null && 'choice' in current ? `当前 ${modelLabel(current.choice as ModelChoice)}；选择只影响此对象` : '尚未选择；在 /config · 模型与连接 配置',
       value: 'choose',
       current: false,
       oneLine: true

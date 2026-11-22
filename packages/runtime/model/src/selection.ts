@@ -78,7 +78,7 @@ export function selectModel(options: {
   const { provider, model, reasoning, choice } = selected
   if (typeof provider !== 'string' || provider.trim() === '') return { ok: false, reason: 'provider 须是非空字符串' }
   if (typeof model !== 'string' || model.trim() === '') return { ok: false, reason: 'model 须是非空字符串' }
-  if (!['default', 'cantrip', 'spell', 'arcane'].includes(choice)) return { ok: false, reason: '有效选择缺少来源；请在 /model 明确选择 Default 或模型档位' }
+  if (!['cantrip', 'spell', 'arcane'].includes(choice)) return { ok: false, reason: '未知模型档位；只能选择 cantrip / spell / arcane' }
   const config = ownOf(providers, provider)
   if (config === undefined) return { ok: false, reason: `未知供应商「${provider}」——已注册：${Object.keys(providers).join(' / ') || '（一个都没有）'}` }
   if (config.vendor !== undefined && vendorOf(config.vendor) === undefined) return { ok: false, reason: `未知供应商适配「${config.vendor}」` }

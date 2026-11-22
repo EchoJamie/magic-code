@@ -36,7 +36,7 @@ export function resolveModelChoice(input: {
     if (request.choice !== undefined) {
       if (!['cantrip', 'spell', 'arcane'].includes(request.choice)) return { ok: false, reason: '未知模型档位；只能选择 cantrip / spell / arcane' }
       const mapping = input.configuredModels?.[request.choice]
-      if (mapping === undefined) return { ok: false, reason: `${labelOf(request.choice)} 尚未配置；请在 /model → 模型档位 中设置` }
+      if (mapping === undefined) return { ok: false, reason: `${labelOf(request.choice)} 尚未配置；请在 /config · 模型与连接 中设置` }
       const changed = selection?.provider !== mapping.provider || selection.model !== mapping.model
       selection = { choice: request.choice, ...mapping, ...(request.reasoning === undefined
         ? changed ? {} : selection?.reasoning === undefined ? {} : { reasoning: selection.reasoning }
@@ -48,7 +48,7 @@ export function resolveModelChoice(input: {
     // 未指定档位 ⇒ 落在**开局档位记录**指向的档（缺省 cantrip）——新会话从上次的地方继续。
     const choice = input.defaultTier ?? 'cantrip'
     const mapping = input.configuredModels?.[choice]
-    if (mapping === undefined) return { ok: false, reason: `${labelOf(choice)} 尚未配置；请在 /model → 模型档位 中设置` }
+    if (mapping === undefined) return { ok: false, reason: `${labelOf(choice)} 尚未配置；请在 /config · 模型与连接 中设置` }
     selection = { choice, ...mapping }
   }
   return selectModel({ providers: input.providers, modelInfoOf: input.modelInfoOf }, selection)

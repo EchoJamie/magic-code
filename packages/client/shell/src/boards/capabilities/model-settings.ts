@@ -715,7 +715,7 @@ export function createModelSettings(ui: {
     if (ui.picker.source === 'model-choice') {
       const choice = row.value as ModelChoice
       if (ui.view.configuredModels[choice] === undefined) {
-        receipt(`${modelLabel(choice)} 尚未配置；请在 /model 的模型档位或默认模型中设置`)
+        receipt(`${modelLabel(choice)} 尚未配置；请在 /config · 模型与连接 中设置`)
         return true
       }
       if (collaborationModel !== null) send({ type: 'collaboration.configure', ...collaborationModel, model: { choice } })
@@ -746,7 +746,7 @@ export function createModelSettings(ui: {
       if (row.value === 'reasoning') {
         const chosen = scopeCurrent()
         if (chosen === null) {
-          receipt('请先配置并选择默认模型或模型档位')
+          receipt('请先在 /config · 模型与连接 配置模型档位')
           return true
         }
         detailAt = chosen
