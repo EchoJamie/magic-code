@@ -146,7 +146,7 @@ describe('状态行 · 栏位固定', () => {
     //    模型那一格不再在默认那一列里（`STATUS_LINE_DEFAULT`＝会话名 · 上下文占用），
     //    「换模型」这件事在屏上只剩记录区那一行回执——下面那条就是它的落点。
     // ⚠️ **U112 换形**：回执行不再以 `· ` 起头（那个字形只做行内分隔），改靠**缩进一级 ＋ 最弱色**
-    expect(frame.record.some((line) => line.text === '  已选择 Default')).toBe(true)
+    expect(frame.record.some((line) => line.text === '  已选择 Cantrip')).toBe(true)
   })
 })
 

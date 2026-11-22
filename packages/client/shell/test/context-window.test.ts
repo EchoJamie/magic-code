@@ -76,12 +76,12 @@ describe('换过模型之后的分母', () => {
     const after = await land.screen()
     // ③ 那一格（模型名）自 U112 起**不在默认状态行里**（可配，默认只有 `session` 与
     // `context`），故「③ 换了没有」按视图那一格核——与同文件那两条它处用例同一个读法。
-    expect(land.shell.getView().status.model).toBe('Default')
+    expect(land.shell.getView().status.model).toBe('Cantrip')
     expect(after.statusLine).toContain('3.1k/33k')
     expect(after.statusLine).not.toContain('1000k')
     // 回执照旧（「刚发生的事」进记录区）
     // ⚠️ **回执不带记号了**（2026-10-01 用户裁定：`·` 只做分隔符）——靠缩进一级 ＋ 弱色
-    expect(after.has('已选择 Default')).toBe(true)
+    expect(after.has('已选择 Cantrip')).toBe(true)
 
     land.shell.dispose()
   })
@@ -129,7 +129,7 @@ describe('换过模型之后的分母', () => {
     const after = await land.screen()
     expect(after.statusLine).toContain('3.1k/1000k')
     expect(after.has('换模型未成：未知供应商「ghost」')).toBe(true)
-    expect(land.shell.getView().status.model).toBe('Default')
+    expect(land.shell.getView().status.model).toBe('Cantrip')
 
     land.shell.dispose()
   })
@@ -141,7 +141,7 @@ describe('换过模型之后的分母', () => {
 
     const after = await land.screen()
     expect(after.statusLine).toContain('3.1k/205k')
-    expect(land.shell.getView().status.model).toBe('Default')
+    expect(land.shell.getView().status.model).toBe('Cantrip')
 
     land.shell.dispose()
   })

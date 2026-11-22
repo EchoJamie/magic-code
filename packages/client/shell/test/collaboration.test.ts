@@ -320,7 +320,7 @@ test('子会话复用现有会话模型入口，只换这个成员的模型', ()
   app.pick('choose')
   dock = app.view().dock
   if (dock.kind !== 'picker') throw new Error('模型档位没有打开')
-  app.pick('default')
+  app.pick('cantrip')
   expect(app.spy.commands.at(-1)).toMatchObject({ type: 'collaboration.configure', member: 'worker', model: { choice: 'cantrip' } })
 })
 

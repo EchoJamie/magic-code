@@ -195,10 +195,10 @@ describe('一条连接的闭环', () => {
       await saved
 
       const after = JSON.parse(readFileSync(land.configPath, 'utf8')) as {
-        models: { default?: { provider: string; model: string } }
+        models: { cantrip?: { provider: string; model: string } }
         providers: Record<string, Record<string, unknown>>
       }
-      expect(after.models.default).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
+      expect(after.models.cantrip).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
       expect(after.providers['ds']).toEqual({
         vendor: 'deepseek', protocol: 'chat-completions',
         apiKey: 'sk-not-a-real-key',
@@ -302,9 +302,9 @@ describe('一条连接的闭环', () => {
       expect(afterDefault.data.current).toEqual({ choice: 'cantrip' as const, provider: 'ds', model: 'deepseek-v4-pro', protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' })
       // 而配置里确实换成了 flash（两件事分开，各自都做对了）
       const onDisk = JSON.parse(readFileSync(land.configPath, 'utf8')) as {
-        models: { default?: { model: string } }
+        models: { cantrip?: { model: string } }
       }
-      expect(onDisk.models.default?.model).toBe('deepseek-flash')
+      expect(onDisk.models.cantrip?.model).toBe('deepseek-flash')
       expect(assembly.models).toBe(bound)
       await shell.submit('保存后仍用已有绑定')
       expect(vendor.calls.findLast(call => call.url.endsWith('/chat/completions'))?.body?.['model']).toBe('deepseek-v4-pro')
@@ -483,7 +483,7 @@ describe('一条连接的闭环', () => {
     // 缺省那条**不写** `apiKey`（走环境变量回退）；另一条两处都没有——
     // 它**不是缺省**，故不会在构造期被预造网关（那条路缺 key 才抛）。
     const configPath = writeConfig(land.root, {
-      models: {default: {provider: "ds", model: 'm'}, cantrip: {provider: "other", model: 'm'}, spell: {provider: "other", model: 'm'}, arcane: {provider: "other", model: 'm'}},
+      models: {cantrip: {provider: "ds", model: 'm'}, spell: {provider: "other", model: 'm'}, arcane: {provider: "other", model: 'm'}},
       providers: {
         ds: { protocol: 'chat-completions', baseURL: 'https://fixture.invalid/ds' },
         other: { protocol: 'chat-completions', baseURL: 'https://fixture.invalid/other' },

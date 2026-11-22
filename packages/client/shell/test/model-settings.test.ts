@@ -321,7 +321,7 @@ describe('③ 选定＝换模型，**不是发送**', () => {
     stage.feed([event('model.switched', { choice: 'cantrip', ok: true, provider: 'personal', model: 'MiniMax-M3' })])
 
     expect(stage.shell.getView().settled.length).toBe(before + 1)
-    expect(stage.shell.getView().status.model).toBe('Default')
+    expect(stage.shell.getView().status.model).toBe('Cantrip')
   })
 })
 
@@ -726,7 +726,7 @@ describe('⑨ 换模型**不动用户默认**（两件事分开）', () => {
     stage.type('/model ')
     stage.press({ kind: 'enter' })
     stage.feed([event('model.catalog', { entries: [], configuredModels: { cantrip: { provider: 'personal', model: 'MiniMax-M3' } } })])
-    for (let i = 0; i < 4; i++) stage.press({ kind: 'down' })
+    for (let i = 0; i < 3; i++) stage.press({ kind: 'down' })
     stage.press({ kind: 'enter' })
     stage.press({ kind: 'enter' })
     expect(sent(stage)).toEqual([{ type: 'model.list' }, { type: 'model.switch', choice: 'cantrip' }])

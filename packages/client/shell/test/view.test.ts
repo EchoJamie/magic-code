@@ -289,7 +289,7 @@ describe('状态行（五态固定词）', () => {
       event('model.usage', { inputTokens: 3100, outputTokens: 40 }),
     ])
 
-    expect(view.status.model).toBe('Default')
+    expect(view.status.model).toBe('Cantrip')
     expect(view.status.usage).toBe(3100)
   })
 
@@ -309,8 +309,8 @@ describe('状态行（五态固定词）', () => {
 
     expect(rowAt(view, onScreen(view).length - 1)).toMatchObject({ kind: 'receipt' })
     const last = onScreen(view).at(-1)
-    expect(last?.kind === 'receipt' ? last.text : '').toContain('Default')
-    expect(view.status.model).toBe('Default')
+    expect(last?.kind === 'receipt' ? last.text : '').toContain('Cantrip')
+    expect(view.status.model).toBe('Cantrip')
   })
 })
 

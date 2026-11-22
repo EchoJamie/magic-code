@@ -837,7 +837,7 @@ describe('选择器选定模型', () => {
         current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip' as const, provider: 'minimax', model: 'MiniMax-M3' },
       }),
     )
-    for (let i = 0; i < 4; i++) app.press({ kind: 'down' })
+    for (let i = 0; i < 3; i++) app.press({ kind: 'down' })
     app.press(ENTER) // 工作选择只列配置来源
     app.press(ENTER)
 
@@ -867,10 +867,9 @@ describe('还没有会话：模型选择留在窗口', () => {
         current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip' as const, provider: 'minimax', model: 'MiniMax-M3' },
       }),
     )
-    for (let i = 0; i < 4; i++) app.press({ kind: 'down' })
+    for (let i = 0; i < 3; i++) app.press({ kind: 'down' })
     app.press(ENTER) // 工作选择
-    app.press({ kind: 'down' }) // → Cantrip
-    app.press(ENTER)
+    app.press(ENTER) // cantrip 现在是选择器首行
 
     expect(app.commands().some(command => command.type === 'model.switch')).toBe(false)
     expect(app.view().modelChoice).toEqual({ choice: 'cantrip' })

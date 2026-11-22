@@ -37,11 +37,11 @@ test('自定义无认证无需列表，手填长型号与覆盖离线保存，�
   const snapshot = await g.settings.read()
   expect(snapshot.configuration.providers).toMatchObject({ local: { auth: 'none', keySource: 'none', keyConfigured: false } })
   expect(JSON.stringify(snapshot)).not.toContain('ENV_SENTINEL')
-  expect(g.raw().models).toEqual({ default: { provider: 'local', model }, cantrip: { provider: 'local', model }, spell: { provider: 'local', model }, arcane: { provider: 'local', model: '另一型号' } })
+  expect(g.raw().models).toEqual({ cantrip: { provider: 'local', model }, spell: { provider: 'local', model }, arcane: { provider: 'local', model: '另一型号' } })
   expect(g.raw().providers.local.modelOverrides[model].capabilities).toEqual({ image: false, tools: true })
   await g.apply({ type: 'model.override', provider: 'local', model, override: null })
   expect(g.raw().providers.local.modelOverrides[model]).toBeUndefined()
-  expect(g.raw().models.default.model).toBe(model)
+  expect(g.raw().models.cantrip.model).toBe(model)
   expect(g.requests()).toBe(0)
 })
 
@@ -55,7 +55,7 @@ test('官方协议不再按型号拦：照旧落盘；改名不锁定自动选�
   // 协议兼容不再是硬闸门：官方提示里没有该型号的协议也照落盘，不回滚配置。
   await g.apply({ type: 'provider.save', provider: 'ds', protocol: 'responses' })
   expect(g.raw().providers.ds.protocol).toBe('responses')
-  expect(g.raw().models.default).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
+  expect(g.raw().models.cantrip).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
   expect(g.requests()).toBe(0)
 })
 
@@ -65,7 +65,7 @@ test('对话能力明确不支持也不拦保存与映射', async () => {
   await g.apply({ type: 'model.override', provider: 'local', model, override: { capabilities: { chat: false } } })
   // 保存前的预检不再因 `chat` 能力拒绝——映射照旧落盘。
   await g.apply({ type: 'model.configure', choice: 'cantrip', provider: 'local', model })
-  expect(g.raw().models.default).toEqual({ provider: 'local', model })
+  expect(g.raw().models.cantrip).toEqual({ provider: 'local', model })
   expect(g.raw().providers.local.modelOverrides[model].capabilities).toEqual({ chat: false })
   expect(g.requests()).toBe(0)
 })

@@ -112,7 +112,7 @@ function stage(): {
 
   const configPath = writeConfig(
     root,
-    validConfig({ dataDir: join(root, 'data'), models: {default: {provider: "alpha", model: 'alpha-1'}, cantrip: {provider: "beta", model: 'beta-1'}, spell: {provider: "alpha", model: 'alpha-1'}, arcane: {provider: "alpha", model: 'alpha-1'}}, providers: PROVIDERS }),
+    validConfig({ dataDir: join(root, 'data'), models: {cantrip: {provider: "alpha", model: 'alpha-1'}, spell: {provider: "beta", model: 'beta-1'}, arcane: {provider: "alpha", model: 'alpha-1'}}, providers: PROVIDERS }),
   )
 
   return {
@@ -199,9 +199,9 @@ describe('读数 1 · 上下文窗口总量', () => {
 
       await handle.submit('嗨')
       // 换到乙——配置里**没有** `contextWindow`
-      expect(assembly.switchModel({ choice: 'cantrip' })).toEqual({
+      expect(assembly.switchModel({ choice: 'spell' })).toEqual({
         ok: true,
-        selection: { choice: 'cantrip', provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' },
+        selection: { choice: 'spell', provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' },
       })
       await handle.submit('再来一句')
 
@@ -287,9 +287,9 @@ describe('读数 3 · 模型条目表', () => {
       expect(catalog.data.note).toBeUndefined()
 
       // 换过之后，「当前」跟着走
-      expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'spell' }).ok).toBe(true)
       const afterSwitch = await askCatalog(handle)
-      expect(afterSwitch.data.current).toEqual({ choice: 'cantrip' as const, provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' })
+      expect(afterSwitch.data.current).toEqual({ choice: 'spell' as const, provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' })
       expect(afterSwitch.data.entries).toEqual(catalog.data.entries)
 
       handle.dispose()
@@ -449,7 +449,7 @@ describe('读数 1 · ④ 的分母在**开机**那一刻就有', () => {
 
     try {
       const assembly = land.assemble({ modelFetch: endpoint() })
-      const switched = assembly.switchModel({ choice: 'cantrip' })
+      const switched = assembly.switchModel({ choice: 'spell' })
       expect(switched.ok).toBe(true)
 
       expect((await assemblyTuiOptions(assembly)).contextWindow).toBeNull()

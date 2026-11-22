@@ -256,23 +256,23 @@ describe('移除与设为默认', () => {
     }
   })
 
-  test('保存 Default 只改映射；接入、覆盖和其他档位保持原样', async () => {
+  test('保存 Cantrip 只改那一档；接入、覆盖和其他档位保持原样', async () => {
     const dir = tempDir('magic-save-')
     try {
       const provider = { vendor: 'deepseek', modelOverrides: { old: { limits: { maxInputTokens: 128 } } } }
-      const path = writeConfig(dir, { providers: { a: provider }, models: { cantrip: { provider: 'a', model: 'old' } } })
+      const path = writeConfig(dir, { providers: { a: provider }, models: { spell: { provider: 'a', model: 'old' } } })
       expect((await configureModel({ path, request: { choice: 'cantrip', provider: 'a', model: 'new' } }))).toEqual({ ok: true })
       expect(PROVIDERS_OF(path)['a']).toEqual(provider)
-      expect(READ(path)['models']).toEqual({ default: { provider: 'a', model: 'new' }, cantrip: { provider: 'a', model: 'old' } })
+      expect(READ(path)['models']).toEqual({ cantrip: { provider: 'a', model: 'new' }, spell: { provider: 'a', model: 'old' } })
     } finally { removeDir(dir) }
   })
 
-  test('保存 Cantrip 不改 Default；不在连接上写型号或思考设置', async () => {
+  test('保存 Spell 不改 Cantrip；不在连接上写型号或思考设置', async () => {
     const dir = tempDir('magic-save-')
     try {
-      const path = writeConfig(dir, { providers: { a: { vendor: 'deepseek' } }, models: { default: { provider: 'a', model: 'main' } } })
-      expect((await configureModel({ path, request: { choice: 'cantrip', provider: 'a', model: 'aux' } }))).toEqual({ ok: true })
-      expect(READ(path)['models']).toEqual({ default: { provider: 'a', model: 'main' }, cantrip: { provider: 'a', model: 'aux' } })
+      const path = writeConfig(dir, { providers: { a: { vendor: 'deepseek' } }, models: { cantrip: { provider: 'a', model: 'main' } } })
+      expect((await configureModel({ path, request: { choice: 'spell', provider: 'a', model: 'aux' } }))).toEqual({ ok: true })
+      expect(READ(path)['models']).toEqual({ cantrip: { provider: 'a', model: 'main' }, spell: { provider: 'a', model: 'aux' } })
       expect(PROVIDERS_OF(path)['a']).toEqual({ vendor: 'deepseek' })
       expect(READ(path)['webFetch']).toBeUndefined()
     } finally { removeDir(dir) }

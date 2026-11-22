@@ -247,12 +247,15 @@ export async function configureModel(input: {
       const value = raw['models']
       if (value !== undefined && (typeof value !== 'object' || value === null || Array.isArray(value))) return { ok: false, reason: 'models 须是对象，请先修复配置' }
       for (const [key, mapping] of Object.entries(value ?? {})) {
+        // 旧形的 `models.default` 是**读时迁移**的种子（2026-11-22 裁定：Default 不是档位）——
+        // 不拦校验，落盘时让它退场（下面写回时剔除）。
+        if (key === 'default') continue
         if (!['cantrip', 'spell', 'arcane'].includes(key) || typeof mapping !== 'object' || mapping === null || Array.isArray(mapping)
           || Object.keys(mapping).some(field => !['provider', 'model'].includes(field))
           || typeof mapping.provider !== 'string' || !Object.hasOwn(providersOf(raw), mapping.provider)
           || typeof mapping.model !== 'string' || mapping.model.trim() === '') return { ok: false, reason: 'models 内容无效，请先修复配置' }
       }
-      const configuredModels = { ...(value as Record<string, unknown> | undefined) }
+      const configuredModels = Object.fromEntries(Object.entries(value as Record<string, unknown> | undefined ?? {}).filter(([key]) => key !== 'default'))
       const mapping = { provider, model }
       configuredModels[choice] = mapping
       if (initialize === true) {

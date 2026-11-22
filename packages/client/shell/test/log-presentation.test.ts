@@ -227,7 +227,7 @@ describe('组件规格 · 行的标记与颜色', () => {
     stage.feed([event('model.switched', { choice: 'cantrip', ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
 
     const frame = await stage.screen()
-    const cells = frame.cellsOf(frame.rowOf('已选择 Default'))
+    const cells = frame.cellsOf(frame.rowOf('已选择 Cantrip'))
 
     // ⚠️ **U112 拆的混用**：回执行**不再以 `·` 起头**（那个字形只做行内分隔符）——
     //    靠**缩进一级 ＋ 最弱色**与助手正文分开（正文顶格、无记号）

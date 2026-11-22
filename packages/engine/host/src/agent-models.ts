@@ -46,7 +46,7 @@ export function resolveModelChoice(input: {
   }
   if (selection === undefined) {
     // 未指定档位 ⇒ 落在**开局档位记录**指向的档（缺省 cantrip）——新会话从上次的地方继续。
-    const choice = input.newAgent ? input.defaults?.choice ?? input.defaultTier ?? 'cantrip' : input.defaultTier ?? 'cantrip'
+    const choice = input.defaultTier ?? 'cantrip'
     const mapping = input.configuredModels?.[choice]
     if (mapping === undefined) return { ok: false, reason: `${labelOf(choice)} 尚未配置；请在 /model → 模型档位 中设置` }
     selection = { choice, ...mapping }

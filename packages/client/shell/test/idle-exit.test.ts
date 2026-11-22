@@ -137,7 +137,7 @@ describe('空闲按一次 Ctrl+C ⇒ 不退出，那一行在**状态行之下**
     // 位置**不随左下开着什么而变**：还是状态行之下那一格
     expect(frame.rowOf(HINT_EXIT_ARMED)).toBe(frame.statusRow + 1)
     // 而那一片自己照旧画着（没被这一行顶掉）
-    expect(frame.has('默认模型 · Default')).toBe(true)
+    expect(frame.has('模型档位 · Cantrip')).toBe(true)
   })
 
   test('第二下才走（两下之间没有别的输入、在 1.5 秒内）', async () => {

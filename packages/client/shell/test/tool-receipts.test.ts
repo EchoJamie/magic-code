@@ -85,7 +85,7 @@ describe('回执与工具组 · 不带记号（2026-10-01 裁定）', () => {
     stage.feed([event('model.switched', { choice: 'cantrip', ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
 
     const frame = await stage.screen(SCREEN)
-    const row = frame.rowOf('已选择 Default')
+    const row = frame.rowOf('已选择 Cantrip')
     const cells = frame.cellsOf(row)
 
     // 头两格是空白（缩进一级），第 3 格**就是正文**——不是 `·`

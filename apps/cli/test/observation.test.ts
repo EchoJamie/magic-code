@@ -99,7 +99,7 @@ describe('无执行者的真实只读目录', () => {
 
   test('只给provider/只给model复用域内选择，缺默认与非法选择具体失败；配置与技能每次现读', async () => {
     const g = ground()
-    g.configure({ a: { protocol: 'chat-completions', baseURL: 'http://unreachable' }, b: { protocol: 'chat-completions', baseURL: 'http://unreachable' } }, { models: { default: { provider: 'a', model: 'first' }, cantrip: { provider: 'b', model: 'second' }, spell: { provider: 'a', model: 'alternate' } } })
+    g.configure({ a: { protocol: 'chat-completions', baseURL: 'http://unreachable' }, b: { protocol: 'chat-completions', baseURL: 'http://unreachable' } }, { models: { cantrip: { provider: 'b', model: 'second' }, spell: { provider: 'a', model: 'alternate' } } })
     expect((await answer({ type: 'model.list' }, { ...g.context, switch: { choice: 'cantrip' } }, 'model.catalog')).current).toEqual({ choice: 'cantrip' as const, provider: 'b', model: 'second', protocol: 'chat-completions', endpoint: 'http://unreachable' })
     expect((await answer({ type: 'model.list' }, { ...g.context, switch: { choice: 'spell' } }, 'model.catalog')).current).toEqual({ choice: 'spell' as const, provider: 'a', model: 'alternate', protocol: 'chat-completions', endpoint: 'http://unreachable' })
     await expect(query({ type: 'model.list' }, { ...g.context, switch: { choice: 'arcane' } })).rejects.toThrow('尚未配置')

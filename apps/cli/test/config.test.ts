@@ -225,7 +225,7 @@ describe('报错取「一声响」（不静默兜底）', () => {
 
   test('字段缺 / 空 / 类型不对——逐条点名到字段', () => {
     const cases: readonly [unknown, RegExp][] = [
-      [validConfig({ providers: {} }), /models.default.provider 指向未知连接/],
+      [validConfig({ providers: {} }), /models\.cantrip\.provider 指向未知连接/],
       [
         validConfig({ providers: { minimax: { vendor: '' } } }),
         /providers\.minimax\.vendor/,
