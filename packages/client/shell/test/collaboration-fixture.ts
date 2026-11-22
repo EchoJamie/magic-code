@@ -20,7 +20,7 @@ export const collaborationFixture: CollaborationView = {
     { delegationId: 10, collaborationId: 'work', delegatorId: 'coordinator', assigneeId: 'worker', source: { messageId: 10 }, authorization: [], scope: '回调校验', state: 'accepted', at: 0 },
     { delegationId: 11, collaborationId: 'work', delegatorId: 'coordinator', assigneeId: 'worker', source: { messageId: 11 }, authorization: [], scope: '补充复核', state: 'queued', at: 0 },
   ],
-  waits: [], constraints: [{ messageId: 20, states: [{ agentId: 'worker', state: 'pending' }, { agentId: 'coordinator', state: 'included' }] }],
+  constraints: [{ messageId: 20, states: [{ agentId: 'worker', state: 'pending' }, { agentId: 'coordinator', state: 'included' }] }],
 }
 
 /** 入口会话自己的历史（与子会话正文互不混入）。 */

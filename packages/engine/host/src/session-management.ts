@@ -42,7 +42,7 @@ export function createSessionManagement(input: {
     if (group !== undefined) {
       if (group.executions.some(e => e.state !== 'finished')) return false
       if (group.collaboration.state === 'open' || group.collaboration.state === 'closing') {
-        if (group.collaboration.state === 'closing' || group.members.some(m => m.reachability === 'suspended') || group.waits.some(w => w.state === 'waiting')) return false
+        if (group.collaboration.state === 'closing' || group.members.some(m => m.reachability === 'suspended')) return false
         if (group.delegations.some(d => !['received', 'rejected', 'cancelled'].includes(d.state) || (d.deliveryMessageId !== undefined && d.receivedAt === undefined))) return false
         if (group.members.some(member => store.collaboration.inbox(member.agentId).some(
           item => item.state === 'pending' && store.collaboration.readMessage(member.agentId, item.messageId)?.purpose !== 'receipt',

@@ -48,4 +48,3 @@ export type CollaborationId = string
 export type OperationId = string
 export type MessageId = RecordId
 export type DelegationId = MessageId
-export type WaitId = RecordId

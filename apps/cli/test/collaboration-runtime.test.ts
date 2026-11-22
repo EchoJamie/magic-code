@@ -3,7 +3,7 @@ import { createConversationSession } from '@magic/conversation'
 import type { ConversationSession } from '@magic/conversation'
 import { createRecordsStore } from '@magic/data'
 import { createFauxGateway, makeFauxSink, makeFauxToolRuntime, makeTestStamper } from '@magic/faux'
-import type { FauxTurn, FauxToolHandler, FauxSink } from '@magic/faux'
+import type { FauxTurn, FauxToolHandler } from '@magic/faux'
 import { tempDir, removeDir } from './tmp.ts'
 import { createCollaborationBoundary } from '@magic/assembly'
 import { createManagedCollaboration } from '@magic/host'
@@ -31,33 +31,21 @@ function makeStage(input: { turns: readonly FauxTurn[]; handlers: Readonly<Recor
   })
   return { stamper, sink, gateway, toolDomain, promptVars: { cwd: '/test', shell: '/bin/sh', platform: 'test', date: '2026-09-26' } }
 }
-async function waitUntilIdle(sink: FauxSink) {
-  const start = Date.now()
-  // 这里只等测试进程完成；产品唤起来自持久事实变更。
-  do {
-    await new Promise(resolve => setImmediate(resolve))
-    if (sink.byKind('agent.state').at(-1)?.data.state === 'waiting') return
-  } while (Date.now() - start < 2000)
-  throw new Error('入口没有让出')
+async function waitUntilIdle() {
+  // 等测试进程的当轮完成；产品唤起来自持久事实变更（消息投递）。
+  await new Promise(resolve => setImmediate(resolve))
 }
 
-for (const response of ['clarify', 'reject'] as const) test(`入口已让出且无TUI：成员${response}事件直接唤起入口，领取终态后不空转`, async () => {
+for (const response of ['clarify', 'reject'] as const) test(`入口正文让出后：成员${response}决定消息直接唤起入口`, async () => {
   const f = fixture()
+  let requests = 0
   const child = f.spawn('child')
   let root: ConversationSession
-  let requests = 0
   const managed = createManagedCollaboration({ environment: () => ({}), store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
     accepting: () => true, start: async () => undefined, wake: session => { if (session === 'origin') root.wake() },
     cancel: async () => undefined, input: () => undefined, configure: async () => undefined, runs: () => [], decisions: () => 0, changed: () => undefined,
   })
-  const stage = makeStage({ turns: [
-    { toolCalls: [{ name: 'exec', args: { description: '测试命令', command: 'wait' } }] }, { text: `处理成员${response}` },
-  ], handlers: { exec: async () => {
-    const result = await managed.request('origin', { action: 'wait', operationId: 'wait', agents: [child.agent.agentId],
-      message: child.delegation.delegationId, expectation: '成员响应', deadline: Date.now() + 3600000 })
-    expect(result.ok).toBe(true)
-    return { ok: true, output: '已登记，等事件', halt: true }
-  } } })
+  const stage = makeStage({ turns: [{ text: '派好后让出' }, { text: `处理成员${response}` }], handlers: {} })
   const boundary = createCollaborationBoundary({ records: f.records, session: 'origin', runId: 'root-run', model: () => f.coordinator.model,
     tools: () => undefined, now: Date.now, changed: managed.changed }).boundary
   root = createConversationSession({ session: 'origin',  prompt: stage.promptVars,
@@ -66,18 +54,14 @@ for (const response of ['clarify', 'reject'] as const) test(`入口已让出且�
   })
   try {
     root.submit({ text: '派好后等待' })
-    await waitUntilIdle(stage.sink)
+    await waitUntilIdle()
     expect(requests).toBe(1)
-    expect(f.records.listWaits(f.collaboration.collaborationId)[0]?.state).toBe('waiting')
     expect((await managed.request('child', { action: 'respond', operationId: response, delegation: child.delegation.delegationId, response, reason: '需要入口处置的事实' })).ok).toBe(true)
-    await waitUntilIdle(stage.sink)
+    await waitUntilIdle()
     expect(requests).toBe(2)
-    const wait = f.records.listWaits(f.collaboration.collaborationId)[0]!
-    expect(wait.state).not.toBe('waiting')
-    expect(wait.handledAt).toBeDefined()
     expect(JSON.stringify(stage.gateway.requests[1])).toContain('需要入口处置的事实')
     root.wake()
-    await waitUntilIdle(stage.sink)
+    await waitUntilIdle()
     expect(requests).toBe(2)
   } finally { managed.shutdown('测试清理'); f.close() }
 })
@@ -115,24 +99,23 @@ test('未登记wait的空闲入口也处理拒绝决定；普通accept和重复�
   })
   try {
     root.submit({ text: '分给成员后继续各自工作' })
-    await waitUntilIdle(stage.sink)
-    expect(f.records.listWaits(f.collaboration.collaborationId)).toEqual([])
+    await waitUntilIdle()
     expect(stage.gateway.requests).toHaveLength(1)
     expect((await managed.request('accepted-child', { action: 'respond', operationId: 'accept', delegation: accepted.delegation.delegationId,
       response: 'accept' })).ok).toBe(true)
     root.wake()
-    await waitUntilIdle(stage.sink)
+    await waitUntilIdle()
     expect(stage.gateway.requests).toHaveLength(1)
 
     const request = { action: 'respond', operationId: 'reject', delegation: rejected.delegation.delegationId,
       response: 'reject', reason: '缺少运行环境，无法交付' } as const
     expect((await managed.request('rejected-child', request)).ok).toBe(true)
-    await waitUntilIdle(stage.sink)
+    await waitUntilIdle()
     expect(stage.gateway.requests).toHaveLength(2)
     expect(JSON.stringify(stage.gateway.requests[1])).toContain('缺少运行环境，无法交付')
     expect((await managed.request('rejected-child', request)).ok).toBe(true)
     root.wake()
-    await waitUntilIdle(stage.sink)
+    await waitUntilIdle()
     expect(stage.gateway.requests).toHaveLength(2)
   } finally { managed.shutdown('测试清理'); f.close() }
 })
@@ -200,16 +183,11 @@ test('已取消的委派不等回执：成员休眠、投递过没回执，收�
   } finally { managed.shutdown('测试清理'); f.close() }
 })
 
-for (const kind of ['message', 'wait'] as const) test(`已领取${kind}在请求发出前失败：显式再唤起可补取，成功带入后不重放`, async () => {
+test('已领取消息在请求发出前失败：显式再唤起可补取，成功带入后不重放', async () => {
   const f = fixture()
   const child = f.spawn('retry-child')
-  if (kind === 'message') f.records.send(child.agent.agentId, { operationId: 'response', at: 5,
+  f.records.send(child.agent.agentId, { operationId: 'response', at: 5,
     recipients: [f.coordinator.agentId], purpose: 'inform', body: [{ kind: 'text', text: 'PENDING_RETRY_FACT' }] })
-  else {
-    f.records.registerWait(f.coordinator.agentId, { operationId: 'wait', at: 5, deadline: 6,
-      forAgents: [child.agent.agentId], expectation: 'PENDING_RETRY_FACT' })
-    f.records.expireWaits(7)
-  }
   const stage = makeStage({ turns: [{ text: '已处理此前未能发出的事实' }], handlers: {} })
   let attempts = 0
   const build = () => createConversationSession({ session: 'origin',  prompt: stage.promptVars,
@@ -220,22 +198,17 @@ for (const kind of ['message', 'wait'] as const) test(`已领取${kind}在请求
   })
   try {
     build().wake()
-    await waitUntilIdle(stage.sink)
+    await waitUntilIdle()
     expect(attempts).toBe(1)
     expect(stage.gateway.requests).toHaveLength(0)
-    if (kind === 'wait') {
-      expect(f.records.listWaits(f.collaboration.collaborationId)[0]?.handledAt).toBeDefined()
-      expect(f.records.listWaits(f.collaboration.collaborationId)[0]?.includedAt).toBeUndefined()
-    }
     // 重建实例，证明可重试事实在库中，不依赖失败实例内的标志。
     const resumed = build()
     resumed.wake()
-    await waitUntilIdle(stage.sink)
+    await waitUntilIdle()
     expect(attempts).toBe(2)
     expect(JSON.stringify(stage.gateway.requests[0])).toContain('PENDING_RETRY_FACT')
-    if (kind === 'wait') expect(f.records.listWaits(f.collaboration.collaborationId)[0]?.includedAt).toBeDefined()
     resumed.wake()
-    await waitUntilIdle(stage.sink)
+    await waitUntilIdle()
     expect(attempts).toBe(2)
   } finally { f.close() }
 })
@@ -245,8 +218,6 @@ test('有效等待期间收到新交代，协调者仍可执行点名停止', as
   const child = f.spawn('stop-child')
   f.records.respondToDelegation(child.agent.agentId, { operationId: 'accept', at: 5,
     delegationId: child.delegation.delegationId, response: 'accept' })
-  f.records.registerWait(f.coordinator.agentId, { operationId: 'waiting', at: 6, deadline: Date.now() + 3600000,
-    forAgents: [child.agent.agentId], expectation: '等待子工作' })
   let stops = 0
   const stage = makeStage({ turns: [{ toolCalls: [{ name: 'agent_control', args: { action: 'stop', delegation: child.delegation.delegationId, reason: '依赖变更' } }] }, { text: '已撤回并保留结果' }],
     handlers: { agent_control: () => { stops++; f.records.stop({ kind: 'delegation', delegationId: child.delegation.delegationId }, '依赖变更', 7); return { ok: true, output: '停止已受理' } } } })
@@ -256,8 +227,8 @@ test('有效等待期间收到新交代，协调者仍可执行点名停止', as
       model: () => f.coordinator.model, tools: () => undefined, now: Date.now, changed: () => undefined }).boundary,
   })
   try {
-    root.submit({ text: '有新情况，请撤回正在等待的这份委派' })
-    await waitUntilIdle(stage.sink)
+    root.submit({ text: '有新情况，请撤回这份进行中的委派' })
+    await waitUntilIdle()
     expect(stops).toBe(1)
     expect(f.records.getDelegation(child.delegation.delegationId)?.state).toBe('cancelled')
     expect(stage.gateway.requests).toHaveLength(2)

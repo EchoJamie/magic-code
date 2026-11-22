@@ -6,13 +6,10 @@ import { collaborationRuntime, latch, requestText, spawnMember } from './run-col
 for (const response of ['clarify', 'reject', 'accept'] as const) {
   test(`真实 manager/socket/executor：入口让出后 ${response} 的唤起语义`, async () => {
     const memberReply = latch()
-    const deadline = Date.now() + 3600_000
-    const f = await collaborationRuntime(`wait-${response}`, async call => {
+    const f = await collaborationRuntime(`yield-${response}`, async call => {
       if (call.model === 'entry-model') {
         if (call.index === 0) return spawnMember
-        if (call.index === 1) return { tool: 'agent_wait', args: { operationId: 'wait-member', agents: [f.member()!.agentId], message: f.delegation()!.delegationId,
-          expectation: '成员明确回应', deadline } }
-        return { text: `入口已处理 ${response}` }
+        return { text: `入口已让出，等待成员 ${response}` }
       }
       if (call.index === 0) {
         await memberReply.promise
@@ -23,13 +20,10 @@ for (const response of ['clarify', 'reject', 'accept'] as const) {
     })
     try {
       f.shell.key({ kind: 'paste', text: '展开回调兼容检查，等待成员明确回应。' }); f.shell.key({ kind: 'enter' })
-      await f.wait('入口持久等待且已让出', () => {
-        const work = f.collaboration()
-        const waiting = work === undefined ? undefined : f.store.collaboration.listWaits(work.collaborationId).find(one => one.state === 'waiting')
+      await f.wait('入口正文结束即让出', () => {
         const run = f.manager.runs().find(one => one.session === f.session())
-        return waiting !== undefined && run?.state === 'idle' && (run.lastTurnAt ?? 0) >= waiting.at
+        return f.requests().length === 2 && run?.state === 'idle'
       })
-      expect(f.requests()).toHaveLength(2)
       const processes = f.manager.executors()
       expect(processes).toHaveLength(2)
       expect(new Set(processes.map(one => one.gen)).size).toBe(2)
@@ -38,18 +32,11 @@ for (const response of ['clarify', 'reject', 'accept'] as const) {
       await f.wait('成员响应落库', () => f.delegation()?.state === (response === 'accept' ? 'accepted' : response === 'clarify' ? 'clarification' : 'rejected'))
       if (response === 'accept') {
         await f.wait('成员当轮结束', () => f.manager.runs().find(one => one.session === f.member()?.sessionId)?.state === 'idle')
-        // 给所有已在 socket 上的回执充分到达；无信息的接受不能偷偷起入口模型。
         await Bun.sleep(350)
         expect(f.requests()).toHaveLength(2)
-        expect(f.store.collaboration.listWaits(f.collaboration()!.collaborationId)[0]?.state).toBe('waiting')
       } else {
-        await f.wait('入口由成员事件重新请求模型', () => f.requests().length >= 3)
+        await f.wait('入口由成员决定消息重新请求模型', () => f.requests().length >= 3)
         expect(requestText(f.requests()[2])).toContain(`MEMBER_${response}_REASON`)
-        const waiting = f.store.collaboration.listWaits(f.collaboration()!.collaborationId)[0]!
-        expect(waiting.state).not.toBe('waiting')
-        expect(waiting.state).not.toBe('expired')
-        expect(waiting.handledAt).toBeDefined()
-        expect(Date.now()).toBeLessThan(deadline)
         await f.wait('入口处理结束', () => f.manager.runs().find(one => one.session === f.session())?.state === 'idle')
         await Bun.sleep(350)
         expect(f.requests()).toHaveLength(3)
@@ -58,9 +45,7 @@ for (const response of ['clarify', 'reject', 'accept'] as const) {
       expect(f.events.filter(one => one.kind === 'error')).toEqual([])
     } finally { memberReply.release(); await f.close() }
   }, 30000)
-}
 
-for (const response of ['reject', 'accept'] as const) {
   test(`真实 manager/socket/executor：入口未登记 wait 且正文结束后 ${response} 的唤起语义`, async () => {
     const memberReply = latch()
     const initialText = '入口已说明当前进展，本轮正常结束，未登记等待。'
@@ -73,7 +58,7 @@ for (const response of ['reject', 'accept'] as const) {
       if (call.index === 0) {
         await memberReply.promise
         return { tool: 'agent_message', args: { action: 'respond', operationId: `response-${response}`, delegation: f.delegation()!.delegationId, response,
-          ...(response === 'reject' ? { reason } : {}) } }
+          ...(response === 'accept' ? {} : { reason }) } }
       }
       return { text: `成员已 ${response}` }
     })
@@ -86,13 +71,12 @@ for (const response of ['reject', 'accept'] as const) {
       })
       const work = f.collaboration()!
       const member = f.member()!
-      expect(f.store.collaboration.listWaits(work.collaborationId)).toEqual([])
       expect((await Array.fromAsync(f.store.readEntries(work.originSessionId))).filter(one => one.kind === 'assistant').at(-1)?.content).toEqual({ text: initialText })
       expect(f.delegation()?.state).toBe('queued')
       expect(f.manager.executors()).toHaveLength(2)
 
       memberReply.release()
-      await f.wait('成员响应已落库', () => f.delegation()?.state === (response === 'reject' ? 'rejected' : 'accepted'))
+      await f.wait('成员响应已落库', () => f.delegation()?.state === (response === 'reject' ? 'rejected' : response === 'clarify' ? 'clarification' : 'accepted'))
       await f.wait('成员响应当轮结束', () => f.manager.runs().find(one => one.session === member.sessionId)?.state === 'idle')
       if (response === 'reject') {
         await f.wait('无 wait 的入口因拒绝重新请求模型', () => f.requests().length >= 3)
@@ -106,7 +90,6 @@ for (const response of ['reject', 'accept'] as const) {
       await Bun.sleep(350)
       expect(f.requests()).toHaveLength(response === 'reject' ? 3 : 2)
       expect(f.requests('member-model')).toHaveLength(2)
-      expect(f.store.collaboration.listWaits(work.collaborationId)).toEqual([])
       expect(f.errors).toEqual([])
       expect(f.events.filter(one => one.kind === 'error')).toEqual([])
     } finally { memberReply.release(); await f.close() }
@@ -122,8 +105,7 @@ test('显式正常收尾：收下成员交付后仍能写最终正文，资源�
   const f = await collaborationRuntime('explicit-close', async call => {
     if (call.model === 'entry-model') {
       if (call.index === 0) return spawnMember
-      if (call.index === 1) return { tool: 'agent_wait', args: { operationId: 'wait-delivery', agents: [f.member()!.agentId], message: f.delegation()!.delegationId,
-        expectation: '收到完整交付后核验收下', deadline: Date.now() + 3600_000 } }
+      if (call.index === 1) return { text: '已派出，等成员交付后唤醒我。' }
       if (call.index === 2) return { tool: 'agent_message', args: { action: 'receive', delegation: f.delegation()!.delegationId } }
       if (call.index === 3) return { tool: 'agent_control', args: { action: 'close' } }
       if (call.index === 4) { await finalReply.promise; return { text: finalText } }
@@ -140,9 +122,8 @@ test('显式正常收尾：收下成员交付后仍能写最终正文，资源�
   })
   try {
     f.shell.key({ kind: 'paste', text: '展开检查，核验成员交付后显式收尾并给最终说明。' }); f.shell.key({ kind: 'enter' })
-    await f.wait('入口已让出等待交付', () => f.collaboration() !== undefined &&
-      f.store.collaboration.listWaits(f.collaboration()!.collaborationId).some(one => one.state === 'waiting') &&
-      f.manager.runs().find(one => one.session === f.session())?.state === 'idle')
+    await f.wait('入口正文结束即让出', () => f.collaboration() !== undefined &&
+      f.manager.runs().find(one => one.session === f.session())?.state === 'idle' && f.requests().length === 2)
     const member = f.member()!
     const origin = f.session()!
     const pids = f.manager.executors().map(one => one.gen)
@@ -255,14 +236,12 @@ for (const response of ['clarify', 'reject'] as const) {
   test(`无 TUI 且入口进程已退出：成员 ${response} 经同一宿主唤回新代入口`, async () => {
     const memberReply = latch()
     const rootReply = latch()
-    const deadline = Date.now() + 3600_000
     const reason = `NO_TUI_${response}_REASON：需要入口核对当前委派。`
     const finalText = `新代入口已处理 ${response}，等待用户后续安排。`
     const f = await collaborationRuntime(`no-tui-${response}`, async call => {
       if (call.model === 'entry-model') {
         if (call.index === 0) return spawnMember
-        if (call.index === 1) return { tool: 'agent_wait', args: { operationId: 'wait-member', agents: [f.member()!.agentId],
-          message: f.delegation()!.delegationId, expectation: '等待成员明确回应', deadline } }
+        if (call.index === 1) return { text: '已派出，等成员明确回应后唤醒我。' }
         await rootReply.promise
         return { text: finalText }
       }
@@ -275,21 +254,17 @@ for (const response of ['clarify', 'reject'] as const) {
     })
     try {
       f.shell.key({ kind: 'paste', text: '分出检查并等待成员，关闭窗口后仍需承接明确回应。' }); f.shell.key({ kind: 'enter' })
-      await f.wait('入口持久等待且已让出', () => {
-        const work = f.collaboration()
-        const waiting = work === undefined ? undefined : f.store.collaboration.listWaits(work.collaborationId).find(one => one.state === 'waiting')
+      await f.wait('入口正文结束即让出', () => {
         const run = f.manager.runs().find(one => one.session === f.session())
-        return waiting !== undefined && run?.state === 'idle' && (run.lastTurnAt ?? 0) >= waiting.at
+        return f.requests().length === 2 && run?.state === 'idle'
       })
       const work = f.collaboration()!
       const identity = f.manager.identity
-      const waiting = f.store.collaboration.listWaits(work.collaborationId)[0]!
       const original = f.manager.executors().find(one => one.session === work.originSessionId)!
       expect(original.gen).toBeDefined()
       f.closeWindows()
       await f.wait('全部窗口关闭且入口真实 onExit 后已无 executor', () => f.manager.clients() === 0 &&
         f.agentExits.some(one => one.gen === original.gen) && !f.manager.executors().some(one => one.session === work.originSessionId))
-      expect(f.store.collaboration.listWaits(work.collaborationId).find(one => one.waitId === waiting.waitId)?.state).toBe('waiting')
       await Bun.sleep(350)
       expect(f.requests()).toHaveLength(2)
       expect(f.manager.clients()).toBe(0)
@@ -303,11 +278,6 @@ for (const response of ['clarify', 'reject'] as const) {
       expect(f.manager.identity).toEqual(identity)
       expect(f.manager.clients()).toBe(0)
       expect(requestText(f.requests()[2])).toContain(reason)
-      const handled = f.store.collaboration.listWaits(work.collaborationId).find(one => one.waitId === waiting.waitId)!
-      expect(handled.state).not.toBe('waiting')
-      expect(handled.state).not.toBe('expired')
-      expect(handled.handledAt).toBeDefined()
-      expect(Date.now()).toBeLessThan(deadline)
       rootReply.release()
       await f.wait('新代入口最终正文持久化', async () => (await Array.fromAsync(f.store.readEntries(work.originSessionId)))
         .some(one => one.kind === 'assistant' && 'text' in one.content && one.content.text === finalText))
@@ -333,8 +303,7 @@ test('生产 shell.hangUp 关窗不停止协作：持久 wait 保留，成员回
   const f = await collaborationRuntime('no-tui-hangup', async call => {
     if (call.model === 'entry-model') {
       if (call.index === 0) return spawnMember
-      if (call.index === 1) return { tool: 'agent_wait', args: { operationId: 'wait-member', agents: [f.member()!.agentId],
-        message: f.delegation()!.delegationId, expectation: '等待成员明确回应', deadline } }
+      if (call.index === 1) return { text: '已派出，等成员回应后继续。' }
       if (call.index === 2) { await closingReply.promise; return { text: '已阅进展，原委派继续等待。' } }
       await resumedReply.promise
       return { text: finalText }
@@ -353,20 +322,16 @@ test('生产 shell.hangUp 关窗不停止协作：持久 wait 保留，成员回
   })
   try {
     f.shell.key({ kind: 'paste', text: '分出检查，等待成员回应；关闭窗口只离开界面。' }); f.shell.key({ kind: 'enter' })
-    await f.wait('入口持久等待且已让出', () => {
-      const work = f.collaboration()
-      const waiting = work === undefined ? undefined : f.store.collaboration.listWaits(work.collaborationId).find(one => one.state === 'waiting')
+    await f.wait('入口正文结束即让出', () => {
       const run = f.manager.runs().find(one => one.session === f.session())
-      return waiting !== undefined && run?.state === 'idle' && (run.lastTurnAt ?? 0) >= waiting.at
+      return f.requests().length === 2 && run?.state === 'idle'
     })
     const work = f.collaboration()!
     const identity = f.manager.identity
-    const waiting = f.store.collaboration.listWaits(work.collaborationId)[0]!
     informReply.release()
-    await f.wait('inform 唤起真实 HTTP，原 wait 尚未解除', () => f.requests().length === 3 && f.requests('member-model').length === 2
+    await f.wait('inform 消息唤起真实 HTTP', () => f.requests().length === 3 && f.requests('member-model').length === 2
       && f.shell.getView().status.state === 'working')
     expect(requestText(f.requests()[2])).toContain(inform)
-    expect(f.store.collaboration.listWaits(work.collaborationId).find(one => one.waitId === waiting.waitId)?.state).toBe('waiting')
     const original = f.manager.executors().find(one => one.session === work.originSessionId)!
     expect(original.gen).toBeDefined()
     const before = f.commands.length
@@ -376,9 +341,8 @@ test('生产 shell.hangUp 关窗不停止协作：持久 wait 保留，成员回
     closingReply.release()
     await f.wait('窗口关闭且原入口真实退出后无 executor', () => f.manager.clients() === 0 && f.agentExits.some(one => one.gen === original.gen)
       && !f.manager.executors().some(one => one.session === work.originSessionId))
-    expect({ commands: f.commands.slice(before), collaboration: f.collaboration()?.state,
-      wait: f.store.collaboration.listWaits(work.collaborationId).find(one => one.waitId === waiting.waitId)?.state })
-      .toEqual({ commands: [], collaboration: 'open', wait: 'waiting' })
+    expect({ commands: f.commands.slice(before), collaboration: f.collaboration()?.state })
+      .toEqual({ commands: [], collaboration: 'open' })
     expect(f.requests()).toHaveLength(3)
 
     memberReply.release()
@@ -390,11 +354,6 @@ test('生产 shell.hangUp 关窗不停止协作：持久 wait 保留，成员回
     expect(f.manager.identity).toEqual(identity)
     expect(f.manager.clients()).toBe(0)
     expect(requestText(f.requests()[3])).toContain(reason)
-    const handled = f.store.collaboration.listWaits(work.collaborationId).find(one => one.waitId === waiting.waitId)!
-    expect(handled.state).not.toBe('waiting')
-    expect(handled.state).not.toBe('expired')
-    expect(handled.handledAt).toBeDefined()
-    expect(Date.now()).toBeLessThan(deadline)
     resumedReply.release()
     await f.wait('新代入口正文落库且真实释放', async () => f.agentExits.some(one => one.gen === resumed.gen)
       && !f.manager.executors().some(one => one.session === work.originSessionId)
