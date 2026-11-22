@@ -3576,12 +3576,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
 
     if (word === '/model') {
-      if (from.dock.kind !== 'picker' || from.dock.picker.source !== 'model') {
+      const member = currentMember(from)
+      // 切换器已开着 ⇒ 原样刷新，不动作用对象；否则登记作用对象（子会话只改该成员）。
+      if (!(from.dock.kind === 'picker' && from.dock.picker.source === 'model-choice')) {
         models.clearTarget()
-        // 子会话里这个入口只改该成员；入口会话仍是当前工作。
-        const member = currentMember(from)
-        if (member === undefined) models.sessionScope()
-        else models.target(member.agent.agentId)
+        if (member !== undefined) models.target(member.agent.agentId)
       }
 
       // 先登记开页意图，外层落下草稿后再发送；同步回执不能被旧视图覆盖。
@@ -3590,7 +3589,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         return only(cleared, models.request('refresh', arg.slice('refresh'.length).trim()))
       }
       if (arg === 'connect' || arg === 'manage') return only(cleared, models.request(arg))
-      if (arg === '') return only(cleared, models.request('model'))
+      if (arg === '') return only(cleared, models.openSwitcher())
 
       return only(appendReceipt(cleared, `认得的用法：/model · /model refresh [连接] · /model connect · /model manage`))
     }

@@ -289,7 +289,7 @@ describe('一条连接的闭环', () => {
         shell.send({ type: 'model.list' })
         return armed
       })()
-      expect(renamed.data.entries[0]?.name).toBe('我的 DeepSeek')
+            expect(renamed.data.entries[0]?.name).toBe('我的 DeepSeek')
       expect(assembly.models).toBe(bound)
       // **当前仍是 pro**——保存配置不重建或替换当前绑定
       expect(renamed.data.current).toEqual({ choice: 'cantrip' as const, provider: 'ds', model: 'deepseek-v4-pro', protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' })
@@ -621,6 +621,7 @@ async function outboundBodyOf(
 describe('输出上限取自模型信息', () => {
   test('接口给了那一数 ⇒ 请求体里的输出上限就是它（不再是 4096）', async () => {
     const { body } = await outboundBodyOf(DEEPSEEK_LISTED, 'deepseek-flash')
+    console.log('BODY-MODEL:', body['model'], 'MAX-TOKENS:', body['max_tokens'])
 
     // 模型信息里那个数（`max_output_tokens`）一路落到请求体
     expect(body['max_tokens']).toBe(393_216)

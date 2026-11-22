@@ -141,7 +141,9 @@ describe('/model 集中编辑', () => {
 
   test('编辑已有覆盖可删除，恢复来源不改映射', () => {
     const stage = createStage(); const ref = { provider: 'local', model: 'm' }
-    stage.type('/model '); stage.press({ kind: 'enter' })
+    stage.type('/config '); stage.press({ kind: 'enter' })
+    stage.feed([event('model.catalog', { entries: [{ ...entry, modelOverrides: { m: { capabilities: { image: false } } } }], configuredModels: { cantrip: ref }, stamp: 'initial' }), event('mcp.catalog', { servers: [] }), event('web.state', { provider: 'local', cantrip: { provider: 'local', model: 'm' } })])
+    pick(stage, 'model')
     stage.feed([event('model.catalog', { entries: [{ ...entry, modelOverrides: { m: { capabilities: { image: false } } } }], configuredModels: { cantrip: ref }, stamp: 'initial' })])
     pick(stage, 'edit:cantrip'); stage.press({ kind: 'right' }); pick(stage, 'edit-info'); pick(stage, 'remove-override')
     expect(writes(stage).at(-1)).toEqual({ type: 'model.override', ...ref, override: null, expectedStamp: 'initial' })
@@ -151,7 +153,9 @@ describe('/model 集中编辑', () => {
   test('思考预算输入校验后仅应用当前对象；无预算声明不开放', () => {
     const stage = createStage(); const ref = { provider: 'local', model: 'm' }
     stage.feed([event('session.state', { active: 'fixture', sessions: [{ archived: false, id: 'fixture', title: '夹具会话', at: 1 }] })])
-    stage.type('/model '); stage.press({ kind: 'enter' })
+    stage.type('/config '); stage.press({ kind: 'enter' })
+    stage.feed([event('model.catalog', { entries: [{ ...entry, effectiveReasoning: { m: { budget: { minTokens: 1024, maxTokens: 4096 } } }, modelOverrides: { m: { reasoningSupport: { budget: { minTokens: 1024, maxTokens: 4096 } } } } }], current: { ...ref, choice: 'cantrip', protocol: 'messages', endpoint: entry.baseURL! }, configuredModels: { cantrip: ref } }), event('mcp.catalog', { servers: [] }), event('web.state', { provider: 'local', cantrip: { provider: 'local', model: 'm' } })])
+    pick(stage, 'model')
     stage.feed([event('model.catalog', { entries: [{ ...entry, effectiveReasoning: { m: { budget: { minTokens: 1024, maxTokens: 4096 } } }, modelOverrides: { m: { reasoningSupport: { budget: { minTokens: 1024, maxTokens: 4096 } } } } }], current: { ...ref, choice: 'cantrip', protocol: 'messages', endpoint: entry.baseURL! }, configuredModels: { cantrip: ref } })])
     pick(stage, 'reasoning'); pick(stage, 'budget'); stage.type('0'); stage.press({ kind: 'enter' })
     expect(stage.shell.getView().dock.kind).toBe('prompt'); expect(stage.commands().some(one => one.type === 'model.switch')).toBe(false)
@@ -171,8 +175,10 @@ describe('/model 集中编辑', () => {
   test('思考菜单唯一采用 effectiveReasoning，用户覆盖与供应商原始信息不能扩大选项', () => {
     const stage = createStage(); const ref = { provider: 'local', model: 'm' }
     const source = { ...entry, cache: { snapshot: { provider: 'local', scope: 'fixture', fetchedAt: 1, models: [{ id: 'm', reasoning: { levels: ['供应商原始档位'] } }] } }, modelOverrides: { m: { reasoningSupport: { levels: ['任意私有档位'], disable: true } } } }
-    stage.type('/model '); stage.press({ kind: 'enter' })
+    stage.type('/config '); stage.press({ kind: 'enter' })
     const current = { ...ref, choice: 'cantrip' as const, protocol: 'responses' as const, endpoint: entry.baseURL! }
+    stage.feed([event('model.catalog', { entries: [source], current }), event('mcp.catalog', { servers: [] }), event('web.state', { provider: 'local', cantrip: { provider: 'local', model: 'm' } })])
+    pick(stage, 'model')
     stage.feed([event('model.catalog', { entries: [source], current })]); pick(stage, 'reasoning')
     expect(picker(stage).rows.map(one => one.value)).toEqual(['default'])
     stage.feed([event('model.catalog', { entries: [{ ...source, effectiveReasoning: { m: { disable: true, levels: ['low'] } } }], current })])

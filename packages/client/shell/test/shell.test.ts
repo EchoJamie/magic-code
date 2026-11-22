@@ -332,21 +332,14 @@ describe('选择器（`/resume` · `/model`）', () => {
       }),
     )
 
-    app.press(ENTER) // 进入 Default 的映射编辑，工作选择不列实际型号
+    app.press(ENTER) // **2026-11-22 裁定**：/model 本体＝档位切换器（映射编辑移去 /config）
     expect(app.view().dock.kind).toBe('picker')
     const dock = app.view().dock
-    // **全量**——两条都列出来，哪怕这趟会话一条都没调用过。
-    // **原锚**：行 ＝ 连接（`label` 是 `minimax` / `local`）。
-    // **为何变**（U41）：一行改报**模型**（设计：「行主文案为模型名，副文案为供应商/连接名」）
-    //   ——连接名挪到副文案那一格。
-    // **新锚**：行的主文案是各自的默认模型，副文案里带着连接名。
-    // **再原锚一次**（U41 返修）：列表末尾现在还常驻着几条**入口行**（连接供应商 /
-    // 管理连接 / 刷新模型）——它们不是「有哪些模型」，故这一条只看 `pick` 有值的那些行。
-    const rows = dock.kind === 'picker' ? dock.picker.rows.filter((row) => row.pick !== undefined) : []
-    expect(rows.map((row) => row.label)).toEqual(['MiniMax-M3', 'qwen3'])
-    // 副文案**以连接名打头**（其后可能还有别的话——如「不在最近一次列表里」）；
-    // 断「打头」而不是断整串：那些尾巴是有内容的判据，另外几条在 `model-settings.test.ts` 里咬
-    expect(rows.map((row) => row.meta.split(' · ')[0])).toEqual(['minimax', 'local'])
+    // 三档直选：当前档带 ●（`current`），未配置的档也可见（说明怎么去配）
+    const rows = dock.kind === 'picker' ? dock.picker.rows : []
+    expect(rows.map((row) => row.value)).toEqual(['cantrip', 'spell', 'arcane'])
+    expect(rows.find((row) => row.value === 'cantrip')?.current).toBe(true)
+    expect(rows.find((row) => row.value === 'spell')?.meta).toContain('尚未配置')
   })
 
   /**

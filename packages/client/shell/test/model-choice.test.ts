@@ -5,10 +5,16 @@ const pair = { provider: 'local', model: 'deepseek-chat' }
 const configuredModels = { cantrip: pair, spell: pair, arcane: pair }
 const entries = [{ effectiveReasoning: { [pair.model]: { levels: ['low', 'high'], disable: true } }, provider: 'local', vendor: 'deepseek', cache: { snapshot: { provider: 'local', scope: 'test', fetchedAt: 1, models: [{ id: pair.model, reasoning: { levels: ['low', 'high'], disable: true } }] } } }]
 function settings(configured = true, stage = createStage()) {
-  // 这些用例测的是**已有会话**时的切换（选定要发 `model.switch`）；会话还没建立的那条路
-  // 由本文件「首次明确使用」用例与 `shell.test` 的「还没有会话」用例守。
+  // 设置视图（映射编辑 ＋ 工作选择 ＋ 思考 ＋ 连接动作）从 **/config · 模型与连接** 进；
+  // /model 本体是档位切换器（另测）。已有会话的切换（选定要发 `model.switch`）在此守。
   if (stage.shell.getView().sessionId === null) stage.feed([event('session.state', { active: 'fixture', sessions: [{ archived: false, id: 'fixture', title: '夹具会话', at: 1 }] })])
-  stage.type('/model '); stage.press({ kind: 'enter' })
+  stage.type('/config '); stage.press({ kind: 'enter' })
+  stage.feed([
+    event('model.catalog', { entries, configuredModels: configured ? configuredModels : {}, ...(configured ? { current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip', ...pair } as const } : {}) }),
+    event('mcp.catalog', { servers: [] }),
+    event('web.state', { provider: 'local', cantrip: { provider: 'local', model: 'deepseek-chat' } }),
+  ])
+  pick(stage, 'model')
   stage.feed([event('model.catalog', { entries, configuredModels: configured ? configuredModels : {}, ...(configured ? { current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip', ...pair } as const } : {}) })])
   return stage
 }
@@ -32,6 +38,17 @@ test('三档映射编辑；实际型号只在编辑层列出，思考不写入�
   pick(stage, 'edit:cantrip'); stage.press({ kind: 'enter' })
   expect(stage.commands().at(-1)).toEqual({ type: 'model.configure', choice: 'cantrip', ...pair })
   expect(stage.commands().some(one => one.type === 'model.switch')).toBe(false)
+})
+test('/model 是档位切换器：三档直选，选定即发 model.switch', () => {
+  const stage = createStage()
+  stage.feed([event('session.state', { active: 'fixture', sessions: [{ archived: false, id: 'fixture', title: '夹具会话', at: 1 }] })])
+  stage.type('/model '); stage.press({ kind: 'enter' })
+  stage.feed([event('model.catalog', { entries, configuredModels, current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip', ...pair } as const })])
+  expect(picker(stage).rows.map(row => row.value)).toEqual(['cantrip', 'spell', 'arcane'])
+  expect(picker(stage).rows.find(row => row.value === 'cantrip')?.current).toBe(true)
+  expect(picker(stage).hint).toContain('新会话也从它开始')
+  pick(stage, 'spell')
+  expect(stage.commands().at(-1)).toEqual({ type: 'model.switch', choice: 'spell' })
 })
 test('首次保存播种三档并记开局档位；保存成功回执后才应用，失败不报成功', () => {
   const stage = settings(false)
@@ -72,6 +89,7 @@ test('A 的首次保存迟到时保留配置结果，不关闭 B 的模型页或
   expect(stage.commands().at(-1)).toMatchObject({ type: 'model.configure', initialize: true })
   stage.press({ kind: 'escape' })
   stage.press({ kind: 'escape' })
+  stage.press({ kind: 'escape' })
   stage.type('/resume ')
   stage.press({ kind: 'enter' })
   stage.feed([event('session.state', { active: 'a', sessions }, { session: 'a' })])
@@ -95,6 +113,7 @@ test('普通映射保存离开后，迟到回执不关闭新开的会话目录',
   const stage = settings()
   pick(stage, 'edit:cantrip')
   stage.press({ kind: 'enter' })
+  stage.press({ kind: 'escape' })
   stage.press({ kind: 'escape' })
   stage.press({ kind: 'escape' })
   stage.type('/resume ')
@@ -170,6 +189,8 @@ test.each(['connect', 'manage'] as const)('模型页 %s 入口同步答复仍保
 test('离开模型页后连接目录迟到，不重新打开连接页', () => {
   const stage = settings()
   pick(stage, 'connect')
+  stage.press({ kind: 'escape' })
+  stage.press({ kind: 'escape' })
   stage.press({ kind: 'escape' })
   stage.feed([event('provider.catalog', { entries, vendors: [] })])
   expect(stage.shell.getView().dock.kind).toBe('input')

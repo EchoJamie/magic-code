@@ -497,6 +497,17 @@ export function assemble(options: AssembleOptions): Assembly {
     )
 
     if (result.ok) {
+      // 主会话切档成功 ⇒ 开局档位记录跟着走（新会话从这次的选择继续）；成员不写记录。
+      // 落笔失败不动摇已完成的切换——如实报一声，不吞掉。信封**同步预铸**：
+      // 写回是异步的，回调时链条可能已收摊，那时再铸会炸。
+      if (result.selection.choice !== undefined && recordsStore.collaboration.agentForSession(chain.session) === undefined) {
+        const recordMiss = forwardStamper.stamp('error', { message: '模型已切换，但开局档位记录未写回（配置可能被并发修改）；下次切档会再试' })
+        void modelSource.persistDefaultTier(result.selection.choice).then(ok => {
+          if (!ok) { try { sink.emit(recordMiss) } catch { /* 收摊后的迟到通知无处可去 */ } }
+        }).catch(() => {
+          try { sink.emit(recordMiss) } catch { /* 同上 */ }
+        })
+      }
       try { options.collaborationChanged?.() }
       catch (error) { sink.emit(forwardStamper.stamp('error', { message: `模型已切换，但协作状态通知失败：${String(error)}` })) }
     }

@@ -14,6 +14,7 @@ import type { Stage } from './screen.ts'
 import { event } from './events.ts'
 
 const ENTER = { kind: 'enter' } as const
+const ESCAPE = { kind: 'escape' } as const
 const ESC = { kind: 'escape' } as const
 const LEFT = { kind: 'left' } as const
 const RIGHT = { kind: 'right' } as const
@@ -85,10 +86,22 @@ function feedProviders(
 
 /** 开 `/model` 那一屏（打字 → 回车 → 喂答复）。 */
 function openModel(stage: Stage, entries: readonly ModelCatalogRow[], at = 0): void {
-  stage.type('/model ')
+  // **2026-11-22 裁定**：映射编辑层从 /config · 模型与连接 进；/model 本体是档位切换器。
+  stage.type('/config ')
+  stage.press(ENTER)
+  stage.feed([
+    event('model.catalog', { entries }),
+    event('mcp.catalog', { servers: [] }),
+    event('web.state', { provider: 'local', cantrip: { provider: 'local', model: 'm' } }),
+  ])
+  const dock = stage.shell.getView().dock
+  if (dock.kind !== 'picker' || dock.picker.source !== 'config') throw new Error('配置组页没有打开')
+  const groupAt = dock.picker.rows.findIndex(row => row.value === 'model')
+  if (groupAt < 0) throw new Error('缺「模型与连接」组')
+  for (let step = 0; step < (groupAt - dock.picker.selected + dock.picker.rows.length) % dock.picker.rows.length; step += 1) stage.press(DOWN)
   stage.press(ENTER)
   stage.feed([event('model.catalog', { entries })])
-  stage.press(ENTER) // Default 映射编辑层
+  stage.press(ENTER) // 映射编辑层
   for (let step = 0; step < at; step += 1) stage.press(DOWN)
 }
 
@@ -142,7 +155,8 @@ describe('② `/model`：`→` 看详情 · 详情里进思考那一屏', () => 
 
     stage.press(LEFT)
     expect(pickerOf(stage)?.source).toBe('model')
-    stage.press(LEFT)
+    stage.press(LEFT) // 退出设置视图，回到 config 组页
+    stage.press(ESCAPE) // 组页收起（它的 LEFT 是筛词编辑，不退层）
     expect(dockOf(stage).kind).toBe('input')
   })
 
@@ -180,7 +194,8 @@ describe('②b `/model` 列表里点「连接供应商 / 管理连接」——�
 
     stage.press(LEFT)
     expect(pickerOf(stage)?.source).toBe('model')
-    stage.press(LEFT)
+    stage.press(LEFT) // 退出设置视图，回到 config 组页
+    stage.press(ESCAPE) // 组页收起（它的 LEFT 是筛词编辑，不退层）
     expect(dockOf(stage).kind).toBe('input')
   })
 
@@ -206,7 +221,8 @@ describe('②b `/model` 列表里点「连接供应商 / 管理连接」——�
 
     stage.press(LEFT)
     expect(pickerOf(stage)?.source).toBe('model') // 回设置层
-    stage.press(LEFT)
+    stage.press(LEFT) // 回 config 组页
+    stage.press(ESCAPE) // 组页收起
     expect(dockOf(stage).kind).toBe('input')
   })
 
@@ -230,7 +246,8 @@ describe('②b `/model` 列表里点「连接供应商 / 管理连接」——�
     expect(pickerOf(stage)?.source).toBe('model')
     stage.press(ESC)
     expect(pickerOf(stage)?.source).toBe('model')
-    stage.press(ESC)
+    stage.press(ESC) // 退出设置视图，回 config 组页
+    stage.press(ESC) // 组页收起 ⇒ 一按到底
     expect(dockOf(stage).kind).toBe('input')
     stage.press(LEFT)
     expect(dockOf(stage).kind).toBe('input') // 列表没被翻回来

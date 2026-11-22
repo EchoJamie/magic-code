@@ -1,26 +1,18 @@
-/**
- * U41 返修 · 接入身份（缓存接口裁决）——判据：**改了接入就得换身份**，
- * 且身份里**没有凭据**。
- *
- * 这一层只算身份（缓存实现的 scoped 读写归缓存线）；这里钉的是**算法**：
- * 哪几件进身份、环境变量那一支为什么不落盘。
- */
-
 import { describe, expect, test } from 'bun:test'
+import { modelCacheAccessOf } from '../src/index.ts'
+import { configFingerprintOf } from '@magic/state'
 import { utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { configFingerprintOf } from '@magic/state'
-import { modelCacheAccessOf } from '@magic/host'
 import { removeDir, tempDir } from './tmp.ts'
 
 const TOKEN = 'proc-token-1'
 
 describe('配置来源', () => {
-  test('身份含**六件**：路径（哪一个文件）＋ dev/ino（同一个 inode 吗）＋ 三个变更读数', () => {
+  test('身份＝路径 ＋ **providers 段的内容哈希**（认证材料变了才轮转）', () => {
     const dir = tempDir('magic-access-')
     try {
       const path = join(dir, 'config.json')
-      writeFileSync(path, '{"a":1}', 'utf8')
+      writeFileSync(path, '{"providers":{"ds":{"apiKey":"k"}}}', 'utf8')
 
       const fingerprint = configFingerprintOf(path)
       expect(fingerprint).toBeDefined()
@@ -28,11 +20,9 @@ describe('配置来源', () => {
       const access = modelCacheAccessOf({ provider: 'ds', config: fingerprint, processToken: TOKEN })
       expect(access.persistent).toBe(true)
       expect(access.id.startsWith('cfg:ds:')).toBe(true)
-      // 逐件都在（顺序即「文件 → inode → 变更」）
-      expect(access.id).toContain(String(fingerprint?.ino))
-      expect(access.id).toContain(String(fingerprint?.mtimeNs))
-      expect(access.id).toContain(String(fingerprint?.ctimeNs))
-      expect(access.id).toContain(String(fingerprint?.size))
+      // 路径与内容哈希都在（同一份内容 ⇒ 同一个身份）
+      expect(access.id).toContain(fingerprint!.hash)
+      expect(configFingerprintOf(path)?.hash).toBe(fingerprint!.hash)
     } finally {
       removeDir(dir)
     }
@@ -42,29 +32,47 @@ describe('配置来源', () => {
    * **反例**（裁决点名的那个）：一个**等长**、又**刻意保留 mtime** 的新文件，
    * 不能算出同一个身份——否则它换了认证却复用旧缓存。
    *
-   * 只取「路径 ＋ mtime ＋ size」会在这里当场失败：三者一模一样。
+   * 旧形（整文件 stat）靠 ino/ctime 兜这个底；新形（内容哈希）直接看**内容**——
+   * 认证材料变了，哈希当场变，mtime 摁不摁得住都无关。
    */
-  test('等长且保留 mtime 的文件替换 ⇒ 身份**必须**变（dev/ino/ctimeNs 认它）', () => {
+  test('等长且保留 mtime 的文件替换 ⇒ 身份**必须**变（内容哈希认它）', () => {
     const dir = tempDir('magic-access-')
     try {
       const path = join(dir, 'config.json')
-      writeFileSync(path, '{"k":"aaaa"}', 'utf8') // 12 字节
+      writeFileSync(path, '{"providers":{"ds":{"apiKey":"aaaa"}}}', 'utf8')
       const before = configFingerprintOf(path)
       expect(before).toBeDefined()
 
-      // 换一个**等长**的文件（内容不同），并把 mtime 摁回原值
-      writeFileSync(path, '{"k":"bbbb"}', 'utf8')
-      const seconds = Number(before!.mtimeNs) / 1e9
+      // 换一个**等长**的文件（认证材料不同），并把 mtime 摁回原值
+      writeFileSync(path, '{"providers":{"ds":{"apiKey":"bbbb"}}}', 'utf8')
+      const seconds = parseInt(before!.hash.slice(0, 8), 16) % 1_700_000_000
       utimesSync(path, seconds, seconds)
 
       const after = configFingerprintOf(path)
       const idOf = (f: ReturnType<typeof configFingerprintOf>) =>
         modelCacheAccessOf({ provider: 'ds', config: f, processToken: TOKEN }).id
 
-      // 大小与 mtime 都被摁住了——**靠它们认不出来**
-      expect(after?.size).toBe(before?.size)
-      // 而身份**真的变了**（ino 或 ctimeNs 认出来了）
+      // mtime 被摁住了——新形根本不看它
+      expect(after?.hash).not.toBe(before?.hash)
+      // 而身份**真的变了**（内容哈希认出来了）
       expect(idOf(after)).not.toBe(idOf(before))
+    } finally {
+      removeDir(dir)
+    }
+  })
+
+  /** **非认证写**不得轮转身份（2026-11-22 收窄的由头）：/model 切档写记录，缓存范围不动。 */
+  test('providers 段之外的写（如模型映射、记录）⇒ 身份**不变**', () => {
+    const dir = tempDir('magic-access-')
+    try {
+      const path = join(dir, 'config.json')
+      writeFileSync(path, '{"providers":{"ds":{"apiKey":"k"}},"models":{}}', 'utf8')
+      const before = configFingerprintOf(path)
+
+      writeFileSync(path, '{"providers":{"ds":{"apiKey":"k"}},"models":{"cantrip":{"provider":"ds","model":"m"}},"defaultTier":"cantrip"}', 'utf8')
+      const after = configFingerprintOf(path)
+
+      expect(after?.hash).toBe(before?.hash)
     } finally {
       removeDir(dir)
     }

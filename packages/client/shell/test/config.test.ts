@@ -305,12 +305,8 @@ describe('`/config` · 筛', () => {
 // ══ 三 · 选中 ⇒ 进那一项自己那一屏 ════════════════════════════════════
 
 describe('`/config` · 选中即进那一屏', () => {
-  test('「模型与连接」⇒ 与**直接敲 `/model`** 逐字同形（两趟对着看）', async () => {
-    const direct = live()
-    direct.type('/model ')
-    direct.press(ENTER)
-    direct.feed([event('model.catalog', { entries: ENTRIES, current: CURRENT })])
-
+  test('「模型与连接」⇒ 设置视图（映射编辑）；/model 本体＝档位切换器（两趟分工对着看）', async () => {
+    // **2026-11-22 裁定**：/model＝三档直选；映射编辑、思考、连接动作归 /config · 模型与连接
     const viaConfig = live()
     open(viaConfig)
     viaConfig.press(ENTER) // 选中第 1 行
@@ -318,14 +314,25 @@ describe('`/config` · 选中即进那一屏', () => {
     expect(viaConfig.commands().at(-1)).toEqual({ type: 'model.list' })
     viaConfig.feed([event('model.catalog', { entries: ENTRIES, current: CURRENT })])
 
-    // 抽屉那一份**逐字段相同**，屏上那一块**逐字相同**（连同右位提示）
-    expect(pickerOf(viaConfig)).toEqual(pickerOf(direct))
+    // 设置视图：三档映射编辑 ＋ 工作选择 ＋ 思考 ＋ 连接动作
+    expect(pickerOf(viaConfig)?.source).toBe('model')
+    const values = pickerOf(viaConfig)?.rows.map((row) => row.value) ?? []
+    expect(values.slice(0, 3)).toEqual(['edit:cantrip', 'edit:spell', 'edit:arcane'])
+    expect(values).toContain('choose')
+    expect(values).toContain('reasoning')
+    expect(values).toContain('connect')
+
+    // /model 本体：三档直选，与设置视图分工
+    const direct = live()
+    direct.type('/model ')
+    direct.press(ENTER)
+    direct.feed([event('model.catalog', { entries: ENTRIES, current: CURRENT })])
+    expect((pickerOf(direct)?.rows.map((row) => row.value) ?? [])).toEqual(['cantrip', 'spell', 'arcane'])
+    expect(pickerOf(direct)?.rows.some((row) => row.value === 'edit:cantrip')).toBe(false)
     const a = await direct.screen({ columns: 100, rows: 40 })
     const b = await viaConfig.screen({ columns: 100, rows: 40 })
-    expect(b.dock.map((one) => one.text)).toEqual(a.dock.map((one) => one.text))
-    expect(b.statusLine).toBe(a.statusLine)
-    expect(b.content.map(one => one.text)).toEqual(['› /config'])
-    expect(a.content.map(one => one.text)).toEqual(['› /model'])
+    expect(a.content.map((one) => one.text)).toEqual(['› /model'])
+    expect(b.content.map((one) => one.text)).toEqual(['› /config'])
   })
 
   test('「外部工具」⇒ `/mcp` 那一屏（总览）', () => {

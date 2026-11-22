@@ -16,7 +16,7 @@ import { createWebSource, DEEPSEEK_WEB_ORIGIN } from '@magic/resources'
 import { bindModelChoice } from '@magic/host'
 import { configStamp as configStampOf } from '@magic/state'
 import { cacheAccessFor, connectionScopeChanged } from '@magic/host'
-import { removeProvider, setPrefs } from '@magic/state'
+import { removeProvider, saveDefaultTier, setPrefs } from '@magic/state'
 import { loadConfig, type LoadedConfig } from '@magic/state'
 import { createFileModelInfoCache } from '@magic/host'
 import { createModelsDevResource } from '@magic/host'
@@ -231,17 +231,39 @@ export function createModelConfiguration(input: {
     }
   }
 
-  async function save(action: Extract<SettingsAction, { type: 'provider.save' | 'model.configure' | 'model.override' | 'web.configure' }>) {
-    let note: string
-    let saved = false
-    try {
-      const expected = 'expectedStamp' in action && action.expectedStamp !== undefined ? action.expectedStamp : configStamp
-      note = await createSettings({ magic, configPath: loaded.path, environment, fetch, now }).apply(action, expected)
-      saved = true
-      note = twoNotes(note, await syncProviderBook())!
-      await modelInfo.warmup()
-    } catch (error) { note = error instanceof Error ? error.message : String(error) }
-    return { note, saved }
+  /** 配置写串行队列——记录写回与设置保存同队，后写者基于前写者推进后的水位，不竞态。 */
+  let configWrites: Promise<void> = Promise.resolve()
+
+  /** /model 切档成功后写回开局档位记录；并发改过就拒绝（不覆盖别人），换下一次重试。 */
+  function persistDefaultTier(tier: 'cantrip' | 'spell' | 'arcane'): Promise<boolean> {
+    const run = configWrites.then(async (): Promise<boolean> => {
+      try {
+        const outcome = await saveDefaultTier({ path: loaded.path, expectedStamp: configStamp, tier })
+        if (!outcome.ok) return false
+        defaultTier = tier
+        configStamp = configStampOf(loaded.path)
+        return true
+      } catch { return false }
+    })
+    configWrites = run.then(() => undefined, () => undefined)
+    return run
+  }
+
+  function save(action: Extract<SettingsAction, { type: 'provider.save' | 'model.configure' | 'model.override' | 'web.configure' }>): Promise<{ note: string; saved: boolean }> {
+    const run = configWrites.then(async (): Promise<{ note: string; saved: boolean }> => {
+      let note: string
+      let saved = false
+      try {
+        const expected = 'expectedStamp' in action && action.expectedStamp !== undefined ? action.expectedStamp : configStamp
+        note = await createSettings({ magic, configPath: loaded.path, environment, fetch, now }).apply(action, expected)
+        saved = true
+        note = twoNotes(note, await syncProviderBook())!
+        await modelInfo.warmup()
+      } catch (error) { note = error instanceof Error ? error.message : String(error) }
+      return { note, saved }
+    })
+    configWrites = run.then(() => undefined, () => undefined)
+    return run
   }
 
   async function remove(provider: string) {
@@ -281,6 +303,7 @@ export function createModelConfiguration(input: {
     get configured() { return configuredModels },
   get defaultTier() { return defaultTier },
     get stamp() { return configStamp },
+    persistDefaultTier,
     sync: syncProviderBook,
     registry: registryOf,
     knownModel: knownModelOf,

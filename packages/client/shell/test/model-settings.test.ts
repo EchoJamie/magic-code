@@ -99,10 +99,22 @@ function conn(
 
 /** 打开 `/model` 那一屏：打字 → 回车 → 喂答复（真会话里答复是内核给的，用例里得有人代发）。 */
 function open(stage: Stage, entries: readonly ModelCatalogRow[], current?: ModelRef): void {
-  stage.type('/model ')
+  // 映射编辑层从 **/config · 模型与连接** 进（/model 本体是档位切换器）。
+  stage.type('/config ')
+  stage.press({ kind: 'enter' })
+  stage.feed([
+    event('model.catalog', { entries, configuredModels: current === undefined ? {} : { cantrip: current }, ...(current === undefined ? {} : { current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip', ...current } }) }),
+    event('mcp.catalog', { servers: [] }),
+    event('web.state', { provider: 'local', cantrip: { provider: 'local', model: 'm' } }),
+  ])
+  const dock = stage.shell.getView().dock
+  if (dock.kind !== 'picker' || dock.picker.source !== 'config') throw new Error('配置组页没有打开')
+  const at = dock.picker.rows.findIndex(row => row.value === 'model')
+  if (at < 0) throw new Error('缺「模型与连接」组')
+  for (let i = 0; i < (at - dock.picker.selected + dock.picker.rows.length) % dock.picker.rows.length; i++) stage.press({ kind: 'down' })
   stage.press({ kind: 'enter' })
   stage.feed([event('model.catalog', { entries, configuredModels: current === undefined ? {} : { cantrip: current }, ...(current === undefined ? {} : { current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip', ...current } }) })])
-  stage.press({ kind: 'enter' }) // Default 映射编辑：实际型号只在配置层展示
+  stage.press({ kind: 'enter' }) // 进映射编辑层：实际型号只在配置层展示
 }
 
 /**
@@ -306,6 +318,7 @@ describe('③ 选定＝换模型，**不是发送**', () => {
 
     expect(sent(stage)).toEqual([
       { type: 'model.list' },
+      { type: 'model.list' },
       { type: 'model.configure', choice: 'cantrip', provider: 'personal', model: 'MiniMax-Text-01', initialize: true },
     ])
     expect(stage.commands().some((one) => one.type === 'input.submit' && one.local !== true)).toBe(false)
@@ -333,8 +346,9 @@ describe('④ 取消**不留痕迹**、不动任何东西', () => {
     stage.press({ kind: 'escape' })
     expect(pickerOf(stage)?.source).toBe('model')
     stage.press({ kind: 'escape' })
+    stage.press({ kind: 'escape' })
     expect(stage.shell.getView().dock.kind).toBe('input')
-    expect(sent(stage)).toEqual([{ type: 'model.list' }]) // 只有那次读面——没有别的
+    expect(sent(stage)).toEqual([{ type: 'model.list' }, { type: 'model.list' }]) // 只有那两次读面——没有别的
     expect(stage.shell.getView().dock.kind).toBe('input')
     expect(stage.shell.getView().settled.some((row) => row.kind === 'receipt')).toBe(false)
   })
@@ -524,6 +538,7 @@ describe('⑬ 入口行：在这一屏里就能连 / 管 / 刷（不必另打命
     stage.press({ kind: 'enter' })
 
     expect(sent(stage)).toEqual([
+      { type: 'model.list' },
       { type: 'model.list' },
       { type: 'provider.list' },
     ])

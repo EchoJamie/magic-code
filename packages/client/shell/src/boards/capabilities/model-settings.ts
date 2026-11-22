@@ -68,7 +68,7 @@ export function createModelSettings(ui: {
   const { present, receipt, send, enterLayer, popLayer } = ui
 
   // 开页意图与保存回执分离：撤销开页不能丢弃已经送出的保存。
-  let opening: 'model' | 'connect' | 'manage' | null = null
+  let opening: 'model' | 'switch' | 'connect' | 'manage' | null = null
 
   const request = (action: 'model' | 'connect' | 'manage' | 'refresh', provider?: string): Command => {
     opening = action === 'refresh' ? 'model' : action
@@ -585,6 +585,17 @@ export function createModelSettings(ui: {
     })
   }
 
+  /** /model 的档位切换器：三档直选，选定即切（记录更新在宿主侧）。 */
+  const openSwitcher = (note: string): void => {
+    const rows = modelChoiceRows(ui.view.configuredModels, scopeCurrent())
+    present({
+      source: 'model-choice',
+      selected: Math.max(0, rows.findIndex((row) => row.current)),
+      rows,
+      hint: ['选定即切到该档；此后新会话也从它开始。', note].filter(Boolean).join('\n'),
+    })
+  }
+
   const refreshModelPicker = (note: string): void => {
     if (ui.picker === null) return
     // 详情 / 思考两屏的资料也来自这一份读数（规格 · 缓存时间 · 思考能力）——照旧的读数重铺
@@ -810,7 +821,7 @@ export function createModelSettings(ui: {
       return
     }
     const intent = opening
-    if ((event.kind === 'model.catalog' && intent === 'model') ||
+    if ((event.kind === 'model.catalog' && (intent === 'model' || intent === 'switch')) ||
         (event.kind === 'provider.catalog' && (intent === 'connect' || intent === 'manage'))) opening = null
     if (event.kind === 'model.catalog') {
       catalogStamp = event.data.stamp
@@ -831,6 +842,8 @@ export function createModelSettings(ui: {
         if (event.data.note !== undefined) receipt(event.data.note)
       } else if (intent === 'model') {
         openModelPicker(event.data.note ?? '')
+      } else if (intent === 'switch') {
+        openSwitcher(event.data.note ?? '')
       } else {
         // 两处都试：各自只认自己那一扇开着（刷新模型那一屏 / 管理那两屏上刚发起的「刷新这一条」）
         refreshModelPicker(event.data.note ?? '')
@@ -871,6 +884,11 @@ export function createModelSettings(ui: {
     },
     clearTarget: () => { opening = null; leaveContext(); collaborationModel = null },
     sessionScope: () => { leaveContext(); modelScope = 'session' },
+    /** /model 的档位切换器：登记开页意图并读目录；选定在 `select` 的 model-choice 分支处理。 */
+    openSwitcher: (): Command => {
+      opening = 'switch'
+      return { type: 'model.list' }
+    },
     target: (member?: AgentId) => {
       leaveContext()
       collaborationModel = member === undefined ? {} : { member }

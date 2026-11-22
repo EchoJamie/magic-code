@@ -87,9 +87,9 @@ export function modelCacheAccessOf(input: {
 }): ModelCacheAccess {
   if (input.config !== undefined) {
     const f = input.config
-    // 逐件写上：**路径认文件、dev/ino 认 inode、三个时刻 ＋ 字节认变更**
+    // 路径认文件、哈希认**认证材料的内容**（providers 段——模型/记录写入不轮转）
     return {
-      id: `cfg:${input.provider}:${f.path}:${f.dev}:${f.ino}:${f.mtimeNs}:${f.ctimeNs}:${f.size}`,
+      id: `cfg:${input.provider}:${f.path}:${f.hash}`,
       persistent: true,
     }
   }

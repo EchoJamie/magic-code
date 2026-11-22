@@ -23,6 +23,7 @@ import { acquireFileLock } from './file-lock.ts'
 import { contentHashOf, readStateRevision, stateRevisionPathOf, writeStateRevision, type StateRevision } from './state-revision.ts'
 import { notifyState } from './subscribe.ts'
 import type {
+  ModelChoice,
   ModelConfigureRequest,
   PrefsSetRequest,
   ProviderSaveRequest,
@@ -264,6 +265,20 @@ export async function configureModel(input: {
         if (typeof raw['defaultTier'] !== 'string' || !['cantrip', 'spell', 'arcane'].includes(raw['defaultTier'])) (raw as Record<string, unknown>)['defaultTier'] = 'cantrip'
       }
       return { ok: true, raw: { ...raw, models: configuredModels } }
+    },
+  })
+}
+
+/**
+ * 开局档位记录：/model 切档成功后由宿主写回（新会话与未指定档位的工作落在它指向的档）。
+ * 带当前配置水位：并发改过就拒绝（不覆盖别人的修改），下一次切档自然重试。
+ */
+export async function saveDefaultTier(input: { path: string; expectedStamp?: string | null; tier: ModelChoice }): Promise<SaveOutcome> {
+  return editConfigFile({
+    path: input.path,
+    ...(input.expectedStamp === undefined ? {} : { expectedStamp: input.expectedStamp }),
+    update(raw) {
+      return { ok: true, raw: { ...raw, defaultTier: input.tier } }
     },
   })
 }

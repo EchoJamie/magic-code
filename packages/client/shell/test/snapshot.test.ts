@@ -370,29 +370,24 @@ describe('场景 10 · `/model`（同一处、同一开合）', () => {
           { provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } }, },
           { provider: 'minimax-m2', cache: { snapshot: { provider: 'minimax-m2', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M2' }] } }, },
         ],
+        configuredModels: { cantrip: { provider: 'minimax', model: 'MiniMax-M3' }, spell: { provider: 'minimax-m2', model: 'MiniMax-M2' }, arcane: { provider: 'minimax', model: 'MiniMax-M3' } },
         current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'cantrip' as const, provider: 'minimax', model: 'MiniMax-M3' },
       }),
     ])
 
-    app.shell.key({ kind: 'enter' }) // 配置映射中的实际型号列表
+    // **2026-11-22 裁定**：/model 本体＝档位切换器（三档直选）；映射编辑与连接动作在 /config
     const settled = [...app.shell.getView().settled, ...app.shell.getView().rows]
 
-    // **开的这一刻什么都不进记录区**（原型 · slash 两种走法：交互配置型「回车什么都不进」；
-    // 「留一行回执」是**选定之后**的事）——旧形状在这里留过一行「换模型未成：…」的假回执
+    // **开的这一刻什么都不进记录区**（「留一行回执」是**选定之后**的事）
     expect(settled.some((row) => row.kind === 'receipt')).toBe(false)
     expect(settled.some((row) => row.kind === 'output')).toBe(false)
 
     const frame = app.screen()
-    expect(frame).toContain('minimax')
-    // **全量**：另一条连接上的模型也在（这趟会话从没调用过它）。
-    // **原锚**：屏上找得到条目名 `minimax-m2`（行 ＝ 连接）。
-    // **为何变**（U41）：一行改报**模型**——`minimax-m2` 那条连接现在体现在**副文案**上，
-    //   主文案是它的模型名。
-    // **新锚**：屏上找得到它的模型名 `MiniMax-M2`。
-    // ⚠️ 2026-09-23（U41 返修）再改一次：列表末尾常驻了三条**入口行**（连接供应商 /
-    //    管理连接 / 刷新模型），故这一屏比上一版多三行——快照随新形态更新。
+    // 三档直选：当前档与没调用过的档都报出各自的映射（全量）
+    expect(frame).toContain('Cantrip')
+    expect(frame).toContain('Spell')
+    expect(frame).toContain('Arcane')
     expect(frame).toContain('MiniMax-M2')
-    expect(frame).toContain('连接供应商')
     expect(frame).toMatchSnapshot()
   })
 })

@@ -314,12 +314,9 @@ test('子会话复用现有会话模型入口，只换这个成员的模型', ()
   app.key('enter')
   expect(app.spy.commands.some(command => command.type === 'model.list')).toBe(true)
   let dock = app.view().dock
-  if (dock.kind !== 'picker') throw new Error('模型选择器没有打开')
-  // 复用会话模型入口，但作用对象写明是这条子会话。
-  expect(dock.picker.rows.find(row => row.value === 'choose')?.label).toContain('实现 · 选择模型')
-  app.pick('choose')
-  dock = app.view().dock
-  if (dock.kind !== 'picker') throw new Error('模型档位没有打开')
+  if (dock.kind !== 'picker') throw new Error('模型切换器没有打开')
+  // 复用切换器（三档直选），但作用对象写明是这条子会话（config：worker）。
+  expect(dock.picker.rows.map(row => row.value)).toEqual(['cantrip', 'spell', 'arcane'])
   app.pick('cantrip')
   expect(app.spy.commands.at(-1)).toMatchObject({ type: 'collaboration.configure', member: 'worker', model: { choice: 'cantrip' } })
 })
