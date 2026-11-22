@@ -88,7 +88,7 @@ for (const response of ['clarify', 'reject', 'accept'] as const) {
       }
       // 留出已在途调度的观察窗口；不参与唤醒，也不把普通 accept 当成信息性回应。
       await Bun.sleep(350)
-      expect(f.requests()).toHaveLength(response === 'reject' ? 3 : 2)
+      expect(f.requests()).toHaveLength(response === 'accept' ? 2 : 3)
       expect(f.requests('member-model')).toHaveLength(2)
       expect(f.errors).toEqual([])
       expect(f.events.filter(one => one.kind === 'error')).toEqual([])
@@ -296,7 +296,6 @@ test('生产 shell.hangUp 关窗不停止协作：持久 wait 保留，成员回
   const closingReply = latch()
   const memberReply = latch()
   const resumedReply = latch()
-  const deadline = Date.now() + 3600_000
   const inform = 'HANGUP_INFORM：当前检查仍在进行，先告知入口进展。'
   const reason = 'HANGUP_CLARIFY：需要入口补充回调边界。'
   const finalText = '关窗后的新代入口已处理成员澄清。'
