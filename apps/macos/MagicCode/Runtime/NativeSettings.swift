@@ -135,10 +135,12 @@ final class NativeSettings {
             let choice = action["choice"].text
             if type == "model.clear" { configured.put(choice, nil) }
             else {
-                guard !action["initialize"].flag || choice == "default" else { throw WireError.invalid("首次初始化只能保存 Default") }
                 let mapping = SettingsValue.object(["provider": action["provider"], "model": action["model"]])
                 configured.put(choice, mapping)
-                if action["initialize"].flag { for tier in ["cantrip", "spell", "arcane"] where configured.object[tier] == nil { configured.put(tier, mapping) } }
+                if action["initialize"].flag {
+                    for tier in ["cantrip", "spell", "arcane"] where configured.object[tier] == nil { configured.put(tier, mapping) }
+                    if raw.object["defaultTier"] == nil { next.put("defaultTier", .string("cantrip")) }
+                }
             }
             next.put("models", configured)
         case "model.override":

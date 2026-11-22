@@ -16,7 +16,7 @@ struct SettingsCategory: Identifiable {
 struct SettingsSearchItem: Identifiable {
     let id: String, category: String, title: String, words: String
     static let all: [Self] = [
-        .init(id: "configuredModels", category: "models", title: "Default 与能力档位", words: "默认模型 Cantrip Spell Arcane 型号 映射"),
+        .init(id: "configuredModels", category: "models", title: "模型档位", words: "Cantrip Spell Arcane 型号 映射 模型档位"),
         .init(id: "providers", category: "models", title: "供应商连接与模型规格", words: "密钥 API key DeepSeek MiniMax 地址 缓存 刷新 容量 思考 覆盖"),
         .init(id: "servers", category: "tools", title: "MCP 服务器", words: "工具 stdio HTTP 命令 参数 环境变量 请求头 连接 重连"),
         .init(id: "web", category: "tools", title: "网页查询与搜索", words: "web search fetch DeepSeek 摘要 代读 Cantrip 联网"),

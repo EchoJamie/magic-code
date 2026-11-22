@@ -195,7 +195,7 @@ test('原生保存不再因协议兼容或对话能力拒绝：官方提示外�
     const overridden = await native({ type: 'model.override', provider: 'ds', model: 'deepseek-v4-pro', override: { capabilities: { chat: false } } })
     expect(overridden.error).toBeUndefined(); expect(overridden.saved).toBe(true)
     const raw = JSON.parse(readFileSync(g.configPath, 'utf8'))
-    expect(raw.models.default).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
+    expect(raw.models.cantrip).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
     expect(raw.providers.ds.protocol).toBe('responses')
     expect(raw.providers.ds.modelOverrides['deepseek-v4-pro'].capabilities).toEqual({ chat: false })
     // 改回别的协议同样照旧落盘（协议兼容不是闸门）。
@@ -404,7 +404,7 @@ test('原生保存不再因协议兼容或对话能力拒绝：官方提示外�
     const overridden = await native({ type: 'model.override', provider: 'ds', model: 'deepseek-v4-pro', override: { capabilities: { chat: false } } })
     expect(overridden.error).toBeUndefined(); expect(overridden.saved).toBe(true)
     const raw = JSON.parse(readFileSync(g.configPath, 'utf8'))
-    expect(raw.models.default).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
+    expect(raw.models.cantrip).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
     expect(raw.providers.ds.protocol).toBe('responses')
     expect(raw.providers.ds.modelOverrides['deepseek-v4-pro'].capabilities).toEqual({ chat: false })
     // 改回别的协议同样照旧落盘（协议兼容不是闸门）。
