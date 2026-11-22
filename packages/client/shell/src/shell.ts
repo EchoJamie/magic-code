@@ -58,6 +58,7 @@ import {
 } from './components/inline.ts'
 import { usageLabel } from './components/lines.ts'
 import type { Dock, PageTurn, Picker, PickerRow, ShellView, UserImage } from './view.ts'
+import { durationText, roundDuration } from './boards/conversation/round.ts'
 import {
   COMMANDS,
   HINT_BOOTING,
@@ -185,19 +186,54 @@ const HELP_LINES: readonly string[] = [
 /**
  * `/status` 的正文——**本地就能答**（模型 / 用量 / 会话都在外壳手上，不必问内核）。
  *
- * 「连得上不」只说实话：最近一次模型调用**出错**就说出错（那是外壳看得见的事实），
- * 否则说「未见异常」——**不编一个「已连接」**（那要真去连一次才知道）。
+ * 设计（2026-11-22 用户定稿）：**无标签列**——内容的形状自明（8 位十六进制＋标题＝会话、
+ * 绝对路径＝工作区、档位开头＝模型组合、`输入 x/y`＝用量）；**不抄状态行**——面板给的是
+ * 行上放不下的那一层（全路径、连接、思考档、回合时长）；**没消息不占行**——出错才有 ▲ 行，
+ * 「未见异常」那种话不存在；**0 是事实**——新会话的用量就是 `0/…`。
  */
-function statusLines(view: ShellView): readonly string[] {
-  const { status } = view
+function statusLines(view: ShellView, launchRoots?: readonly string[]): readonly string[] {
+  const { status, sessionId, catalog, modelCurrent } = view
+  const active = catalog.find(one => one.id === sessionId)
+
+  // 身份：id 前 8 位（/resume 同一约定）＋ 标题；还没有会话就如实说「新会话」。
+  const identity = sessionId === null
+    ? '新会话'
+    : active?.title === undefined ? sessionId.slice(0, 8) : `${sessionId.slice(0, 8)} · ${active.title}`
+
+  // 工作区：会话**锚定的那组根**（[0]＝默认根；多根＝联合作用域，全列）；
+  // 还没有会话 ⇒ 启动目录那组。旧账缺席（列加上之前落账的）＝不编，整行不出现。
+  const roots = active?.workspace ?? (sessionId === null ? launchRoots : undefined)
+  const workspace = roots === undefined || roots.length === 0 ? undefined : roots.join(' ＋ ')
+
+  // 模型组合：档位 · 连接 / 型号 · 思考档（思考显示的就是值：`high` / `默认` / `off` / `≤8k`）。
+  // 没钉思考设置 ＝ 跟默认走 ⇒ 解析供应商声明的默认档；钉了就用钉的那一档。
+  const setting = configReasoningOf(modelCurrent) ?? { mode: 'default' as const }
+  const support = modelCurrent === null
+    ? undefined
+    : view.models.find(one => one.provider === modelCurrent.provider)?.effectiveReasoning?.[modelCurrent.model]
+  const head = [status.model ?? undefined, modelCurrent === null ? undefined : `${modelCurrent.provider} / ${modelCurrent.model}`]
+  const model = head.some(one => one !== undefined)
+    ? [...head, reasoningText(setting, support)].filter(one => one !== undefined).join(' · ')
+    : undefined
+
+  // 计量：用量与状态行 ④ **同一个口径**（`usageLabel`，两处各报各的迟早分叉）；
+  // 时长＝最近一轮（跑着实时，闲着是刚跑完那轮；新会话没有轮次就不提）。
+  const usage = usageLabel(status.usage, status.window)
+  const round = view.round === null ? null : roundDuration(view.round, view.turnDuration, Date.now())
+  const metering = [
+    usage === null ? undefined : `输入 ${usage}`,
+    round === null ? undefined : `本轮 ${durationText(round)}`,
+  ].filter(one => one !== undefined).join(' · ')
 
   return [
-    `会话　${status.session ?? '新会话'}`,
-    `模型　${status.model ?? '（还没调用过）'}`,
-    // 与状态行 ④ **同一个口径**（`usageLabel`）——两处各报各的，迟早分叉
-    `用量　${usageLabel(status.usage, status.window) ?? '（还没上报）'}`,
-    `状态　${status.state === 'error' ? '最近一次模型调用出错' : '未见异常'}`,
-  ]
+    identity,
+    workspace,
+    model,
+    metering,
+    // 「连得上不」只说实话：最近一次模型调用**出错**就点名（那是外壳看得见的事实）；
+    // 未见异常**不占行**（没消息不占行）。
+    ...(status.state === 'error' ? ['▲ 上一次模型调用没成'] : []),
+  ].filter((one): one is string => one !== undefined && one !== '')
 }
 
 const STATUS_TITLE = '此刻'
@@ -1157,7 +1193,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (event.kind === 'turn.end' && view.sudo != null) { sudoPassword = ''; commit({ ...view, sudo: null }) }
 
     const reasoning = configReasoningOf(view.modelCurrent)
-    const reasoningLabel = reasoning === undefined ? null : reasoningText(reasoning)
+    // 「跟默认走」要能解析成**具体档位**（供应商声明过 defaultLevel 的话）——
+    // 取当前连接上这个型号的有效思考支持（覆盖后的那份），交给标签函数解析。
+    const currentRow = view.modelCurrent === null ? undefined : view.models.find(one => one.provider === view.modelCurrent?.provider)
+    const support = currentRow?.effectiveReasoning?.[view.modelCurrent?.model ?? '']
+    const reasoningLabel = reasoning === undefined ? null : reasoningText(reasoning, support)
     if (view.status.reasoning !== reasoningLabel) commit(patchStatus(view, { reasoning: reasoningLabel }))
 
     if (waiting === 'config' && CONFIG_READINGS.some((one) => one.event === event.kind)) {
@@ -3497,7 +3537,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     // —— 本地结果进记录区，原文已按用户输入回显 ——
     if (word === '/help') return only(appendOutput(cleared, HELP_TITLE, HELP_LINES))
-    if (word === '/status') return only(appendOutput(cleared, STATUS_TITLE, statusLines(from)))
+    if (word === '/status') return only(appendOutput(cleared, STATUS_TITLE, statusLines(from, options.workspaceRoots)))
 
     if (word === '/clear') {
       // 开一条新的——**清屏由内核那一声答复触发**（页号一变，渲染层就翻页，见

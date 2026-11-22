@@ -143,6 +143,12 @@ export type ReasoningSetting =
  */
 export type ReasoningSupport = {
   readonly default?: 'on' | 'off'
+  /**
+   * **供应商声明的默认档位**（`/models` 响应的 `effort.default_level`）——
+   * 思考模式 `default`（跟默认走）时**实际生效的那一档**。缺省＝供应商没声明，
+   * 界面只能如实说「默认」，**不猜档位**。
+   */
+  readonly defaultLevel?: string
   /** 支持的档位值（**不假设同一套低/中/高**）。 */
   readonly levels?: readonly string[]
   /** 支持的预算范围（token）；只给一头也是合法的。 */

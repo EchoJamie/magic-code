@@ -164,10 +164,14 @@ function toModelsOf(body: unknown): readonly ModelInfo[] {
     if (Array.isArray(raw.input_modalities) && raw.input_modalities.every(v => typeof v === 'string')) capabilities.image ??= raw.input_modalities.includes('image')
     const source = record(raw.reasoning)
     const levels = source.levels ?? record(raw.effort).supported_levels
+    const effort = record(raw.effort)
     const reasoning: ReasoningSupport = {
       ...(typeof source.disable === 'boolean' ? { disable: source.disable } : {}),
       ...(source.default === 'on' || source.default === 'off' ? { default: source.default } : {}),
       ...(Array.isArray(levels) && levels.every(v => typeof v === 'string' && v.length) ? { levels: levels as string[] } : {}),
+      // 供应商声明的默认档位（`effort.default_level`）——mode `default` 时实际生效的那一档，
+      // 界面据此把「思考·默认」解析成具体档位；没声明就不带这一位（不猜）。
+      ...(typeof effort.default_level === 'string' && effort.default_level !== '' ? { defaultLevel: effort.default_level } : {}),
     }
     const budget = record(source.budget)
     const min = budget.min_tokens, max = budget.max_tokens

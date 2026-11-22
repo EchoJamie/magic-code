@@ -335,11 +335,16 @@ export function modelHint(
   return heads.join('\n')
 }
 
-export function reasoningText(setting: ReasoningSetting): string {
-  if (setting.mode === 'off') return '不思考'
-  if (setting.mode === 'default') return '思考·默认'
-  if (setting.mode === 'budget') return `思考·${tokenLabel(setting.budgetTokens)}`
-  return `思考·${setting.level === 'low' ? '低' : setting.level === 'medium' ? '中' : '高'}`
+export function reasoningText(setting: ReasoningSetting, support?: ReasoningSupport): string {
+  // **没有前缀**（用户 2026-11-22 裁定）：显示的就是值——
+  // 档位**不汉化**（low/high 与各家自定义值用它该有的名称，与思考选择器同一套字）。
+  if (setting.mode === 'off') return 'off'
+  if (setting.mode === 'budget') return `≤${tokenLabel(setting.budgetTokens)}`
+  if (setting.mode === 'default') {
+    // 跟默认走 ⇒ 供应商声明过默认档位就**直接显示那一档**；没声明过（不知道服务端会用哪档）才如实说「默认」。
+    return support?.defaultLevel ?? '默认'
+  }
+  return setting.level
 }
 
 export function configReasoningOf(current: ModelSelectionRef | null): ReasoningSetting | undefined {

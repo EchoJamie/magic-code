@@ -216,6 +216,6 @@ test('编辑全局映射时，状态行思考仍来自当前工作的有效选�
   })])
   pick(stage, 'edit:cantrip')
   stage.feed([event('provider.catalog', { entries, vendors: [] })])
-  expect(stage.shell.getView().status.reasoning).toBe('思考·高')
+  expect(stage.shell.getView().status.reasoning).toBe('high')
   stage.shell.dispose()
 })

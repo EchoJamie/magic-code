@@ -101,7 +101,7 @@ describe('列表获取', () => {
 
     const models = await DEEPSEEK_VENDOR.listModels(ctxOf(fetch))
 
-    expect(models).toEqual([{ id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', capabilities: { image: true }, reasoning: { levels: ['low', 'high', 'max'] }, limits: { maxOutputTokens: 393_216, maxContextTokens: 1_048_576 } }])
+    expect(models).toEqual([{ id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', capabilities: { image: true }, reasoning: { levels: ['low', 'high', 'max'], defaultLevel: 'high' }, limits: { maxOutputTokens: 393_216, maxContextTokens: 1_048_576 } }])
   })
 
   /**
