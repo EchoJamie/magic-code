@@ -214,8 +214,9 @@ export function reasoningRows(
     (one.mode !== 'budget' || (setting.mode === 'budget' && one.budgetTokens === setting.budgetTokens))
   const rows: PickerRow[] = [
     {
-      label: '模型默认',
-      meta: '不发送思考参数，服务端自己定',
+      // 行名＝状态行与 /status 显示的那个值（2026-11-22 裁定：同一套字）
+      label: '默认',
+      meta: `不发送思考参数，服务端自己定${support?.defaultLevel === undefined ? '' : `（模型默认档：${support.defaultLevel}）`}`,
       current: mark({ mode: 'default' }),
       value: 'default',
       reasoning: { mode: 'default' },
@@ -224,8 +225,8 @@ export function reasoningRows(
   ]
   if (support?.disable === true) {
     rows.push({
-      label: '明确关闭',
-      meta: '说了别想（与「默认」不是一回事）',
+      label: 'off',
+      meta: '明确关闭（说了别想，与「默认」不是一回事）',
       current: mark({ mode: 'off' }),
       value: 'off',
       reasoning: { mode: 'off' },
@@ -235,7 +236,7 @@ export function reasoningRows(
   for (const level of support?.levels ?? []) {
     rows.push({
       label: level,
-      meta: '档位',
+      meta: '',
       current: mark({ mode: 'level', level }),
       value: `level:${level}`,
       reasoning: { mode: 'level', level },
@@ -243,7 +244,7 @@ export function reasoningRows(
     })
   }
   if (support?.budget !== undefined) rows.push({
-    label: '指定 token 预算',
+    label: 'token 预算',
     meta: setting.mode === 'budget' ? String(setting.budgetTokens) : '输入范围内的正整数',
     current: setting.mode === 'budget',
     value: 'budget',

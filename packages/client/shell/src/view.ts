@@ -375,6 +375,7 @@ export const COMMANDS: readonly CommandSpec[] = [
 
   { name: '/config', summary: '调整终端、模型与工具设置' },
   { name: '/model', summary: '切换模型档位（Cantrip / Spell / Arcane）' },
+  { name: '/effort', summary: '设置思考等级（默认 / off / 档位 / token 预算）' },
 
   { name: '/skills', summary: '浏览或搜索技能，选定后加入草稿' },
 

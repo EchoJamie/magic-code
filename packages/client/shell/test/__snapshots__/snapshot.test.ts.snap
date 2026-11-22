@@ -122,6 +122,7 @@ exports[`场景 11 · \`/help\`（纯输出型） 输出进记录区（dim 块�
   /status   查看会话、工作区、模型组合与用量
   /config   调整终端、模型与工具设置
   /model    切换模型档位（Cantrip / Spell / Arcane）
+  /effort   设置思考等级（默认 / off / 档位 / token 预算）
   /skills   浏览或搜索技能，选定后加入草稿
   /mcp      查看外部工具服务器和工具
   /web      选择网页查询与搜索使用的连接

@@ -1001,8 +1001,8 @@ describe('slash 候选（D12 · 纯函数级）', () => {
     ])
     // U52——打到一半就认出来（`/ex` 只可能是 `/exit`：别的名里一个 `x` 都没有）
     expect(matchCommands('/ex').map((row) => row.name)).toEqual(['/exit'])
-    // 内置命令含 /memory 与 /compact，共十五条。
-    expect(matchCommands('/').map((row) => row.name)).toHaveLength(15)
+    // 内置命令含 /memory 与 /compact，共十六条（U-2026-11-22：/effort 进表）。
+    expect(matchCommands('/').map((row) => row.name)).toHaveLength(16)
     expect(matchCommands('看下目录')).toEqual([]) // 不是 slash——不出候选
   })
 

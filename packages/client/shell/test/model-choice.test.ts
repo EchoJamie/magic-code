@@ -72,7 +72,7 @@ test('工作选择只列三个档位；缺档位仍可见、拒绝时不给执�
 })
 test('思考独立修改有效当前组合；配置映射编辑不携带思考设置', () => {
   const stage = settings(); pick(stage, 'reasoning')
-  expect(picker(stage).rows.map(row => row.label)).toEqual(['模型默认', '明确关闭', 'low', 'high'])
+  expect(picker(stage).rows.map(row => row.label)).toEqual(['默认', 'off', 'low', 'high'])
   stage.press({ kind: 'down' }); stage.press({ kind: 'down' }); stage.press({ kind: 'enter' })
   expect(stage.commands().at(-1)).toEqual({ type: 'model.switch', reasoning: { mode: 'level', level: 'low' } })
 })

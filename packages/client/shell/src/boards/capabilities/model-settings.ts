@@ -68,7 +68,7 @@ export function createModelSettings(ui: {
   const { present, receipt, send, enterLayer, popLayer } = ui
 
   // 开页意图与保存回执分离：撤销开页不能丢弃已经送出的保存。
-  let opening: 'model' | 'switch' | 'connect' | 'manage' | null = null
+  let opening: 'model' | 'switch' | 'reasoning' | 'connect' | 'manage' | null = null
 
   const request = (action: 'model' | 'connect' | 'manage' | 'refresh', provider?: string): Command => {
     opening = action === 'refresh' ? 'model' : action
@@ -821,7 +821,7 @@ export function createModelSettings(ui: {
       return
     }
     const intent = opening
-    if ((event.kind === 'model.catalog' && (intent === 'model' || intent === 'switch')) ||
+    if ((event.kind === 'model.catalog' && (intent === 'model' || intent === 'switch' || intent === 'reasoning')) ||
         (event.kind === 'provider.catalog' && (intent === 'connect' || intent === 'manage'))) opening = null
     if (event.kind === 'model.catalog') {
       catalogStamp = event.data.stamp
@@ -844,6 +844,10 @@ export function createModelSettings(ui: {
         openModelPicker(event.data.note ?? '')
       } else if (intent === 'switch') {
         openSwitcher(event.data.note ?? '')
+      } else if (intent === 'reasoning') {
+        const pick = scopeCurrent()
+        if (pick === null) receipt('还没有选定模型——先 /config · 模型与连接 配置档位，/model 切到档位')
+        else openReasoningPicker(pick)
       } else {
         // 两处都试：各自只认自己那一扇开着（刷新模型那一屏 / 管理那两屏上刚发起的「刷新这一条」）
         refreshModelPicker(event.data.note ?? '')
@@ -889,10 +893,43 @@ export function createModelSettings(ui: {
       opening = 'switch'
       return { type: 'model.list' }
     },
+    /** /effort 的思考选择器：登记开页意图并读目录（选择器要的那份能力描述随目录下来）。 */
+    openReasoning: (): Command => {
+      opening = 'reasoning'
+      return { type: 'model.list' }
+    },
     target: (member?: AgentId) => {
       leaveContext()
       collaborationModel = member === undefined ? {} : { member }
       modelScope = 'session'
+    },
+    /** /effort <值> 直设：对着**这个模型声明的能力表**校验（未声明的不发送假参数）。
+     *  **纯校验**——不发命令、不改视图（runSlash 约定：返回待发命令，由外层统一发）。 */
+    validateReasoningArg: (raw: string): { ok: true; setting: ReasoningSetting } | { ok: false; note: string } => {
+      const pick = scopeCurrent()
+      if (pick === null) return { ok: false, note: '还没有选定模型——先 /model 切到档位' }
+      const support = reasoningSupportOf(pick)
+      const value = raw.trim()
+      const lower = value.toLowerCase()
+      if (lower === 'default' || value === '默认') return { ok: true, setting: { mode: 'default' } }
+      if (lower === 'off') {
+        if (support?.disable !== true) return { ok: false, note: `这个模型没有声明可明确关闭；声明的档位：${support?.levels?.join(' / ') ?? '（无）'}` }
+        return { ok: true, setting: { mode: 'off' } }
+      }
+      if (/^\d+$/.test(value)) {
+        const tokens = Number(value)
+        const budget = support?.budget
+        if (budget === undefined) return { ok: false, note: `这个模型没有声明 token 预算；声明的档位：${support?.levels?.join(' / ') ?? '（无）'}` }
+        if ((budget.minTokens !== undefined && tokens < budget.minTokens) || (budget.maxTokens !== undefined && tokens > budget.maxTokens)) {
+          return { ok: false, note: `预算须在 ${budget.minTokens ?? '未声明下限'} ～ ${budget.maxTokens ?? '未声明上限'} 之间` }
+        }
+        return { ok: true, setting: { mode: 'budget', budgetTokens: tokens } }
+      }
+      const levels = support?.levels
+      if (levels === undefined || levels.length === 0) return { ok: false, note: '这个模型没有声明思考档位——只能按模型默认用' }
+      const hit = levels.find(one => one.toLowerCase() === lower)
+      if (hit === undefined) return { ok: false, note: `这台模型声明的档位：${levels.join(' / ')}；没有「${value}」` }
+      return { ok: true, setting: { mode: 'level', level: hit } }
     },
     receive,
     select,

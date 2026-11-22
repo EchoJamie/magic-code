@@ -3616,6 +3616,29 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       return only(cleared, ...CONFIG_READINGS.map((one) => one.command))
     }
 
+    if (word === '/effort') {
+      if (arg !== '') {
+        models.clearTarget()
+        const effortMember = currentMember(from)
+        if (effortMember !== undefined) models.target(effortMember.agent.agentId)
+        // 纯校验（声明了什么就认什么）；结果按会话状态落：没有会话留在窗口，有会话发切换
+        const outcome = models.validateReasoningArg(arg)
+        if (!outcome.ok) return only(appendReceipt(cleared, outcome.note))
+        if (view.sessionId === null) {
+          return only(noteResult({ ...cleared, modelChoice: { ...(cleared.modelChoice ?? {}), reasoning: outcome.setting } }, `已选定 ${reasoningText(outcome.setting)}；下一条消息起用它`))
+        }
+        return only(cleared, { type: 'model.switch', reasoning: outcome.setting })
+      }
+      // 已开着就原样刷新；否则登记作用对象（子会话只改该成员）
+      if (!(from.dock.kind === 'picker' && from.dock.picker.source === 'model-reasoning')) {
+        models.clearTarget()
+        const effortMember = currentMember(from)
+        if (effortMember !== undefined) models.target(effortMember.agent.agentId)
+      }
+      waiting = null
+      return only(cleared, models.openReasoning())
+    }
+
     if (word === '/model') {
       const member = currentMember(from)
       // 切换器已开着 ⇒ 原样刷新，不动作用对象；否则登记作用对象（子会话只改该成员）。
