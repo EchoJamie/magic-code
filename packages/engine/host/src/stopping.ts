@@ -135,11 +135,27 @@ export function createRunStops(input: {
       const deadline = Date.now() + stopGraceMs + 2 * stopKillMs
       while (!executor.exited && executor.run.ended === undefined && Date.now() < deadline) await Bun.sleep(25)
       if (!executor.exited && executor.run.ended === undefined) {
-        note ??= '执行实例关闭尚未确认，未终止共享 Engine'
-        executor.run.reclaimPending = true
-        executor.run.reclaimNote = note
-        refresh(executor.run, now())
-        changed(true)
+        if (executor.spawned.kill === undefined) {
+          // 进程内执行者没有最后一档（杀不得共享 Engine）——挂待核销，照旧收。
+          note ??= '执行实例关闭尚未确认，未终止共享 Engine'
+          executor.run.reclaimPending = true
+          executor.run.reclaimNote = note
+          refresh(executor.run, now())
+          changed(true)
+          settleStop(executor.run, note)
+          return
+        }
+        // **独立子进程：宽限过后可以真杀**——只带走它自己，不伤共享 Engine。
+        executor.spawned.kill()
+        const killedDeadline = Date.now() + stopKillMs
+        while (!executor.exited && executor.run.ended === undefined && Date.now() < killedDeadline) await Bun.sleep(25)
+        if (!executor.exited && executor.run.ended === undefined) {
+          note ??= '强杀后仍未确认退出'
+          executor.run.reclaimPending = true
+          executor.run.reclaimNote = note
+          refresh(executor.run, now())
+          changed(true)
+        }
         settleStop(executor.run, note)
       }
     })().finally(() => stoppingTasks.delete(executor))

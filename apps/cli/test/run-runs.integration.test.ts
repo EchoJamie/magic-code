@@ -10,9 +10,8 @@ import { createRecordsStore } from '@magic/data'
 import { connectManager } from '@magic/host'
 import type { ManagerClient } from '@magic/host'
 import { startManager } from '@magic/host'
-import type { ExecutorLauncher, ExecutorRequest, Manager, SpawnedExecutor } from '@magic/host'
+import { localLinks, type ExecutorLauncher, type ExecutorSpawn, type ExecutorSpawned, type ExecutorToManager, type Link, type Manager, type ManagerToExecutor } from '@magic/host'
 import { runPathsOf } from '@magic/host'
-import type { ExecutorToManager, ManagerToExecutor } from '@magic/contracts'
 import { removeDir, tempDir } from './tmp.ts'
 import { attentionFacts } from './resident-attention-fixture.ts'
 
@@ -65,7 +64,7 @@ function ground(name: string): Ground {
  */
 type Fake = {
   readonly gen: number
-  readonly request: ExecutorRequest
+  readonly request: ExecutorSpawn
   /** 管理者送到这一头的东西（按到达序）——命令与快照请求都在里头。 */
   readonly got: ManagerToExecutor[]
   send(message: ExecutorToManager): void
@@ -82,7 +81,7 @@ type Fake = {
 type Bench = {
   readonly manager: Manager
   /** 发过几次车（按序）——各支按第几次取那一头。 */
-  readonly requests: readonly ExecutorRequest[]
+  readonly requests: readonly { readonly request: ExecutorSpawn; readonly link: Link<ManagerToExecutor> }[]
   /** 把第 `index` 次发车的执行者「接上」（它连回管理者、报上姓名）。 */
   attach(index: number): Promise<Fake>
   /** 所有接上的那一头。 */
@@ -102,14 +101,16 @@ async function waitFor(what: string, ok: () => boolean, timeoutMs = 5_000): Prom
 /** 立一摊：真管理者 ＋ 假执行者。 */
 async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promise<Bench> {
   const store = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
-  const requests: ExecutorRequest[] = []
+  const requests: { readonly request: ExecutorSpawn; readonly link: Link<ManagerToExecutor> }[] = []
   const exits = new Map<number, (reason: string) => void>()
   const fakes: Fake[] = []
 
   const launcher: ExecutorLauncher = {
-    spawn(request: ExecutorRequest): SpawnedExecutor {
-      requests.push(request)
+    spawn(request: ExecutorSpawn): ExecutorSpawned {
+      const [managerLink, agentLink] = localLinks<ExecutorToManager, ManagerToExecutor>()
+      requests.push({ request, link: agentLink })
       return {
+          link: managerLink,
         // 假进程号：只作诊断（这一支里没人按 PID 找它）——取一段不会撞上真进程的号
         onExit(listener) {
           exits.set(request.gen, listener)
@@ -133,16 +134,16 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
   const manager = started.manager
 
   const attach = async (index: number): Promise<Fake> => {
-    const request = requests[index]
-    if (request === undefined) throw new Error(`第 ${index} 次发车都还没有`)
+    const entry = requests[index]
+    if (entry === undefined) throw new Error(`第 ${index} 次发车都还没有`)
 
-    const link = request.link
+    const link = entry.link
     const got: ManagerToExecutor[] = []
     link.onMessage((message) => got.push(message))
 
     const fake: Fake = {
-      gen: request.gen,
-      request,
+      gen: entry.request.gen,
+      request: entry.request,
       got,
       send: (message) => void link.send(message),
       emit(kind, data, session, at = Date.now()) {
@@ -163,7 +164,7 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
         link.send({ t: 'stopping', why })
       },
       exit(reason) {
-        exits.get(request.gen)?.(reason)
+        exits.get(entry.request.gen)?.(reason)
       },
       close() {
         link.close()
@@ -483,8 +484,8 @@ describe('`/clear` 是这个窗口的', () => {
       // 而它那一代照旧活着（切走不是取消工作）
       expect(b.manager.executors().map((row) => row.gen)).toContain(shared)
       two.send({ type: 'input.submit', text: '新对话的首次输入' })
-      await waitFor('明确输入才另起一代', () => b.requests.length === 2 && two.gen() === b.requests[1]?.gen)
-      expect(b.requests[1]?.session).toBeNull()
+      await waitFor('明确输入才另起一代', () => b.requests.length === 2 && two.gen() === b.requests[1]?.request.gen)
+      expect(b.requests[1]?.request.session).toBeNull()
       expect(one.gen()).toBe(shared)
 
       one.close()
@@ -515,7 +516,7 @@ describe('登记落盘与重启核对', () => {
       expect(b.requests).toHaveLength(0)
       client.send({ type: 'input.submit', text: '明确继续' })
       await waitFor('创建新代', () => b.requests.length === 1)
-      expect(b.requests[0]?.session).toBe('s-old')
+      expect(b.requests[0]?.request.session).toBe('s-old')
     } finally { client.close(); await b.dispose() }
   }, 30000)
 
@@ -565,8 +566,8 @@ test('同会话终端接收具体事项；离线事项持久保留且未投递',
     a.send({ type: 'input.submit', text: '启动 A' })
     other.send({ type: 'input.submit', text: '启动 B' })
     await waitFor('两个执行者', () => b.requests.length === 2)
-    const first = await b.attach(b.requests.findIndex(request => request.session === 'a'))
-    const second = await b.attach(b.requests.findIndex(request => request.session === 'b'))
+    const first = await b.attach(b.requests.findIndex(entry => entry.request.session === 'a'))
+    const second = await b.attach(b.requests.findIndex(entry => entry.request.session === 'b'))
     first.ready('a'); second.ready('b')
     first.emit('turn.start', {}, 'a')
     first.emit('turn.end', { reason: 'settled' }, 'a')

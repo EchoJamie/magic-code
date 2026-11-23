@@ -153,6 +153,13 @@ export type RecordsStoreOptions = {
    */
   readonly dataDir: string
   /**
+   * **写等待**（`busy_timeout`，毫秒）——同一连接上 SQLite 遇到别的写者占锁时等多久。
+   *
+   * 缺省 0（立刻报忙）：管理者单写者，等没有意义。独立子进程的执行者开自己的连接
+   * 与管理者并存写（WAL），给有界等待（如 5000）——写撞上的那一刻排队，而不是整轮失败。
+   */
+  readonly busyTimeoutMs?: number
+  /**
    * **本进程工作的那个工作区**（U26）——会话**建立时锚定**的就是它：库里这一列只在
    * **建行那一次**写（`ON CONFLICT DO NOTHING`），故此后的启动目录改了也改不到它。
    *
@@ -314,7 +321,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   const databasePath = join(dataDir, DATABASE_FILE)
   const db = new Database(databasePath, { create: true })
   try {
-    db.exec('PRAGMA busy_timeout = 0')
+    db.exec(`PRAGMA busy_timeout = ${options.busyTimeoutMs ?? 0}`)
     initSchema(db, databasePath)
     db.exec('PRAGMA journal_mode = WAL')
     db.exec('PRAGMA synchronous = NORMAL')

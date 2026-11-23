@@ -26,7 +26,7 @@ import { installCommands } from './manager/commands.ts'
 import { installLifecycle } from './manager/lifecycle.ts'
 
 export type { Manager, ManagerOptions, StartResult } from './manager/context.ts'
-export type { ExecutorLauncher, ExecutorRequest, SpawnedExecutor } from './launch.ts'
+export type { ExecutorLauncher, ExecutorSpawn, ExecutorSpawned } from './launch.ts'
 
 /** 重试次数——「尸首清掉再 bind」那一步；给三次是因为它只该有一次成功或彻底失败。 */
 const BIND_ATTEMPTS = 3

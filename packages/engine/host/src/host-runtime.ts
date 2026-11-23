@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { isAbsolute } from 'node:path'
 import { loadConfig } from '@magic/state'
 import { runPathsOf } from '@magic/host'
-import { createAgentLauncher } from './launch.ts'
+import { createProcessLauncher } from './launch.ts'
 import { startManager } from './manager.ts'
 import { softwareSource } from './runtime-launch.ts'
 import { writeEngineState } from '@magic/host'
@@ -29,7 +29,7 @@ export async function runEngine(argv: readonly string[]): Promise<number> {
   try {
     const loaded = loadConfig({ magic })
     const started = await startManager({
-      paths, magic, launch: createAgentLauncher(), mcp: loaded.config.mcp?.servers ?? {},
+      paths, magic, launch: createProcessLauncher(), mcp: loaded.config.mcp?.servers ?? {},
       engineState: async (phase, request, error) => { state = { ...state, state: phase, request, error }; publish() },
       beforeExit: async () => { state = { ...state, state: 'stopped', error: undefined }; publish() },
       onShutdownError: error => { state = { ...state, state: 'failed', error }; publish() },

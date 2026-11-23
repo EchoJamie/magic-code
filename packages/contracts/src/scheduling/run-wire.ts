@@ -241,9 +241,24 @@ export type ExecutorToManager =
    */
   | { readonly t: 'snapshot'; readonly seq: number; readonly snapshot: RunSnapshot }
   /** 要用户输入 sudo 密码（U129）——由执行者的 sudo 认证端口发起。 */
+  /** 要用户输入 sudo 密码（U129）——由执行者的 sudo 认证端口发起。 */
   | { readonly t: 'sudo.request'; readonly requestId: string; readonly command: string }
   /** 这一件认证不用再等了（取消 / 轮收束 / 连接走了）。 */
   | { readonly t: 'sudo.cancel'; readonly requestId: string; readonly reason: string }
+  /**
+   * **执行者子进程连回管理者的报到**——按发车令牌（executionId）配对。
+   *
+   * 进程内执行者不经这条（它的通道在发车那一刻就地建好）；只有独立子进程会发：
+   * 连上管理者 socket 后第一句话就是它，配不上号的连接当场关掉。
+   */
+  | { readonly t: 'executor.hello'; readonly executionId: string }
+  /**
+   * **子进程账本的自报**——它自己那摊里又起了哪些进程。
+   *
+   * 进程内执行者的账本管理者看得见（同一进程）；子进程的账本管理者够不着，
+   * 故变动时由子进程自报，管理者照登记收（崩溃后的收回依据就是这份）。
+   */
+  | { readonly t: 'ledger.owned'; readonly owned: readonly import('../shared/process.ts').OwnedProcess[] }
 
 /** 管理者 → 执行者。 */
 export type ManagerToExecutor =

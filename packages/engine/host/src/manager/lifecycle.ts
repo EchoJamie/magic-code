@@ -167,6 +167,13 @@ export function installLifecycle(ctx: ManagerContext): void {
       case 'collaboration.changed':
         collaboration.changed()
         return
+      case 'ledger.owned':
+        // 子进程账本的自报——管理者照登记收（崩溃后的收回依据就是这份）。
+        executor.run.owned = [...message.owned]
+        refresh(executor.run, now())
+        ctx.saveRuns()
+        ctx.pushRuns()
+        return
       case 'assembled':
         if (message.session !== null && store.hasSession(message.session)) executor.run.session = message.session
         executor.run.workspace = message.workspace

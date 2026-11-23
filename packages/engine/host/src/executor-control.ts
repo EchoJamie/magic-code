@@ -1,7 +1,6 @@
 import type { AgentModelConfig, Diagnostics, McpCatalogRow, ProcessLedger } from '@magic/contracts'
-import type { WorkEnvironment } from '@magic/host'
-import type { RunRecord } from '@magic/host'
-import type { SpawnedExecutor } from './launch.ts'
+import type { WorkEnvironment, RunRecord } from '@magic/host'
+import type { ExecutorSpawned } from './launch.ts'
 import type { ExecutorToManager, Link, ManagerToExecutor } from '@magic/host'
 
 export type Executor = {
@@ -13,7 +12,7 @@ export type Executor = {
   readonly executionId: string
   /** 运行事实的唯一来源。 */
   readonly run: RunRecord
-  readonly spawned: SpawnedExecutor
+  readonly spawned: ExecutorSpawned
   exited: boolean
   /** 启动时建立的进程内协议端点；就绪前的命令仍须排队。 */
   readonly link: Link<ExecutorToManager>

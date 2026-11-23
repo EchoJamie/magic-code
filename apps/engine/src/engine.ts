@@ -42,6 +42,10 @@ export async function engineMain(argv: readonly string[]): Promise<number> {
     try { return await runEngine(argv.slice(1)) }
     catch (error) { console.error(`Engine 启动失败：${String(error)}`); return 0 }
   }
+  if (argv[0] === 'executor') {
+    const { runExecutorProcess } = await import('@magic/host')
+    return runExecutorProcess(argv.slice(1))
+  }
   if (argv[0] !== 'service' || !['status', 'start', 'stop', 'switch', 'remove'].includes(argv[1] ?? '')) {
     console.error('用法：magic-engine install --payload <目录> --profile engine|terminal|app | uninstall --component engine|cli | serve … | service status|start|stop|switch|remove [--home <路径>] [--parent <路径>]')
     return 1

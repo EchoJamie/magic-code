@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolveMagicHome, type EventDataOf, type EventKind, type KernelEvent, type NativeRequest, type NativeResponse, type SessionManagement, type Wire } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
-import { startManager, type ExecutorRequest } from '@magic/host'
+import { startManager, localLinks, type ExecutorSpawn, type ExecutorToManager, type Link, type ManagerToExecutor } from '@magic/host'
 import { connectManager, type ManagerClient } from '@magic/host'
 import { runPathsOf } from '@magic/host'
 import { linkOf, socketHandlers } from '@magic/host'
@@ -22,18 +22,19 @@ async function fixture() {
   const paths = runPathsOf(magic, tmpdir())
   const store = createRecordsStore({ dataDir: magic.base, workspace: [root] })
   for (const session of ['a', 'b']) store.setSessionTitle(session, session, 1)
-  const launches: ExecutorRequest[] = []
+  const launches: { readonly request: ExecutorSpawn; readonly link: Link<ManagerToExecutor> }[] = []
   const commands: Wire[] = []
   const started = await startManager({ magic, paths, stopGraceMs: 10, stopKillMs: 10,
     launch: { spawn(request) {
-      launches.push(request)
+      const [managerLink, agentLink] = localLinks<ExecutorToManager, ManagerToExecutor>()
       const endings: ((reason: string) => void)[] = []
-      request.link.onMessage(message => {
+      agentLink.onMessage(message => {
         commands.push(message)
-        if (message.t === 'snapshot') request.link.send({ t: 'snapshot', seq: message.seq, snapshot: { watermark: 0, turnOpen: false, tools: [] } })
+        if (message.t === 'snapshot') agentLink.send({ t: 'snapshot', seq: message.seq, snapshot: { watermark: 0, turnOpen: false, tools: [] } })
         if (message.t === 'bye') for (const end of endings) end(message.why)
       })
-      return { onExit(end) { endings.push(end) }, cancel() { for (const end of endings) end('受控执行者已结束') } }
+      launches.push({ request, link: agentLink })
+      return { link: managerLink, onExit(end) { endings.push(end) }, cancel() { for (const end of endings) end('受控执行者已结束') } }
     } },
   })
   if (started.role !== 'manager') throw new Error('隔离 Engine 未启动')
@@ -62,12 +63,12 @@ async function fixture() {
   function event<K extends EventKind>(session: string, kind: K, data: EventDataOf[K], turn: number | null = 1) {
     const event = { id: store.serviceFor(session).nextId(), at: Date.now(), turn, session, kind, data } as KernelEvent
     store.appendEvent(event)
-    launches.findLast(request => request.session === session)?.link.send({ t: 'ev', event })
+    launches.findLast(entry => entry.request.session === session)?.link.send({ t: 'ev', event })
     return event
   }
   function ready(index = 0) {
     const launch = launches[index]!
-    launch.link.send({ t: 'assembled', session: launch.session, workspace: [root] })
+    launch.link.send({ t: 'assembled', session: launch.request.session, workspace: [root] })
     launch.link.send({ t: 'ready' })
   }
   async function manage(items: readonly SessionManagement[], serviceInstance = manager.identity.serviceInstance) {
