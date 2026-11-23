@@ -93,6 +93,9 @@ CREATE TABLE IF NOT EXISTS ${ENTRIES_TABLE} (
 );
 CREATE INDEX IF NOT EXISTS entries_by_session ON ${ENTRIES_TABLE} (session, id);
 CREATE INDEX IF NOT EXISTS entries_by_turn ON ${ENTRIES_TABLE} (turn_id, id);
+-- 会话目录的 at 取自每会话最新条目（相关子查询 MAX(e.at)）——
+-- 只有 (session, at) 索引能让它从「扫全会话条目」变索引定位。
+CREATE INDEX IF NOT EXISTS entries_by_session_at ON ${ENTRIES_TABLE} (session, at);
 
 CREATE TABLE IF NOT EXISTS ${EVENTS_TABLE} (
   id         INTEGER PRIMARY KEY,
@@ -106,6 +109,9 @@ CREATE TABLE IF NOT EXISTS ${EVENTS_TABLE} (
 );
 CREATE INDEX IF NOT EXISTS events_by_session ON ${EVENTS_TABLE} (session, id);
 CREATE INDEX IF NOT EXISTS events_by_turn ON ${EVENTS_TABLE} (turn_id, id);
+-- 按 kind 取材的读面（tool.decision 历史累计、latestEvent 的 kind 过滤）——
+-- 无此索引时这些查询全表扫 events，且都发生在共享事件循环上。
+CREATE INDEX IF NOT EXISTS events_by_kind ON ${EVENTS_TABLE} (kind, id);
 
 CREATE TABLE IF NOT EXISTS ${ATTENTION_TABLE} (
   id         TEXT    PRIMARY KEY NOT NULL,

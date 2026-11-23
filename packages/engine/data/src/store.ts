@@ -502,11 +502,84 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     }
   }
 
+  // —— 已解析条目的**后缀记忆** ——
+  // 上下文重建（assembleContext）与恢复扫描的读形状是「从某位置读到尾」，且**每一轮
+  // 请求都来一遍**；6,059 条 / 4.6MB 载荷的真实会话实测一轮约 130ms 的读 + 解析，
+  // 全压在共享事件循环上。条目**只增不改**（append-only，id 单调自一个取号空间），
+  // 故按「起点 + MAX(id) 水位」记忆整段解析结果：
+  // - 水位不变 ⇒ 直接交回内存里那段（起点更早的按 id 过滤）；
+  // - 水位涨了 ⇒ 只把增量读进来接上（每轮常态：新增几条，读几条）；
+  // - 任何写入路径（本域 appendEntry、协作收件、恢复补记）都**不必挂钩**——
+  //   校验只是一句索引内的 `MAX(id)`，谁写的都会被看见。
+  // 记忆段存**全部行**（含 `continuation`，交回时过滤）——水位才能用纯索引的 MAX，
+  // 不被「读侧排除的 kind」卡成永远 miss。
+  // ⚠️ 命中时交回**同一批** Entry 对象（消费方按只读用；真要改，先拷贝）。
+  // 记忆上限（LRU）：管理者会翻阅历史会话，别让翻阅把内存钉住。
+  const ENTRY_MEMO_LIMIT = 8
+  const entryMemo = new Map<SessionId, { from: number; maxId: number; entries: Entry[] }>()
+  const maxEntryIdOf = db.query<{ id: number | null }, [string]>(
+    `SELECT MAX(id) AS id FROM ${ENTRIES_TABLE} WHERE session = ?`,
+  )
+  const selectEntriesRaw = db.query<EntryRow, [string, number, number]>(
+    `SELECT id, session, turn_id, kind, content_kind, content_text, content_blob, payload, at, source
+       FROM ${ENTRIES_TABLE}
+      WHERE session = ? AND id > ?
+      ORDER BY id
+      LIMIT ?`,
+  )
+
+  function entryMemoKeep(session: SessionId, memo: { from: number; maxId: number; entries: Entry[] }): void {
+    entryMemo.delete(session)
+    entryMemo.set(session, memo)
+    while (entryMemo.size > ENTRY_MEMO_LIMIT) {
+      const oldest = entryMemo.keys().next().value
+      if (oldest === undefined) break
+      entryMemo.delete(oldest)
+    }
+  }
+
+  /** 全后缀形态（`to` 不限、不含辅助条目）的读——走记忆，Miss 时整段重建或接增量。 */
+  async function* readEntriesSuffix(session: SessionId, floor: number): AsyncGenerator<Entry> {
+    const live = maxEntryIdOf.get(session)?.id ?? 0
+    const cached = entryMemo.get(session)
+    const reusable = cached !== undefined && cached.from <= floor + 1 ? cached : undefined
+
+    if (reusable !== undefined && reusable.maxId === live) {
+      entryMemoKeep(session, reusable)
+      for (const entry of reusable.entries) if (entry.id > floor && entry.kind !== 'continuation') yield entry
+      return
+    }
+
+    // Miss：可复用段必须**连续**接——从它的末尾补齐（起点在段中时，段尾到起点之间
+    // 的行也要进段，供日后更早起点的读复用），再接请求起点之后的增量。
+    const entries = reusable === undefined ? [] : [...reusable.entries]
+    let after = reusable === undefined ? floor : reusable.maxId
+    for (;;) {
+      const rows = selectEntriesRaw.all(session, after, READ_CHUNK)
+      if (rows.length === 0) break
+      for (const row of rows) entries.push(entryOfRow(row))
+      const last = rows.at(-1)
+      if (last === undefined || rows.length < READ_CHUNK) break
+      after = last.id
+      await new Promise<void>(resolve => setImmediate(resolve))
+    }
+    // 水位取**实际读到的**最后一行——读到中途新落的行也在段内，水位与内容保持一致；
+    // 之后新落的留给下一次的增量。floor 高于全部行时以 floor 作水位（该起点以下确无新行）。
+    const maxId = Math.max(entries.at(-1)?.id ?? floor, floor)
+    entryMemoKeep(session, {
+      from: reusable === undefined ? floor + 1 : Math.min(reusable.from, floor + 1),
+      maxId, entries,
+    })
+    for (const entry of entries) if (entry.id > floor && entry.kind !== 'continuation') yield entry
+  }
+
   function readEntries(sessionId: SessionId, range?: EntryRange): AsyncIterable<Entry> {
     assertSessionId(sessionId)
     // 闭区间含端点：`from ≤ id ≤ to`；缺省＝该端不限。倒挂（from > to）自然读空。
     const floor = range?.from === undefined ? 0 : range.from - 1
     const ceiling = range?.to ?? Number.MAX_SAFE_INTEGER
+
+    if (range?.to === undefined && range?.auxiliary !== true) return readEntriesSuffix(sessionId, floor)
 
     return paginate(
       (after) => selectEntries.all(sessionId, Math.max(after, floor), ceiling, range?.auxiliary === true ? 1 : 0, READ_CHUNK),

@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MODELS_DEV_TTL_MS, MODELS_DEV_URL } from '@magic/model'
@@ -47,6 +47,31 @@ test('文件缓存按需解析、1 小时过期、手动绕过 TTL；失败保�
     writeFileSync(file, JSON.stringify({ fetchedAt: now + 1, data: catalog(500_000) }))
     expect(resource.read().snapshot?.providers['minimax-cn']?.models[id]?.limits?.maxOutputTokens).toBe(500_000)
     expect(createModelsDevResource(base, fetcher).read().snapshot?.fetchedAt).toBe(now + 1)
+  } finally { rmSync(base, { recursive: true, force: true }) }
+})
+
+test('解析结果按文件指纹记忆：未改文件命中同一份对象，改写后换新；无文件不缓存空结果', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'magic-models-dev-memo-'))
+  const fetcher = async () => new Response(JSON.stringify(catalog()))
+  const resource = createModelsDevResource(base, fetcher)
+  const file = join(base, MODELS_DEV_CACHE_FILE)
+  try {
+    // 无文件：不缓存（之后落盘要能读到）
+    expect(resource.read().snapshot).toBeUndefined()
+    mkdirSync(join(base, 'cache'), { recursive: true })
+    writeFileSync(file, JSON.stringify({ fetchedAt: 1000, data: catalog() }))
+    const first = resource.read().snapshot
+    expect(first?.providers['minimax-cn']).toBeDefined()
+    // 未改文件：同一份对象（不重解析）
+    expect(resource.read().snapshot).toBe(first)
+    // 改写文件（同实例）：指纹失效，读到新值
+    writeFileSync(file, JSON.stringify({ fetchedAt: 2000, data: catalog(500_000) }))
+    const second = resource.read().snapshot
+    expect(second).not.toBe(first)
+    expect(second?.providers['minimax-cn']?.models[id]?.limits?.maxOutputTokens).toBe(500_000)
+    // 刷新成功（rename 原子替换）后同样换新——refresh 内部走 read() 同一记忆
+    await createModelsDevResource(base, fetcher).refresh()
+    expect(resource.read().snapshot?.fetchedAt).toBeGreaterThan(2000)
   } finally { rmSync(base, { recursive: true, force: true }) }
 })
 
