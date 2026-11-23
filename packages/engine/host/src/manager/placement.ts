@@ -1,10 +1,9 @@
 import type { Command } from '@magic/contracts'
-import { ARCHIVED_NOTE, createWorkEnvironment, localLinks } from '@magic/host'
+import { ARCHIVED_NOTE, createWorkEnvironment } from '@magic/host'
 import { createProcessLedger } from '@magic/resources'
 import { newRunRecord, refresh } from '@magic/host'
-import { createAgentLauncher, type SpawnedExecutor } from '../launch.ts'
+import { createAgentLauncher, type ExecutorSpawned } from '../launch.ts'
 import { sendToExecutor as send, type Executor } from '../executor-control.ts'
-import type { ExecutorToManager, ManagerToExecutor } from '@magic/host'
 import type { ClientConn } from '../connections.ts'
 import type { ManagerContext, SpawnInput } from './context.ts'
 
@@ -61,19 +60,18 @@ export function installPlacement(ctx: ManagerContext): void {
     const gen = ctx.nextGen
     ctx.nextGen += 1
     const executionId = `${gen}-${crypto.randomUUID()}`
-    const [link, agentLink] = localLinks<ExecutorToManager, ManagerToExecutor>()
     const ledger = createProcessLedger(owned => {
       executor.run.owned = owned
       refresh(executor.run, now())
       ctx.saveRuns(true)
       ctx.pushRuns()
     })
-    let spawned: SpawnedExecutor
+    let spawned: ExecutorSpawned
     try {
       spawned = (options.launch ?? createAgentLauncher()).spawn({
         gen, executionId, network, environment: network.env,
         session: input.session, cwd: input.cwd, magic: options.magic,
-        link: agentLink, records: store, ledger,
+        records: store, ledger,
         ...(input.switch === undefined ? {} : { switch: input.switch }),
       })
     } catch (error) {
@@ -85,6 +83,7 @@ export function installPlacement(ctx: ManagerContext): void {
       }
       return undefined
     }
+    const link = spawned.link
 
     const executor: Executor = {
       ledger, network,

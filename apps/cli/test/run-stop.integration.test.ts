@@ -28,8 +28,8 @@ import { unreadSummaryOf } from '@magic/shell'
 import { readRuns } from '@magic/host'
 import { connectManager } from '@magic/host'
 import type { ManagerClient } from '@magic/host'
-import { startManager } from '@magic/host'
-import type { ExecutorLauncher, ExecutorRequest, Manager, SpawnedExecutor } from '@magic/host'
+import { startManager, localLinks } from '@magic/host'
+import type { ExecutorLauncher, ExecutorSpawn, ExecutorSpawned, Link, Manager } from '@magic/host'
 import { runPathsOf } from '@magic/host'
 import type { ExecutorToManager, ManagerToExecutor } from '@magic/contracts'
 import { removeDir, tempDir } from './tmp.ts'
@@ -78,7 +78,7 @@ function ground(name: string): Ground {
 /** 一个假执行者——线上那几件都会做，另加「报自有进程组」与「叫它退它退不退」。 */
 type Fake = {
   readonly gen: number
-  readonly request: ExecutorRequest
+  readonly request: ExecutorSpawn
   readonly got: ManagerToExecutor[]
   /** 管理者按过哪几记「兵」（TERM / KILL 各记一笔）。 */
   readonly signals: string[]
@@ -97,7 +97,7 @@ type Fake = {
 
 type Bench = {
   readonly manager: Manager
-  readonly requests: readonly ExecutorRequest[]
+  readonly requests: readonly { readonly request: ExecutorSpawn }[]
   readonly fakes: Fake[]
   readonly killed: readonly { readonly gen: number; readonly signal: string }[]
   attach(index: number): Promise<Fake>
@@ -116,15 +116,17 @@ async function waitFor(what: string, ok: () => boolean | Promise<boolean>, timeo
 /** 立一摊：真管理者 ＋ 假执行者（`launch` 那一头按用例的需要收口）。 */
 async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promise<Bench> {
   const store = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
-  const requests: ExecutorRequest[] = []
+  const requests: { readonly request: ExecutorSpawn; readonly link: Link<ManagerToExecutor> }[] = []
   const exits = new Map<number, (reason: string) => void>()
   const fakes: Fake[] = []
   const killed: { gen: number; signal: string }[] = []
 
   const launcher: ExecutorLauncher = {
-    spawn(request: ExecutorRequest): SpawnedExecutor {
-      requests.push(request)
+    spawn(request: ExecutorSpawn): ExecutorSpawned {
+      const [managerLink, agentLink] = localLinks<ExecutorToManager, ManagerToExecutor>()
+      requests.push({ request, link: agentLink })
       return {
+        link: managerLink,
         onExit(listener) {
           exits.set(request.gen, listener)
         },
@@ -153,16 +155,16 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
   if (started.role !== 'manager') throw new Error(`没立起来：${started.role}`)
 
   const attach = async (index: number): Promise<Fake> => {
-    const request = requests[index]
-    if (request === undefined) throw new Error(`第 ${index} 次发车都还没有`)
+    const entry = requests[index]
+    if (entry === undefined) throw new Error(`第 ${index} 次发车都还没有`)
 
-    const link = request.link
+    const link = entry.link
     const got: ManagerToExecutor[] = []
     link.onMessage((message) => got.push(message))
 
     const fake: Fake = {
-      gen: request.gen,
-      request,
+      gen: entry.request.gen,
+      request: entry.request,
       got,
       signals: [],
       stubborn: true,
@@ -186,13 +188,13 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
         link.send({ t: 'bound', session })
       },
       async owned(processes) {
-        for (const one of processes) await request.ledger.add(one)
+        for (const one of processes) await entry.request.ledger.add(one)
       },
       stopping(why) {
         link.send({ t: 'stopping', why })
       },
       exit(reason) {
-        exits.get(request.gen)?.(reason)
+        exits.get(entry.request.gen)?.(reason)
       },
       close() {
         link.close()

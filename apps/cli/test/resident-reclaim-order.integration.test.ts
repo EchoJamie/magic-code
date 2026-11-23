@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { resolveMagicHome } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
 import { spawnOwned } from '@magic/resources'
-import { startManager, type ExecutorRequest } from '@magic/host'
+import { startManager, localLinks, type ExecutorSpawn, type ExecutorToManager, type Link, type ManagerToExecutor } from '@magic/host'
 import { connectManager } from '@magic/host'
 import { runPathsOf } from '@magic/host'
 
@@ -22,13 +22,14 @@ test('Agent 取消等待真实完成，工具核销后才回 done，旧代回调
   const magic = resolveMagicHome({}, root), paths = runPathsOf(magic, tmpdir())
   const store = createRecordsStore({ dataDir: magic.base, workspace: [root] })
   store.setSessionTitle('ordered', '退出次序', 1)
-  let request: ExecutorRequest | undefined
+  let request: { readonly input: ExecutorSpawn; readonly link: Link<ManagerToExecutor> } | undefined
   let cancelled = false, exited = false, done = false
   const callbacks: ((reason: string) => void)[] = []
   const started = await startManager({ paths, magic, stopGraceMs: 30, stopKillMs: 30,
     launch: { spawn(input) {
-      request = input; cancelled = false; exited = false
-      return { onExit(callback) { callbacks.push(callback) }, cancel() { cancelled = true } }
+      const [managerLink, agentLink] = localLinks<ExecutorToManager, ManagerToExecutor>()
+      request = { input, link: agentLink }; cancelled = false; exited = false
+      return { link: managerLink, onExit(callback) { callbacks.push(callback) }, cancel() { cancelled = true } }
     } },
   })
   if (started.role !== 'manager') throw new Error('启动失败')
@@ -44,7 +45,7 @@ test('Agent 取消等待真实完成，工具核销后才回 done，旧代回调
     await until(() => request !== undefined)
     attach()
     tool = await spawnOwned([process.execPath, '-e', "process.on('SIGTERM',()=>{}); console.log('ready'); setInterval(()=>{},1000)"], {
-      stdout: 'pipe', stderr: 'ignore', ledger: request!.ledger, kind: 'background', what: '次序测试工具', cwd: root,
+      stdout: 'pipe', stderr: 'ignore', ledger: request!.input.ledger, kind: 'background', what: '次序测试工具', cwd: root,
     })
     const reader = tool.process.stdout.getReader(); await reader.read(); reader.releaseLock()
     await until(() => manager.runs().some(row => row.background === 1))
@@ -57,10 +58,10 @@ test('Agent 取消等待真实完成，工具核销后才回 done，旧代回调
     expect(await tool.process.exited).toBe(137)
     expect(readRuns(paths)[0]?.owned).toBeUndefined()
 
-    const gen = request!.gen
+    const gen = request!.input.gen
     done = false
     client.send({ type: 'input.submit', text: '下一代' })
-    await until(() => request!.gen !== gen)
+    await until(() => request!.input.gen !== gen)
     attach()
     client.stop('ordered', 'run')
     await until(() => cancelled)

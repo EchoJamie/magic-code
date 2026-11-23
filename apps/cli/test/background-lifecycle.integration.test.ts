@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RecordsStore } from '@magic/data'
-import { createAgentLauncher, type ExecutorLauncher } from '@magic/host'
+import { createAgentLauncher, type ExecutorLauncher, type ExecutorToManager, type Link } from '@magic/host'
 import { collaborationRuntime, latch, requestText, spawnMember } from './run-collaboration-fixture.ts'
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
@@ -117,16 +117,20 @@ test('成员已交付仍持有服务；无 TUI 时异常结束在原成员协调
     const isMember = request.session !== null && request.session === f.member()?.sessionId
     let turn: number | null = null
     let paused = false
-    const send = request.link.send.bind(request.link)
-    request.link.send = message => {
-      const event = message.t === 'ev' ? message.event : undefined
-      if (event?.kind === 'turn.start') turn = event.turn
-      const sent = send(message)
-      // 等管理者真正处理主 Agent 的 waiting，才释放成员尚未完成的上下文读取。
-      if (!isMember && event?.kind === 'agent.state' && event.data.state === 'waiting' && f.requests().length === 6) {
-        continueRead.release()
-      }
-      return sent
+    // 主 Agent 到 waiting 的那一跳在管理者侧观察（执行者 → 管理者的方向）。
+    const link: Link<ExecutorToManager> = {
+      get closed() { return inner.link.closed },
+      close: () => inner.link.close(), onClose: listener => inner.link.onClose(listener),
+      onMessage: listener => inner.link.onMessage(message => {
+        const event = message.t === 'ev' ? message.event : undefined
+        if (event?.kind === 'turn.start') turn = event.turn
+        listener(message)
+        // 等管理者真正处理主 Agent 的 waiting，才释放成员尚未完成的上下文读取。
+        if (!isMember && event?.kind === 'agent.state' && event.data.state === 'waiting' && f.requests().length === 6) {
+          continueRead.release()
+        }
+      }),
+      send(message) { return inner.link.send(message) },
     }
     const withPausedRead = (records: RecordsStore): RecordsStore => ({
       ...records,
@@ -144,7 +148,8 @@ test('成员已交付仍持有服务；无 TUI 时异常结束在原成员协调
         } }
       },
     })
-    return launcher.spawn({ ...request, records: isMember ? withPausedRead(request.records) : request.records })
+    const inner = launcher.spawn({ ...request, records: isMember ? withPausedRead(request.records) : request.records })
+    return { link, onExit: inner.onExit, cancel: inner.cancel }
   } }
   const f = await collaborationRuntime('u124-member-finish', async call => {
     const delegation = f.delegation()?.delegationId

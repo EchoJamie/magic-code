@@ -86,19 +86,19 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
       if (direction === 'executor-to-manager' ? holdRequest : holdControl) queues[direction === 'executor-to-manager' ? 'request' : 'control'].push(forward)
       else forward()
     }
-    const link: Link<ManagerToExecutor> = {
-      get closed() { return request.link.closed },
-      close: () => request.link.close(), onClose: listener => request.link.onClose(listener),
-      onMessage: listener => request.link.onMessage(message => receive(message, 'manager-to-executor', () => listener(message))),
-      send(message) { receive(message as ExecutorToManager, 'executor-to-manager', () => request.link.send(message)); return !request.link.closed },
+    const link: Link<ExecutorToManager> = {
+      get closed() { return inner.link.closed },
+      close: () => inner.link.close(), onClose: listener => inner.link.onClose(listener),
+      onMessage: listener => inner.link.onMessage(message => receive(message, 'executor-to-manager', () => listener(message))),
+      send(message) { receive(message as ManagerToExecutor, 'manager-to-executor', () => inner.link.send(message)); return !inner.link.closed },
     }
     const ledger = { ...request.ledger,
       async add(input: Parameters<typeof request.ledger.add>[0]) { await request.ledger.add(input); row.owned = request.ledger.list() },
     }
-    const agent = launcher.spawn({ ...request, link, ledger })
+    const inner = launcher.spawn({ ...request, ledger })
     mark('agent-started', { gen: row.gen, session: row.session })
-    agent.onExit(reason => { row.exited = { order: mark('agent-onExit', { gen: row.gen, session: row.session, reason }), reason } })
-    return agent
+    inner.onExit(reason => { row.exited = { order: mark('agent-onExit', { gen: row.gen, session: row.session, reason }), reason } })
+    return { link, onExit: inner.onExit, cancel: inner.cancel }
   } } })
   if (started.role !== 'manager') {
     server.stop(true); removeDir(paths.dir); removeDir(root)

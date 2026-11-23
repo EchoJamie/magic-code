@@ -6,7 +6,7 @@ import type { KernelEvent, NativeResponse, RunSnapshot, Wire } from '@magic/cont
 import { resolveMagicHome } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
 import { spawnOwned, reapOwned } from '@magic/resources'
-import { startManager, type ManagerOptions, type ExecutorRequest } from '@magic/host'
+import { startManager, localLinks, type ExecutorSpawn, type ExecutorToManager, type Link, type ManagerOptions, type ManagerToExecutor } from '@magic/host'
 import { runPathsOf } from '@magic/host'
 import { connectManager } from '@magic/host'
 import { terminalConnection } from '../src/run/terminal.ts'
@@ -28,12 +28,13 @@ for (const recognition of ['bound', 'event.session', 'session.state.active'] as 
   test(`空白首消息经 ${recognition} 认领真实 target；同代不重取快照，宿主重开仍提交原 Session`, async () => {
     const g = ground()
     const store = createRecordsStore({ dataDir: g.dataDir, workspace: [g.root] })
-    const launches: ExecutorRequest[] = []
+    const launches: { readonly request: ExecutorSpawn; readonly link: Link<ManagerToExecutor> }[] = []
     const options: ManagerOptions = { ...g, stopGraceMs: 10, stopKillMs: 10,
       launch: { spawn(request) {
-        launches.push(request)
+        const [managerLink, agentLink] = localLinks<ExecutorToManager, ManagerToExecutor>()
+        launches.push({ request, link: agentLink })
         let end = (_reason: string) => {}
-        return { onExit(callback) { end = callback }, cancel() { end('测试执行者核销') } }
+        return { link: managerLink, onExit(callback) { end = callback }, cancel() { end('测试执行者核销') } }
       } },
     }
     const started = await startManager(options)
@@ -57,8 +58,8 @@ for (const recognition of ['bound', 'event.session', 'session.state.active'] as 
       expect(manager.executors()).toHaveLength(0)
       connection.client.send({ type: 'input.submit', text: '空白页第一次明确输入' })
       await waitFor(() => launches.length === 1 && targets.length === 1)
-      expect(launches[0]!.session).toBeNull()
-      const gen = launches[0]!.gen
+      expect(launches[0]!.request.session).toBeNull()
+      const gen = launches[0]!.request.gen
       expect(targets).toEqual([{ session: null, gen }])
       executor = launches[0]!.link
       const requests: Wire[] = []
@@ -110,7 +111,7 @@ for (const recognition of ['bound', 'event.session', 'session.state.active'] as 
       expect(launches).toHaveLength(1) // 重握手、历史接回均不执行。
       connection.client.send({ type: 'input.submit', text: '明确 Enter 继续原工作' })
       await waitFor(() => launches.length === 2)
-      expect(launches[1]!.session).toBe('actual-session')
+      expect(launches[1]!.request.session).toBe('actual-session')
       expect((await store.listSessions()).map((session) => session.id)).toEqual(['actual-session'])
     } finally {
       connection.client.close(); executor?.close(); manager.stop('测试结束'); await manager.waitUntilExit()
@@ -126,12 +127,13 @@ test('窗口切走后旧执行者迟到 bound/event 只更新当前 watchers，�
   store.setSessionTitle('chosen', '主动切到的工作', 2)
   store.setSessionTitle('late-bound', '原执行者认领的持久工作', 3)
   store.setSessionTitle('late-active', '原执行者后来认领的工作', 3)
-  const launches: ExecutorRequest[] = []
+  const launches: { readonly request: ExecutorSpawn; readonly link: Link<ManagerToExecutor> }[] = []
   const started = await startManager({ ...g, stopGraceMs: 10, stopKillMs: 10,
     launch: { spawn(request) {
-      launches.push(request)
+      const [managerLink, agentLink] = localLinks<ExecutorToManager, ManagerToExecutor>()
+      launches.push({ request, link: agentLink })
       let end = (_reason: string) => {}
-      return { onExit(callback) { end = callback }, cancel() { end('已核销') } }
+      return { link: managerLink, onExit(callback) { end = callback }, cancel() { end('已核销') } }
     } },
   })
   if (started.role !== 'manager') throw new Error('启动失败')
@@ -163,7 +165,7 @@ test('窗口切走后旧执行者迟到 bound/event 只更新当前 watchers，�
     expect(rightTargets).toEqual(['late-bound', 'late-active'])
     left.send({ type: 'input.submit', text: '仍继续主动选中的工作' })
     await waitFor(() => launches.length === 2)
-    expect(launches[1]!.session).toBe('chosen')
+    expect(launches[1]!.request.session).toBe('chosen')
   } finally {
     left.close(); right?.close(); executor?.close(); manager.stop('测试结束'); await manager.waitUntilExit()
     store.close(); rmSync(g.root, { recursive: true, force: true })
@@ -174,12 +176,14 @@ test('原生停止绑定当前输入代次，旧菜单不误停下一轮，同�
   const g = ground()
   const store = createRecordsStore({ dataDir: g.dataDir, workspace: [g.root] })
   store.setSessionTitle('work', '连续工作', 1)
-  const launches: ExecutorRequest[] = []
+  const launches: { readonly request: ExecutorSpawn; readonly link: Link<ManagerToExecutor> }[] = []
   let end: (reason: string) => void = () => {}
   const started = await startManager({ ...g, stopGraceMs: 50, stopKillMs: 50,
-    launch: { spawn(request) { launches.push(request); return {
-      onExit(callback) { end = callback }, cancel() { end('测试执行者退出') },
-    } } },
+    launch: { spawn(request) {
+      const [managerLink, agentLink] = localLinks<ExecutorToManager, ManagerToExecutor>()
+      launches.push({ request, link: agentLink })
+      return { link: managerLink, onExit(callback) { end = callback }, cancel() { end('测试执行者退出') } }
+    } },
   })
   if (started.role !== 'manager') throw new Error('启动失败')
   const manager = started.manager
@@ -304,9 +308,10 @@ test('原生停止绑定当前输入代次，旧菜单不误停下一轮，同�
   const faults: string[] = []
   const started = await startManager({ ...g, stopGraceMs: 600, stopKillMs: 600,
     launch: { spawn(request) {
+      const [managerLink] = localLinks<ExecutorToManager, ManagerToExecutor>()
       let end = (_reason: string) => {}
       const ready = spawnOwned(['/bin/sleep', '300'], { stdout: 'ignore', stderr: 'ignore', ledger: request.ledger, kind: 'exec', what: '隔离测试工具' }).then(value => { child = value })
-      return { onExit(callback) { end = callback }, cancel() {
+      return { link: managerLink, onExit(callback) { end = callback }, cancel() {
         void ready.then(async () => { for (const one of request.ledger.list()) await reapOwned(one); end('工具已收回') })
       } }
     } },

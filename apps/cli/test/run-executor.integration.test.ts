@@ -7,7 +7,7 @@ import { createRecordsStore } from '@magic/data'
 import type { KernelEvent, RunNotice, NativeResponse } from '@magic/contracts'
 import { connectManager } from '@magic/host'
 import type { ManagerClient } from '@magic/host'
-import { createAgentLauncher } from '@magic/host'
+import { createAgentLauncher, createProcessLauncher } from '@magic/host'
 import { startManager } from '@magic/host'
 import type { Manager } from '@magic/host'
 import { linkOf, socketHandlers } from '@magic/host'
@@ -715,3 +715,25 @@ test('D57 · 客户端整项停止覆盖主命令退出后的管道等待，队�
     client.close(); manager.stop('测试结束'); await manager.waitUntilExit(); await g.dispose()
   }
 }, 15_000)
+
+describe('执行者进程隔离', () => {
+  test('子进程连回管理者跑完整一轮后自退；接续照旧，停止时一并收场', async () => {
+    const complete = { kind: 'text' as const, text: '完成', chunks: 1, chunkDelayMs: 0 }
+    const g = ground('process-isolation', 'settled', [complete, complete])
+    const manager = await standUp(g, createProcessLauncher())
+    const client = await open(g, manager, 'isolated')
+    const records = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
+    let completed = 0
+    client.onEvent(event => { if (event.kind === 'turn.end' && event.data.reason === 'settled') completed++ })
+    try {
+      client.send({ type: 'session.new' })
+      await submitAndWait(client, '进程隔离首轮', '首轮经子进程收束且执行者已退', () => completed === 1 && manager.executors().length === 0)
+      expect(g.fixture.requests().filter(request => request.path.endsWith('/chat/completions'))).toHaveLength(1)
+      await submitAndWait(client, '继续原会话', '第二轮照旧经子进程收束', () => completed === 2 && manager.executors().length === 0)
+      expect((await records.listSessions()).map(session => session.id)).toHaveLength(1)
+    } finally {
+      client.close(); manager.stop('测试结束'); await manager.waitUntilExit()
+      records.close(); await g.dispose()
+    }
+  }, 30_000)
+})

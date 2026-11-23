@@ -32,6 +32,12 @@ export function installCommands(ctx: ManagerContext): void {
 
     link.onMessage((message) => {
       try {
+        if (message.t === 'executor.hello') {
+          // 子进程执行者的报到——按发车令牌认领；不认识（对不上号/已认过/正在收摊）就关。
+          const claimed = options.launch?.claim?.(message.executionId, link) ?? false
+          if (!claimed) link.close()
+          return
+        }
         if (message.t === 'hello') {
           if (greeted) { link.close(); return }
           greeted = true

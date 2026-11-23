@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { tmpdir } from 'node:os'
 import { createRecordsStore } from '@magic/data'
 import { connectManager, type ManagerClient } from '@magic/host'
-import { readRuns, startManager, type ExecutorRequest } from '@magic/host'
+import { readRuns, startManager, localLinks, type ExecutorSpawn, type ExecutorToManager, type Link, type ManagerToExecutor } from '@magic/host'
 import { reconcile, STORED_RUNS_LIMIT } from '@magic/host'
 import { runPathsOf } from '@magic/host'
 import { magicAt, tempDir, removeDir } from './tmp.ts'
@@ -15,12 +15,13 @@ test('持久执行身份：未核销代次不受最近历史条数截断，重�
   const store = createRecordsStore({ dataDir, workspace: [root] })
   const sessions = Array.from({ length: STORED_RUNS_LIMIT + 1 }, (_, index) => `work-${index}`)
   for (const session of sessions) store.setSessionTitle(session, session, Date.now())
-  const launches: ExecutorRequest[] = []
+  const launches: { readonly request: ExecutorSpawn; readonly link: Link<ManagerToExecutor> }[] = []
   const started = await startManager({ paths, magic, stopGraceMs: 10, stopKillMs: 10,
     launch: { spawn(request) {
-      launches.push(request)
+      const [managerLink, agentLink] = localLinks<ExecutorToManager, ManagerToExecutor>()
+      launches.push({ request, link: agentLink })
       let exit = (_reason: string) => {}
-      return { onExit(callback) { exit = callback }, cancel() { exit('登记装置退出') } }
+      return { link: managerLink, onExit(callback) { exit = callback }, cancel() { exit('登记装置退出') } }
     } },
   })
   if (started.role !== 'manager') throw new Error('管理者未启动')
@@ -37,9 +38,9 @@ test('持久执行身份：未核销代次不受最近历史条数截断，重�
     const persisted = readRuns(paths)
     expect(persisted).toHaveLength(sessions.length)
     for (const launch of launches) {
-      const run = persisted.find(run => run.session === launch.session)!
-      expect(run.executionId).toBe(launch.executionId)
-      expect(reconcile(run, Date.now()).executionId).toBe(launch.executionId)
+      const run = persisted.find(run => run.session === launch.request.session)!
+      expect(run.executionId).toBe(launch.request.executionId)
+      expect(reconcile(run, Date.now()).executionId).toBe(launch.request.executionId)
     }
   } finally {
     for (const client of clients) client.close()
