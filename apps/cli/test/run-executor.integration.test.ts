@@ -720,11 +720,12 @@ describe('执行者进程隔离', () => {
   test('子进程连回管理者跑完整一轮后自退；接续照旧，停止时一并收场', async () => {
     const complete = { kind: 'text' as const, text: '完成', chunks: 1, chunkDelayMs: 0 }
     const g = ground('process-isolation', 'settled', [complete, complete])
-    const manager = await standUp(g, createProcessLauncher())
+    const manager = await standUp(g, { launch: createProcessLauncher({ socket: runPathsOf(g.magic, g.tmp).socket, log: line => console.error('[launcher]', String(line).slice(0, 200)) }), probeIntervalMs: 50_000 })
     const client = await open(g, manager, 'isolated')
     const records = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
     let completed = 0
     client.onEvent(event => { if (event.kind === 'turn.end' && event.data.reason === 'settled') completed++ })
+    client.onEvent(event => { if (event.kind === 'error') console.error('[dbg] error:', String(event.data.message).slice(0, 150)) })
     try {
       client.send({ type: 'session.new' })
       await submitAndWait(client, '进程隔离首轮', '首轮经子进程收束且执行者已退', () => completed === 1 && manager.executors().length === 0)

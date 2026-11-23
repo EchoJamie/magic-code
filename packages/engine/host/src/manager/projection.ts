@@ -11,7 +11,7 @@ import { RUNS_PUSH_MS, RUNS_SAVE_MS, type ManagerContext, type NativeSessionsQue
 
 /** 运行事实、会话目录与界面偏好——同一份数据既推给窗口也落盘。 */
 export function installProjection(ctx: ManagerContext): void {
-  const { options, paths, now, store, executors, lastRuns, connections, sessions, diagnosticLog, identity } = ctx
+  const { options, now, store, executors, lastRuns, connections, sessions, diagnosticLog, identity } = ctx
   const { clients } = connections
   const { workRoot, isArchived, canArchive } = sessions
 
@@ -87,7 +87,7 @@ export function installProjection(ctx: ManagerContext): void {
       const one = storedRunOf(executor.run)
       if (one !== undefined) outstanding.push(one)
     }
-    writeRuns(paths, [...history.slice(-STORED_RUNS_LIMIT), ...outstanding], now())
+    writeRuns(ctx.store, [...history.slice(-STORED_RUNS_LIMIT), ...outstanding], now())
   }
 
   function publishPreferences(except?: ClientConn): void {

@@ -22,6 +22,6 @@ export function readRunsAt(dataDir: string): readonly RunRecord[] {
 
 /** 以全量快照替换运行登记（库不存在则建库）。 */
 export function replaceRunsAt(dataDir: string, records: readonly RunRecord[]): void {
-  const store = createRecordsStore({ dataDir, workspace: [] })
+  const store = createRecordsStore({ dataDir, workspace: [], busyTimeoutMs: 5_000 })
   try { store.runs.replaceAll(records) } finally { store.close() }
 }

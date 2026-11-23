@@ -147,11 +147,14 @@ export function createDeferredChannel(): {
 export type ProcessLauncherOptions = {
   /** 子进程命令行头两截——缺省由 `runtimeLaunch()` 推（源码 / 发行两种形态都对）。 */
   readonly command?: readonly string[]
+  /** 管理者监听的 socket——**直接下发**，子进程不自推导（沙盒的 TMPDIR 与管理者不同时，
+   * `runPathsOf` 的回退目录就对不上）。 */
+  readonly socket: string
   readonly log?: ((line: string) => void) | undefined
 }
 
 /** 执行者的独立子进程——真并行、故障隔离；SIGTERM 兜底回收。 */
-export function createProcessLauncher(options: ProcessLauncherOptions = {}): ExecutorLauncher {
+export function createProcessLauncher(options: ProcessLauncherOptions): ExecutorLauncher {
   const pending = new Map<string, { channel: ReturnType<typeof createDeferredChannel>; cancel: () => void; kill: () => void }>()
 
   return {
@@ -172,8 +175,9 @@ export function createProcessLauncher(options: ProcessLauncherOptions = {}): Exe
         ...(options.command ?? runtimeLaunch()),
         'executor',
         '--execution-id', request.executionId,
+        '--socket', options.socket,
         '--home', request.magic.home,
-        '--parent', request.magic.base,
+        '--base', request.magic.base,
         '--cwd', request.cwd,
         ...(request.session === null ? [] : ['--session', request.session]),
         ...(request.switch === undefined ? [] : ['--switch', JSON.stringify(request.switch)]),
@@ -181,11 +185,25 @@ export function createProcessLauncher(options: ProcessLauncherOptions = {}): Exe
       try {
         child = Bun.spawn(argv, {
           env: childEnv(request.environment),
-          stdin: 'ignore', stdout: 'ignore', stderr: 'ignore',
+          stdin: 'ignore', stdout: 'ignore', stderr: 'inherit',
         })
       } catch (error) {
         options.log?.(`执行者子进程没起来：${String(error)}`)
         throw error
+      }
+      if (child.stderr !== undefined && typeof child.stderr !== 'number' && options.log !== undefined) {
+        const log = options.log
+        const stream = child.stderr
+        void (async () => {
+          try {
+            const reader = (stream as unknown as ReadableStream<Uint8Array>).getReader()
+            for (;;) {
+              const { done, value } = await reader.read()
+              if (done) break
+              log(new TextDecoder().decode(value).trimEnd())
+            }
+          } catch { /* 子进程已退——读流自然结束 */ }
+        })()
       }
       void child.exited.then(code => {
         pending.delete(request.executionId)
@@ -193,7 +211,7 @@ export function createProcessLauncher(options: ProcessLauncherOptions = {}): Exe
       })
       pending.set(request.executionId, {
         channel,
-        cancel: () => child?.kill(),
+        cancel: () => { console.error(`[launcher] cancel called: ${new Error('trace').stack?.split('\n').slice(1, 4).join(' <- ')}`); child?.kill() },
         kill: () => child?.kill('SIGKILL'),
       })
       return {
@@ -201,9 +219,10 @@ export function createProcessLauncher(options: ProcessLauncherOptions = {}): Exe
         onExit(listener) { exitListeners.push(listener) },
         cancel() {
           pending.delete(request.executionId)
+          pending.delete(request.executionId)
           try { child?.kill() } catch { /* 已退——不追 */ }
         },
-        kill() { try { child?.kill('SIGKILL') } catch { /* 已退——不追 */ } },
+        kill() { console.error(`[launcher] kill called: ${new Error('trace').stack?.split('\n').slice(1, 4).join(' <- ')}`); try { child?.kill('SIGKILL') } catch { /* 已退——不追 */ } },
       }
     },
   }

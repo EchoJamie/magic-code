@@ -136,6 +136,7 @@ export function groupAlive(pgid: number): boolean {
 
 /** 给整组发一个信号——组里恰好一个成员都没有也算成功（ESRCH 是收尾路上的常态）。 */
 export function signalGroup(pgid: number, name: 'SIGTERM' | 'SIGKILL'): void {
+  console.error(`[signalGroup] ${name} -> pgid ${pgid} from pid ${process.pid} ${new Error('t').stack?.split('\n').slice(1, 4).join(' <- ')}`)
   try {
     process.kill(-pgid, name)
   } catch {

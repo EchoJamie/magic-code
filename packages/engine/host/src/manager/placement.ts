@@ -111,7 +111,7 @@ export function installPlacement(ctx: ManagerContext): void {
       executor.spawned.cancel()
       diagnosticLog.write('error', 'executor.record.failed', { ...identity, run: String(gen) })
     }
-    link.onMessage(message => { try { ctx.onExecutorMessage(executor, message) } catch (error) { failed(error) } })
+    link.onMessage(message => { try { ctx.onExecutorMessage(executor, message) } catch (error) { options.log?.(`[failed] ${String(error)} @${message.t} ${JSON.stringify(message).slice(0, 200)}`); failed(error) } })
 
     spawned.onExit((reason) => {
       executor.exited = true
