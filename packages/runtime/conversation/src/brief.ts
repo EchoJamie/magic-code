@@ -46,7 +46,7 @@ const INSTRUCTION = `你是这次交接的记录者。下面是本会话到目�
 - 日期、数字、对象按原文语义保留；同一名称不表示同一件事，证据不足保留原义。
 - 只写材料中实际存在的未决事项与下一步，不发明待办；不罗列工具调用流水。
 - 必要的原文位置写成“会话#记录”，便于回查。
-- 只输出这五段正文，不要输出 <tool_call>、函数调用、JSON 工具参数或代码块。
+- 只输出这五段正文，不要输出 工具调用标记、函数调用、JSON 工具参数或代码块。
 本次整理重点：`
 
 export async function prepareBrief(deps: BriefDeps, entries: readonly Entry[]): Promise<{ readonly text: string; readonly through: number; readonly summarized: number }> {
