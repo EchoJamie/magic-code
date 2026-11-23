@@ -40,7 +40,15 @@ export type ExecutorSpawn = {
 export type ExecutorSpawned = {
   readonly link: Link<ExecutorToManager>
   onExit(listener: (reason: string) => void): void
+  /** 请求收场（进程模式＝SIGTERM；进程内＝取消在途）。 */
   cancel(): void
+  /**
+   * **最后一档**（可选）——宽限过后仍不肯走的执行者，单独强杀。
+   *
+   * 只有独立子进程给得出（SIGKILL 不伤及共享 Engine）；进程内执行者没有这档
+   * （杀不得共享进程——那正是进程内方案的根本约束），缺省即「没有」。
+   */
+  kill?(): void
 }
 
 /** Agent 是 Engine 内的异步实例；取消与完成只作用于本次运行。 */
@@ -144,7 +152,7 @@ export type ProcessLauncherOptions = {
 
 /** 执行者的独立子进程——真并行、故障隔离；SIGTERM 兜底回收。 */
 export function createProcessLauncher(options: ProcessLauncherOptions = {}): ExecutorLauncher {
-  const pending = new Map<string, { channel: ReturnType<typeof createDeferredChannel>; cancel: () => void }>()
+  const pending = new Map<string, { channel: ReturnType<typeof createDeferredChannel>; cancel: () => void; kill: () => void }>()
 
   return {
     claim(executionId, link) {
@@ -183,8 +191,11 @@ export function createProcessLauncher(options: ProcessLauncherOptions = {}): Exe
         pending.delete(request.executionId)
         for (const listener of [...exitListeners]) listener(`子进程退出（${code}）`)
       })
-      pending.set(request.executionId, { channel, cancel: () => child?.kill() })
-
+      pending.set(request.executionId, {
+        channel,
+        cancel: () => child?.kill(),
+        kill: () => child?.kill('SIGKILL'),
+      })
       return {
         link: channel.link,
         onExit(listener) { exitListeners.push(listener) },
@@ -192,6 +203,7 @@ export function createProcessLauncher(options: ProcessLauncherOptions = {}): Exe
           pending.delete(request.executionId)
           try { child?.kill() } catch { /* 已退——不追 */ }
         },
+        kill() { try { child?.kill('SIGKILL') } catch { /* 已退——不追 */ } },
       }
     },
   }

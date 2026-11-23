@@ -84,6 +84,8 @@ type Fake = {
   readonly signals: string[]
   /** 不理会 TERM 的那一档（用例开关）——按下 KILL 才退。 */
   stubborn: boolean
+  /** 可强杀的那一档（用例开关）——进程隔离的执行者才给得出。 */
+  killable?: boolean
   send(message: ExecutorToManager): void
   emit(kind: string, data: unknown, session: string | null, at?: number): number
   ready(session: string | null): void
@@ -138,6 +140,12 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
           if (fake?.stubborn === true) return
           exits.get(request.gen)?.(`被叫停（${signal}）`)
         },
+        kill() {
+          // 进程隔离的最后一档——只有「可杀」的那一档（独立子进程）走得到这里。
+          if (fakes.find((one) => one.gen === request.gen)?.killable !== true) return
+          killed.push({ gen: request.gen, signal: 'kill' })
+          exits.get(request.gen)?.('被强杀')
+        },
       }
     },
   }
@@ -168,6 +176,7 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
       got,
       signals: [],
       stubborn: true,
+      killable: false,
       send: (message) => void link.send(message),
       emit(kind, data, session, at = Date.now()) {
         const id = store.serviceFor(session ?? '').nextId()
@@ -336,6 +345,37 @@ describe('停止：整体那一档', () => {
       // 异步实例没有可杀的 PID；完成仍须以真实释放回调为准。
       fake.exit('在途责任已释放')
       await waitFor('落定', () => rowOf(client, 's-2')?.state !== 'stopping')
+
+      client.close()
+    } finally {
+      await b.dispose()
+    }
+  }, 30_000)
+
+  test('进程隔离的执行者：宽限过后真杀（SIGKILL 兜底），只带走它自己', async () => {
+    const g = ground('escalate')
+    seed(g, ['s-4'])
+    const b = await bench(g)
+    const client = await open(g, b.manager)
+    const taps = tapsOf(client)
+
+    try {
+      client.send({ type: 'session.open', session: 's-4' })
+      client.send({ type: 'input.submit', text: '受控执行者测试输入' })
+      await waitFor('发车', () => b.requests.length === 1)
+      const fake = await b.attach(0)
+      fake.ready('s-4')
+      fake.stubborn = true // TERM 白按——正是「执行者不理会」那一档
+      fake.killable = true // 进程隔离：有 SIGKILL 这一档
+      await waitFor('开张', () => rowOf(client, 's-4') !== undefined)
+
+      client.stop('s-4', 'run')
+
+      await waitFor('TERM 到了', () => b.killed.some((one) => one.gen === fake.gen && one.signal === 'cancel'))
+      // 宽限过后 KILL 落下，运行就此落定——不是无限 reclaimPending。
+      await waitFor('KILL 到了', () => b.killed.some((one) => one.gen === fake.gen && one.signal === 'kill'))
+      await waitFor('落定', () => rowOf(client, 's-4')?.state !== 'stopping')
+      expect(taps.some(one => one.phase === 'done')).toBe(true)
 
       client.close()
     } finally {
