@@ -19,7 +19,7 @@ import { render } from 'ink'
 import { createElement as h } from 'react'
 import { createShell, type ShellOptions } from './shell.ts'
 import { TuiApp } from './components/app.ts'
-import { createTabTitleWriter } from './tab-title.ts'
+import { createSessionTitleTab } from './session-title-tab.ts'
 import type { ControlTransport, RunNotice, SessionId, StopScope } from '@magic/contracts'
 import type { RunFeed, ResumeFeed, StopReport, SudoFeed } from './shell.ts'
 
@@ -134,8 +134,8 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     throw new Error('外壳需要一个终端（stdin 不是 TTY）——请在终端里启动。')
   }
 
-  // 页签标题（OSC 0）——**只在真终端上写**（管道 / 测试假流不碰；见 `ShellOptions.tabTitle`）
-  const tabTitle = stdout.isTTY === true ? createTabTitleWriter(stdout) : undefined
+  // 页签标题（OSC 0）——**只在真终端上写**（管道 / 测试假流不碰；见 `ShellOptions.sessionTitleTab`）
+  const sessionTitleTab = stdout.isTTY === true ? createSessionTitleTab(stdout) : undefined
 
   // ④ 的分母（装配给）——没给就是「拿不到」，屏上回退成只报已用量（见 `RunTuiOptions`）
   const shell = createShell(options.transport, {
@@ -162,7 +162,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     notices: options.notices,
     sudo: options.sudo,
     markRead: options.markRead,
-    ...(tabTitle === undefined ? {} : { tabTitle }),
+    ...(sessionTitleTab === undefined ? {} : { sessionTitleTab }),
     // **「放开输入」以 `boot` 完成为界**（技术方案 · 装配视图第 5 步 · U25 收敛）——
     // 没有 `boot` 可等的调用方（测试 / 演示）照旧一挂载就能提交。
     inputReady: options.boot === undefined,

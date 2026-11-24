@@ -54,7 +54,7 @@ import {
   wire,
 } from './components/inline.ts'
 import { usageLabel } from './components/lines.ts'
-import type { TabTitleWriter } from './tab-title.ts'
+import type { SessionTitleTab } from './session-title-tab.ts'
 import type { Dock, PageTurn, Picker, PickerRow, ShellView, UserImage } from './view.ts'
 import {
   COMMANDS,
@@ -277,7 +277,7 @@ export type ShellOptions = {
    * 无标题时页签兜底产品名（`🪄 Magic Code`）。
    * 缺省＝不写（非终端流 / 旧装配），行为与加它之前一字不动。
    */
-  readonly tabTitle?: TabTitleWriter | undefined
+  readonly sessionTitleTab?: SessionTitleTab | undefined
 
   readonly runs?: RunFeed | undefined
 
@@ -826,8 +826,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       reading.set(next.dock.picker.reader.key, next.dock.picker.reader.top)
     }
     view = next
-    // **页签跟着 ② 走**——同一格、同一来源（见 `ShellOptions.tabTitle`）；去重在写出器里
-    options.tabTitle?.update(next.status.session)
+    // **页签跟着 ② 走**——同一格、同一来源（见 `ShellOptions.sessionTitleTab`）；去重在写出器里
+    options.sessionTitleTab?.update(next.status.session)
     if (streaming) notifyCoalesced()
     else {
       if (pending !== undefined) {
@@ -3643,7 +3643,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       unsubscribeTransport()
       watchers.clear()
       // 页签标题是自己写出去的——收摊时清掉（不假装能恢复 shell 原值，见 `tab-title.ts`）
-      options.tabTitle?.clear()
+      options.sessionTitleTab?.clear()
     },
   }
 }

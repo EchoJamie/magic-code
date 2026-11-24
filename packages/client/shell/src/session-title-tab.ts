@@ -19,10 +19,10 @@
  */
 
 /** 页签标题的字符上限——**字素**（与状态行标题那把尺子同源，多留余量给窗格装饰）。 */
-export const TAB_TITLE_MAX_CHARS = 240
+export const SESSION_TAB_TITLE_MAX_CHARS = 240
 
 /** 清洗不可信标题文本——控制字符剔除、空白折叠、按字素截断；清洗后全空＝空串。 */
-export function sanitizeTabTitle(text: string, limit: number = TAB_TITLE_MAX_CHARS): string {
+export function sanitizeSessionTitleTab(text: string, limit: number = SESSION_TAB_TITLE_MAX_CHARS): string {
   let out = ''
   let pendingSpace = false
   for (const char of Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)).map(part => part.segment)) {
@@ -45,7 +45,7 @@ export function sanitizeTabTitle(text: string, limit: number = TAB_TITLE_MAX_CHA
 }
 
 /** 页签标题的写出面——`out` 由装配注入（真 stdout / 测试假流）。 */
-export type TabTitleWriter = {
+export type SessionTitleTab = {
   /** ② 的会话名变了——`null` ＝ 还没有标题（按状态行同一口径显示「新会话」）。 */
   update(session: string | null): void
   /** 收摊——清掉自己写过的标题（写空 OSC，不假装能恢复原值）。 */
@@ -53,13 +53,13 @@ export type TabTitleWriter = {
 }
 
 /** 造标题写出器——去重状态随实例走（一条终端一个）。无标题时的兜底＝产品名（页签身份）。 */
-export function createTabTitleWriter(out: { write(text: string): void }, fallback: string = '🪄 Magic Code'): TabTitleWriter {
+export function createSessionTitleTab(out: { write(text: string): void }, fallback: string = '🪄 Magic Code'): SessionTitleTab {
   /** 上一次写出去的标题——去重用；`undefined` ＝ 本实例还什么都没写过。 */
   let last: string | undefined
 
   return {
     update(session: string | null): void {
-      const title = sanitizeTabTitle(session ?? fallback)
+      const title = sanitizeSessionTitleTab(session ?? fallback)
       if (title === '' || title === last) return
       last = title
       out.write(`\x1b]0;${title}\x07`)

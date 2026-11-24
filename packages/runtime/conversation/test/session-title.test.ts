@@ -1,9 +1,10 @@
 /**
- * AI 标题（docs/会话标题方案.md）——首条真实用户交代落账后旁路起一次标题。
+ * AI 标题（docs/会话标题方案.md）——首条真实材料落账后旁路起一次标题。
  *
- * 本文件钉住六件事：触发条件（真实交代落账 · notice/local 不算）· 一次生成（成功后不再触发）
- * · 失败降级（不写不上屏，下一条自然重试）· 写前竞争（期间被改名就弃写）· 用量隔离
- * （标题调用对 sink 完全透明）· 缺省关闭（没接写面就整个功能不在）。
+ * 本文件钉住七件事：触发条件（真实交代落账 · notice/local 不算 · 成员会话的收件消费
+ * 走委派职责范围）· 一次生成（成功后不再触发）· 失败降级（不写不上屏，下一条自然重试）
+ * · 写前竞争（期间被改名就弃写）· 用量隔离（标题调用对 sink 完全透明）· 缺省关闭
+ * （没接写面就整个功能不在）。
  *
  * 网关替身**按请求分派**（标题请求走标题脚本、业务请求走业务脚本）——标题生成是
  * fire-and-forget，与主轮的先后不定，按请求分派让断言不赌时序。
@@ -15,7 +16,7 @@ import type { FauxRecords, FauxTurn } from '@magic/faux'
 import { DEFAULT_TEST_SESSION, FIXED_AT, createFauxGateway } from '@magic/faux'
 import type { FauxSink } from '@magic/faux'
 import { createConversationSession } from '../src/service.ts'
-import { AI_TITLE_LIMIT } from '../src/title.ts'
+import { AI_TITLE_LIMIT } from '../src/session-title.ts'
 import { makeStage } from './support/harness.ts'
 import type { Stage } from './support/harness.ts'
 import { waitUntilIdle } from './support/harness.ts'
@@ -266,5 +267,47 @@ describe('AI 标题 · 竞争与缺省', () => {
     // model.call.start / model.usage 只剩主轮那一次
     expect(bench.sink.byKind('model.usage').length).toBe(0)
     expect(bench.sink.byKind('model.call.start').length).toBe(1)
+  })
+})
+
+describe('AI 标题 · 成员会话（收件消费路径）', () => {
+  /** 成员场景的替身——记录桩带协作身份与委派；边界只答「有收件可消费」。 */
+  function memberBench(options: { readonly titleTurns?: readonly FauxTurn[]; readonly mainTurns?: readonly FauxTurn[] }): { sink: FauxSink; titleRequests: readonly ModelRequest[]; written: string[]; service: ReturnType<typeof createConversationSession> } {
+    const stage = makeStage()
+    const titles = createFauxGateway({ stamper: stage.stamper, turns: options.titleTurns ?? [] })
+    const main = createFauxGateway({ stamper: stage.stamper, turns: options.mainTurns ?? [] })
+    const written: string[] = []
+    const records = {
+      ...stage.records,
+      collaboration: {
+        ...(stage.records as unknown as { collaboration: Record<string, unknown> }).collaboration,
+        agentForSession: () => ({ agentId: 'a1', collaborationId: 'c1', sessionId: DEFAULT_TEST_SESSION, name: '成员', purpose: undefined }),
+        listDelegations: () => [{ delegationId: 'd1', collaborationId: 'c1', assigneeId: 'a1', delegatorId: 'root', state: 'accepted', scope: '修复移动端登录按钮', body: [] }],
+      },
+    } as unknown as RecordsService
+
+    const service = createConversationSession({
+      session: DEFAULT_TEST_SESSION,
+      prompt: stage.promptVars,
+      gateway: { stream: (request, opts) => (isTitleRequest(request) ? titles : main).stream(request, opts) },
+      tools: stage.toolDomain,
+      records,
+      sink: stage.sink,
+      stamper: stage.stamper,
+      now: () => FIXED_AT,
+      collaboration: { consume: async () => true, context: async () => undefined, admit: () => undefined, requested: () => {} },
+      setTitle: (_session, title) => { written.push(title) },
+    })
+    return { sink: stage.sink, titleRequests: titles.requests, written, service }
+  }
+
+  test('收件消费（委派简报不落 user 条目）也起标题——取材委派职责范围', async () => {
+    const bench = memberBench({ titleTurns: [{ text: '修复移动端登录按钮' }], mainTurns: [{ text: '收到，开始。' }] })
+
+    bench.service.wake()
+    await waitUntilIdle(bench.sink)
+    await waitUntil(() => bench.written.length > 0, '成员标题写入')
+
+    expect(bench.written).toEqual(['修复移动端登录按钮'])
   })
 })

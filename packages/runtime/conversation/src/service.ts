@@ -57,7 +57,7 @@ import type { PromptVars } from './prompt/index.ts'
 import { createRefDelivery } from './refs.ts'
 import { createRulesDelivery } from './rules.ts'
 import { createSkillsDelivery } from './skills.ts'
-import { createTitleService } from './title.ts'
+import { createSessionTitleService } from './session-title.ts'
 
 /**
  * 装配期构造入参——一切「谁来实现」的选择由装配根给出（本域不知道背后是谁：
@@ -278,7 +278,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
    * 加它之前一字不动）。网关与压缩摘要同路（`continuationGateway ?? gateway`——旁路
    * 调用不走协作包装：不登记执行、不参与停点核销，见 `title.ts` 头注）。
    */
-  const titles = deps.setTitle === undefined ? undefined : createTitleService({
+  const titles = deps.setTitle === undefined ? undefined : createSessionTitleService({
     session: deps.session, gateway: deps.continuationGateway ?? deps.gateway,
     records: deps.records, setTitle: deps.setTitle, now: deps.now ?? Date.now,
   })
@@ -423,11 +423,22 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         }
         if (input === undefined && !(await collaboration?.consume())) continue
 
+        // **成员会话的第一份材料走收件消费**（委派简报落成 `agent-message` 条目，不经
+        // `prepareInput`）——标题从这里也拿得到机会，取材**委派的职责范围**（域内可达，
+        // 无需动协作契约；成员与主会话在标题这件事上同等对待）。失败照旧静默回退。
+        if (titles !== undefined && input === undefined) {
+          const agent = deps.records.collaboration.agentForSession(deps.session)
+          const delegation = agent?.collaborationId === undefined ? undefined
+            : deps.records.collaboration.listDelegations(agent.collaborationId)
+                .filter(one => one.assigneeId === agent.agentId).at(-1)
+          if (delegation !== undefined) titles.onUserEntry(delegation.scope)
+        }
+
         const outcome = await agentLoop(runtime, input, controller.signal, async entry => {
           try {
             await deps.collaboration?.userInput?.(entry,queued.shared)
             // **首条真实交代落账**——条件成立就后台起一次 AI 标题（fire-and-forget，
-            // 不阻塞轮次；notice 输入不算用户开场白，见 `title.ts`）
+            // 不阻塞轮次；notice 输入不算用户开场白，见 `session-title.ts`）
             if (titles !== undefined && input !== undefined && input.notice !== true) titles.onUserEntry(input.text)
           } finally { queued.done?.() }
         })

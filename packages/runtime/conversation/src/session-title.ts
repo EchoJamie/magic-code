@@ -87,9 +87,9 @@ function titleCandidate(answer: string): string | undefined {
 }
 
 /** AI 标题的写面——与改名同一份落点（装配接 `RecordsStore.setSessionTitle`）。 */
-export type TitleWriter = (session: SessionId, title: string, at: Timestamp) => void
+export type SessionTitleWriter = (session: SessionId, title: string, at: Timestamp) => void
 
-export type TitleService = {
+export type SessionTitleService = {
   /**
    * 首条真实用户交代**落账之后**调——条件成立就后台起一次（fire-and-forget，不阻塞轮次）。
    * notice 输入由调用方排除；local 输进不了那条路。
@@ -98,13 +98,13 @@ export type TitleService = {
 }
 
 /** 造标题生成器——网关与写面都由装配给（见文件头注三条护栏）。 */
-export function createTitleService(deps: {
+export function createSessionTitleService(deps: {
   readonly session: SessionId
   readonly gateway: ModelGateway
   readonly records: Pick<RecordsService, 'listSessions'>
-  readonly setTitle: TitleWriter
+  readonly setTitle: SessionTitleWriter
   readonly now: () => Timestamp
-}): TitleService {
+}): SessionTitleService {
   /** 本进程内已成功生成过——成功后永不再触发（「一次生成」）。 */
   let generated = false
   /** 在途位——单飞：在途期间再来交代不叠加。 */
