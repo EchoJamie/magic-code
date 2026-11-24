@@ -21,10 +21,10 @@ import type { Command, KernelEvent } from '@magic/contracts'
 import { assertSerializable } from './serializable.ts'
 
 /** 内核侧命令订阅方（主循环）——收命令，不返回值。 */
-export type CommandHandler = (command: Command) => void
+type CommandHandler = (command: Command) => void
 
 /** 外壳侧事件订阅方（渲染 / 观测）——收事件，不返回值。 */
-export type KernelEventListener = (event: KernelEvent) => void
+type KernelEventListener = (event: KernelEvent) => void
 
 /** 退订——重复调用无害。 */
 export type Unsubscribe = () => void

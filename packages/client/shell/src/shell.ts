@@ -1,11 +1,12 @@
 import type { BackgroundCommand, BackgroundView } from '@magic/contracts'
 import { backgroundDetail, backgroundKey, backgroundPicker } from './boards/conversation/background.ts'
 import { createModelSettings, type ModelNavigation } from './boards/capabilities/model-settings.ts'
+import { modelLabel } from './boards/capabilities/models.ts'
 import { createPrompt, type Ask } from './prompt.ts'
 import { createMemoryPicker } from './boards/records/memory-picker.ts'
 import { createSessionPicker } from './boards/records/session-picker.ts'
 
-import { sanitizeForDisplay } from '@magic/contracts'
+import { sanitizeForDisplay, WIRE_MESSAGE_BUDGET_BYTES } from '@magic/contracts'
 import { dirname } from 'node:path'
 import { composerLayout } from './components/composer.ts'
 
@@ -17,6 +18,7 @@ import type {
   Entry,
   EventKind,
   KernelEvent,
+  ModelChoice,
   RecordId,
   RunNotice,
   RunRow,
@@ -35,6 +37,7 @@ import {
   memberRows,
   memberState,
   messageRows,
+  workTabs,
 } from './boards/conversation/collaboration.ts'
 import { lineSpan, stepLeft, stepRight } from './components/composer.ts'
 import type { DraftRef } from './components/inline.ts'
@@ -251,6 +254,13 @@ export type ShellOptions = {
   readonly reopen?: (() => Promise<void>) | undefined
 
   readonly contextWindow?: number | null | undefined
+  /**
+   * **开局落地的那一档模型**（`ModelChoice`）——状态行 ③ 开机那一格。
+   *
+   * 由装配从**与请求解析同一个来源**递进来（`terminal.ts` 的 `startupRegistry().current()`）；
+   * 不给 ＝ 这一步不知道 ⇒ 那一格整格省掉（不写「未知」——那是编一个词）。
+   */
+  readonly modelChoice?: ModelChoice | undefined
 
   readonly workspaceRoots?: readonly string[] | undefined
   /** 基础目录派生的实际数据目录，仅用于设置回显。 */
@@ -265,6 +275,9 @@ export type ShellOptions = {
   readonly turnDuration?: 'elapsed' | 'active' | undefined
 
   readonly reducedMotion?: boolean | undefined
+
+  /** 实验性 · 语音输入（D75）——缺省关；此后随 `prefs.state` 走。 */
+  readonly voiceEnabled?: boolean | undefined
 
   readonly inputReady?: boolean | undefined
 
@@ -308,8 +321,13 @@ export type VoiceInput = {
     readonly onFinal: (text: string) => void
     readonly onError: (code: string, message?: string) => void
   }): { readonly stop: () => void; readonly cancel: () => void }
-  /** 听「右 ⌥ 单独按一下」；返回退订（TUI 收摊时调）。 */
-  listen(onTap: () => void): () => void
+  /**
+   * 听「右 ⌥ 单独按一下」；返回退订（TUI 收摊时调）。
+   *
+   * ⚠️ **一次轻点报成两半**（D75）：`down` 是按下、`up` 是松开。配对与「哪一屏拿焦点」
+   * 由外壳判（`focus.ts`）：这一侧听见的是**整台机器**，每个窗口都会收到同一下。
+   */
+  listen(onTap: (phase: 'down' | 'up') => void): () => void
 }
 
 /** sudo 密码通道（U129）——**只传密码，不落任何事件 / 记录**。 */
@@ -319,7 +337,7 @@ export type SudoFeed = {
   answer(requestId: string, password: string | null): void
 }
 
-export type SudoFeedEvent =
+type SudoFeedEvent =
   | { readonly kind: 'request'; readonly requestId: string; readonly command: string }
   | { readonly kind: 'settled'; readonly requestId: string }
 
@@ -380,19 +398,19 @@ const STREAMING: ReadonlySet<EventKind> = new Set<EventKind>(['model.delta', 'to
  * 故它自己那一截要从「有没有别的话」这笔账里去掉——不去掉的话，`/pdf` 单独一条会被
  * 当成「说了点什么」而直接发出去（一次一个字都没有的交代）。
  */
-export function spokenOf(draft: string, refs: readonly DraftRef[], word: string): string {
+function spokenOf(draft: string, refs: readonly DraftRef[], word: string): string {
   const spoken = bodyOf(draft, refs)
 
   return spoken.startsWith(word) ? spoken.slice(word.length) : spoken
 }
 
-export function submittable(draft: string, refs: readonly DraftRef[]): boolean {
+function submittable(draft: string, refs: readonly DraftRef[]): boolean {
   if (bodyOf(draft, refs).trim() !== '') return true
 
   return refs.some((ref) => ref.kind !== 'skill')
 }
 
-export function bodyOf(draft: string, refs: readonly DraftRef[]): string {
+function bodyOf(draft: string, refs: readonly DraftRef[]): string {
   let out = ''
   let cursor = 0
 
@@ -424,17 +442,30 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   //    放一次的东西」，都得另保一手才活得过 `rebuild`（那半由 `bannerFirst` 管）。
   //
   // ⚠️ **画哪一版由渲染层按列数定**（视图这层不知道列数）——见 `LogRow` 里 `banner` 那一支。
-  // 这里种的只有 ④ 的**开机那一格**（`contextWindow`）——此后的分母随事件来（见 `ShellOptions`）。
+  //
+  // 这里种的是状态行**开机就说得出的那三格**：④ 的分母（`contextWindow`）与模型
+  // （`modelChoice`，开局落地的那一档）由装配递进来（与请求解析**同一个来源**：
+  // `terminal.ts` 的 `startupRegistry().current()`）；已用量开机就是 `0`——这一条会话
+  // 一个 token 都还没用（`magic resume <id>` 那一趟是例外：那一条的账这一侧不知道，
+  // 照旧省掉那一格，见 `ShellOptions.openingSession`）。
+  const openedWindow = options.contextWindow ?? null
   let view = withBanner(
-    withContextWindow(
-      createView({
+    patchStatus(
+      withContextWindow(
+        createView({
 
-        statusLine: options.statusLine,
-        reducedMotion: options.reducedMotion,
-        turnDuration: options.turnDuration,
-        workspace: workspaceLabelOf(options.workspaceRoots),
-      }),
-      options.contextWindow ?? null,
+          statusLine: options.statusLine,
+          reducedMotion: options.reducedMotion,
+          voiceEnabled: options.voiceEnabled,
+          turnDuration: options.turnDuration,
+          workspace: workspaceLabelOf(options.workspaceRoots),
+        }),
+        openedWindow,
+      ),
+      {
+        usage: options.openingSession === undefined ? 0 : null,
+        model: options.modelChoice === undefined ? null : modelLabel(options.modelChoice),
+      },
     ),
   )
 
@@ -540,6 +571,20 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     send: command => send(command),
   })
 
+  /**
+   * **还没有会话时，模型选择留在窗口自己身上**（用户 2026-11-19 定：连接是核心、会话懒建立）。
+   *
+   * 不发给引擎：那时没有装配、也没有会话可落这条事实。发送下一条消息时随它带过去
+   * （`UserInput.model`），装配按它建注册表。返回 `false` ＝ 已有会话，调用方照旧发 `model.switch`。
+   */
+  const chooseInWindow = (request: import('@magic/contracts').ModelSwitchRequest): boolean => {
+    if (view.sessionId !== null || view.collaboration?.collaboration !== undefined) return false
+    const choice = request.choice ?? view.modelChoice?.choice
+    const said = choice === undefined ? '已选择思考等级' : `已选择 ${modelLabel(choice)}`
+    commit(noteResult({ ...view, modelChoice: { ...view.modelChoice, ...request }, status: { ...view.status, ...(choice === undefined ? {} : { model: modelLabel(choice) }) } }, `${said}；下一条消息起用它`))
+    return true
+  }
+
   const compactDrafts = new Map<string, { session: string; text: string; refs: readonly DraftRef[]; caret: number }>()
   const compactLabel = (state: import('@magic/contracts').CompactState['state']) => ({ pending: '等待完整交互边界', running: '正在整理笔记', completed: '压缩完成', failed: '压缩失败', cancelled: '已取消', interrupted: '已中断', 'no-material': '没有可压材料', unknown: '受理或结果尚未确认' })[state]
   const compactNote = (state: import('@magic/contracts').CompactState) => state.notesSaved && state.state !== 'completed' ? '已保存的笔记保留，本次历史收缩未完成' : ''
@@ -589,6 +634,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     enterLayer: () => enterLayer(),
     popLayer: () => popLayer(),
     get prompt() { return prompt },
+    chooseInWindow: request => chooseInWindow(request),
   })
 
   let collaborationQuery: { readonly member?: AgentId } | null = null
@@ -1128,6 +1174,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         ...view,
         statusLine: event.data.statusLine,
         reducedMotion: event.data.reducedMotion === true,
+        // 实验性那几项：**回话里没带就按关**（缺省＝关，见 `ExperimentalConfig`）
+        voiceEnabled: event.data.voice === true,
         turnDuration: event.data.turnDuration ?? 'elapsed',
       })
       if (held === 'statusline') openStatusLinePicker(picked(view)?.value === undefined ? 0 : view.dock.kind === 'picker' ? view.dock.picker.selected : 0)
@@ -1170,7 +1218,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         const label = turn.label
         turn = null
         if (label !== null && event.data.note === undefined && before !== event.data.active) {
-          commit(appendPageNote(view, `已切到 ${label}`))
+          // 页注说**会话名**（id 已在列表行上，切完的回执不再复读一遍）。
+          commit(appendPageNote(view, `已切到 ${nameOfSession(event.data.active)}`))
         }
       }
 
@@ -1297,6 +1346,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     rebuildEntries = [...rebuildEntries, ...historyEntries(data)]
     if (!data.done) return
+    /**
+     * 读取失败/降级时**不清屏**：已经收到的条目仍在，界面保留上一份内容并给一句
+     * 可重试的说明。2026-11-21 的教训是「用着用着突然不能用了」——历史读失败
+     * 不该等于历史消失。
+     */
+    if (data.error !== undefined && rebuildEntries.length === 0) {
+      rebuildFor = null
+      commit({ ...view, flash: data.error })
+      return
+    }
 
     rebuildEntries = [...rebuildEntries].sort((a,b)=>a.at-b.at||a.id-b.id)
     if (history.length === 0) {
@@ -1321,7 +1380,25 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       ...(data.timing === undefined ? {} : { timing: data.timing }),
       ...(data.messages === undefined ? {} : { messages: data.messages }),
     })
-    commit({ ...rebuilt, rows: [...rebuilt.rows, ...unconfirmed] })
+    /**
+     * **接回这条会话的用量读数**（`session.history.usage`，末块给）——状态行 ④ 放回离开那一刻
+     * 那个数：`/resume` 与 `magic resume <id>` 换过去时那一格先按「不知道」省掉（见
+     * `reduceSessionState` 与开机那一格），这里补上。
+     *
+     * 已经在报的数是更新的现场（这一趟跑出来的），**不盖**——拿历史里那份旧读数盖回去就是
+     * 「用旧账压新账」。`0` 不算「已经报过」：那是开机／刚开一条新会话那一位（一个 token 都
+     * 还没用），真实调用报回来的分子不会是这个数。
+     */
+    const live = view.status.usage !== null && view.status.usage !== 0
+    const withUsage = live || data.usage === undefined ? rebuilt : patchStatus(rebuilt, {
+      ...(data.usage.inputTokens === undefined ? {} : { usage: data.usage.inputTokens }),
+      ...(data.usage.contextWindow === undefined ? {} : { window: data.usage.contextWindow }),
+    })
+    commit({
+      ...withUsage,
+      rows: [...withUsage.rows, ...unconfirmed],
+      ...(data.truncated === true ? { flash: '记录过长，已显示部分内容' } : {}),
+    })
     rebuildFor = null
     rebuildEntries = []
 
@@ -1384,7 +1461,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     const keep = push ? undefined : picked(view)?.value
     const rows = [collaborationRow('history', '查看记录'), ...(archived ? [] : [collaborationRow('rename', '改名')]),
       ...(archived ? [collaborationRow('restore', '恢复', '恢复后需另行接回或发送')] : connected && item?.canArchive === true ? [collaborationRow('archive', '归档')] : []),
-      ...(session === view.sessionId && archived ? [collaborationRow('draft', '查看／复制原草稿'), collaborationRow('sessions', '/resume · 切换其他会话')] : [])]
+      ...(session === view.sessionId && archived ? [collaborationRow('draft', '查看／复制原草稿')] : [])]
     if (push) enterLayer()
     commit(openPicker(view, { source: 'session-actions', title: `${nameOfSession(session)}${archived ? ' · 已归档' : ''}`,
       selected: Math.max(0, rows.findIndex(row => row.value === keep)), rows, hint: '↑↓ 选择 · Enter 执行 · Esc 返回' }))
@@ -1629,6 +1706,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     statusLine: view.statusLine,
     reducedMotion: view.reducedMotion,
+    voice: view.voiceEnabled,
     turnDuration: view.turnDuration,
     filter: configQuery,
   })
@@ -1710,6 +1788,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const toggleReducedMotion = (): void => {
     const next = !view.reducedMotion
     send({ type: 'prefs.set', reducedMotion: next })
+  }
+
+  /**
+   * **实验性 · 语音输入**（D75）——开了才接「右 ⌥ 那一跳」（监听器与焦点上报）。
+   *
+   * ⚠️ 生效**不重启界面**：落定读数经 `prefs.state` 回来（`view.voiceEnabled`），
+   *    `run.ts` 那一侧据此起停——屏上这一格与真正接没接，永远取自同一处。
+   */
+  const toggleVoiceInput = (): void => {
+    send({ type: 'prefs.set', voice: !view.voiceEnabled })
   }
 
   const refreshConfigPicker = (): void => {
@@ -2018,19 +2106,27 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const openCollaboration = (selected?: string): void => {
     const snapshot = view.collaboration
     const member = currentMember(view)
+    /**
+     * **工作级那几条**——独立成一组（`工作级`），与成员行之间只隔一组头，不画线。
+     *
+     * `停止整件工作` 走 `danger`（不可逆：铺不开回收）；`明确继续整件工作` 走 `wait`
+     * （先核对停点）。两处都是「按下去有后果」的，颜色替用户先看一眼。
+     */
+    const workRow = (value: string, label: string, meta = '', tone?: 'run' | 'wait' | 'danger' | 'idle') =>
+      ({ ...collaborationRow(value, label, meta, tone), group: '工作级' })
     const rows = [
       ...(snapshot?.collaboration ? memberRows(snapshot, view.sessionId) : []),
-      ...(snapshot?.collaboration ? [collaborationRow('whole', '回到主会话', '恢复入口草稿；输入只发给入口自己'),
-        collaborationRow('broadcast', '向所有成员补充', '共同要求送达相关成员'),
-      collaborationRow('constraints', '共同补充的带入情况'),
-      collaborationRow('default-model', '后续派生的默认模型', '按需配置'),
-      collaborationRow('stop-work', '停止整件工作', '覆盖全部成员及继续委派'),
-      ...(snapshot.collaboration.state === 'stopped' ? [collaborationRow('resume-work', '明确继续整件工作', '先核对停点')] : [])] : []),
+      ...(snapshot?.collaboration ? [workRow('whole', '回到主会话', '恢复入口草稿；输入只发给入口自己'),
+        workRow('broadcast', '向所有成员补充', '共同要求送达相关成员'),
+        workRow('constraints', '共同补充的带入情况'),
+        workRow('default-model', '后续派生的默认模型', '按需配置'),
+        workRow('stop-work', '停止整件工作', '覆盖全部成员及继续委派', 'danger'),
+        ...(snapshot.collaboration.state === 'stopped' ? [workRow('resume-work', '明确继续整件工作', '先核对停点', 'wait')] : [])] : []),
     ]
     // 从子会话打开时主会话在列表里并预选（Enter 返回）；在主会话时它不出现。
     const preselected = selected ?? (member === undefined ? undefined : snapshot?.collaboration?.coordinatorId)
     commit(openPicker(view, {
-      source: 'collaboration', title: '[协作] 整件工作 · 子会话', rows,
+      source: 'collaboration', title: '整件工作 · 子会话', tabs: workTabs('collaboration'), rows,
       selected: Math.max(0, rows.findIndex(row => row.value === preselected)),
       hint: `${snapshot?.collaboration ? '浏览列表不切输入 · Enter 进入子会话或执行操作' : '没有协作成员'}\nTab/Shift+Tab 切换 · ↑↓ 选择 · Enter 打开 · Esc 返回`,
     }))
@@ -2168,6 +2264,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
   const sendInput = (text: string, refs: readonly DraftRef[]): ShellEffect => {
     if (!connected) { commit(appendReceipt(view, 'Engine 未连接，草稿未发送。')); return NONE }
+    /**
+     * 一条消息装不下时**不能静默丢**：发送端会拒发（连接保持），但用户会以为
+     * 发出去了、界面停在「提交中」——那仍然是「突然不能用」。保留草稿、说清出口。
+     */
+    if (new TextEncoder().encode(text).byteLength > WIRE_MESSAGE_BUDGET_BYTES - 64 * 1024) {
+      commit({ ...view, flash: '这一句太长，单条消息装不下——请拆成几条，或用 @ 引用文件' })
+      return NONE
+    }
     // 咨询子会话只供查看；纠正与补充要给原工作。
     if (currentMember(view)?.agent.purpose === 'consultation') {
       commit(appendReceipt(view, '咨询子会话只供查看；相关纠正请补充给原工作'))
@@ -2189,7 +2293,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     const echoed = view.inputMember === undefined ? appendEcho(cleared,text,userImages(refs)) : cleared
     draft({...echoed,rows:echoed.rows.map((row,index)=>row.kind==='user'&&index===echoed.rows.length-1?{...row,inputRef:ref,inputState:'提交中'}:row)})
-    const input = { text, ref, purpose, ...(refs.length === 0 ? {} : { refs: wire(refs) }) }
+    const input = { text, ref, purpose, ...(refs.length === 0 ? {} : { refs: wire(refs) }), ...(view.modelChoice === null ? {} : { model: view.modelChoice }) }
     // 子会话里输入只发给这一条子会话；入口会话默认只给自己（不再广播给成员）。
     const sub = currentMember(view)
     send(view.collaboration?.collaboration === undefined ? { type: 'input.submit', ...input }
@@ -3102,6 +3206,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
           toggleReducedMotion()
           return NONE
         }
+        if (row.value === 'voice') {
+          if (view.dock.kind === 'picker' && view.dock.picker.source === 'config') enterLayer()
+          toggleVoiceInput()
+          return NONE
+        }
 
         if (row.value === 'mcp') {
           enterLayer()
@@ -3150,7 +3259,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         // 一个事件都不发（见 `conversation` 的 `run`）。故回执**这一侧当场给**
         // （等答复就是白等），页也不翻（没换记录区，翻了反而是「凭空清一屏」）。
         if (row.value === view.sessionId) {
-          commit(appendReceipt(closePicker(view), `已切到 ${row.label}`))
+          commit(appendReceipt(closePicker(view), `已切到 ${nameOfSession(row.value)}`))
           return NONE
         }
 
@@ -3356,14 +3465,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // 命令把这一行整个吃掉了（交互配置型不带正文）——**引用也跟着走**：
     // 它们指向的那段文字已经不在草稿里了（留着就是「正文没了、材料还在」的暗带）。
     const cleared: ShellView = { ...from, draft: '', caret: 0, refs: [] }
-    /**
-     * **断线时先问连接、再动界面**：需要引擎的命令不在本地留下半开的页面或等待态——
-     * 直接回一句说明、**草稿保留**（`submit` 见最后一行是回执就把草稿还原）。
-     * 纯壳命令（`/help`、`/status`、`/exit`）与入口自己完成的配置动作（`/model`、`/web`）不走这一判。
-     */
-    const offline = (): { next: ShellView; commands: readonly Command[]; leaving: boolean } =>
-      only(appendReceipt(cleared, `Engine 未连接，${word} 需要连接后使用；草稿保留`))
-
     /** 本地这一下的改动 ＋ 待发的命令——两件一起交回调用方（它决定次序）。 */
     const only = (
       next: ShellView,
@@ -3373,6 +3474,26 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       commands,
       leaving: false,
     })
+
+    /**
+     * **断线时先问连接、再动界面**：需要引擎的命令不在本地留下半开的页面或等待态——
+     * 直接回一句说明、**草稿保留**（`submit` 见最后一行是回执就把草稿还原）。
+     *
+     * 判据取**这条命令要发的那些命令**是否都在 `offlineCommands` 里，而不是「断没断」：
+     * 设置模式下 `mcp.list` 也由入口直接答，`/config` 因此照常可用；普通模式断线时它要等
+     * 一份不会来的答复，才该拦。纯壳命令（`/help`、`/status`、`/exit`）不在表里。
+     */
+    const needs: readonly Command['type'][] = word === '/clear' ? ['session.new']
+      : word === '/ps' ? ['collaboration.read', 'background.list']
+        : word === '/resume' ? ['session.list']
+          : word === '/rename' ? ['session.rename']
+            : word === '/skills' ? ['skills.list']
+              : word === '/config' ? ['model.list', 'mcp.list', 'web.list']
+                : word === '/mcp' ? ['mcp.list']
+                  : []
+    const offline = (): { next: ShellView; commands: readonly Command[]; leaving: boolean } =>
+      only(appendReceipt(cleared, `Engine 未连接，${word} 需要连接后使用；草稿保留`))
+    if (!connected && needs.length > 0 && !needs.every(type => transport.offlineCommands?.includes(type) === true)) return offline()
 
     // —— 本地结果进记录区，原文已按用户输入回显 ——
     if (word === '/help') return only(appendOutput(cleared, HELP_TITLE, HELP_LINES))
@@ -3388,7 +3509,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       // 「同一入口下挂动作」的姿势留给 `/model`）。多写的词照 `submit` 那一侧的老规矩
       // 如实回一句，不当交代发出去。
       if (arg !== '') return only(appendReceipt(cleared, '认得的用法：/clear（不带参数）'))
-      if (!connected) return offline()
 
       turn = { kind: 'new', label: null }
       return only(cleared, { type: 'session.new' })
@@ -3396,15 +3516,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     if (word === '/ps') {
       if (arg) return only(appendReceipt(cleared, '用法：/ps'))
-      if (!connected) return offline()
       collaborationQuery = {}
-      return only(openPicker(cleared, { source: 'collaboration', title: '[协作] 整件工作 · 子会话  │  后台命令', rows: [], selected: 0, hint: '正在读取 · Tab/Shift+Tab 切换 · Esc 返回' }), { type: 'collaboration.read' }, { type: 'background.list' })
+      return only(openPicker(cleared, { source: 'collaboration', title: '整件工作', tabs: workTabs('collaboration'), rows: [], selected: 0, hint: '正在读取 · Tab/Shift+Tab 切换 · Esc 返回' }), { type: 'collaboration.read' }, { type: 'background.list' })
     }
 
     if (word === '/resume') {
       if (arg === '') {
-        if (!connected) return offline()
-        models.cancelOpen()
+          models.cancelOpen()
         waiting = 'session'
         return only(cleared, { type: 'session.list' })
       }
@@ -3424,7 +3542,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       if (from.sessionId === null) {
         return only(appendReceipt(cleared, '还没有会话可改名——先交代一句开张'))
       }
-      if (!connected) return offline()
       return only(cleared, { type: 'session.rename', session: from.sessionId, title })
     }
 
@@ -3437,7 +3554,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
 
     if (word === '/skills') {
-      if (!connected) return offline()
       models.cancelOpen()
       waiting = 'skills'
       skillSeed = arg
@@ -3453,7 +3569,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     if (word === '/config') {
       if (arg !== '') return only(appendReceipt(cleared, '认得的用法：/config（不带参数）'))
-      if (!connected) return offline()
       models.cancelOpen()
       waiting = 'config'
       configPending = new Set(CONFIG_READINGS.map(one => one.event))
@@ -3487,14 +3602,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         const who = arg.slice('reconnect'.length).trim()
         if (who === '') return only(appendReceipt(cleared, '要重连哪一台？`/mcp reconnect <名字>`'))
 
-        if (!connected) return offline()
-        models.cancelOpen()
+          models.cancelOpen()
         waiting = 'mcp'
         mcpServer = who
         return only(cleared, { type: 'mcp.reconnect', server: who })
       }
 
-      if (!connected) return offline()
       models.cancelOpen()
       waiting = 'mcp'
       mcpServer = arg

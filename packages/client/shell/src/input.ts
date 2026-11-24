@@ -1,3 +1,5 @@
+import { stripFocusReports } from './focus.ts'
+
 /** 外壳认得的按键——组件把 Ink 的 `(input, key)` 收窄成这个（多出来的都算 `other`）。 */
 export type ShellKey =
   | { readonly kind: 'char'; readonly char: string }
@@ -63,6 +65,10 @@ export function toShellKeys(
     readonly tab?: boolean
   },
 ): readonly ShellKey[] {
+  // **焦点上报**（DECSET 1004 · D75）——`CSI I` / `CSI O`。Ink 剥了 ESC，交上来的就是
+  // `[I` / `[O`；落到最后那一支会变成两个**正文字母**（`[` 与 `I`），草稿里凭空多一串。
+  // 认键之前先剥（只剥行首那几条，见 `stripFocusReports`），后面的分支一个都不用改。
+  input = stripFocusReports(input)
   if (key.return === true && key.meta === true) return [{kind:'alt+enter'}]
   if (key.ctrl === true && input === 'p') return [{ kind: 'ctrl+p' }]
   if (key.ctrl === true && input === 'n') return [{ kind: 'ctrl+n' }]
@@ -177,7 +183,7 @@ export function toShellKeys(
  * 带 `\n` ⇒ 那一下仍然不提交（**与今天一样，不是新坏**）。要更宽只剩「问终端 bracketed paste
  * 开没开」（`CSI ? 2004 $ p`）那一条路——多数终端根本不答，还多一次开机时序的赌，故不做。
  */
-export function trailingEnterOf(input: string): string | null {
+function trailingEnterOf(input: string): string | null {
   if (input.length < 2 || !input.endsWith('\r')) return null
   if (input.includes('\n')) return null
   if (input.slice(0, -1).includes('\r')) return null

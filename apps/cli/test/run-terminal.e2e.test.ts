@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdirSync, realpathSync, renameSync, symlinkSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runPathsOf } from '@magic/host'
+import { createRecordsStore } from '@magic/data'
 import { readDatabase } from './support.ts'
 import { REPO_ROOT, createUiSession } from './ui/index.ts'
 import type { Sandbox, UiSession } from './ui/index.ts'
@@ -113,7 +114,7 @@ describe('终端是客户端', () => {
     }
   }, 120_000)
 
-  test('`resume` 打错一个字母——经管理者那条路照样报错退场（不静默开一条空的）', async () => {
+  test('`resume` 打错一个字母——提示后窗口仍可用，不静默开一条空的', async () => {
     const runs = runArtifacts('magic-u48-typo-runs-')
     const fixture = startFixture({ turns: [] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
@@ -127,19 +128,21 @@ describe('终端是客户端', () => {
         sandbox,
         fixture,
         argv: ['resume', 's-typo'],
-        // 这一趟**画不出一帧**（没接上就退了）——故不等首帧
-        skipReady: true,
       })
 
-      const closed = await window.close({ graceMs: 8_000 })
-      expect(closed.exit.by).toBe('app') // 自己退的
-      expect(closed.exit.code).toBe(1)
-
+      // 2026-11-21：会话 id 找不到不再拒握手并关连接——窗口照常可用，只给一句提示。
+      const deadline = Date.now() + 5_000
+      while (!window.rawText().includes('没有这条会话') && Date.now() < deadline) await Bun.sleep(50)
       const said = window.rawText()
       expect(said).toContain('没有这条会话')
       expect(said).toContain('s-typo')
 
-      // **一个会话都没开**——「报错不降级」在这一条路上也是结构上的
+      await window.quit()
+      const closed = await window.close({ graceMs: 8_000 })
+      expect(closed.exit.by).toBe('app') // 自己退的，不是被管理者踢掉
+      expect(closed.exit.code).toBe(0)
+
+      // **一个会话都没开**——提示归提示，不静默开一条空的
       const db = readDatabase(join(sandbox.dataDir, 'records.db'))
       try {
         expect(db.sessions.length).toBe(0)
@@ -349,6 +352,8 @@ describe('终端是客户端', () => {
 
 const SAID = '记一句短话'
 const REPLY = '好，记下了。'
+const SAID_AGAIN = '接着聊'
+const REPLY_AGAIN = '接着聊了。'
 
 describe('`resume` 接续（真窗口）', () => {
   async function withContent(
@@ -427,6 +432,100 @@ describe('`resume` 接续（真窗口）', () => {
 
       // 窗口走了 ⇒ 那一代也收（没有连接者、手上也没事）
       await waitFor('执行者收掉', async () => (await straysIn(sandbox)).executors.length === 0, 20_000)
+    } finally {
+      await window?.close().catch(() => {})
+      await host.close()
+      await fixture.stop()
+      await sandbox.dispose()
+      if (process.env['MAGIC_CLI_EVIDENCE'] === undefined) removeDir(runs)
+    }
+  }, 120_000)
+
+  /**
+   * **用户判据**（2026-11-21）：P0 不是「连接没断」，是「还能继续对话」。
+   * 接回一条已有历史的会话后，必须能再发一句、拿到模型回复、窗口仍可退出。
+   */
+  test('接续之后还能继续对话——发一句、收到回复，窗口与执行者都正常', async () => {
+    const runs = runArtifacts('magic-u53-resume-chat-')
+    const fixture = startFixture({ turns: [
+      { kind: 'text', text: REPLY },
+      { kind: 'text', text: REPLY_AGAIN },
+    ] })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    const host = await startResidentHost(sandbox, join(runs, 'host'))
+    let window: UiSession | undefined
+
+    try {
+      const id = await withContent(sandbox, fixture, runs)
+      expect(id).not.toBe('')
+      expect(fixture.requests()).toHaveLength(1)
+
+      window = await createUiSession({
+        label: '接续再聊', artifacts: runs, sandbox, fixture, argv: ['resume', id],
+      })
+      await window.wait({ text: REPLY }, { timeoutMs: 30_000 })
+
+      // 接回之后**继续对话**：这一句是本次 P0 的真正判据。
+      await window.send(SAID_AGAIN, { until: { text: SAID_AGAIN }, timeoutMs: 15_000 })
+      await window.key('enter')
+      await window.wait({ text: REPLY_AGAIN }, { timeoutMs: 30_000 })
+      expect(fixture.requests()).toHaveLength(2)
+      await window.wait({ text: '○ 空闲' }, { timeoutMs: 30_000 })
+
+      await window.quit()
+      const closed = await window.close({ graceMs: 8_000 })
+      expect(closed.exit.by).toBe('app')
+      expect(closed.exit.code).toBe(0)
+      window = undefined
+    } finally {
+      await window?.close().catch(() => {})
+      await host.close()
+      await fixture.stop()
+      await sandbox.dispose()
+      if (process.env['MAGIC_CLI_EVIDENCE'] === undefined) removeDir(runs)
+    }
+  }, 120_000)
+
+  /**
+   * **事故数据形状下的同一条判据**：9MB 历史记录接回后，仍要能发一句、收到回复。
+   */
+  test('9MB 历史会话接回后还能继续对话', async () => {
+    const runs = runArtifacts('magic-u53-resume-big-chat-')
+    const fixture = startFixture({ turns: [
+      { kind: 'text', text: REPLY },
+      { kind: 'text', text: REPLY_AGAIN },
+    ] })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    const host = await startResidentHost(sandbox, join(runs, 'host'))
+    let window: UiSession | undefined
+    try {
+      // 先用真窗口走一轮，确保这条会话有已保存的模型组合与历史。
+      const id = await withContent(sandbox, fixture, runs)
+      expect(fixture.requests()).toHaveLength(1)
+
+      // 再往同一条会话追加一条 9MB 记录（事故的数据形状）。
+      const store = createRecordsStore({ dataDir: sandbox.dataDir, workspace: [sandbox.workspace] })
+      const huge = 'x'.repeat(9 * 1024 * 1024)
+      store.serviceFor(id).appendEntry({
+        kind: 'tool-result', content: { text: huge }, payload: { ok: true, output: { text: huge } }, at: Date.now(),
+      })
+      store.close()
+
+      window = await createUiSession({
+        label: '大历史接续再聊', artifacts: runs, sandbox, fixture, argv: ['resume', id],
+      })
+      await window.wait({ text: REPLY }, { timeoutMs: 30_000 })
+
+      await window.send(SAID_AGAIN, { until: { text: SAID_AGAIN }, timeoutMs: 15_000 })
+      await window.key('enter')
+      await window.wait({ text: REPLY_AGAIN }, { timeoutMs: 30_000 })
+      expect(fixture.requests()).toHaveLength(2)
+      await window.wait({ text: '○ 空闲' }, { timeoutMs: 30_000 })
+
+      await window.quit()
+      const closed = await window.close({ graceMs: 8_000 })
+      expect(closed.exit.by).toBe('app')
+      window = undefined
     } finally {
       await window?.close().catch(() => {})
       await host.close()
@@ -551,7 +650,7 @@ describe('停止、后台命令与接着交代（真窗口）', () => {
     const MARK = `321.${Math.floor(Math.random() * 900_000) + 100_000}`
     const fixture = startFixture({
       turns: [
-        { kind: 'tool', name: 'exec', args: { command: `sleep ${MARK}`, background: true } },
+        { kind: 'tool', name: 'exec', args: { description: '测试命令', command: `sleep ${MARK}`, background: true } },
         { kind: 'text', text: '交出去了。' },
       ],
     })
@@ -608,7 +707,7 @@ describe('停止、后台命令与接着交代（真窗口）', () => {
     const fixture = startFixture({
       turns: [
         // ① 一件**要跑一会儿**的工具（好让菜单开在「它正跑着」那一刻）
-        { kind: 'tool', name: 'exec', args: { command: `while [ ! -f '${toolRelease}' ]; do sleep 0.02; done; echo 看完了` } },
+        { kind: 'tool', name: 'exec', args: { description: '测试命令', command: `while [ ! -f '${toolRelease}' ]; do sleep 0.02; done; echo 看完了` } },
         // ② 第二轮的正文**慢慢长**（这样还能看见「第二轮真起来了」）
         { kind: 'text', text: '看完了，接着做。'.repeat(2), chunks: 2, chunkDelayMs: 0,
           beforeChunk: async (index) => { if (index === 1) await tail.promise } },
@@ -673,7 +772,7 @@ describe('停止、后台命令与接着交代（真窗口）', () => {
   test.each([false, true])('转后台留的接回入口：照那一行真敲一遍，接回同一个库（自定义符号链接位置=%s）', async (alias) => {
     const runs = tempDir('magic-u100-resume-runs-')
     const fixture = startFixture({ turns: [
-      { kind: 'tool', name: 'exec', args: { command: 'sleep 60', background: true } },
+      { kind: 'tool', name: 'exec', args: { description: '测试命令', command: 'sleep 60', background: true } },
       { kind: 'text', text: '第一句答复。' },
     ] })
     const base = createSandbox({ baseURL: fixture.baseURL })
@@ -815,7 +914,7 @@ describe('停止、后台命令与接着交代（真窗口）', () => {
     const MARK = `322.${Math.floor(Math.random() * 900_000) + 100_000}`
     const fixture = startFixture({
       turns: [
-        { kind: 'tool', name: 'exec', args: { command: `sleep ${MARK}`, background: true } },
+        { kind: 'tool', name: 'exec', args: { description: '测试命令', command: `sleep ${MARK}`, background: true } },
         { kind: 'text', text: '交出去了。' },
       ],
     })
@@ -873,6 +972,62 @@ describe('停止、后台命令与接着交代（真窗口）', () => {
     }
   }, 120_000)
 })
+
+/**
+ * **实验性 · 语音输入**（D75）——开关在 `/config` 里，落到终端字节上才算数。
+ *
+ * 量的是完整那条链：`/config` 一按 → `prefs.set` → 引擎写盘 → `prefs.state` 回来 →
+ * 外壳那一格变 → `run.ts` 才开焦点上报（`\x1b[?1004h`）。**缺省关**时一个字节都不该有；
+ * 退出时还要把模式复原（`\x1b[?1004l`），别留给下一个程序。
+ *
+ * ⚠️ 只判字节，不等那条本机助手编出来：上报是**一开就写**的，助手编译要几秒，与这一条无关。
+ */
+test('实验性 · 语音输入：缺省不接（无焦点上报）；`/config` 里一开就发 `?1004h`，退出复原 `?1004l`', async () => {
+  const runs = runArtifacts('magic-d75-voice-runs-')
+  const fixture = startFixture({ turns: [] })
+  const sandbox = createSandbox({ baseURL: fixture.baseURL })
+  const host = await startResidentHost(sandbox, join(runs, 'host'))
+  let window: UiSession | undefined
+
+  try {
+    window = await createUiSession({ label: '语音开关', artifacts: runs, sandbox, fixture })
+
+    // ① 缺省关：配置里没写 experimental ——一个焦点上报都不发
+    expect(window.rawText()).not.toContain('\u001b[?1004h')
+
+    // ② `/config` → 筛「语音」→ 回车＝开
+    await window.send('/config')
+    await window.key('enter')
+    await window.wait({ text: '语音输入' })
+    // 分组头也在屏上（实验性那一栏单列一组——不是混在常态设置里）
+    await window.wait({ text: '实验性功能' })
+    await window.send('语音')
+    await window.wait({ text: '已关 · 仅 Ghostty' })
+    await window.key('enter')
+    // 落定读数回来之后那一格才变（不是按下去就变）
+    await window.wait({ text: '已开 · 仅 Ghostty' })
+
+    // ③ 真开了：终端收到焦点上报的开模式
+    expect(window.rawText()).toContain('\u001b[?1004h')
+
+    // ④ 退出复原——照产品的方式退（空闲连按两次 ctrl+c，1 秒内），再判那个复原字节。
+    // ⚠️ **判的是字节不是退出方式**：被 SIGKILL 掉的进程写不出 `?1004l`——
+    //    所以这两个字节本身就是「收尾走到了」的凭据。
+    await window.key('esc')
+    await window.key('ctrl+c')
+    await Bun.sleep(120)
+    await window.key('ctrl+c')
+    await window.close({ graceMs: 8_000 })
+    expect(window.rawText()).toContain('\u001b[?1004l')
+    window = undefined
+  } finally {
+    await window?.close().catch(() => {})
+    await host.close()
+    await fixture.stop()
+    await sandbox.dispose()
+    if (process.env['MAGIC_CLI_EVIDENCE'] === undefined) removeDir(runs)
+  }
+}, 120_000)
 
 /** 命令行里带那一段的进程号（`pgrep -f` 按整条命令行找——那一段是随机的，撞不上别人的）。 */
 async function pidsOf(mark: string): Promise<readonly number[]> {

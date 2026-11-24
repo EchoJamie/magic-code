@@ -76,7 +76,7 @@ export type RefDelivery = {
 }
 
 /** 取齐的结果——判别式（失败位指得出**是哪一份**、为什么）。 */
-export type RefLoad =
+type RefLoad =
   | { readonly ok: true; readonly refs: readonly InputRefEntry[] }
   | { readonly ok: false; readonly reason: string }
 

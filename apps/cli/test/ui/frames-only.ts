@@ -39,7 +39,7 @@ import { SCENARIOS, scenarioNames } from './scenarios.ts'
 import type { ScenarioContext, ScenarioName, ScenarioOptions } from './scenarios.ts'
 
 /** 一条**读数**——故事在该判的那一点上，屏上**实际**是什么（原样，不判对错）。 */
-export type Reading = {
+type Reading = {
   /** 故事原话（开发写的那条判据的名字）——**它是「看哪儿」，不是「判什么」**。 */
   readonly what: string
   /** 开发那条判据本来会得到什么——**只作记账**，本跑法不据它下结论。 */
@@ -64,11 +64,6 @@ export type FramesRun = {
 }
 
 export type FramesRunOptions = ScenarioOptions
-
-/** 场景名——与判据那条路同一份目录（`list` 用它）。 */
-export function framesScenarioNames(): readonly ScenarioName[] {
-  return scenarioNames()
-}
 
 /**
  * 跑一趟——**故事照走，该判的地方换成取帧**。
@@ -215,15 +210,3 @@ function describeCondition(condition: unknown): string {
 
   return JSON.stringify(condition)
 }
-
-/** 一条读数糊成一行（命令行与报告都用它）。 */
-export function describeReading(reading: Reading): string {
-  const frame = reading.frame === undefined ? '（没取到帧）' : `${reading.frame.columns}×${reading.frame.rows}`
-  const detail = reading.detail === '' ? '' : `　${reading.detail}`
-  // ⚠️ 「本来会红」也照打——**这正是「读数」的意思**：看着的人自己决定那算不算事
-  const held = reading.held ? '' : '　← 开发那条判据在这儿本来会红'
-
-  return `${reading.what}　${frame}${detail}${held}`
-}
-
-export { describeCondition as describeFramesCondition }

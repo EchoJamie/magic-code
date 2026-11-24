@@ -136,6 +136,28 @@ describe('输入行', () => {
     app.unmount()
   })
 
+  /**
+   * **焦点上报不是正文**（D75）——开了 DECSET 1004 之后，终端在窗口拿到／失去焦点时往
+   * stdin 写 `CSI I` / `CSI O`；Ink 剥了 ESC，交上来的是 `[I` / `[O`。它们若落到认键
+   * 的最后那一支，就是**两个正文字母**（`[` 与 `I`）——草稿里凭空多一串。
+   *
+   * 这一条量的正是**从 Ink 到外壳那一跳**：剥在 `toShellKeys` 的最前面（`stripFocusReports`）。
+   */
+  test('焦点上报不进草稿（`\u001b[I` / `\u001b[O` 不是正文）', async () => {
+    const { app } = liveApp()
+
+    await app.waitForFrame((frame) => frame.includes('交代一件事'))
+    await app.type('\u001b[I')
+    await app.type('\u001b[O')
+    await app.type('ok')
+    const frame = await app.waitForFrame((one) => one.includes('› ok'))
+
+    expect(frame).not.toContain('[I')
+    expect(frame).not.toContain('[O')
+
+    app.unmount()
+  })
+
   test('控制键不往输入框里塞字（Ctrl+D 不是字母 d）', async () => {
     const { app } = liveApp()
 

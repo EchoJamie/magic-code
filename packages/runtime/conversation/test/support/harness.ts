@@ -53,7 +53,7 @@ import { buildSystemPrompt } from '../../src/prompt/index.ts'
 import type { PromptVars } from '../../src/prompt/index.ts'
 
 /** 工作区根——权限与沙箱共用同一份（契约：越界判据两处同源）。 */
-export const ROOTS: PermissionContext = { roots: ['/w'], declaredRoots: ['/w'], defaultRoot: '/w' }
+const ROOTS: PermissionContext = { roots: ['/w'], declaredRoots: ['/w'], defaultRoot: '/w' }
 
 /** 缺省提示词注入值——四项齐（`cwd` / `shell` / `platform` / `date`）。 */
 export const PROMPT_VARS: PromptVars = {
@@ -64,7 +64,7 @@ export const PROMPT_VARS: PromptVars = {
 }
 
 /** 缺省工具规格——与 `@magic/faux` 骨架同形（阶段 1 唯一工具 `exec`）。 */
-export const EXEC_SPEC: ToolSpec = {
+const EXEC_SPEC: ToolSpec = {
   name: 'exec',
   summary: '命令执行（经沙箱 · 工作目录约束）',
   parameters: {},
@@ -72,13 +72,13 @@ export const EXEC_SPEC: ToolSpec = {
 }
 
 /** 缺省工具处理器——回一句「跑了什么」，便于断言回填内容。 */
-export const echoExec: FauxToolHandler = (call) => ({ ok: true, output: `跑了 ${String(call.args.command)}` })
+const echoExec: FauxToolHandler = (call) => ({ ok: true, output: `跑了 ${String(call.args.command)}` })
 
 // ═══════════════════════════════════════════════════════════════════════
 // 工具域替身
 // ═══════════════════════════════════════════════════════════════════════
 
-export type ToolDomainOptions = {
+type ToolDomainOptions = {
   readonly stamper: EventStamper
   readonly sink: { emit(event: KernelEvent): void }
   readonly gate: PermissionGate
@@ -121,7 +121,7 @@ function rejected(call: ToolCall, callRef: RecordId): ToolResult {
  * - 不产 `tool.decision.request` / `tool.decision`（那是**权限域**的产出，桩不发事件）。
  * - 不按大小转 blob——`content` 一律内联（桩的 `content` 本就内联；阈值归真工具域）。
  */
-export function makeToolDomain(options: ToolDomainOptions): ToolRuntime {
+function makeToolDomain(options: ToolDomainOptions): ToolRuntime {
   const { stamper, sink, gate, ctx, tools } = options
   const record = options.record ?? ((text: string): Content => ({ text }))
 

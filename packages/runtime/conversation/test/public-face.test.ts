@@ -18,6 +18,7 @@ describe('公开面', () => {
   test('值面精确枚举——会话与计划端口、实例工厂及常驻宿主的纯读目录入口', () => {
     // 常驻宿主复用域内目录适配，纯读入口不创建会话实例；仍不公开循环与内部装配。
     expect(Object.keys(face).sort()).toEqual([
+      'PREVIEW_LIMIT',
       'bindSessionReferences',
       'createConversationService',
       'createConversationSession',

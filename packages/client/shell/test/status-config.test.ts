@@ -97,10 +97,42 @@ describe('状态行可配 · 入口走 /config', () => {
       '减少动效',
       '本轮耗时',
       '数据目录与工作区根',
+      // 实验性功能那一组（D75）——组头是渲染层的 `group`，这里只列那一项
+      '语音输入',
     ])
     // **明写「默认」**：「你没配」与「你配的正好等于默认」在这一格上分得开
-    expect(rowsOf(stage).find((row) => row.label.trim() === '状态行')?.meta).toBe('默认 · 会话名 · 上下文占用 · Enter 进入')
+    expect(rowsOf(stage).find((row) => row.label.trim() === '状态行')?.meta).toBe('默认 · 会话名 · 模型 · 上下文占用 · Enter 进入')
     expect(rowsOf(stage).find((row) => row.label.trim() === '减少动效')?.meta).toBe('已关 · Enter 切换')
+  })
+
+  /**
+   * **实验性功能 › 语音输入**（D75）——一按就发 `prefs.set`，**生效以回话为准**。
+   *
+   * 这一条量三件：缺省关 · 按一下只发「语音」这一格（不夹带别的） · 回话落定后屏上跟着变
+   * 且抽屉不关。真正的起停（监听器与 `?1004h`）在 `run.ts`，由那里按同一个读数走。
+   */
+  test('「语音输入」：缺省关，按一下发 `prefs.set`；回话落定后那一格变「已开 · 仅 Ghostty」', () => {
+    const stage = openConfig()
+
+    expect(stage.shell.getView().voiceEnabled).toBe(false)
+    expect(rowsOf(stage).find((row) => row.value === 'voice')?.meta).toBe('已关 · 仅 Ghostty · Enter 切换')
+
+    enter(stage, '语音输入')
+    expect(sent(stage)).toEqual({ type: 'prefs.set', voice: true } as never)
+
+    // **回话之前不动**（不能把提前回显当保存成功）
+    expect(stage.shell.getView().voiceEnabled).toBe(false)
+    stage.feed([event('prefs.state', { voice: true, reducedMotion: false })])
+    expect(stage.shell.getView().voiceEnabled).toBe(true)
+    expect(rowsOf(stage).find((row) => row.value === 'voice')?.meta).toBe('已开 · 仅 Ghostty · Enter 切换')
+    // 抽屉不关：接着还能勾别的
+    expect(stage.shell.getView().dock.kind).toBe('picker')
+
+    // 再按一下＝关
+    enter(stage, '语音输入')
+    expect(sent(stage)).toEqual({ type: 'prefs.set', voice: false } as never)
+    stage.feed([event('prefs.state', { voice: false, reducedMotion: false })])
+    expect(stage.shell.getView().voiceEnabled).toBe(false)
   })
 
   test('选定「状态行」⇒ 进它自己那一屏：五格 ＋ 上色开关；**锚不在这张表里**', () => {
@@ -115,8 +147,9 @@ describe('状态行可配 · 入口走 /config', () => {
     expect(rows.some((row) => row.label.includes('全放行'))).toBe(false)
     // 默认那条在屏上标着「已放上 · 第 N 格」（顺序＝挑的先后）
     expect(rows.find((row) => row.label.trim() === '会话名')?.meta).toBe('已放上 · 第 1 格')
-    expect(rows.find((row) => row.label.trim() === '上下文占用')?.meta).toBe('已放上 · 第 2 格')
-    expect(rows.find((row) => row.label.trim() === '模型')?.meta).toBe('未放上')
+    expect(rows.find((row) => row.label.trim() === '模型')?.meta).toBe('已放上 · 第 2 格')
+    expect(rows.find((row) => row.label.trim() === '上下文占用')?.meta).toBe('已放上 · 第 3 格')
+    expect(rows.find((row) => row.label.trim() === '思考档')?.meta).toBe('未放上')
   })
 
   test('回车＝放上／拿下；**顺序＝放上的先后**；每一次都发一条 `prefs.set`', () => {
@@ -124,16 +157,16 @@ describe('状态行可配 · 入口走 /config', () => {
     enter(stage, '状态行')
 
     enter(stage, '工作区')
-    expect(sent(stage)?.statusLine?.cells).toEqual(['session', 'context', 'workspace'])
-    expect(rowsOf(stage).find((row) => row.label.trim() === '工作区')?.meta).not.toBe('已放上 · 第 3 格')
+    expect(sent(stage)?.statusLine?.cells).toEqual(['session', 'model', 'context', 'workspace'])
+    expect(rowsOf(stage).find((row) => row.label.trim() === '工作区')?.meta).not.toBe('已放上 · 第 4 格')
     stage.feed([event('prefs.state', { statusLine: sent(stage)!.statusLine!, reducedMotion: false })])
-    expect(rowsOf(stage).find((row) => row.label.trim() === '工作区')?.meta).toBe('已放上 · 第 3 格')
+    expect(rowsOf(stage).find((row) => row.label.trim() === '工作区')?.meta).toBe('已放上 · 第 4 格')
 
     enter(stage, '上下文占用')
-    expect(sent(stage)?.statusLine?.cells).toEqual(['session', 'workspace'])
+    expect(sent(stage)?.statusLine?.cells).toEqual(['session', 'model', 'workspace'])
     stage.feed([event('prefs.state', { statusLine: sent(stage)!.statusLine!, reducedMotion: false })])
     // 拿掉一格 ⇒ 后面那几格**跟着前移**
-    expect(rowsOf(stage).find((row) => row.label.trim() === '工作区')?.meta).toBe('已放上 · 第 2 格')
+    expect(rowsOf(stage).find((row) => row.label.trim() === '工作区')?.meta).toBe('已放上 · 第 3 格')
     // **抽屉不关**（连勾几格是常态）
     expect(stage.shell.getView().dock.kind).toBe('picker')
   })

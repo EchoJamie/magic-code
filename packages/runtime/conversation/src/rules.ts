@@ -54,7 +54,7 @@ import { withProjectRules } from './prompt/rules.ts'
  * 三选一而不是一个布尔：三件事对模型的要求**完全不同**——
  * 前两种是「等下一趟、照新规约重提」，第三种是「**别再提了**，去告诉用户」。
  */
-export type PreflightResult =
+type PreflightResult =
   | { readonly kind: 'pass' }
   /** 有没送达过的新规约——这批一份都不执行，材料已钉住、下一次请求必带。 */
   | { readonly kind: 'review'; readonly blocking: readonly ProjectRule[] }

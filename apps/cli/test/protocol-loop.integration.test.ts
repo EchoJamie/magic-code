@@ -7,7 +7,7 @@ import { eventsOfKind, makeStage, readDatabase } from './support.ts'
 const protocols = ['responses', 'messages', 'chat-completions'] as const
 const model = 'local/U126:exact'
 const key = 'u126-local-test-key'
-const command = { command: 'echo U126' }
+const command = { command: 'echo U126', description: '回显测试' }
 const prompt = '请执行 echo U126，然后告诉我结果。'
 const thought = '只执行指定的本地回显命令。'
 const answer = '命令已完成，输出 U126。'

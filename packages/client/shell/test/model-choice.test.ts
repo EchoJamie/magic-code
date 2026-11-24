@@ -5,6 +5,9 @@ const pair = { provider: 'local', model: 'deepseek-chat' }
 const configuredModels = { default: pair, cantrip: pair, spell: pair, arcane: pair }
 const entries = [{ effectiveReasoning: { [pair.model]: { levels: ['low', 'high'], disable: true } }, provider: 'local', vendor: 'deepseek', cache: { snapshot: { provider: 'local', scope: 'test', fetchedAt: 1, models: [{ id: pair.model, reasoning: { levels: ['low', 'high'], disable: true } }] } } }]
 function settings(configured = true, stage = createStage()) {
+  // 这些用例测的是**已有会话**时的切换（选定要发 `model.switch`）；会话还没建立的那条路
+  // 由 `model-choice` 末尾与 `shell.test` 的「还没有会话」用例守。
+  if (stage.shell.getView().sessionId === null) stage.feed([event('session.state', { active: 'fixture', sessions: [{ archived: false, id: 'fixture', title: '夹具会话', at: 1 }] })])
   stage.type('/model '); stage.press({ kind: 'enter' })
   stage.feed([event('model.catalog', { entries, configuredModels: configured ? configuredModels : {}, ...(configured ? { current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', ...pair } as const } : {}) })])
   return stage

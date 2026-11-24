@@ -106,7 +106,7 @@ describe('① 在跑的在请求里 · ② 跑完就没有了 · ⑤ 不进记�
         // ① 交出去一条**会自己跑完**的后台命令
         {
           toolCalls: [
-            { name: 'exec', args: { command: `sleep 0.6; echo ${MARK}`, background: true } },
+            { name: 'exec', args: { description: '测试命令', command: `sleep 0.6; echo ${MARK}`, background: true } },
           ],
         },
         // ② 这一轮不等它——模型接着说话（此刻它在跑）
@@ -170,7 +170,7 @@ describe('④ 反面：每会话一份（A 的在跑命令不进 B 的请求）'
     try {
       const turns: readonly FauxTurn[] = [
         // 每链头一段：交出去一条**永不结束**的命令（活到用例把它停掉为止）
-        { toolCalls: [{ name: 'exec', args: { command: 'sleep 60', background: true } }] },
+        { toolCalls: [{ name: 'exec', args: { description: '测试命令', command: 'sleep 60', background: true } }] },
         // 每链第二段：这一轮不等它——模型接着说话（此刻它在跑）
         { text: '交出去了' },
         // 底下几段留给「停掉」之后那几声（每链自己吃自己的那一份）
@@ -249,7 +249,7 @@ describe('⑤ 每请求重算（压缩碰不到它）', () => {
     try {
       const turns: readonly FauxTurn[] = [
         // 起一条**挂着不动**的（这样中途不会有「跑完」那一声来搅乱次序）
-        { toolCalls: [{ name: 'exec', args: { command: 'sleep 60', background: true } }] },
+        { toolCalls: [{ name: 'exec', args: { description: '测试命令', command: 'sleep 60', background: true } }] },
         // 用量报高一点——下一轮开跑前就会触发压缩
         { text: '交出去了', usage: { inputTokens: 500, outputTokens: 5 } },
         { text: '答复' },

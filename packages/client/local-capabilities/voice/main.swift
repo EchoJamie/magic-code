@@ -79,7 +79,9 @@ while argumentIndex < arguments.count {
 // 右 ⌥ 单独按下再松开＝一次；中途按了别的键、或同时带别的修饰键就不算。
 // 实现在 `Hotkey.swift`（listen-only 的 event tap，只看不改、不吞键、不记录内容）。
 if listenMode {
-  hotkeyHandler = { emit(["type": "hotkey"]) }
+  // 两次上报（D75）：`down` 是按下、`up` 是松开且整次干净——外壳拿这两半配对，
+  // 认「同一个窗口里按下又松开」才算一次轻点（见 `focus.ts`）。
+  hotkeyHandler = { phase in emit(["type": "hotkey", "phase": phase]) }
   guard startHotkeyListener() else { fail("input-monitoring") }
   emit(["type": "listening"])
   // 外壳退订 => stdin 关掉 => 收摊。

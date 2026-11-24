@@ -63,7 +63,7 @@ export type FauxPermissionRequest = {
  * 一次答复的留痕——`remember` **原样记**：给了就在，没给就**不在这个键上**
  * （不改写成 `false`——「答复里带没带这个位」正是测试要看的那一件事）。
  */
-export type FauxPermissionAnswer = {
+type FauxPermissionAnswer = {
   readonly id: DecisionId
   readonly decision: Decision
   /**

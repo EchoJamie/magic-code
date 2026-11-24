@@ -24,7 +24,7 @@ test('当前来源替换不累积历史，实际呈现才已读且失败停点�
   const fixture = startFixture({ turns: [
     { kind: 'text', text: '历史第一条结果' }, { kind: 'text', text: '' },
     { kind: 'text', text: '这次真正显示的新结果' },
-    { kind: 'tool', name: 'exec', args: { command: 'chmod 755 .' } },
+    { kind: 'tool', name: 'exec', args: { description: '测试命令', command: 'chmod 755 .' } },
     { kind: 'http', status: 400, message: '隔离失败验收' },
   ] })
   const sandbox = createSandbox({ baseURL: fixture.baseURL })
@@ -49,7 +49,8 @@ test('当前来源替换不累积历史，实际呈现才已读且失败停点�
     expect(first.detail).toBe('历史第一条结果')
     const session = first.session
     headless.send({ type: 'input.submit', text: '第二条：空答轮' })
-    await until(() => facts().length === 1 && facts()[0]?.kind === 'done' && facts()[0]?.id !== first.id)
+    // 等待条件锁定**本会话**那条新 done——簿里偶发的别条 done（无 session 字段）不算数，否则下面 empty.session 会踩空
+    await until(() => facts().length === 1 && facts()[0]?.kind === 'done' && facts()[0]?.id !== first.id && facts()[0]?.session === session)
     const empty = facts()[0]!
     expect(empty.session).toBe(session)
     expect(empty.unread).toBe(true)

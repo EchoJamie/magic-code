@@ -91,14 +91,14 @@ type Token =
   | { readonly kind: 'dup' }
 
 /** 一段命令（`&&` 等切开的单元）。 */
-export type Segment = {
+type Segment = {
   /** 原样文本（材料显示用）。 */
   readonly raw: string
   readonly tokens: readonly Token[]
 }
 
 /** 切段 ＋ 分词——一遍扫完（引号内的分隔符不算分隔符）。 */
-export function scan(command: string): readonly Segment[] {
+function scan(command: string): readonly Segment[] {
   const segments: Segment[] = []
   let tokens: Token[] = []
   let word = ''

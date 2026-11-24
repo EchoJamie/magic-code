@@ -62,7 +62,7 @@ export function createSettings(context: SettingsContext) {
       providers, models: config.models ?? {}, web: config.web ?? {}, agentRoles: raw.agentRoles ?? {},
       mcp: { servers }, rules: raw.rules ?? {}, skills: raw.skills ?? {},
       ...(raw.workspaceRoots === undefined ? {} : { workspaceRoots: raw.workspaceRoots }),
-      statusLine: config.statusLine ?? { cells: ['session', 'workspace', 'context'], color: true }, motion: config.motion ?? {},
+      statusLine: config.statusLine ?? { cells: ['session', 'model', 'context'], color: true }, motion: config.motion ?? {},
     }
     const sources = ['rules.sources', 'rules.linkSources', 'skills.sources'].flatMap(source => {
       const [section, key] = source.split('.') as [string, string]

@@ -24,6 +24,8 @@ export type ExecutorSpawn = {
   readonly gen: number
   /** 发车令牌——它连上来时按这个认。 */
   readonly executionId: string
+  /** 管理者实际监听的地址，不由执行者按自己的环境重新计算。 */
+  readonly socket: string
   /** 开工那条会话（显式接续时就有）；`null` ＝ 让它自己开张（D5）。 */
   readonly session: string | null
   /** **启动目录**——工作区默认根（配置没写 `workspaceRoots` 时就是它）。 */
@@ -147,14 +149,11 @@ export function createDeferredChannel(): {
 export type ProcessLauncherOptions = {
   /** 子进程命令行头两截——缺省由 `runtimeLaunch()` 推（源码 / 发行两种形态都对）。 */
   readonly command?: readonly string[]
-  /** 管理者监听的 socket——**直接下发**，子进程不自推导（沙盒的 TMPDIR 与管理者不同时，
-   * `runPathsOf` 的回退目录就对不上）。 */
-  readonly socket: string
   readonly log?: ((line: string) => void) | undefined
 }
 
 /** 执行者的独立子进程——真并行、故障隔离；SIGTERM 兜底回收。 */
-export function createProcessLauncher(options: ProcessLauncherOptions): ExecutorLauncher {
+export function createProcessLauncher(options: ProcessLauncherOptions = {}): ExecutorLauncher {
   const pending = new Map<string, { channel: ReturnType<typeof createDeferredChannel>; cancel: () => void; kill: () => void }>()
 
   return {
@@ -175,7 +174,7 @@ export function createProcessLauncher(options: ProcessLauncherOptions): Executor
         ...(options.command ?? runtimeLaunch()),
         'executor',
         '--execution-id', request.executionId,
-        '--socket', options.socket,
+        '--socket', request.socket,
         '--home', request.magic.home,
         '--base', request.magic.base,
         '--cwd', request.cwd,

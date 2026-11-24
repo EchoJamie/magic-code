@@ -124,7 +124,7 @@ export type NativeSessionsQuery = {
   ids?: readonly string[]
 }
 
-export type ManagerRuntime = {
+type ManagerRuntime = {
   read(): Promise<{
     canChangeData: boolean
     mcp: { session: string; gen: number | null; servers: readonly McpCatalogRow[] }[]
@@ -206,6 +206,8 @@ export type ManagerContext = {
 
   // —— 投影 ——
   rows(): readonly RunRow[]
+  /** 线上视图：有界、字段裁短；内部判定仍用完整的 `rows()`。 */
+  runsView(): readonly RunRow[]
   pushRuns(immediate?: boolean): void
   saveRuns(immediate?: boolean): void
   publishPreferences(except?: ClientConn): void
@@ -236,7 +238,7 @@ export type ManagerContext = {
 
   // —— 执行者放置与送达 ——
   liveOf(session: string): Executor | undefined
-  spawnFresh(conn: ClientConn): Executor | undefined
+  spawnFresh(conn: ClientConn, model?: import('@magic/contracts').ModelSwitchRequest): Executor | undefined
   spawn(input: SpawnInput): Executor | undefined
   retarget(conn: ClientConn, session: string): void
   bindEnvironment(executor: Executor, session: string | null): void

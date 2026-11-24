@@ -8,14 +8,65 @@ import type {
   TurnTimingEvent,
   Wire,
 } from '@magic/contracts'
-import { isTurnTimingEvent } from '@magic/contracts'
+import {
+  CONTROL_DIRECTORY_LIMIT,
+  CONTROL_FRAME_BUDGET_BYTES,
+  CONTROL_PREVIEW_TEXT_BYTES,
+  INPUT_PREVIEW_TEXT_BYTES,
+  isTurnTimingEvent,
+  pendingViews,
+} from '@magic/contracts'
 import { loadConfig, setPrefs } from '@magic/state'
-import { ARCHIVED_NOTE, backgroundOf, createWorkEnvironment, linkOf, memoryWorkspace, query as observe, readMemory, readMemorySource, readReferenceSessions, workspaceOf } from '@magic/host'
+import { ARCHIVED_NOTE, backgroundOf, controlLink, createWorkEnvironment, linkOf, memoryWorkspace, query as observe, readMemory, readMemorySource, readReferenceSessions, workspaceOf } from '@magic/host'
 import { bindSessionReferences, createPlanReader, readSessionDisplayHistory } from '@magic/conversation'
 import type { Socket } from 'bun'
 import { sendToExecutor as send, type Executor } from '../executor-control.ts'
+import { clipEntryForWire, clipTextBytes, clipValue, wireBytesOf } from '../wire-view.ts'
 import type { ClientConn } from '../connections.ts'
 import type { ManagerContext } from './context.ts'
+
+/**
+ * 历史分批发给窗口的字节预算——产生侧单帧预算减去给末包元数据留的余量。
+ *
+ * 原先按「50 条一批」发：条数不是字节数。一批里只要有几条几十万字的工具结果，
+ * 单条 `session.history` 就能逼近甚至超过连接层上限（与 2026-11-21 接续事故同形）。
+ * 现在按整帧字节累计；单条再大也只占单帧预算的一半，装得进任何一批。
+ */
+const HISTORY_BATCH_BYTES = CONTROL_FRAME_BUDGET_BYTES - 256 * 1024
+
+/** 单条历史记录装得下的预算——超过就裁正文（保留开头并注明），别让一条旧记录撑破连接。 */
+const HISTORY_ENTRY_BYTES = CONTROL_FRAME_BUDGET_BYTES / 2
+
+/** 末包随附的元数据上限——inputs 最近 20 条、timing 最近 1000 条、messages 最近 50 条。 */
+const HISTORY_META_INPUTS = 20
+const HISTORY_META_TIMING = 1_000
+const HISTORY_META_MESSAGES = 50
+const HISTORY_META_COMPACTIONS = 20
+
+/** welcome 里最多带多少条未读提醒——其余由后续读取补，不能压住握手帧。 */
+const WELCOME_NOTICE_LIMIT = 20
+
+/** 目录视图：active 在首位，超出上限的会话由后续分页/搜索补。 */
+function directoryView<T extends { readonly id: string }>(sessions: readonly T[], active: string): readonly T[] {
+  const head = sessions.find(one => one.id === active)
+  return [
+    ...(head === undefined ? [] : [head]),
+    ...sessions.filter(one => one.id !== active),
+  ].slice(0, CONTROL_DIRECTORY_LIMIT)
+}
+
+/**
+ * welcome 的提醒视图：条数有上限、正文按预算截断。
+ *
+ * 提醒的 `detail` 可能是助手最终回复的全文（`notices.ts` 的完成提醒）；
+ * 握手帧必须**按构造**装得下，不能等 `wire` 兜底。
+ */
+function welcomeNotices<T extends { readonly detail?: string }>(notices: readonly T[]): readonly T[] {
+  return notices.slice(0, WELCOME_NOTICE_LIMIT).map(one => {
+    if (one.detail === undefined) return one
+    return { ...one, detail: clipTextBytes(one.detail, CONTROL_PREVIEW_TEXT_BYTES) }
+  })
+}
 
 /** 客户端命令的受理、路由与回执。 */
 export function installCommands(ctx: ManagerContext): void {
@@ -24,7 +75,37 @@ export function installCommands(ctx: ManagerContext): void {
   const { workRoot, isArchived, manageSession } = sessions
 
   function accept(socket: Socket<unknown>): void {
-    const link = linkOf<Wire>(socket)
+    /**
+     * **这条连接上的坏事要留痕**（D75）：`terminate` 那一路对端只看到「没原因」，
+     * 而这一层原先是**一处都不写**——「连不上却查不到」正是这么来的。
+     */
+    const rawLink = linkOf<Wire>(socket, {
+      fault: (event, data) => diagnosticLog.write('error', event, {
+        ...identity,
+        ...(typeof data['reason'] === 'string' ? { reason: data['reason'] } : {}),
+        ...(typeof data['bytes'] === 'number' ? { bytes: data['bytes'] } : {}),
+        ...(typeof data['kind'] === 'string' ? { kind: data['kind'] } : {}),
+        ...(typeof data['dropped'] === 'number' ? { dropped: data['dropped'] } : {}),
+        ...(typeof data['backlog'] === 'number' ? { backlog: data['backlog'] } : {}),
+      }),
+      closed: (detail) => diagnosticLog.write(
+        // 对端先断且没给原因：**warn**——这就是「连不上」最常见的那一形
+        detail.by === 'peer' && detail.reason === undefined ? 'warn' : 'info',
+        detail.by === 'peer' && detail.reason === undefined ? 'link.closed.silent' : 'link.closed',
+        { ...identity, by: detail.by, ...(detail.reason === undefined ? {} : { reason: detail.reason }) },
+      ),
+    })
+    /**
+     * **唯一出口**（2026-11-21）：所有写给客户端/观察者的帧都经这道门面。
+     * 超预算时按类型降级（目录/历史/输入/投影减半、welcome 先剥提醒），
+     * 降不动就拒发这一帧——**连接保持**。没有这道门面，任何漏改的产生点
+     * 都会再次把「连接」变成「一条消息的人质」。
+     */
+    const link = controlLink(rawLink, (event, data) => diagnosticLog.write('warn', event, {
+      ...identity,
+      ...(typeof data['kind'] === 'string' ? { kind: data['kind'] } : {}),
+      ...(typeof data['bytes'] === 'number' ? { bytes: data['bytes'] } : {}),
+    }))
     if (!ctx.available) { link.close(); return }
     /** 这条连接立起来的时候是谁的——`hello` 那一刻定下，之后不再变。 */
     let greeted = false
@@ -47,36 +128,27 @@ export function installCommands(ctx: ManagerContext): void {
         if (message.t === 'hello') {
           if (ctx.stopped) { link.send({ t: 'line', text: 'Magic Code 正在退出' }); link.close(); return }
           if (message.protocol !== identity.protocol || message.version !== identity.version || message.source !== identity.source) {
+            diagnosticLog.write('warn', 'client.refused', { ...identity, reason: 'identity-mismatch' })
             link.send({ t: 'line', text: 'App 与终端版本或来源不同，请退出原版后重试' }); link.close(); return
           }
+          /**
+           * **找不到会话不再拒绝握手**（2026-11-21 可用性底线）：
+           * `magic resume` 收的 id 可能过期/拼错；为这一条把整条连接关掉，
+           * 用户看到的就是「用着用着突然不能用了」。改为正常欢迎 + 一句提示，
+           * 选中位落回空会话，用户可以直接 /resume 选别的。
+           */
+          const missing = message.session !== undefined &&
+            (!store.hasSession(message.session) || (isArchived(message.session) && !message.reattach))
           const conn = connections.create({
             link: link as unknown as import('@magic/host').Link<ClientToManager>,
-            selectedSession: message.session ?? null,
+            selectedSession: missing ? null : message.session ?? null,
             cwd: message.cwd,
             switch: message.switch,
           })
           client = conn
 
-          if (message.session !== undefined && (!store.hasSession(message.session) || (isArchived(message.session) && !message.reattach))) {
-            link.send({
-              t: 'welcome',
-              identity,
-              conn: conn.id,
-              base: options.magic.base,
-              // 回绝这一条不必等预检（它连不上就是连不上，与外部工具无关）
-              mcp: ctx.probed,
-              // 这一条**不是给窗口的读数**（连接当场就关了）——给一份空的，形态上照旧
-              runs: [],
-              notices: [],
-              refuse: isArchived(message.session) ? ARCHIVED_NOTE :
-                `没有这条会话：${message.session}——` +
-                `magic resume 收的是会话 id（/resume 那张列表里那串）；库里没有它，本次一步都没走`,
-            })
-            link.close()
-            return
-          }
-
           connections.accept(conn)
+          diagnosticLog.write('info', 'client.connected', { ...identity, conn: conn.id, ...(message.session === undefined ? {} : { session: message.session }) })
 
           link.send({
             t: 'welcome',
@@ -85,11 +157,25 @@ export function installCommands(ctx: ManagerContext): void {
             base: options.magic.base,
             mcp: ctx.probed,
             // 开屏那张摘要据它说「这一摊有几项在跑」——**接上就读得到**，不必先问一次
-            runs: ctx.rows(),
-            // 汇总只读；具体事项另行确认已读。
-            notices: store.attention.list().filter((one) => one.unread),
+            runs: ctx.runsView(),
+            // 汇总只读；具体事项另行确认已读。条数与正文都要有上限——
+            // welcome 是握手帧，不能等 wire 的绝对上限来兜。
+            notices: welcomeNotices(store.attention.list().filter((one) => one.unread)),
           })
           if (message.openRequest !== undefined) ctx.native.attached(message.openRequest, message.session ?? null)
+
+          if (missing && message.session !== undefined) {
+            link.send({
+              t: 'line',
+              text: isArchived(message.session) ? ARCHIVED_NOTE :
+                `没有这条会话：${message.session}——` +
+                `magic resume 收的是会话 id（/resume 那张列表里那串）；库里没有它，本次一步都没走。` +
+                '仍可以 /resume 选别的会话，或直接开始新会话。',
+            })
+            diagnosticLog.write('info', 'client.missing-session', { ...identity, session: message.session })
+            void ctx.catalog(conn)
+            return
+          }
 
           // 已在运行则接回；完成的会话只读历史，直到下一次明确输入。
           if (message.session !== undefined) {
@@ -120,21 +206,32 @@ export function installCommands(ctx: ManagerContext): void {
         diagnosticLog.write('error', 'client.operation.failed', identity)
       }
     })
-    link.onClose(() => { if (client !== undefined) ctx.dropConnection(client.id) })
+    link.onClose((error) => {
+      if (client === undefined) return
+      diagnosticLog.write(error === undefined ? 'warn' : 'info', error === undefined ? 'client.closed.silent' : 'client.closed', {
+        ...identity, conn: client.id, ...(error === undefined ? {} : { reason: error.message.slice(0, 120) }),
+      })
+      ctx.dropConnection(client.id)
+    })
   }
 
   async function catalog(conn: ClientConn, archived = false): Promise<void> {
     try {
-      const sessions = await ctx.nativeSessions({ archived })
+      const all = await ctx.nativeSessions({ archived })
       if (conn.link.closed) return
+      const active = conn.selectedSession ?? ''
+      const sessions = directoryView(all, active)
       conn.link.send({
         t: 'ev', gen: null, event: {
-          id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'session.state',
-          data: { active: conn.selectedSession ?? '', sessions },
+          id: 0, turn: null, at: now(), session: active, kind: 'session.state',
+          data: {
+            active, sessions,
+            ...(all.length > sessions.length ? { total: all.length, truncated: true as const } : {}),
+          },
         }
       })
       if (conn.selectedSession !== null) { const session = conn.selectedSession; conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'session.changed', data: { session: workRoot(session), archived: isArchived(session), canArchive: ctx.sessions.canArchive(session), terminalOpen: ctx.terminalClients(session).length > 0 } } }) }
-      if (conn.selectedSession !== null) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: conn.selectedSession, kind: 'input.pending', data: { inputs: store.serviceFor(conn.selectedSession).inputs.list() } } })
+      if (conn.selectedSession !== null) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: conn.selectedSession, kind: 'input.pending', data: { inputs: pendingViews(store.serviceFor(conn.selectedSession).inputs.list()) } } })
     } catch { if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session: conn.selectedSession ?? '', kind: 'session.state', data: { active: conn.selectedSession ?? '', sessions: [], note: '无法读取会话目录' } } }) }
   }
 
@@ -144,13 +241,27 @@ export function installCommands(ctx: ManagerContext): void {
     if (revision === undefined) return
     try {
       let entries: Entry[] = []
+      let batchBytes = 0
       const inputs: Extract<KernelEvent, { kind: 'input.local' }>[] = []
       const timing: TurnTimingEvent[] = []
       const compactEvents: Extract<KernelEvent, { kind: 'compact.state' }>[] = []
+      // **最后那一次调用的读数**（见 `session.history.usage`）——与在场时状态行 ④ 同一条规矩：
+      // 分子取 `model.usage` 的输入消耗，分母取 `model.call.start` 的预算（那一次没带预算就退回
+      // 用量事件自带的窗长）。两个都只在**末次**有效：往前那些是更早的账。
+      let lastUsage: { inputTokens?: number; contextWindow?: number } | undefined
+      let lastBudget: number | undefined
+      let started = false
       for await (const event of store.serviceFor(session).readEvents(session)) {
         if (event.kind === 'input.local') inputs.push(event)
         if (isTurnTimingEvent(event)) timing.push(event)
         if (event.kind === 'compact.state') compactEvents.push(event)
+        if (event.kind === 'model.call.start') { started = true; lastBudget = event.data.inputBudget }
+        if (event.kind === 'model.usage') lastUsage = { inputTokens: event.data.inputTokens, contextWindow: event.data.contextWindow }
+      }
+      const usage = lastUsage === undefined ? undefined : {
+        ...(lastUsage.inputTokens === undefined ? {} : { inputTokens: lastUsage.inputTokens }),
+        ...(started ? (lastBudget === undefined ? {} : { contextWindow: lastBudget })
+          : (lastUsage.contextWindow === undefined ? {} : { contextWindow: lastUsage.contextWindow })),
       }
       // 子会话正文里的 `agent-message` 条目只带引用；正文随末块交给外壳并入正文。
       const agent = store.collaboration.agentForSession(session)
@@ -159,19 +270,59 @@ export function installCommands(ctx: ManagerContext): void {
         ? [] : store.collaboration.listMessages(agent.agentId)
       const plan = await createPlanReader({ records: store.serviceFor(session), session }).readPlan()
       const send = (done: boolean): void => {
+        /**
+         * 末包的元数据也要有上限——`inputs` 是该会话所有 `input.local` 的全文，
+         * `timing` 随 turn 数线性增长，`messages` 来自无 LIMIT 的协作消息列表
+         * （2026-11-21 审计：只给 entries 分批，末包单独就能复现 P0）。
+         */
+        const meta = done ? {
+          inputs: inputs.slice(-HISTORY_META_INPUTS).map(event => ({
+            ...event,
+            data: { ...event.data, text: clipTextBytes(event.data.text, INPUT_PREVIEW_TEXT_BYTES) },
+          })),
+          timing: timing.slice(-HISTORY_META_TIMING),
+          ...(plan === undefined ? {} : { plan: clipValue(plan, CONTROL_PREVIEW_TEXT_BYTES) as NonNullable<typeof plan> }),
+          compactions: compactEvents.slice(-HISTORY_META_COMPACTIONS),
+          ...(usage === undefined ? {} : { usage }),
+          ...(messages.length === 0 ? {} : { messages: messages.slice(-HISTORY_META_MESSAGES) }),
+          ...(inputs.length > HISTORY_META_INPUTS
+            || timing.length > HISTORY_META_TIMING
+            || compactEvents.length > HISTORY_META_COMPACTIONS
+            || messages.length > HISTORY_META_MESSAGES
+            ? { truncated: true as const }
+            : {}),
+        } : {}
         conn.link.send({
           t: 'ev', gen: null, event: {
-            id: 0, turn: null, at: now(), session, kind: 'session.history', data: { session, entries, done, ...(done ? { inputs, timing, plan, compactions: compactEvents, ...(messages.length === 0 ? {} : { messages }) } : {}) },
+            id: 0, turn: null, at: now(), session, kind: 'session.history',
+            data: { session, entries, done, ...meta },
           }
         })
         entries = []
+        batchBytes = 0
       }
-      for await (const entry of readSessionDisplayHistory(store, session)) {
+      for await (const raw of readSessionDisplayHistory(store, session)) {
         if (!connections.historyCurrent(conn, revision)) return
+        // **按字节分类**（2026-11-21）：条数只是上限之一；单条超预算先裁全部字段。
+        let entry = clipEntryForWire(raw, HISTORY_ENTRY_BYTES)
+        let bytes = wireBytesOf(entry)
+        // 裁剪后仍装不下一批：再降一档，别让门面来砍。
+        while (bytes > HISTORY_BATCH_BYTES) {
+          const tighter = clipEntryForWire(entry, Math.max(1, Math.floor(bytes / 2)))
+          const next = wireBytesOf(tighter)
+          if (next >= bytes) break
+          entry = tighter
+          bytes = next
+        }
+        if (entries.length > 0 && batchBytes + bytes > HISTORY_BATCH_BYTES) send(false)
         entries.push(entry)
+        batchBytes += bytes
         if (entries.length === 50) send(false)
       }
       if (connections.historyCurrent(conn, revision)) {
+        // 条目与 meta 分开：先发最后一批 entries，再发空条目的 done 帧——
+        // 末包再大也不会把「读完了」这件事挤掉。
+        if (entries.length > 0) send(false)
         send(true)
         const notice = ctx.reconcileNotice(workRoot(session))
         if (conn.selectedSession === session && notice?.unread) conn.link.send({ t: 'notice', notice })
@@ -306,12 +457,13 @@ export function installCommands(ctx: ManagerContext): void {
         const outcome = await setPrefs({ path: loaded.path, expectedStamp: loaded.stamp, request: command })
         if (outcome.ok) ctx.publishPreferences(conn)
         const config = outcome.ok ? loadConfig({ magic: options.magic }).config : loaded.config
-        const changed = [command.statusLine === undefined ? '' : '状态行', command.reducedMotion === undefined ? '' : '动效', command.turnDuration === undefined ? '' : '本轮耗时'].filter(Boolean).join(' · ')
+        const changed = [command.statusLine === undefined ? '' : '状态行', command.reducedMotion === undefined ? '' : '动效', command.turnDuration === undefined ? '' : '本轮耗时', command.voice === undefined ? '' : '语音输入'].filter(Boolean).join(' · ')
         conn.link.send({
           t: 'ev', gen: null, event: {
             id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'prefs.state', data: {
               ...(config.statusLine === undefined ? {} : { statusLine: config.statusLine }),
               turnDuration: config.turnDuration ?? 'elapsed', reducedMotion: config.motion?.reduced === true,
+              voice: config.experimental?.voice === true,
               note: outcome.ok ? `已更新：${changed}` : `${changed}没改成——${outcome.reason}`,
             }
           }
@@ -332,7 +484,17 @@ export function installCommands(ctx: ManagerContext): void {
     }
     const originSession = conn.selectedSession
     const activeCollaboration = originSession == null ? undefined : store.collaboration.collaborationForSession(originSession)
-    if (gen !== null && (conn.target === undefined || gen !== conn.target.gen)) {
+    // 用户交代（新的一条交代 / 协作里的一句话 / 队列管理）**不验代次，按会话状态路由**：
+    // 无目标 → 明确继续起下一代；忙 → 既有的排队；刚完成 → 收旧起新——三条正路各按
+    // **会话此刻的状态**处理，本来就不需要窗口证明「它看到的是第几代」。世代视图是
+    // 尽力而为的异步推进，拿它拒绝新交代，等于把结构性的切换窗口变成「用户得重敲一遍」
+    // 的坑（2026-11-22 裁：输入队列归 TUI 内部，交代的投递不做世代校验）。
+    //
+    // 闸继续保护**其余命令**：那些是交互语境里的动作（对着某一代的提示作答、换目标、
+    // 停止）——旧视图下执行才会真的误操作新运行（设计 · 状态可信度、独占与重新连接 ①）。
+    // 拒绝是有回声的（一句 `line`）：静默丢弃会让窗口对着一个不动的屏发呆。
+    const statement = command.type === 'input.submit' || command.type === 'collaboration.input' || command.type === 'input.manage'
+    if (!statement && gen !== null && (conn.target === undefined || gen !== conn.target.gen)) {
       conn.link.send({
         t: 'line',
         text:
@@ -396,7 +558,7 @@ export function installCommands(ctx: ManagerContext): void {
           }
         }
       }
-      conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session, kind: 'input.pending', data: { inputs: inputs.list(), ...(note === undefined ? {} : { note }) } } })
+      conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session, kind: 'input.pending', data: { inputs: pendingViews(inputs.list()), ...(note === undefined ? {} : { note }) } } })
       return
     }
     // 当前会话是子会话时，输入只发给这条子会话；入口会话默认只给入口自己（不再广播给成员）。
@@ -493,11 +655,13 @@ export function installCommands(ctx: ManagerContext): void {
 
       // 这一支的前提就是「没有目标」（上面那个 if），故没有可复用的当下那一代——
       // main 的 `retarget` 里有这一段是因为它那儿 `current` 可能还在。
+      const carried = command.type === 'input.submit' ? command.model : undefined
+      const choice = carried ?? conn.switch
       const spawned = ctx.spawn({
         session,
         explicit: true,
         cwd: conn.cwd, environment: conn.environment,
-        ...(conn.switch === undefined ? {} : { switch: conn.switch }),
+        ...(choice === undefined ? {} : { switch: choice }),
       })
       if (spawned === undefined) {
         conn.link.send({ t: 'line', text: `起不了执行者——没接上 ${session}` })
@@ -512,7 +676,7 @@ export function installCommands(ctx: ManagerContext): void {
       return
     }
 
-    const target = conn.target ?? ctx.spawnFresh(conn)
+    const target = conn.target ?? ctx.spawnFresh(conn, command.type === 'input.submit' ? command.model : undefined)
     if (target === undefined) {
       conn.link.send({ t: 'line', text: '起不了执行者——这条命令没能送到' })
       return

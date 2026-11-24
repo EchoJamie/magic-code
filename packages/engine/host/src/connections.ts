@@ -15,6 +15,9 @@ export type ClientConn = Readonly<{
   selectedSession: string | null
 }>
 
+/** 等快照期间最多攒多少条事件——超过丢最旧（快照回来会按水位重建）。 */
+const BUFFERED_EVENT_LIMIT = 500
+
 type ConnectionState = {
   -readonly [K in keyof ClientConn]: ClientConn[K]
 } & {
@@ -107,8 +110,13 @@ export function createClientConnections(changed: () => void, log?: (line: string
   function publish(executor: Executor, event: KernelEvent): void {
     for (const conn of clients.values()) {
       if (conn.target !== executor) continue
-      if (conn.awaiting !== null) conn.buffered.push(event)
-      else conn.link.send({ t: 'ev', gen: executor.gen, event })
+      if (conn.awaiting !== null) {
+        // 快照迟迟不回时，等快照的事件不能无限攒内存；丢最旧的，快照/重同步补。
+        conn.buffered.push(event)
+        if (conn.buffered.length > BUFFERED_EVENT_LIMIT) {
+          conn.buffered.splice(0, conn.buffered.length - BUFFERED_EVENT_LIMIT)
+        }
+      } else conn.link.send({ t: 'ev', gen: executor.gen, event })
     }
   }
 

@@ -352,7 +352,7 @@ describe('失败路径', () => {
       const assembly = stage.assemble({
         // 内置件照跑：U129 起判轻与改权限都默认放行，`echo 内置照常` 那串输出原样回来。
         turns: [
-          { toolCalls: [{ name: 'exec', args: { command: 'echo 内置照常' } }] },
+          { toolCalls: [{ name: 'exec', args: { description: '测试命令', command: 'echo 内置照常' } }] },
           { text: '好' },
         ],
       })
@@ -642,7 +642,7 @@ describe('恢复', () => {
       expect(backfill).toMatchObject({ name: 'mcp__fake__echo', ok: false })
       expect(
         messages.map((m) => (m.role === 'tool' ? m.output : 'content' in m ? m.content : '')).join('\n'),
-      ).toContain('未自动重跑')
+      ).toContain('未重跑')
 
       shell.dispose()
       await resumed.shutdown()

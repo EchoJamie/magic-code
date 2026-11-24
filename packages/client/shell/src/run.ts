@@ -18,8 +18,9 @@
 import { render } from 'ink'
 import { createElement as h } from 'react'
 import { createShell, type ShellOptions } from './shell.ts'
+import { openFocusReport } from './focus.ts'
 import { TuiApp } from './components/app.ts'
-import type { ControlTransport, RunNotice, SessionId, StopScope } from '@magic/contracts'
+import type { ControlTransport, ModelChoice, RunNotice, SessionId, StopScope } from '@magic/contracts'
 import type { RunFeed, ResumeFeed, StopReport, SudoFeed } from './shell.ts'
 
 /** 启动入参——传输由装配注入；`boot` 是「订阅之后、放开输入之前」那一跳。 */
@@ -48,6 +49,13 @@ export type RunTuiOptions = {
   readonly turnDuration?: 'elapsed' | 'active' | undefined
   readonly reducedMotion?: boolean | undefined
   readonly contextWindow?: number | null | undefined
+  /**
+   * **开局落地的那一档模型**（状态行 ③ 的开机那一格）。
+   *
+   * 与 `contextWindow` **同一个来源**（`terminal.ts` 的 `startupRegistry().current()`）：
+   * 那一位给分母，这一位给名字——两处各算一遍就会分叉。不给 ＝ 不知道 ⇒ 那一格省掉。
+   */
+  readonly modelChoice?: ModelChoice | undefined
   /**
    * **本进程的工作区**（U26）——`/resume` 那一屏据它认「别的项目」（分组头 ＋ 压暗）。
    * 装配把执行域的 `roots()` 递进来；**不给＝不知道自己在哪儿**（一组都不压暗）。
@@ -116,6 +124,8 @@ export type RunTuiOptions = {
   readonly sudo?: SudoFeed | undefined
   /** **语音输入**（U135）——装配把本机能力递进来；不给＝这台机器上没有语音入口。 */
   readonly voice?: ShellOptions['voice'] | undefined
+  /** **实验性 · 语音输入开着没有**（D75）——缺省关，此后随 `prefs.state` 走。 */
+  readonly voiceEnabled?: boolean | undefined
 }
 
 /** 挂上终端之后的把手。 */
@@ -141,6 +151,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     reducedMotion: options.reducedMotion,
     turnDuration: options.turnDuration,
     contextWindow: options.contextWindow ?? null,
+    modelChoice: options.modelChoice,
     workspaceRoots: options.workspaceRoots,
     dataDir: options.dataDir,
     home: options.home,
@@ -152,6 +163,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     reopen: options.reopen,
     openingSession: options.openingSession,
     voice: options.voice,
+    voiceEnabled: options.voiceEnabled,
     stop: options.stop,
     stopped: options.stopped,
     lines: options.lines,
@@ -165,7 +177,42 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
 
   // **右 ⌥ 那一下**（U135）——不走终端：终端默认编码里没有裸修饰键，报它就得改键盘协议，
   // 而那个协议位会毁掉输入法。改由本机只读监听（`CGEvent` listen-only）取，监听器随 TUI 启停。
-  const stopVoiceHotkey = options.voice?.listen(() => { shell.key({ kind: 'voice' }) })
+  //
+  // ⚠️ **那一下是系统级的**（D75）：同一下按键，每个 Magic 窗口的监听都听得见。故先开
+  //    终端的**焦点上报**（DECSET 1004），只有「这一屏此刻拿焦点」时才认——三条规矩
+  //    （未知不触发 · 按下与松开要在同一屏 · 退出复原）都在 `focus.ts` 里。
+  //
+  // ⚠️ 上报是**从 stdin 进来的字节**，与 Ink 读的是同一根流：我们只认、不消费
+  //    （`feed` 不动流）；Ink 那一头交上来的 `[I` / `[O` 由 `input.ts` 剥掉，不进草稿。
+  /**
+   * **这一跳接不接**（D75 · `/config` 的「实验性功能 › 语音输入」）——**缺省不接**。
+   *
+   * 开着才起监听器、才开焦点上报（`?1004h`）；关着时一件事都不做（连字节都不发）。
+   * 开与关**随屏上的读数走**（`view.voiceEnabled`）：`/config` 里一按，落定读数经
+   * `prefs.state` 回来，这一处就跟着起停——不用重启界面，也不各记一份。
+   */
+  let focusing: ReturnType<typeof openFocusReport> | null = null
+  let stopHotkey: (() => void) | null = null
+  const applyVoice = (enabled: boolean): void => {
+    if (options.voice === undefined) return
+    if (enabled && stopHotkey === null) {
+      focusing = openFocusReport(stdin, stdout)
+      stopHotkey = options.voice.listen((phase) => {
+        // 没有闸门（这一帧还没开上报）＝不认：判不出焦点就不触发（见 `focus.ts`）
+        if (focusing !== null && focusing.gate.tap(phase, Date.now())) shell.key({ kind: 'voice' })
+      })
+      return
+    }
+    if (!enabled && stopHotkey !== null) {
+      stopHotkey()
+      stopHotkey = null
+      focusing?.close()
+      focusing = null
+    }
+  }
+  applyVoice(shell.getView().voiceEnabled)
+  // 屏上那一格变了就跟着起停——**同一个读数**，不另存一份「我记得开着」
+  const unsubscribeVoice = shell.subscribe(() => applyVoice(shell.getView().voiceEnabled))
 
   const app = render(h(TuiApp, { shell }), {
     stdin,
@@ -228,7 +275,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
   const closeOut = (): void => {
     if (unmounted) return
     unmounted = true
-    stopVoiceHotkey?.()
+    applyVoice(false)
     app.unmount()
   }
 
@@ -247,6 +294,9 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
 
   /** 把这一组监听摘掉——**两条出口共用这一份清单**（正常收尾 / `boot` 抛错）。 */
   const unhook = (): void => {
+    // 语音那一跳收尾（D75 第三条）：监听器停掉、焦点模式复原——**两条出口共用这一处**
+    unsubscribeVoice()
+    applyVoice(false)
     for (const event of ['end', 'close', 'error'] as const) stdin.off(event, onTerminalGone)
     for (const signal of ['SIGHUP', 'SIGTERM'] as const) process.off(signal, onTerminalGone)
   }

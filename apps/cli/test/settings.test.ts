@@ -66,6 +66,17 @@ test('MCP 值只进不出，保留/替换/清除区分，浏览不执行命令',
   expect(await g.store.listSessions()).toEqual([])
 })
 
+test('实验性 · 语音输入写进 experimental 段；关掉就把那一段整个摘掉（缺省＝关）', async () => {
+  const g = setup()
+  // 没配过＝没有那一段（**缺省关**，见 `ExperimentalConfig`）
+  expect(loadConfig({ magic: g.context.magic }).config.experimental).toBeUndefined()
+  await g.apply({ type: 'prefs.set', voice: true })
+  expect(loadConfig({ magic: g.context.magic }).config.experimental?.voice).toBe(true)
+  // 关掉：与「没配过」同义——不留一句从来不生效的话（同 `motion` 那条）
+  await g.apply({ type: 'prefs.set', voice: false })
+  expect(loadConfig({ magic: g.context.magic }).config.experimental).toBeUndefined()
+})
+
 test('首次文件新建/同mtime内容外改/两入口旧快照/损坏JSON均拒绝覆盖', async () => {
   const g = setup(); const before = await g.settings.read()
   await g.apply({ type: 'prefs.set', reducedMotion: true })

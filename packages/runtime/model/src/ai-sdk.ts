@@ -26,7 +26,7 @@ export type VendorStreamerOptions = {
   readonly fetch?: FetchLike
   readonly adapter?: VendorAdapter
 }
-export type VendorRequest = ModelRequest & { readonly model: string }
+type VendorRequest = ModelRequest & { readonly model: string }
 export type VendorStreamer = (request: VendorRequest, options?: ModelStreamOptions, maxOutputTokens?: number) => AsyncIterable<VendorStreamPart>
 
 function sameSource(state: ReasoningState | undefined, options: VendorStreamerOptions, model: string): boolean {

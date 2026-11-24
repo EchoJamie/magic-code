@@ -61,7 +61,7 @@ import { refused } from './toolkit.ts'
  * **一个名字一份技能**（同名在发现那一层就收成一条了，见文件头注），故不需要第三个键
  * 去指「哪一份来源」。
  */
-export const SKILL_PARAMETERS = {
+const SKILL_PARAMETERS = {
   type: 'object',
   description:
     '取一份技能的正文或它引用的文件。给 name 取主文；再给 relative（相对技能目录，' +

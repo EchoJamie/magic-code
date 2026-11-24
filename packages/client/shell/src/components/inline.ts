@@ -53,21 +53,13 @@ function sorted(refs: readonly DraftRef[]): readonly DraftRef[] {
   return [...refs].sort((left, right) => left.start - right.start)
 }
 
-/**
- * 插入点落在哪一处引用上（`start < at < end`）——**严格在里面**才算。
- * 落在边界上（`at === start` / `at === end`）不算「在里面」：那是「紧挨着它」的位置。
- */
-export function insideRef(refs: readonly DraftRef[], at: number): DraftRef | undefined {
-  return refs.find((ref) => ref.start < at && at < ref.end)
-}
-
 /** 起点在这一处的引用（`delete` 键：插入点正停在它头上）。 */
 export function refStartingAt(refs: readonly DraftRef[], at: number): DraftRef | undefined {
   return refs.find((ref) => ref.start === at)
 }
 
 /** 终点在这一处的引用（退格键：插入点正停在它尾巴上）。 */
-export function refEndingAt(refs: readonly DraftRef[], at: number): DraftRef | undefined {
+function refEndingAt(refs: readonly DraftRef[], at: number): DraftRef | undefined {
   return refs.find((ref) => ref.end === at)
 }
 
@@ -122,7 +114,7 @@ export function removeRange(
  * 若只删一个字素，屏上会留下 `@src/login.t` 这样半截 marker，而身份区间还在后面挂着
  * （**暗带**）。故「压到就整个走」：那一下删掉的是整处引用。
  */
-export function widen(
+function widen(
   refs: readonly DraftRef[],
   from: number,
   to: number,
@@ -301,24 +293,8 @@ export function deleteRange(
   return widen(refs, at, stepRight(text, at))
 }
 
-/**
- * 整份引用**平移** `delta` 格——提交那一刻按「掐掉的头几格」与正文对齐用。
- *
- * 由头：交出去的文字是**掐过头尾空白**的（`trim()`），而引用的位置记的是原草稿里的坐标
- * ——不搬的话，头上有空格时那一处材料会展开在错一格的地方。
- *
- * ⚠️ **掐掉的那一段里不可能有引用**（引用的 `marker` 不以空白开头），故平移之后不会出现
- * 负下标；真出现（手搭的视图）也不是这里该悄悄丢掉的理由——那种数据到内核那头会以
- * 「位置对不上」被夹回（见 `context.ts` 的 `inlineOf`），比在这儿静默少送一份材料好。
- */
-export function shiftedRefs(refs: readonly DraftRef[], delta: number): readonly DraftRef[] {
-  if (delta === 0 || refs.length === 0) return refs
-
-  return refs.map((ref) => ({ ...ref, start: ref.start + delta, end: ref.end + delta }))
-}
-
 /** 一处引用 → 命令面上的那一份（`at` ＝ 起点；`marker` 随正文一起走）。 */
-export function wireOf(ref: DraftRef): InputRef {
+function wireOf(ref: DraftRef): InputRef {
   if (ref.kind === 'session') return { kind: 'session', at: ref.start, marker: ref.marker, source: ref.source, ...(ref.through === undefined ? {} : { through: ref.through }) }
   if (ref.kind === 'note') return { kind: 'note', at: ref.start, marker: ref.marker, source: ref.source, session: ref.session }
   if (ref.kind === 'memory') return { kind: 'memory', at: ref.start, marker: ref.marker, source: ref.source, scope: ref.scope, revision: ref.revision }

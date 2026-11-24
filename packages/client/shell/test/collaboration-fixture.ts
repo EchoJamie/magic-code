@@ -1,6 +1,6 @@
 import type { CollaborationView, Entry } from '@magic/contracts'
 
-export const collaborationEntries: readonly Entry[] = [
+const collaborationEntries: readonly Entry[] = [
   { id: 30, kind: 'user', at: 1, content: { text: '保持公共接口兼容，检查回调校验。' } },
   { id: 32, kind: 'tool-call', at: 2, content: { text: '' }, payload: { id: 'call-fixture-1', name: 'exec', args: { command: 'bun test callback.test.ts' } } },
   { id: 33, kind: 'tool-result', at: 3, content: { text: '3 pass · 回调兼容测试通过' }, payload: { ok: true, output: { text: '3 pass · 回调兼容测试通过' } } },
@@ -20,7 +20,7 @@ export const collaborationFixture: CollaborationView = {
     { delegationId: 10, collaborationId: 'work', delegatorId: 'coordinator', assigneeId: 'worker', source: { messageId: 10 }, authorization: [], scope: '回调校验', state: 'accepted', at: 0 },
     { delegationId: 11, collaborationId: 'work', delegatorId: 'coordinator', assigneeId: 'worker', source: { messageId: 11 }, authorization: [], scope: '补充复核', state: 'queued', at: 0 },
   ],
-  waits: [], constraints: [{ messageId: 20, states: [{ agentId: 'worker', state: 'pending' }, { agentId: 'coordinator', state: 'included' }] }],
+  constraints: [{ messageId: 20, states: [{ agentId: 'worker', state: 'pending' }, { agentId: 'coordinator', state: 'included' }] }],
 }
 
 /** 入口会话自己的历史（与子会话正文互不混入）。 */

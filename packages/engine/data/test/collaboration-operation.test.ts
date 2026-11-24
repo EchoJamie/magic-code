@@ -4,14 +4,10 @@ import { createRecordsStore } from '../src/index.ts'
 import { body, fixture } from './collaboration-fixture.ts'
 
 describe('协作记录 · 拒绝是需要处理的决定', () => {
-  for (const waiting of [false, true]) test(`reject 保留 decision 收件且重试不重复，登记等待=${waiting}`, () => {
+  test('reject 保留 decision 收件且重试不重复', () => {
     const f = fixture()
     try {
       const child = f.spawn('child')
-      if (waiting) f.records.registerWait(f.coordinator.agentId, {
-        operationId: 'wait', forAgents: [child.agent.agentId], forMessageId: child.delegation.delegationId,
-        expectation: '成员响应', deadline: 100, at: 10,
-      })
       const input = { operationId: 'reject', delegationId: child.delegation.delegationId,
         response: 'reject' as const, reason: '无法履行这份委派', at: 11 }
       const result = f.records.respondToDelegation(child.agent.agentId, input)
@@ -25,25 +21,17 @@ describe('协作记录 · 拒绝是需要处理的决定', () => {
       expect(message.userSource).toBeUndefined()
       expect(f.records.respondToDelegation(child.agent.agentId, { ...input, at: 12 })).toEqual(result)
       expect(f.records.inbox(f.coordinator.agentId)).toEqual(receipts)
-      const outcomes = f.records.consumeWaitOutcomes(f.coordinator.agentId, 13)
-      if (waiting) expect(outcomes).toMatchObject([{ state: 'interrupted', reason: input.reason }])
-      else expect(outcomes).toEqual([])
-      expect(f.records.consumeWaitOutcomes(f.coordinator.agentId, 14)).toEqual([])
     } finally { f.close() }
   })
 
-  test('accept 仍是普通 receipt，不解除等待或产生终态回报', () => {
+  test('accept 仍是普通 receipt', () => {
     const f = fixture()
     try {
       const child = f.spawn('child')
-      f.records.registerWait(f.coordinator.agentId, { operationId: 'wait', forAgents: [child.agent.agentId],
-        forMessageId: child.delegation.delegationId, expectation: '交付', deadline: 100, at: 10 })
       f.accept(child.delegation.delegationId)
       const inbox = f.records.inbox(f.coordinator.agentId)
       expect(inbox).toHaveLength(1)
       expect(f.records.readMessage(f.coordinator.agentId, inbox[0]!.messageId)?.purpose).toBe('receipt')
-      expect(f.records.listWaits(f.collaboration.collaborationId)[0]?.state).toBe('waiting')
-      expect(f.records.consumeWaitOutcomes(f.coordinator.agentId, 11)).toEqual([])
     } finally { f.close() }
   })
 })

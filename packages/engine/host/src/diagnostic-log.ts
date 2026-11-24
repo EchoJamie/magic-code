@@ -8,7 +8,30 @@ function logFailure(error: unknown): string {
 import { LOG_LEVELS, isLogLevel, type LogLevel } from '@magic/contracts'
 
 /** Only structural identifiers enter files. Text, errors, config and wire payloads do not. */
-export type LogFields = Partial<Record<'hostInstance' | 'serviceInstance' | 'session' | 'run' | 'request', string>> & { count?: number; debugMode?: boolean; previousDebugMode?: boolean; logLevel?: LogLevel; previousLogLevel?: LogLevel; settingSource?: 'app' | 'cli' | 'config' }
+export type LogFields = Partial<Record<'hostInstance' | 'serviceInstance' | 'session' | 'run' | 'request', string>> & {
+  count?: number
+  /**
+   * **连接这一层的诊断位**（D75 补）：`conn` 是窗口编号、`bytes` 是涉事字节数、
+   * `by` 说谁先断、`reason` 只放**代码内生成的短码或短句**
+   * （`identity-mismatch` / `send-backlog` 一类）——它不来自用户、供应商或工具输出，
+   * 日志里不留内容这条规矩不变。
+   */
+  bytes?: number
+  conn?: number
+  by?: 'local' | 'peer'
+  reason?: string
+  /** 哪一类消息（`t` 或 `ev:kind` 的短 token）——只记形状，不记正文。 */
+  kind?: string
+  /** 本次积压 episode 里被拒发的帧数（终止时汇总）。 */
+  dropped?: number
+  /** 拒发时已有的欠账字节数。 */
+  backlog?: number
+  debugMode?: boolean
+  previousDebugMode?: boolean
+  logLevel?: LogLevel
+  previousLogLevel?: LogLevel
+  settingSource?: 'app' | 'cli' | 'config'
+}
 export class DiagnosticLog {
   readonly directory: string
   private level: LogLevel
@@ -43,6 +66,22 @@ export class DiagnosticLog {
       if (value !== undefined && /^[a-zA-Z0-9_-]{1,100}$/.test(value)) safe[key] = value
     }
     if (Number.isSafeInteger(fields.count)) safe.count = fields.count
+    /**
+     * **连接诊断位**（D75）——类型里加了还不够，`write` 必须真的把它们拷进落盘那一份。
+     * 上一版正是漏了这一步：日志里只剩事件名，`link.terminated` 没有 `reason`/`bytes`，
+     * 「连不上」再次查不到原因。
+     */
+    const conn = fields.conn
+    if (conn !== undefined && Number.isSafeInteger(conn) && conn >= 0) safe.conn = conn
+    const bytes = fields.bytes
+    if (bytes !== undefined && Number.isSafeInteger(bytes) && bytes >= 0) safe.bytes = bytes
+    if (fields.by === 'local' || fields.by === 'peer') safe.by = fields.by
+    if (typeof fields.reason === 'string' && fields.reason.length > 0 && fields.reason.length <= 120 && !/[\u0000-\u001f\u007f]/.test(fields.reason)) safe.reason = fields.reason
+    if (typeof fields.kind === 'string' && /^[a-zA-Z0-9:._-]{1,64}$/.test(fields.kind)) safe.kind = fields.kind
+    const dropped = fields.dropped
+    if (dropped !== undefined && Number.isSafeInteger(dropped) && dropped >= 0) safe.dropped = dropped
+    const backlog = fields.backlog
+    if (backlog !== undefined && Number.isSafeInteger(backlog) && backlog >= 0) safe.backlog = backlog
     for (const key of ['debugMode', 'previousDebugMode'] as const) if (typeof fields[key] === 'boolean') safe[key] = fields[key]
     for (const key of ['logLevel', 'previousLogLevel'] as const) if (isLogLevel(fields[key])) safe[key] = fields[key]
     if (fields.settingSource && ['app', 'cli', 'config'].includes(fields.settingSource)) safe.settingSource = fields.settingSource

@@ -24,9 +24,9 @@ describe('exec 超时：缺省两分钟，到点转后台', () => {
   test('不填 timeoutMs ⇒ 沙箱收到 120000；显式 null 仍是不设上界', async () => {
     const deps = makeToolDeps()
 
-    await deps.runtime.invoke({ id: 'c1', name: 'exec', args: { command: 'ls' } }, {})
-    await deps.runtime.invoke({ id: 'c2', name: 'exec', args: { command: 'ls', timeoutMs: null } }, {})
-    await deps.runtime.invoke({ id: 'c3', name: 'exec', args: { command: 'ls', timeoutMs: 2500 } }, {})
+    await deps.runtime.invoke({ id: 'c1', name: 'exec', args: { description: '测试命令', command: 'ls' } }, {})
+    await deps.runtime.invoke({ id: 'c2', name: 'exec', args: { description: '测试命令', command: 'ls', timeoutMs: null } }, {})
+    await deps.runtime.invoke({ id: 'c3', name: 'exec', args: { description: '测试命令', command: 'ls', timeoutMs: 2500 } }, {})
 
     expect(deps.sandbox.execs.map(one => one.opts.timeoutMs)).toEqual([120_000, null, 2500])
   })
@@ -38,12 +38,12 @@ describe('exec 超时：缺省两分钟，到点转后台', () => {
       stop: async () => ({ ok: true, note: '' }),
       adopt: async () => ({ ok: false, reason: '本用例不接管' }),
     } })
-    await withBackground.runtime.invoke({ id: 'c1', name: 'exec', args: { command: 'make' } }, {})
+    await withBackground.runtime.invoke({ id: 'c1', name: 'exec', args: { description: '测试命令', command: 'make' } }, {})
     expect(withBackground.sandbox.execs[0]?.opts.onTimeout).toBe('background')
     expect(typeof withBackground.sandbox.execs[0]?.opts.adopt).toBe('function')
 
     const without = makeToolDeps()
-    await without.runtime.invoke({ id: 'c2', name: 'exec', args: { command: 'make' } }, {})
+    await without.runtime.invoke({ id: 'c2', name: 'exec', args: { description: '测试命令', command: 'make' } }, {})
     expect(without.sandbox.execs[0]?.opts.onTimeout).toBe('kill')
     expect(without.sandbox.execs[0]?.opts.adopt).toBeUndefined()
   })
@@ -55,7 +55,7 @@ describe('exec 超时：缺省两分钟，到点转后台', () => {
       stop: async () => ({ ok: true, note: '' }),
       // 契约上 adopt 是可选的：只实现 start 的宿主第一趟超时不该撞成 TypeError
     } })
-    await deps.runtime.invoke({ id: 'c1', name: 'exec', args: { command: 'make' } }, {})
+    await deps.runtime.invoke({ id: 'c1', name: 'exec', args: { description: '测试命令', command: 'make' } }, {})
     expect(deps.sandbox.execs[0]?.opts.onTimeout).toBe('kill')
     expect(deps.sandbox.execs[0]?.opts.adopt).toBeUndefined()
   })
@@ -63,7 +63,7 @@ describe('exec 超时：缺省两分钟，到点转后台', () => {
   test('沙箱报「已转后台」⇒ 回执说清还在跑、编号与输出文件；ok:false', async () => {
     const deps = makeToolDeps({ exec: { make: adopted() } })
 
-    const outcome = await deps.runtime.invoke({ id: 'c1', name: 'exec', args: { command: 'make' } }, {})
+    const outcome = await deps.runtime.invoke({ id: 'c1', name: 'exec', args: { description: '测试命令', command: 'make' } }, {})
 
     expect(outcome.ok).toBe(false)
     expect(outcome.output).toContain('命令超过 120000ms 还没结束，已转后台继续跑：编号 bg-7')
@@ -77,7 +77,7 @@ describe('exec 超时：缺省两分钟，到点转后台', () => {
   test('转后台那一句不许与「失败」混为一谈：不说「被杀」「被掐断」', async () => {
     const deps = makeToolDeps({ exec: { make: adopted() } })
 
-    const outcome = await deps.runtime.invoke({ id: 'c1', name: 'exec', args: { command: 'make' } }, {})
+    const outcome = await deps.runtime.invoke({ id: 'c1', name: 'exec', args: { description: '测试命令', command: 'make' } }, {})
 
     expect(outcome.output).not.toContain('被掐断')
     expect(outcome.output).not.toContain('已拒绝')

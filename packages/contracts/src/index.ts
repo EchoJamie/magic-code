@@ -21,6 +21,8 @@
  */
 
 export * from './shared/ids.ts'
+export * from './shared/control-budget.ts'
+export * from './shared/wire-budget.ts'
 export * from './conversation/entries.ts'
 export * from './conversation/events.ts'
 export * from './conversation/control.ts'

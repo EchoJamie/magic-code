@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRecordsStore } from '@magic/data'
-import type { KernelEvent, RunNotice, NativeResponse } from '@magic/contracts'
+import type { KernelEvent, ManagerToClient, RunNotice, NativeResponse } from '@magic/contracts'
 import { connectManager } from '@magic/host'
 import type { ManagerClient } from '@magic/host'
 import { createAgentLauncher, createProcessLauncher } from '@magic/host'
@@ -39,7 +39,7 @@ function ground(name: string, mode: 'held' | 'settled' | 'background' | 'backgro
   // 真执行者只连接本机受控模型；待答命令绝不批准，不产生工具副作用。
   const complete = { kind: 'text' as const, text: '核心隔离回合完成', chunks: 1, chunkDelayMs: 0 }
   const fixture = startFixture({ turns: turns ?? (mode.startsWith('background')
-    ? [{ kind: 'tool', name: 'exec', args: { command: mode === 'background-finish' ? 'sleep 1.5' : 'sleep 300', background: true } }, complete]
+    ? [{ kind: 'tool', name: 'exec', args: { description: '测试命令', command: mode === 'background-finish' ? 'sleep 1.5' : 'sleep 300', background: true } }, complete]
     : [mode === 'settled' ? complete : { kind: 'text', text: '受控等待中', chunks: 200, chunkDelayMs: 100 }]),
   })
   const environment: Record<string, string> = { ...Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined)), HOME: home, MAGIC_HOME: base }
@@ -334,46 +334,30 @@ describe('一个窗口一条执行者', () => {
 })
 
 describe('独占与代次', () => {
-  test('过期连接携带旧代次的命令一律拒绝——且是有回声的拒绝', async () => {
-    const g = ground('stale')
+  test('旧视图的窗口交代新的一条：按会话状态起下一代——代次不再拦用户交代', async () => {
+    const g = ground('stale-statement', 'settled', [{ kind: 'text', text: '完成', chunks: 1, chunkDelayMs: 0 }])
     const manager = await standUp(g)
+    const session = 'aaaaaaaa-0000-0000-0000-000000000008'
+    seedSession(g, session, '旧视图那条')
 
     try {
-      // 一条**手搓的连接**：就是「别处一个旧窗口」的形态——它自己说一个号，
-      // 而那个号不是管理者此刻给它的那一个。
+      // 一条**手搓的连接**：hello 指着会话 S，然后谎报一个号——「窗口的世代视图落后于
+      // 管理者」那个结构性的窗口（真窗口拿的是刚结束那一代的号，与它同形）。
       const socket = await Bun.connect({
         unix: manager.socketPath,
         socket: socketHandlers(),
       })
       const link = linkOf(socket as never)
-      const lines: string[] = []
-      link.onMessage((message) => {
-        if ((message as { t: string }).t === 'line') {
-          lines.push((message as { text: string }).text)
-        }
-      })
-      link.send({ t: 'hello', role: 'client', protocol: manager.identity.protocol, version: manager.identity.version, source: manager.identity.source, cwd: g.ws, label: '旧窗口' })
+      const received: ManagerToClient[] = []
+      link.onMessage((message) => { received.push(message as ManagerToClient) })
+      link.send({ t: 'hello', role: 'client', protocol: manager.identity.protocol, version: manager.identity.version, source: manager.identity.source, cwd: g.ws, session, label: '旧视图窗口' })
+      await waitFor('welcome 到了', () => received.some(m => m.t === 'welcome'))
 
-      // ① 还没有目标时说一个号——那正是「旧窗口拿着上一代的号」的形态
-      link.send({ t: 'cmd', gen: 42, cmd: { type: 'input.submit', text: '旧代次不得执行' } })
-      await waitFor('旧号的命令被拒', () => lines.length > 0)
-      expect(lines[0]).toContain('已经不在了')
-      // **没有为它起执行者**——拒绝是真拒绝，不是「收下了另说」
-      expect(manager.executors().length).toBe(0)
-
-      // ② 窗口正常接上之后再拿旧号发——同样被拒
-      lines.length = 0
-      link.send({ t: 'cmd', gen: null, cmd: { type: 'input.submit', text: '受控待答' } })
-      await waitFor('正常那条起了执行者', () => manager.executors().length === 1)
-      const live = manager.executors()[0] as { readonly gen: number }
-      await waitFor('正常输入进入待答', () => manager.runs().some((row) => row.state === 'running'))
-
-      link.send({ t: 'cmd', gen: live.gen + 7, cmd: { type: 'input.submit', text: '旧代次不得执行' } })
-      await waitFor('旧号又被拒', () => lines.length > 0)
-      expect(lines[0]).toContain(`${live.gen + 7}`)
-      // 执行者一代都没多
-      expect(manager.executors().length).toBe(1)
-
+      // 交代按**会话状态**路由：没有活目标 ⇒ 「明确继续」起下一代并送达——
+      // 不拒绝、不要求重敲。TUI 交代的投递不需要向管理者报世代（队列归 TUI）。
+      link.send({ t: 'cmd', gen: 42, cmd: { type: 'input.submit', text: '旧视图的一条交代', ref: 'r-1' } })
+      await waitFor('下一代起了', () => manager.executors().length === 1)
+      await waitFor('交代真送进了模型', () => g.fixture.requests().some(r => r.path.endsWith('/chat/completions')))
       link.close()
     } finally {
       manager.stop('用例收尾')
@@ -382,7 +366,35 @@ describe('独占与代次', () => {
     }
   }, 60_000)
 
+  test('世代闸继续保护交互语境的命令：旧号的 model.switch 被拒', async () => {
+    const g = ground('stale-switch')
+    const manager = await standUp(g)
 
+    try {
+      // 没有目标时说一个号——换模型不是「新交代」，是交互语境里的动作：照旧被闸挡下
+      // （设计 · 状态可信度、独占与重新连接 ①），且是有回声的拒绝。
+      const socket = await Bun.connect({
+        unix: manager.socketPath,
+        socket: socketHandlers(),
+      })
+      const link = linkOf(socket as never)
+      const lines: string[] = []
+      link.onMessage((message) => {
+        if ((message as { t: string }).t === 'line') lines.push((message as { text: string }).text)
+      })
+      link.send({ t: 'hello', role: 'client', protocol: manager.identity.protocol, version: manager.identity.version, source: manager.identity.source, cwd: g.ws, label: '旧窗口' })
+      link.send({ t: 'cmd', gen: 42, cmd: { type: 'model.switch', choice: 'cantrip' } })
+      await waitFor('旧号的命令被拒', () => lines.length > 0)
+      expect(lines[0]).toContain('已经不在了')
+      expect(manager.executors().length).toBe(0)
+
+      link.close()
+    } finally {
+      manager.stop('用例收尾')
+      await manager.waitUntilExit()
+      await g.dispose()
+    }
+  }, 60_000)
 })
 
 /** 这一支要用的那条会话 id——形制与上面 `session.open` 那几条同。 */
@@ -424,7 +436,7 @@ describe('收缩与异常', () => {
   test('真实模型与工具：中间轮无 done，最终事项只交给绑定终端，执行者释放不重复系统通知', async () => {
     const marker = 'resident-continues-tool-output'
     const g = ground('attention', 'settled', [
-      { kind: 'tool', name: 'exec', args: { command: `echo ${marker}` } },
+      { kind: 'tool', name: 'exec', args: { description: '测试命令', command: `echo ${marker}` } },
       // 保留真实流式阶段，第一轮结束时可直接检查持久事项，不能只在最终数总数。
       { kind: 'text', text: '工具结果已收到，这才是本次交代的最终结果。', chunks: 10, chunkDelayMs: 100 },
     ])
@@ -653,9 +665,9 @@ test('在途执行者动态调整诊断等级，代次与审批保持；错误�
 
 test('配置文件争锁与大输出期间仍能查询并独立停止另一工作', async () => {
   const g = ground('control-pressure', 'settled', [
-    { kind: 'tool', name: 'exec', args: { command: 'yes u122-output', background: true } },
+    { kind: 'tool', name: 'exec', args: { description: '测试命令', command: 'yes u122-output', background: true } },
     { kind: 'text', text: '后台输出继续' },
-    { kind: 'tool', name: 'exec', args: { command: 'sleep 30' } },
+    { kind: 'tool', name: 'exec', args: { description: '测试命令', command: 'sleep 30' } },
   ])
   const { acquireFileLock } = await import('@magic/state')
   const manager = await standUp(g)
@@ -691,7 +703,7 @@ test('配置文件争锁与大输出期间仍能查询并独立停止另一工�
 }, 15000)
 
 test('D57 · 客户端整项停止覆盖主命令退出后的管道等待，队列不再启动', async () => {
-  const g = ground('pipe-stop', 'settled', [{ kind: 'tool', name: 'exec', args: {
+  const g = ground('pipe-stop', 'settled', [{ kind: 'tool', name: 'exec', args: { description: '测试命令',
     command: 'cd /tmp && /bin/sleep 30 >/dev/null 2>&1 & echo parent-done',
   } }])
   const manager = await standUp(g)
@@ -720,7 +732,9 @@ describe('执行者进程隔离', () => {
   test('子进程连回管理者跑完整一轮后自退；接续照旧，停止时一并收场', async () => {
     const complete = { kind: 'text' as const, text: '完成', chunks: 1, chunkDelayMs: 0 }
     const g = ground('process-isolation', 'settled', [complete, complete])
-    const manager = await standUp(g, { launch: createProcessLauncher({ socket: runPathsOf(g.magic, g.tmp).socket, log: line => console.error('[launcher]', String(line).slice(0, 200)) }), probeIntervalMs: 50_000 })
+    // 执行者环境可来自窗口，临时目录不同也必须连接管理者实际监听的地址。
+    g.environment.TMPDIR = g.ws
+    const manager = await standUp(g, { launch: createProcessLauncher() })
     const client = await open(g, manager, 'isolated')
     const records = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
     let completed = 0

@@ -53,7 +53,7 @@ export type VtCell = {
 }
 
 /** 可见屏的一行。 */
-export type VtLine = {
+type VtLine = {
   /** 屏幕矩阵里的行号（0 ＝ 可见区顶行）。 */
   readonly row: number
   readonly text: string

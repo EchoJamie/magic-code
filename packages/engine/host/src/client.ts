@@ -108,6 +108,11 @@ export async function connectManager(socketPath: string, options: ConnectOptions
   const detachedListeners: ((why: string) => void)[] = []
   let lateDetached: string | undefined
   const lineListeners: ((text: string) => void)[] = []
+  /**
+   * 握手阶段先到的 `line`——那时外壳还没订阅。丢掉的话，「没有这条会话」这类
+   * 提示就永远看不到（2026-11-21：改为不关连接后，提示必须在窗口里可见）。
+   */
+  let pendingLines: string[] = []
   const sudoListeners: ((event: { readonly kind: 'request'; readonly requestId: string; readonly command: string } | { readonly kind: 'settled'; readonly requestId: string }) => void)[] = []
   let lateResumed: { gen: number; snapshot: RunSnapshot } | undefined
 
@@ -158,7 +163,8 @@ export async function connectManager(socketPath: string, options: ConnectOptions
         }
         return
       case 'line':
-        for (const listener of [...lineListeners]) listener(message.text)
+        if (lineListeners.length === 0) pendingLines.push(message.text)
+        else for (const listener of [...lineListeners]) listener(message.text)
         return
       case 'sudo.request':
         for (const listener of [...sudoListeners]) listener({ kind: 'request', requestId: message.requestId, command: message.command })
@@ -243,7 +249,15 @@ export async function connectManager(socketPath: string, options: ConnectOptions
       })
     },
     onStopped: (listener) => { stoppedListeners.push(listener) },
-    onLine: (listener) => { lineListeners.push(listener) },
+    onLine: (listener) => {
+      lineListeners.push(listener)
+      if (pendingLines.length === 0) return
+      const queued = pendingLines
+      pendingLines = []
+      queueMicrotask(() => {
+        for (const text of queued) for (const receive of [...lineListeners]) receive(text)
+      })
+    },
     onSudo: (listener) => { sudoListeners.push(listener) },
     answerSudo: (requestId, password) => { link.send(password === null ? { t: 'sudo.answer', requestId, cancelled: true } : { t: 'sudo.answer', requestId, password }) },
     onClose: (listener) => { link.onClose((error) => listener(error ?? closeError)) },

@@ -4,13 +4,13 @@
  * 正文字数阈值——超者转 blob（**字符**，非字节：廉价且可预期，落数据库前的判断够用）。
  * 缺省 8192：一屏刷不完、但还没到「必须落盘」的量级——正常对话不进 blob。
  */
-export const DEFAULT_BLOB_THRESHOLD = 8192
+const DEFAULT_BLOB_THRESHOLD = 8192
 
 /**
  * **压缩触发阈值（占比）**——用量达**窗长**的这一成即交接（用户 2026-11-19 定：85%）。
  * 留一成半给「这一轮还要塞进去的东西」（工具定义 ＋ 本轮工具结果 ＋ 模型的答复）。
  */
-export const DEFAULT_COMPACT_AT_FRACTION = 0.85
+const DEFAULT_COMPACT_AT_FRACTION = 0.85
 
 /**
  * **压缩触发阈值（绝对 token 数）**——**窗长没声明时**的退路（`providers.<id>.contextWindow`
@@ -20,7 +20,7 @@ export const DEFAULT_COMPACT_AT_FRACTION = 0.85
  * 多数端点容得下 128k，故 120k 作为「该收了」的信号；真压早了只是白跑一次摘要，
  * 真撞上超限还有第二条触发路径（`model.error{context-limit}`）兜着。
  */
-export const DEFAULT_COMPACT_AT_TOKENS = 120_000
+const DEFAULT_COMPACT_AT_TOKENS = 120_000
 
 export type ContextPolicy = {
   /** 正文超此长度即转 blob（字符数）——写侧。 */

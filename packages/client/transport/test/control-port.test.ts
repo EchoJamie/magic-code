@@ -345,7 +345,7 @@ describe('通道回环——命令进 · 事件出', () => {
     ]
     for (const command of requests) shell.send(command)
     expect(commands).toEqual([...requests])
-    const snapshot: KernelEvent = { id: 1, session: 'origin', turn: null, at: 0, kind: 'collaboration.view', data: { originSession: 'origin', members: [], delegations: [], waits: [], constraints: [] } }
+    const snapshot: KernelEvent = { id: 1, session: 'origin', turn: null, at: 0, kind: 'collaboration.view', data: { originSession: 'origin', members: [], delegations: [], constraints: [] } }
     hub.emit(snapshot)
     expect(events).toEqual([snapshot])
     expect(JSON.parse(JSON.stringify(events))).toEqual(events)

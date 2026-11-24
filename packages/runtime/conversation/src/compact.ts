@@ -1,11 +1,11 @@
-import type { Entry, EventSink, EventStamper, ModelGateway, RecordId, RecordsService, SessionId, ToolRuntime, WorkingNotes } from '@magic/contracts'
+import type { EventSink, EventStamper, ModelGateway, RecordId, RecordsService, SessionId, ToolRuntime, WorkingNotes } from '@magic/contracts'
 import { BriefFailure, prepareBrief, type BriefCapacity } from './brief.ts'
 import { PreparationFailure, preparationReserve, substantiveEntries } from './organize.ts'
 import { readPlanOf } from './plan.ts'
 
-export type CompactTrigger = 'threshold' | 'context-limit'
-export type CompactFailureKind = 'configuration' | 'no-material' | 'local-capacity' | 'remote-capacity' | 'transient' | 'canceled' | 'changed'
-export type CompactOutcome = ({ readonly notesSaved: boolean } & (
+type CompactTrigger = 'threshold' | 'context-limit'
+type CompactFailureKind = 'configuration' | 'no-material' | 'local-capacity' | 'remote-capacity' | 'transient' | 'canceled' | 'changed'
+type CompactOutcome = ({ readonly notesSaved: boolean } & (
   | { readonly ok: true; readonly summary: RecordId; readonly summarized: number; readonly kept: number }
   | { readonly ok: false; readonly reason: string; readonly kind: CompactFailureKind; readonly canContinue: boolean }
 ))
@@ -128,6 +128,3 @@ async function saveNotes(deps: CompactorDeps, text: string): Promise<boolean> {
     return false
   }
 }
-
-/** 供装配与其他调用方判断一条记录是不是交接材料。 */
-export const isHandoffEntry = (entry: Entry): boolean => entry.kind === 'user' && entry.payload !== undefined && 'handoff' in entry.payload && entry.payload.handoff === true

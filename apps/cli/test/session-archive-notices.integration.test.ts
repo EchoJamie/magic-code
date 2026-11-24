@@ -102,7 +102,12 @@ test('归档先受理：广播只读、拒输入与普通接回、只读重连�
     expect(events.find(event => event.kind === 'input.settled' && event.data.ref === 'draft')?.data).toMatchObject({ ok: false, reason: expect.stringContaining('已归档') })
     expect(f.launches).toHaveLength(0)
     expect((await f.manage([{ session: 'a', action: 'rename', title: '不能改名' }])).results[0]).toMatchObject({ ok: false, error: expect.stringContaining('先恢复') })
-    await expect(f.connect()).rejects.toThrow('已归档')
+    // 2026-11-21：归档会话不再拒握手关连接——正常连上，给一句提示，连接保持。
+    const reopened = await f.connect()
+    const lines: string[] = []
+    reopened.onLine(text => lines.push(text))
+    await until(() => lines.some(text => text.includes('已归档')))
+    expect(reopened.closed).toBe(false)
     const reconnected = await f.connect('a', true)
     reconnected.send({ type: 'history.read', session: 'b' })
     const history: KernelEvent[] = []

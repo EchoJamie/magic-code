@@ -300,7 +300,7 @@ export async function setPrefs(input: {
   readonly validate?: (raw: Record<string, unknown>) => void
   readonly request: PrefsSetRequest
 }): Promise<SaveOutcome> {
-  const { statusLine, reducedMotion, turnDuration } = input.request
+  const { statusLine, reducedMotion, turnDuration, voice } = input.request
 
   return editConfigFile({
     path: input.path,
@@ -324,6 +324,20 @@ export async function setPrefs(input: {
       if (reducedMotion !== undefined) {
         if (reducedMotion) next['motion'] = { reduced: true }
         else delete next['motion']
+      }
+
+      // 实验性那一组（D75）——**只留开着的项**：`false` 与「没配过」同义，不写进去
+      // （同 `motion` 那条：配置里不留一句从来不生效的话）；整段空了就把这一段摘掉。
+      if (voice !== undefined) {
+        const experimental: Record<string, unknown> = {
+          ...(typeof next['experimental'] === 'object' && next['experimental'] !== null
+            ? next['experimental'] as Record<string, unknown>
+            : {}),
+        }
+        if (voice) experimental['voice'] = true
+        else delete experimental['voice']
+        if (Object.keys(experimental).length === 0) delete next['experimental']
+        else next['experimental'] = experimental
       }
 
       return { ok: true, raw: next }

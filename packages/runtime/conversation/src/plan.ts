@@ -29,7 +29,7 @@ export const HISTORY_PAGE_ENTRIES = 10
 export const HISTORY_ENTRY_CHARS = 2000
 
 /** 一页正文合计上限（字符）——条数与字符数两道闸，谁先到算谁。 */
-export const HISTORY_PAGE_CHARS = 8000
+const HISTORY_PAGE_CHARS = 8000
 
 /** 当前计划独立保存，读取不迁移或修改记录。 */
 export function readPlanOf(records: RecordsService, session: SessionId): PlanSnapshot {

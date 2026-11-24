@@ -1,5 +1,12 @@
 import type { Socket } from 'bun'
-import { decodeNativeMessage } from '@magic/contracts'
+import {
+  CONTROL_BACKLOG_CHECK_MS,
+  CONTROL_BACKLOG_GRACE_MS,
+  decodeNativeMessage,
+  WIRE_MESSAGE_BUDGET_BYTES,
+  WIRE_RECEIVE_HARD_CAP_BYTES,
+  WIRE_SEND_BACKLOG_BYTES,
+} from '@magic/contracts'
 import type { Wire } from '@magic/contracts'
 export type { Wire, ClientToManager, ManagerToClient, ExecutorToManager, ManagerToExecutor, McpProbeRow } from '@magic/contracts'
 
@@ -59,12 +66,35 @@ export type Link<In extends Wire = Wire> = {
  */
 const LINKS = new WeakMap<Socket<unknown>, Link>()
 
+/** 诊断用：这一帧是什么消息（`t` 与事件 kind 的短 token，**不带正文**）。 */
+function frameKindOf(message: Wire): string {
+  const record = message as { t?: unknown; event?: { kind?: unknown } }
+  const t = typeof record.t === 'string' ? record.t : 'unknown'
+  const kind = typeof record.event?.kind === 'string' ? record.event.kind : undefined
+  return (kind === undefined ? t : `${t}:${kind}`).slice(0, 48)
+}
+
 /**
  * 把一个 Bun socket 包成 `Link`——**服务端接进来的与客户端连上的走同一条路**。
  *
  * 两处各写一份的代价是「服务端那条路忘了回报 `close`」这类只在一边出现的毛病。
  */
-export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>): Link<In> {
+/**
+ * **这一层要知道的坏事往哪写**（D75 排查补：原先一处都不写）。
+ *
+ * `wire.ts` 是引擎与终端**共用**的传输层，它自己不知道身份——故由造连接的人给一个汇：
+ * 引擎那边写进诊断日志（`manager` / `executor` 分量），终端那边可以不给。
+ *
+ * 两条级别定死：**`terminate` 是 error**（连接被我们硬砍，对端只会看到「没原因」），
+ * **`close` 是 info**（正常收尾）；对端先断且没给 error 的那一形由调用方按 warn 记
+ * ——那正是「连不上却查不到」的那一类。
+ */
+export type LinkHooks = {
+  readonly fault?: (event: string, data: Record<string, unknown>) => void
+  readonly closed?: (detail: { readonly by: 'local' | 'peer'; readonly reason?: string }) => void
+}
+
+export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>, hooks?: LinkHooks): Link<In> {
   const existing = LINKS.get(socket)
   if (existing !== undefined) return existing as Link<In>
 
@@ -84,13 +114,79 @@ export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>): Link<In
   let pending: Uint8Array = EMPTY_BYTES
   let projection: Uint8Array | undefined
 
+  /** 是不是我们自己关的（`close()` 那一路）——判「谁先断」用。 */
+  let ending = false
+
+  /** 最近一次**真正写出字节**的时刻——积压宽限的判据（见 `syncBacklog`）。 */
+  let lastProgressAt = Date.now()
+  /** 有欠账时挂着的检查定时器——欠账清空即摘掉。 */
+  let backlogTimer: ReturnType<typeof setTimeout> | undefined
+  /** 当前是否处于一次「欠账 episode」——**进入时才起算宽限**，见下。 */
+  let inBacklog = false
+  /** 本 episode 里被积压拒发的帧数——只报第一次，终止时汇总。 */
+  let backlogRejected = 0
+
+  const queuedBytes = (): number => pending.length + (projection?.length ?? 0)
+
+  const clearBacklogCheck = (): void => {
+    if (backlogTimer !== undefined) { clearTimeout(backlogTimer); backlogTimer = undefined }
+  }
+
+  /**
+   * **积压宽限**（2026-11-21）：对端不读，不等于这一条连接已经坏了。
+   * 只有欠账持续存在、且 `CONTROL_BACKLOG_GRACE_MS` 内**一个字节都没写出去**，
+   * 才认「连接坏了」并断开；任何一次成功写出都会把计时推后。
+   *
+   * ⚠️ **进入欠账时才起算**：连接空闲很久后第一次写不出去，不能拿「上次写出」
+   * 的旧时间戳当场判死——那是把「刚有消息」误当成「对端已经卡了半分钟」。
+   *
+   * ⚠️ 检查必须**自己驱动**：对端不读时不会再有 `send` 或 `drain`，
+   * 没有这一跳，宽限永远不会到期。
+   */
+  const syncBacklog = (): void => {
+    if (closed) return
+    if (queuedBytes() === 0) {
+      clearBacklogCheck()
+      inBacklog = false
+      backlogRejected = 0
+      return
+    }
+    if (!inBacklog) {
+      inBacklog = true
+      lastProgressAt = Date.now()
+    }
+    armBacklogCheck()
+  }
+
+  const armBacklogCheck = (): void => {
+    if (backlogTimer !== undefined || closed) return
+    backlogTimer = setTimeout(() => {
+      backlogTimer = undefined
+      if (closed) return
+      if (queuedBytes() === 0) { inBacklog = false; backlogRejected = 0; return }
+      if (Date.now() - lastProgressAt >= CONTROL_BACKLOG_GRACE_MS) {
+        ending = true
+        hooks?.fault?.('link.terminated', { reason: 'slow-consumer', bytes: queuedBytes(), dropped: backlogRejected })
+        try { socket.terminate() } catch {}
+        settle(new Error('客户端长时间未接收数据，连接已断开'))
+        return
+      }
+      armBacklogCheck()
+    }, CONTROL_BACKLOG_CHECK_MS)
+    backlogTimer.unref?.()
+  }
+
   const settle = (error?: Error): void => {
     if (closed) return
     closed = true
+    clearBacklogCheck()
+    inBacklog = false
+    backlogRejected = 0
     // 人都走了，欠着的那一截没有送出去的地方了——丢掉（**不是悄悄丢**：对面收不全
     // 整条消息，它那一侧的断句本来就会把它认成坏行，与「这条连接断了」是同一件事）。
     pending = EMPTY_BYTES
     projection = undefined
+    hooks?.closed?.({ by: ending ? 'local' : 'peer', ...(error === undefined ? {} : { reason: error.message }) })
     for (const listener of [...closeListeners]) listener(error)
     closeListeners = []
     listeners = []
@@ -112,25 +208,34 @@ export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>): Link<In
    *
    * 次序不变：欠账与后来的消息**首尾相接**地攒在一起，先欠的先出。
    */
-  const pump = (): void => {
+  const pump = (): boolean => {
     while (!closed && (pending.length > 0 || projection !== undefined)) {
       if (pending.length === 0) { pending = projection!; projection = undefined }
       let accepted: number
       try {
         accepted = socket.write(pending)
       } catch {
+        // 写失败是这一条连接坏了——与「一条消息太大」不同，这里要断开并留原因。
+        ending = true
+        hooks?.fault?.('link.terminated', { reason: 'write-error', bytes: queuedBytes() })
+        try { socket.terminate() } catch {}
         settle(new Error('写不进去'))
-        return
+        return false
       }
       // **0 ＝ 这一下一点都塞不进去**（发送缓冲满）——欠账留着，等 `drain` 那一跳
       if (accepted <= 0) break
+      // 任何一次成功写出都算「有进展」——积压宽限从这一下重新起算。
+      lastProgressAt = Date.now()
       pending = accepted >= pending.length ? EMPTY_BYTES : pending.slice(accepted)
     }
 
-    if (closed) return
+    if (closed) return false
     // **每条都 flush**（实测要的）：不 flush 的话小消息躺在用户态缓冲里等下一次写，
     // 而「下一次写」可能是几秒之后——线上就成了「发出去半分钟没动静」。
-    socket.flush()
+    try { socket.flush() } catch { /* 下一次写/drain 会再试 */ }
+    // 无论这一轮有没有进展都要核账：刚进入欠账时这里负责起算并挂上定时器。
+    syncBacklog()
+    return true
   }
 
   const link: Link = {
@@ -141,24 +246,45 @@ export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>): Link<In
       try {
         wire = `${JSON.stringify(message)}\n`
       } catch {
-        settle(new Error('写不进去'))
+        // 序列化失败是产生侧的 bug——拒发这一帧，但连接不陪葬。
+        hooks?.fault?.('link.frame.rejected', { reason: 'unserializable', kind: frameKindOf(message), bytes: 0 })
         return false
       }
 
       const bytes = encoder.encode(wire)
-      // 已开始写的帧必须补完；尚未写出的完整投影只保留最新一份。
-      if (message.t === 'native.projection' && pending.length > 0 && bytes.length <= 8 * 1024 * 1024) {
-        projection = bytes
-        return true
-      }
-      if (pending.length + bytes.length + (projection?.length ?? 0) > 8 * 1024 * 1024) {
-        try { socket.terminate() } catch {}
-        settle(new Error('客户端未及时接收数据，请重新连接以读取快照'))
+      const kind = frameKindOf(message)
+      /**
+       * **单帧超限 ≠ 连接坏了**（用户底线：无论数据多大，界面都要可用）。
+       * 这一帧一个字节都不写，返回 false 让产生侧降级/重试；连接保持。
+       * 超限帧不进入 pending，也不参与积压判定。
+       */
+      if (bytes.length > WIRE_MESSAGE_BUDGET_BYTES) {
+        hooks?.fault?.('link.frame.rejected', { reason: 'message-too-large', bytes: bytes.length, kind })
         return false
       }
+
+      // 已开始写的帧必须补完；尚未写出的完整投影只保留最新一份。
+      // 合并后总欠账仍须在上限内，否则按普通积压拒绝。
+      if (message.t === 'native.projection' && pending.length > 0 &&
+          pending.length + bytes.length + (projection?.length ?? 0) <= WIRE_SEND_BACKLOG_BYTES) {
+        projection = bytes
+        syncBacklog()
+        return true
+      }
+
+      if (pending.length + bytes.length + (projection?.length ?? 0) > WIRE_SEND_BACKLOG_BYTES) {
+        // 欠账装不下这一条：**不入队、不断连**——产生侧下次重试或降级。
+        // 每个积压 episode 只报第一次，避免 100ms 一帧的推送把日志刷爆。
+        backlogRejected += 1
+        if (backlogRejected === 1) {
+          hooks?.fault?.('link.frame.rejected', { reason: 'backlog', bytes: pending.length + bytes.length, kind, backlog: queuedBytes() })
+        }
+        syncBacklog()
+        return false
+      }
+
       pending = pending.length === 0 ? bytes : concat(pending, bytes)
-      pump()
-      return true
+      return pump()
     },
 
     onMessage(listener) {
@@ -175,6 +301,7 @@ export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>): Link<In
     },
 
     close() {
+      ending = true
       try {
         socket.end()
       } catch {
@@ -194,19 +321,46 @@ export function linkOf<In extends Wire = Wire>(socket: Socket<unknown>): Link<In
   ;(socket as Socket<LinkSlot>).data = {
     chunk: (bytes) => {
       buffered += decoder.decode(bytes, { stream: true })
-      if (buffered.length > 8 * 1024 * 1024) { socket.terminate(); settle(new Error('消息过大')); return }
 
+      /**
+       * **先按行切，再按行判大小**（2026-11-21）：原先先看 `buffered.length`
+       * （UTF-16 码元）并与字节常量比较——一串总长超过 8MiB 的**小行**会被误杀，
+       * 含中文时单位还差了 3 倍。单行超限只丢这一行；只有「未换行的持续流」
+       * 超过硬顶才按协议违规断开。
+       */
+      // 下标扫描、最后只 slice 一次——别让大量小行在每行都复制剩余缓冲。
+      let start = 0
       let at = buffered.indexOf('\n')
       while (at !== -1) {
-        const line = buffered.slice(0, at)
-        buffered = buffered.slice(at + 1)
+        const line = buffered.slice(start, at)
+        start = at + 1
         if (line.trim() !== '') {
-          const message = wireOf(line)
-          if (message !== undefined) {
-            for (const listener of [...listeners]) listener(message)
+          // UTF-8 每码元最多 3 字节：码元数不超过预算的三分之一时无需编码。
+          const lineBytes = line.length > WIRE_MESSAGE_BUDGET_BYTES / 3
+            ? encoder.encode(line).length
+            : line.length
+          if (lineBytes > WIRE_MESSAGE_BUDGET_BYTES) {
+            // 只丢这一行，后面的行照常解析——单条坏帧不该带走整条连接。
+            hooks?.fault?.('link.line.rejected', { reason: 'message-too-large', bytes: lineBytes })
+          } else {
+            const message = wireOf(line)
+            if (message !== undefined) {
+              for (const listener of [...listeners]) listener(message)
+            }
           }
         }
-        at = buffered.indexOf('\n')
+        at = buffered.indexOf('\n', start)
+      }
+      if (start > 0) buffered = buffered.slice(start)
+
+      if (buffered.length > WIRE_RECEIVE_HARD_CAP_BYTES / 3) {
+        const rest = encoder.encode(buffered).length
+        if (rest > WIRE_RECEIVE_HARD_CAP_BYTES) {
+          ending = true
+          hooks?.fault?.('link.terminated', { reason: 'receive-buffer', bytes: rest })
+          socket.terminate()
+          settle(new Error('消息过大'))
+        }
       }
     },
     // **发送缓冲又能装了**（Bun 的回调）——欠着的那一截接着送（见 `pump` 的注）。

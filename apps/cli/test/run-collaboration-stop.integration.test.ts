@@ -19,7 +19,7 @@ async function scenario(name: string, reply: (f: StopRuntime) => ModelReply | Pr
     }
     if (call.model === 'member-model') {
       if (call.index === 0) return { tool: 'agent_message', args: { action: 'respond', operationId: 'stop-accept', delegation: delegationOf(f).delegationId, response: 'accept' } }
-      if (call.index === 1) return { tool: 'exec', args: { command: 'sleep 30', background: true } }
+      if (call.index === 1) return { tool: 'exec', args: { description: '测试命令', command: 'sleep 30', background: true } }
       if (call.index === 2) return reply(f)
     }
     return { text: 'UNEXPECTED_WORK_AFTER_BARRIER' }
@@ -34,8 +34,7 @@ async function ready(f: StopRuntime): Promise<readonly OwnedProcess[]> {
     return work !== undefined && delegationOf(f)?.state === 'accepted' &&
       f.calls.filter(one => one.model === 'member-model').length === 3 &&
       f.launches.some(one => one.session === memberOf(f)?.sessionId && one.owned.length > 0) &&
-      f.store.collaboration.listWaits(work.collaborationId).some(one => one.state === 'waiting') &&
-      f.manager.runs().find(one => one.session === work.originSessionId)?.state === 'idle'
+            f.manager.runs().find(one => one.session === work.originSessionId)?.state === 'idle'
   })
   const member = memberOf(f)
   const owned = f.launches.find(one => one.session === member.sessionId)!.owned.map(one => ({ ...one }))
@@ -60,7 +59,6 @@ async function stopped(f: StopRuntime) {
     const delegation = f.delegations().find(one => one.assigneeId === agent.agentId)
     expect(f.store.collaboration.checkAdmission(agent.agentId, delegation?.delegationId, 'work').allowed).toBe(false)
   }
-  expect(f.store.collaboration.listWaits(work.collaborationId).map(one => one.state)).toEqual(['interrupted'])
   expect(f.delegations().every(one => one.state === 'cancelled')).toBe(true)
   return { order, calls: f.calls.length, workExecutions: f.store.collaboration.listExecutions(work.collaborationId).filter(one => one.mode === 'work').map(one => one.operationId) }
 }
@@ -105,8 +103,15 @@ async function reclaimed(f: StopRuntime, owned: readonly OwnedProcess[], atStop:
   f.client.send({ type: 'session.open', session: memberSession })
   f.client.send({ type: 'history.read', session: memberSession })
   await f.wait('停止后的子会话历史', () => f.events.slice(historyStart).some(one => one.kind === 'session.history' && one.data.session === memberSession && one.data.done))
-  const history = f.events.slice(historyStart).flatMap(one => one.kind === 'session.history' && one.data.session === memberSession && one.data.done ? [one.data] : [])[0]
-  expect(history?.entries.length).toBeGreaterThan(0)
+  /**
+   * 原锚：只取 `done` 那一块的 entries（末包带最后一批条目）。
+   * 为何变：末包拆成「最后一批条目（done:false）」＋「空条目的 done 帧」，
+   * 否则 inputs/timing/plan 会把末帧撑过单帧预算（2026-11-21）。
+   * 新锚：把该会话所有分块的 entries 拼起来，条目总数不变。
+   */
+  const blocks = f.events.slice(historyStart).flatMap(one =>
+    one.kind === 'session.history' && one.data.session === memberSession ? [one.data] : [])
+  expect(blocks.flatMap(block => block.entries).length).toBeGreaterThan(0)
   await Bun.sleep(200) // 仅检查迟到帧/多余调用；停止证明来自 onExit、原账本与进程组探针。
   expect(f.calls).toHaveLength(atStop.calls)
   expect({ calls: f.calls.length, launches: f.launches.length }).toEqual(before)
@@ -151,13 +156,13 @@ test('后代已登记、真实启动并持有后台进程后整体 stop：入口
     }
     if (call.model === 'member-model') {
       if (call.index === 0) return { tool: 'agent_message', args: { action: 'respond', operationId: 'stop-accept', delegation: delegationOf(f).delegationId, response: 'accept' } }
-      if (call.index === 1) return { tool: 'exec', args: { command: 'sleep 30', background: true } }
+      if (call.index === 1) return { tool: 'exec', args: { description: '测试命令', command: 'sleep 30', background: true } }
       if (call.index === 2) { await spawn.promise; return spawnDescendant }
       if (call.index === 3) return { text: 'A 已派生 B，等待核对。' }
     }
     if (call.model === 'descendant-model') {
       if (call.index === 0) return { tool: 'agent_message', args: { action: 'respond', operationId: 'descendant-accept', delegation: childDelegation()!.delegationId, response: 'accept' } }
-      if (call.index === 1) return { tool: 'exec', args: { command: 'sleep 30', background: true } }
+      if (call.index === 1) return { tool: 'exec', args: { description: '测试命令', command: 'sleep 30', background: true } }
       if (call.index === 2) { await descendantResponse.promise; return { text: 'B 的旧响应。' } }
     }
     return { text: 'UNEXPECTED_WORK_AFTER_BARRIER' }

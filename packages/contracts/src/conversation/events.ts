@@ -1,5 +1,4 @@
 import type { MagicConfig } from '../shared/config.ts'
-import type { StoredInput } from './input.ts'
 /**
  * 共享语言 · 事件（kind 族与载荷 · 信封 · 不落库清单）——已冻结 v0。
  *
@@ -617,8 +616,27 @@ export type EventDataOf = {
      * 讨论重读成员完整历史（D68 / U130）。主会话与普通会话不给。
      */
     readonly messages?: readonly AgentMessage[]
+    /**
+     * 这条会话**最近一次调用**留下的用量读数（末块才给）——恢复会话时状态行 ④ 要用的那一格。
+     *
+     * 来处是**落着库的** `model.usage` 事件（它不在不落库清单里），故这不是编的：它正是
+     * 用户离开这条会话那一刻屏上那个数。两格同源：
+     * - `inputTokens`＝最后一次 `model.usage` 的输入消耗；
+     * - `contextWindow`＝最后一次 `model.call.start` 的 `inputBudget`（分母跟着分子走，与
+     *   在场时那一格同一条规矩）；那一次没带预算时退回用量事件自带的窗长。
+     *
+     * 一次调用都没有（或供应商没上报）＝**不给这一位**——外壳照「不知道」办，不写 0。
+     */
+    readonly usage?: {
+      readonly inputTokens?: number
+      readonly contextWindow?: number
+    }
     /** **末块**为 `true`——外壳据此知道重建收尾了。 */
     readonly done: boolean
+    /** 这一块被裁剪过（可选字段；旧端忽略）。 */
+    readonly truncated?: true
+    /** 续读游标：最后一条**已发送**的条目 id（可选字段；下一块从这里往后）。 */
+    readonly next?: number
   }
   // model · 会话——换模型的结果（用户命令）。**落库**（技术方案 · 记录 · kind 族）：
   // 切换是**会话的可观测事实**——`model.call.start` 只说「这次用了谁」，
@@ -685,7 +703,7 @@ export type EventDataOf = {
   //
   // ⚠️ **给了 `ref` 就必须有终态**：白名单式的「成了才回」会让外壳永等一份草稿。
   'input.local': { readonly text: string; readonly refs: readonly import('./control.ts').InputRef[]; readonly ref: string }
-  'input.pending': { readonly inputs: readonly StoredInput[]; readonly note?: string }
+  'input.pending': { readonly inputs: readonly import('./input.ts').PendingInputView[]; readonly note?: string; readonly omitted?: number }
   'input.settled': {
     /** 受理时实际冻结的引用；重投回的是原输入的范围。 */
     readonly refs?: readonly import('./control.ts').InputRef[]
@@ -817,6 +835,10 @@ export type EventDataOf = {
     readonly active: SessionId
     /** 会话目录——最近在前；标题用 `SessionSummary.title`（改过的取存值，否则按首条消息现算）。 */
     readonly sessions: readonly SessionSummary[]
+    /** 目录总条数（只在有截断时给）——UI 据此说「还有 N 条」。 */
+    readonly total?: number
+    /** 目录被截断（只在有截断时给；旧的 `sessions` 字段仍然是页面内容）。 */
+    readonly truncated?: true
     /**
      * 一句话说明——**只在有事要说时给**（没开成 / 新建好了 / 改名落定）。
      *
@@ -1012,6 +1034,8 @@ export type EventDataOf = {
     readonly turnDuration?: import('../shared/config.ts').TurnDurationMode
     /** 减少动效（`MagicConfig.motion.reduced`）——缺省＝没开。 */
     readonly reducedMotion?: boolean
+    /** 实验性 · 语音输入（`MagicConfig.experimental.voice`）——缺省＝关（D75）。 */
+    readonly voice?: boolean
     /** 一句话说明——只在有事要说时给（没写成的缘由 / 写成了哪几格）。 */
     readonly note?: string
   }

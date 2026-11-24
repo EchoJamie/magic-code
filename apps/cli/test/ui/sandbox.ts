@@ -33,7 +33,7 @@ import type { UiAnchors } from './driver.ts'
 export const FAKE_API_KEY = 'sk-fake-u40-not-a-real-key'
 
 /** 起不了夹具时指的那个端点（`127.0.0.1:9` ＝ 丢弃端口，连不上、也不出网）。 */
-export const DEAD_BASE_URL = 'http://127.0.0.1:9/v1'
+const DEAD_BASE_URL = 'http://127.0.0.1:9/v1'
 
 /** 隔离沙地——四块落点 ＋ 一份交给子进程的环境。 */
 export type Sandbox = {

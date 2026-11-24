@@ -223,7 +223,7 @@ if (mode === 'sweep') {
 
 if (mode === 'fixed') {
   // 把这一趟的字节喂进**仓里那一台 VT**（`createVt`，与驱动用的是同一支），看修后语义下屏是什么
-  const { createVt } = await import('../test/ui/vt.ts')
+  const { createVt } = await import('../../test/ui/vt.ts')
   const vt = createVt({
     columns: info.terminal.columns,
     rows: info.terminal.rows,

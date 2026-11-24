@@ -83,7 +83,7 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
     try {
       if (command.type === 'prefs.set') {
         const config = loadConfig({ magic }).config
-        emit('prefs.state', { statusLine: config.statusLine, turnDuration: config.turnDuration ?? 'elapsed', reducedMotion: config.motion?.reduced === true, note })
+        emit('prefs.state', { statusLine: config.statusLine, turnDuration: config.turnDuration ?? 'elapsed', reducedMotion: config.motion?.reduced === true, voice: config.experimental?.voice === true, note })
       } else if (command.type === 'web.configure') {
         const config = loadConfig({ magic }).config
         emit('web.state', {

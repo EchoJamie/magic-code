@@ -70,8 +70,8 @@ describe('Engine 连接上的脚本入口', () => {
 
 test('真脚本等待两次工具中间轮之后的最终turn.end；工具回填和最终正文完整落账', async () => {
   const fixture = startFixture({ turns: [
-    { kind: 'tool', name: 'exec', args: { command: 'chmod 755 .' } },
-    { kind: 'tool', name: 'exec', args: { command: 'printf script-tool-finished' } },
+    { kind: 'tool', name: 'exec', args: { description: '测试命令', command: 'chmod 755 .' } },
+    { kind: 'tool', name: 'exec', args: { description: '测试命令', command: 'printf script-tool-finished' } },
     { kind: 'text', text: '工具全做完后的最终答复', chunks: 4, chunkDelayMs: 40 },
   ] })
   const sandbox = createSandbox({ baseURL: fixture.baseURL })

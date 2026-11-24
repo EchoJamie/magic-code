@@ -26,6 +26,7 @@ import type {
   ControlTransport,
   KernelEvent,
   MagicHome,
+  ModelChoice,
   ModelInfo,
   ModelInfoSnapshot,
   ModelSwitchRequest,
@@ -90,19 +91,25 @@ export type ModelInfoLookup = (provider: string, model: string) => ModelInfo | u
  */
 export async function terminalOptions(inputs: TerminalInputs): Promise<RunTuiOptions> {
   const { client, loaded, cwd } = inputs
+  /** 开局落地的那一份选中——状态行 ③（名字）与 ④（分母）**同一个来源**，故只取一次。 */
+  const opened = startupSelection(inputs)
 
   return {
     copyText: writeClipboardText,
     transport: terminalSettings(clientTransport(client), inputs.magic, workspaceOf(loaded, cwd), inputs.switch),
     statusLine: loaded.config.statusLine,
     turnDuration: loaded.config.turnDuration ?? 'elapsed', reducedMotion: loaded.config.motion?.reduced === true,
+    // 实验性 · 语音输入（D75）——**缺省关**；`/config` 里那一按改的是配置文件，此后这一格随它走
+    voiceEnabled: loaded.config.experimental?.voice === true,
     detached: (listener) => client.onDetached(listener),
     ...(inputs.reopen === undefined ? {} : { reopen: inputs.reopen }),
     // **没有 `boot`**：恢复是**执行者**那一头的事（它在装配之后、收第一条命令之前跑完）。
     // 窗口这一侧因此「一起来就放开输入」——而那不会让输入抢在恢复前面：管理者把命令
     // **攒到执行者报 `ready` 才放行**（见 `manager.ts` 的 `deliver`）。这道闸从
     // 「外壳那一跳」挪到了「执行者那一跳」，判据一字未松。
-    contextWindow: startupContextWindow(inputs),
+    contextWindow: opened?.window ?? null,
+    // 状态行 ③ 开机那一格——**与上一行同一个来源**（见 `startupSelection`）
+    modelChoice: opened?.choice,
     workspaceRoots: workspaceOf(loaded, cwd).roots(),
     // **数据目录与家目录**（U71 · `/config` 第 4 行那一格）——与工作区根同一条：**呈现要它们**，
     // 而它们是**启动那一刻定下的**（配置 ＋ `MAGIC_HOME`），没有任何命令问得到。
@@ -196,7 +203,7 @@ export function clientTransport(client: ManagerClient): ControlTransport {
  * - 缺 key 时**不抛**（返回 `undefined`）：今天装配期缺 key 会响亮地抛，而那一跳现在
  *   归执行者——窗口这一侧拦下来只会把「谁该报这句错」搞反。执行者那一边照旧会报。
  */
-export function startupRegistry(inputs: RegistryInputs): ModelRegistry | undefined {
+function startupRegistry(inputs: RegistryInputs): ModelRegistry | undefined {
   const { loaded, switch: request } = inputs
   let registry: ModelRegistry
   try {
@@ -228,7 +235,7 @@ export function startupRegistry(inputs: RegistryInputs): ModelRegistry | undefin
 }
 
 /** `startupRegistry` 要的那几件——`TerminalInputs` 的一个子集（开屏那一格只需要它们）。 */
-export type RegistryInputs = {
+type RegistryInputs = {
   readonly loaded: LoadedConfig
   readonly switch?: ModelSwitchRequest | undefined
   /** 模型信息缓存的读数（见 `TerminalInputs.modelInfo`）。 */
@@ -274,18 +281,26 @@ export async function readModelInfo(loaded: LoadedConfig, magic: MagicHome): Pro
 }
 
 /**
- * 开屏那一格的分母（状态行 ④）——**按开局落地的那个选中算**。
+ * **开屏时状态行那两格**——③ 用哪个模型（`choice`）与 ④ 的分母（窗总量）。
  *
- * 没有注册表 / 还没有去向 ⇒ `null`（**拿不到的不编**，与装配那一处同一条判据）。
+ * 两格取的是**同一份选中**（`startupRegistry().current()`）：
+ * - 分母按它算，与装配建注册表时的那一条判据一字不差（拿不到 ⇒ `null`，**不编**）；
+ * - 名字就是那一档（`modelLabel(choice)` 由外壳套，判据只有一处）。
+ *
+ * 为什么要它（2026-11-21 用户明示）：新开一条会话／开机那一刻，状态行得说清**用谁在干活**，
+ * 且上下文占用从 `0/窗口` 起。这一位与 `contextWindow` **同一处算、同一处给**——两处各算
+ * 一遍迟早分叉（显示与请求解析同一个来源）。
+ *
+ * 没有注册表 / 还没落地方向 ⇒ `undefined`（两格都省掉）。
  */
-function startupContextWindow(inputs: TerminalInputs): number | null {
+function startupSelection(inputs: TerminalInputs): { readonly window: number | null; readonly choice: ModelChoice } | undefined {
   const registry = startupRegistry(inputs)
-  if (registry === undefined) return null
+  if (registry === undefined) return undefined
 
   const current = registry.current()
-  if (current === undefined) return null
+  if (current === undefined) return undefined
 
-  return registry.capacityOf(current.provider, current.model)?.inputBudget ?? null
+  return { window: registry.capacityOf(current.provider, current.model)?.inputBudget ?? null, choice: current.choice }
 }
 
 /**

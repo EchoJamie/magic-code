@@ -26,7 +26,7 @@ import type { ToolDefinition, ToolRunResult } from './registry.ts'
 import { refused } from './toolkit.ts'
 
 /** 缓存条数上限——**短时缓存**，不是资料库。 */
-export const WEB_CACHE_MAX_ENTRIES = 32
+const WEB_CACHE_MAX_ENTRIES = 32
 
 /**
  * 装配在**每次调用开始时**给的网页服务读数（U94）。
@@ -59,7 +59,7 @@ const NOT_CONFIGURED = [
   '配好之后接着说一句就能继续。',
 ].join('\n')
 
-export const WEB_FETCH_PARAMETERS = {
+const WEB_FETCH_PARAMETERS = {
   type: 'object',
   description:
     '取一个网页，按你的问题把答案挑出来——只回答案，不把整页原文塞进上下文。' +

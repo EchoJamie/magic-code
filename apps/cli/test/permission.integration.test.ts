@@ -20,7 +20,7 @@ import type { Assembly } from '../src/index.ts'
 import { eventsOfKind, makeStage } from './support.ts'
 
 /** 一条只读命令（机械分析判轻）——默认通。 */
-const READ_ONLY_TURN = { toolCalls: [{ name: 'exec', args: { command: 'echo hello-magic' } }] }
+const READ_ONLY_TURN = { toolCalls: [{ name: 'exec', args: { description: '测试命令', command: 'echo hello-magic' } }] }
 
 /**
  * 不在禁止清单里的写操作（改权限）——U129 起同样**默认通**，不再弹卡。
@@ -28,10 +28,10 @@ const READ_ONLY_TURN = { toolCalls: [{ name: 'exec', args: { command: 'echo hell
  * 用 `chmod 755 .`（工作区目录本身）是装置上的讲究：它一定存在 ⇒ 命令跑得成
  * （`ok: true`），而 `755` 保留属主的 `rwx` ⇒ 不把后面几步走出毛病来。
  */
-const PERMISSION_TURN = { toolCalls: [{ name: 'exec', args: { command: 'chmod 755 .' } }] }
+const PERMISSION_TURN = { toolCalls: [{ name: 'exec', args: { description: '测试命令', command: 'chmod 755 .' } }] }
 
 /** **删除那一族**——U129 起**直接拒**（不问、也没有卡），回执里指路 `trash`。 */
-const REFUSED_TURN = { toolCalls: [{ name: 'exec', args: { command: 'rm -rf build' } }] }
+const REFUSED_TURN = { toolCalls: [{ name: 'exec', args: { description: '测试命令', command: 'rm -rf build' } }] }
 
 /** 裸接控制面——只订阅事件（U129 起没有要答复的窗口）。 */
 function bareShell(assembly: Assembly) {

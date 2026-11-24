@@ -134,9 +134,6 @@ export const OUTPUT_SUDO_CANCELED = '已取消 sudo 认证——命令未执行'
 export const sudoAuthFailedOutput = (detail?: string): string =>
   `sudo 认证没通过——命令未执行${detail === undefined || detail.trim() === '' ? '' : `（${detail.trim()}）`}；可以再发起一次重试`
 
-/** 认证成功、但 `sudo -n` 执行时时间戳已失效（极少见）——说清是哪一截没成。 */
-export const sudoTimestampLostOutput = 'sudo 认证已通过，但执行时系统时间戳已失效——命令未执行；请重新发起一次'
-
 // —— `exec` 的后台那一形（U70）——
 
 /**
@@ -191,6 +188,19 @@ export const OUTPUT_EXEC_BAD_TIMEOUT =
   '参数错误：timeoutMs 须为正数（毫秒）；不填或给 null ＝ 不设上界（一直等）'
 
 /**
+ * `description` 没给（或给了空串）——**必填**（用户 2026-11-20 定）。
+ *
+ * 这一句是给人看的：工具行上显示、审批时读它、记录里留一行。模型省掉它，
+ * 替它做判断的人就只能去读命令猜意图。上限 50 字，与模式里的 `maxLength` 同一口径。
+ */
+export const OUTPUT_EXEC_DESCRIPTION_REQUIRED =
+  '参数错误：description 必填——一句话说清这条命令要做什么（最多 50 字，会显示给人看）'
+
+/** `description` 超长——**不截断、不静默收下**，当场说清上限，让模型自己缩写。 */
+export const OUTPUT_EXEC_DESCRIPTION_TOO_LONG =
+  '参数错误：description 最多 50 字——缩成一句话再给'
+
+/**
  * `background` 与 `timeoutMs` **一起给了**（U69 集成时加）。
  *
  * 为什么不静默用其中一个：后台那一形**根本不读** `timeoutMs`（它在 `run` 里早早转手就回了），
@@ -239,6 +249,15 @@ export const OUTPUT_NO_MATCH = '[无命中]'
 
 /** 命中取满上限——**可能**还有更多（至多这么多条，不是说「就这么多」）。 */
 export const cappedOutput = (limit: number): string => `[命中达到上限 ${limit}——可能还有更多]`
+
+/**
+ * 命中文本超过**字节**上限——与条数上限分开说。
+ *
+ * 条数管「看几条」，字节管「一次能看多少」：一行 5.7MB 的 JSON 也能算「一条命中」，
+ * 只卡条数等于没卡（2026-11-21 事故的来源）。给出口而不只是说「截断了」。
+ */
+export const outputBytesTruncated = (limit: number): string =>
+  `[输出已截断：超过 ${limit} 字节——用更窄的 pattern 或指定 path 缩小范围]`
 
 // —— `edit` 的四条「不改」——
 

@@ -7,6 +7,8 @@ import { createSpyTransport } from './fakes.ts'
 import { event } from './events.ts'
 import { collaborationFixture } from './collaboration-fixture.ts'
 import { show } from './screen.ts'
+import { dockHeightOf } from '../src/components/app.ts'
+import { displayWidth } from '../src/components/lines.ts'
 
 const commands: BackgroundCommand[] = [
   { id: 'bg-1', execution: 'root-generation', session: 'origin', command: '主命令 · 持续服务', outputPath: '/tmp/主服务完整路径.log', state: 'running', startedAt: 1 },
@@ -18,7 +20,7 @@ function fixture(collaboration = true) {
   let background: BackgroundView = { commands, waiting: [] }
   const shell = createShell({ ...spy.transport, send(command) {
     spy.transport.send(command)
-    if (command.type === 'collaboration.read') spy.emit(event('collaboration.view', collaboration ? collaborationFixture : { originSession: 'origin', members: [], delegations: [], waits: [], constraints: [] }, { session: 'origin' }))
+    if (command.type === 'collaboration.read') spy.emit(event('collaboration.view', collaboration ? collaborationFixture : { originSession: 'origin', members: [], delegations: [], constraints: [] }, { session: 'origin' }))
     if (command.type === 'background.list') spy.emit(event('background.state', background, { session: 'origin' }))
   } }, { magicBase: '/test/.magic', copyText: async text => { copied.push(text) } })
   spy.emit(event('session.state', { active: 'origin', sessions: [{ id: 'origin', archived: false, at: 1 }] }, { session: 'origin' }))
@@ -155,4 +157,33 @@ test('/ps 进入模型编辑后后台更新不抢焦点，逐层返回刷新编�
   expect(picker().rows).toEqual([])
   expect(f.spy.commands.some(command => ['provider.save', 'model.override', 'model.configure', 'collaboration.configure', 'background.stop'].includes(command.type))).toBe(false)
   f.shell.dispose()
+})
+
+// ══ 面板式（`Tab` 那两屏）：行自己截到一行，窄窗也不让终端替我们折 ═════
+
+/**
+ * 这两条量的是**面板式在窄窗上的分寸**——`停止 bg-N` 那条命令是几百列的，
+ * 面板式把它截成一行；超了终端就会自己折，而折出来的行数不归我们的账（U31 那一族）。
+ *
+ * 也正因为这条用例是「从 0 铺一屏」而不是「改窗后看残影」，它量的是**布局**；
+ * 改窗后终端自己 reflow 出来的残影不在这里判（那是取景设施的事）。
+ */
+test('面板式：后台列表与详情在 200/100/60 列下都不越宽，账与屏同源', async () => {
+  const f = fixture()
+  f.ps()
+  f.shell.key({ kind: 'tab' })
+  const list = f.shell.getView()
+  for (const columns of [200, 100, 60]) {
+    const frame = await show([list], { columns, rows: 40 })
+    expect(frame.dock.every(line => displayWidth(line.text) <= columns)).toBe(true)
+    expect(frame.dock.length).toBe(dockHeightOf(list, columns, 40))
+  }
+
+  f.pick(backgroundKey(commands[1]!))
+  const detail = f.shell.getView()
+  for (const columns of [200, 100, 60]) {
+    const frame = await show([detail], { columns, rows: 40 })
+    expect(frame.dock.every(line => displayWidth(line.text) <= columns)).toBe(true)
+    expect(frame.dock.length).toBe(dockHeightOf(detail, columns, 40))
+  }
 })

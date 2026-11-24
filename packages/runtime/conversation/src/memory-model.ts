@@ -10,7 +10,7 @@ export async function callMemoryModel(input: {
   readonly sink: EventSink
   readonly stamper: EventStamper
   readonly now: () => number
-}): Promise<{ text: string; reasoning: string; result: ModelResult; failure?: { tier: ModelErrorTier; message: string } }> {
+}): Promise<{ text: string; reasoning: string; result: ModelResult; model?: string; provider?: string; failure?: { tier: ModelErrorTier; message: string } }> {
   input.signal?.throwIfAborted()
   const began = input.now()
   let model: string | undefined
@@ -32,7 +32,7 @@ export async function callMemoryModel(input: {
       if (event.kind === 'model.error') failure = event.data
     }
     result = await stream.result
-    return { text, reasoning, result, ...(failure === undefined ? {} : { failure }) }
+    return { text, reasoning, result, model, ...(provider === undefined ? {} : { provider }), ...(failure === undefined ? {} : { failure }) }
   } catch (error) {
     failure ??= { tier: 'terminal', message: error instanceof Error ? error.message : String(error) }
     return { text, reasoning, result: { complete: false, finishReason: 'error' }, failure }

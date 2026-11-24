@@ -95,7 +95,7 @@ export const BANNER_INDENT = '  '
 export const BANNER_MAGIC_WIDTH = 27
 
 /** 一行版的分色点（`Magic` 与 `Code` 两个词——同一条分色规则在两版上的落法）。 */
-export const BANNER_COMPACT_MAGIC_WIDTH = 5
+const BANNER_COMPACT_MAGIC_WIDTH = 5
 
 /**
  * 字标此刻该印哪一版——**按列数选**；`[]` ＝ **不印**。

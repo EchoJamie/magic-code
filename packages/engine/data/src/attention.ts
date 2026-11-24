@@ -2,7 +2,7 @@ import type { Database } from 'bun:sqlite'
 import type { AttentionItem } from '@magic/contracts'
 import { ATTENTION_TABLE, type NamedParams } from './schema.ts'
 
-export type AttentionQuery = {
+type AttentionQuery = {
   readonly sessions?: readonly string[]
   readonly unread?: boolean
 }

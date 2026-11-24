@@ -411,7 +411,7 @@ export function toolCallPayloadOf(payload: EntryPayload | undefined): Pick<ToolC
   return { name, args }
 }
 
-export function toolResultPayloadOf(payload: EntryPayload | undefined): ToolResultPayload | undefined {
+function toolResultPayloadOf(payload: EntryPayload | undefined): ToolResultPayload | undefined {
   const source: unknown = payload
   if (!isRecord(source)) return undefined
 

@@ -17,8 +17,7 @@ test('真实宿主退出再开：target 接回原工作，只读不执行；明�
   const f = await collaborationRuntime('host-reopen', async call => {
     if (call.model === 'entry-model') {
       if (call.index === 0) return spawnMember
-      if (call.index === 1) return { tool: 'agent_wait', args: { operationId: 'reopen-wait', agents: [f.member()!.agentId],
-        message: f.delegation()!.delegationId, expectation: '等待独立核对', deadline: Date.now() + 3600_000 } }
+      if (call.index === 1) return { text: '已派出，等成员核对结果后唤醒我。' }
       return { text: resumedText }
     }
     await lateMember.promise
@@ -39,8 +38,8 @@ test('真实宿主退出再开：target 接回原工作，只读不执行；明�
   const exits: { gen: number; reason: string }[] = []
   try {
     f.shell.key({ kind: 'paste', text: '派出核对后等待成员结果。' }); f.shell.key({ kind: 'enter' })
-    await f.wait('旧宿主持久等待已建立', () => f.collaboration() !== undefined &&
-      f.store.collaboration.listWaits(f.collaboration()!.collaborationId).some(wait => wait.state === 'waiting') && f.requests().length === 2 && f.requests('member-model').length === 1)
+    await f.wait('成员已接受且入口让出', () => f.collaboration() !== undefined &&
+      f.requests().length === 3 && f.requests('member-model').length === 1)
     const origin = f.session()!
     const work = f.collaboration()!
     const member = f.member()!
@@ -53,7 +52,6 @@ test('真实宿主退出再开：target 接回原工作，只读不执行；明�
     expect(f.agentExits).toHaveLength(2)
     expect(f.store.collaboration.getCollaboration(work.collaborationId)?.state).toBe('stopped')
     expect(f.store.collaboration.listExecutions(work.collaborationId).every(call => call.state === 'finished')).toBe(true)
-    expect(f.store.collaboration.listWaits(work.collaborationId)[0]?.state).toBe('interrupted')
 
     const launch = createAgentLauncher()
     const started = await startManager({ paths: runPathsOf(f.magic, tmpdir()), magic: f.magic,
@@ -72,14 +70,14 @@ test('真实宿主退出再开：target 接回原工作，只读不执行；明�
     await f.wait('只读历史与协作停点经新连接返回', () => events.some(event => event.kind === 'session.history' && event.session === origin && event.data.done)
       && events.some(event => event.kind === 'collaboration.view' && event.data.originSession === origin && event.data.collaboration?.state === 'stopped'))
     expect(reopened.executors()).toEqual([])
-    expect(f.requests()).toHaveLength(2)
+    expect(f.requests()).toHaveLength(3)
     expect(f.requests('member-model')).toHaveLength(1)
     expect(f.store.collaboration.getCollaboration(work.collaborationId)?.state).toBe('stopped')
     expect(f.store.collaboration.getAgent(member.agentId)?.reachability).toBe('suspended')
 
     client.send({ type: 'collaboration.resume' })
-    await f.wait('明确继续后的入口真实请求', () => f.requests().length === 3)
-    expect(requestText(f.requests()[2])).toContain('interrupted')
+    await f.wait('明确继续后的入口真实请求', () => f.requests().length === 4)
+    expect(requestText(f.requests()[3])).toContain('interrupted')
     expect(requestText(f.requests()[2])).toContain('用户退出宿主')
     await f.wait('入口最终正文与新代实际释放', async () => {
       const entries = await Array.fromAsync(f.store.readEntries(origin))
@@ -108,7 +106,7 @@ test('真实宿主退出再开：target 接回原工作，只读不执行；明�
     const evidence = process.env['MAGIC_COLLAB_RUN_EVIDENCE']
     if (evidence) { const dir = resolve(evidence); mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'host-reopen-result.json'), JSON.stringify({
       oldIdentity: f.manager.identity, newIdentity: reopened.identity, targets, reconnectSessions, events, exits, entries,
-      collaboration: f.store.collaboration.getCollaboration(work.collaborationId), waits: f.store.collaboration.listWaits(work.collaborationId),
+      collaboration: f.store.collaboration.getCollaboration(work.collaborationId),
     }, null, 2)) }
   } finally {
     lateMember.release(); client.close()

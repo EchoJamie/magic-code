@@ -25,7 +25,6 @@ export type CollaborationHost = {
 /** 由 App 管理者持有的协作运行适配；定时器只服务持久截止点，不轮询模型。 */
 export function createManagedCollaboration(host: CollaborationHost) {
   const records = host.store.collaboration
-  const timers = new Map<number, ReturnType<typeof setTimeout>>()
   let closing = false
   const waking = new Map<string, Promise<void>>()
   const finishing = new Set<string>()
@@ -86,10 +85,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
     if (agent === undefined || !admission(agent) || waking.has(agentId)) return
     const pending = (async () => {
       try { await host.start(agent); if (admission(agent)) host.wake(agent.sessionId) }
-      catch (error) {
-        for (const wait of records.interruptWaits(agentId, String(error))) if (wait.agentId !== agentId) wake(wait.agentId)
-        host.changed()
-      }
+      catch { host.changed() }
     })().finally(() => waking.delete(agentId))
     waking.set(agentId, pending)
   }
@@ -114,8 +110,6 @@ export function createManagedCollaboration(host: CollaborationHost) {
     if (closing) return
     const ids = await collaborations()
     if (closing) return
-    const outcomes = ids.flatMap(id => records.listWaits(id))
-    for (const wait of outcomes) if (wait.state !== 'waiting' && wait.handledAt === undefined) wake(wait.agentId)
     for (const id of ids) for (const member of records.listMembers(id)) {
       if (records.inbox(member.agentId).some(i => {
         if (i.state !== 'pending') return false
@@ -125,26 +119,10 @@ export function createManagedCollaboration(host: CollaborationHost) {
           || message.delegationId === undefined || records.getDelegation(message.delegationId)?.state !== 'cancelled'
       })) wake(member.agentId)
     }
-    const waits = outcomes.filter(w => w.state === 'waiting')
-    const live = new Set(waits.map(w => w.waitId))
-    for (const [id, timer] of timers) if (!live.has(id)) { clearTimeout(timer); timers.delete(id) }
-    for (const wait of waits) {
-      if (timers.has(wait.waitId)) continue
-      const agent = records.getAgent(wait.agentId)
-      if (agent === undefined || !admission(agent)) continue
-      const timer = setTimeout(() => {
-        timers.delete(wait.waitId)
-        if (closing) return
-        for (const expired of records.expireWaits(host.now())) wake(expired.agentId)
-        changed()
-      }, Math.min(2_147_483_647, Math.max(0, wait.deadline - host.now())))
-      timer.unref?.()
-      timers.set(wait.waitId, timer)
-    }
   }
   async function view(session: string, member?: string, note?: string): Promise<CollaborationView> {
     const collaboration = records.collaborationForSession(session)
-    if (collaboration === undefined) return { originSession: session, members: [], delegations: [], waits: [], constraints: [], ...(note === undefined ? {} : { note }) }
+    if (collaboration === undefined) return { originSession: session, members: [], delegations: [], constraints: [], ...(note === undefined ? {} : { note }) }
     const id = collaboration.collaborationId
     const members = records.listMembers(id)
     const usage = await Promise.all(members.map(async agent => {
@@ -157,11 +135,8 @@ export function createManagedCollaboration(host: CollaborationHost) {
       return usageOf(reports, calls)
     }))
     const delegations = records.listDelegations(id)
-    const waits = records.listWaits(id)
     const memberDelegation = (agent: string) => delegations.find(d => d.assigneeId === agent && d.state === 'accepted')
       ?? delegations.filter(d => d.assigneeId === agent).at(-1)
-    const memberWait = (agent: string) => waits.find(w => w.agentId === agent && w.state === 'waiting')
-      ?? waits.filter(w => w.agentId === agent && w.handledAt === undefined).at(-1)
     // 当前会话本身若就是某个成员，不能再当「查看这个成员」——那条路会重读并重发
     // 它自己的完整历史（D68）。当前会话的内容走会话历史分片与实时事件。
     const current = records.agentForSession(session)
@@ -177,9 +152,8 @@ export function createManagedCollaboration(host: CollaborationHost) {
       members: members.map((agent, index) => ({ agent, usage: usage[index]!,
         ...(host.runs().find(run => run.session === agent.sessionId) === undefined ? {} : { runtime: host.runs().find(run => run.session === agent.sessionId)! }),
         ...(memberDelegation(agent.agentId) === undefined ? {} : { delegation: memberDelegation(agent.agentId)! }),
-        ...(memberWait(agent.agentId) === undefined ? {} : { waiting: memberWait(agent.agentId)! }),
         pendingDecisions: host.decisions(agent.sessionId),
-      })), delegations, waits,
+      })), delegations,
       constraints: records.listConstraints(id).filter(c => c.active).map(c => ({ messageId: c.messageId, states: records.constraintStatus(c.messageId) })),
       ...(messages.length === 0 ? {} : { messages }),
       ...(note === undefined ? {} : { note }),
@@ -192,7 +166,6 @@ export function createManagedCollaboration(host: CollaborationHost) {
       const agent = records.agentForSession(session)
       if (agent?.collaborationId === undefined) return
       if (agent.purpose === 'consultation') { await completeConsultation(session, reason); return }
-      for (const wait of records.interruptWaits(agent.agentId, reason)) if (wait.agentId !== agent.agentId) wake(wait.agentId)
       changed()
     },
     async idle(session: string): Promise<boolean> {
@@ -276,8 +249,6 @@ export function createManagedCollaboration(host: CollaborationHost) {
     /** 宿主停止受理时同步关闭持久准入，随后由管理者核销实际执行者。 */
     shutdown(reason: string) {
       closing = true
-      for (const timer of timers.values()) clearTimeout(timer)
-      timers.clear()
       return records.stop({ kind: 'host' }, reason, host.now())
     },
     async recover() {
@@ -302,7 +273,6 @@ export function createManagedCollaboration(host: CollaborationHost) {
         // 委派已全部结束（取消/完成）时，退出即释放；仍有已接受委派才挂起待核实。
         const accepted = records.listDelegations(agent.collaborationId).some(d => d.assigneeId === agent.agentId && d.state === 'accepted')
         records.setReachability(agent.agentId, accepted ? 'suspended' : 'historical')
-        for (const wait of records.interruptWaits(agent.agentId, reason)) if (wait.agentId !== agent.agentId) wake(wait.agentId)
       }
       for (const execution of records.listExecutions(agent.collaborationId)) {
         if (execution.agentId === agent.agentId && execution.runId === runId && execution.state !== 'finished') records.finishExecution(execution.operationId, reason)

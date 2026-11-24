@@ -23,15 +23,20 @@ export type ConfigPaths = {
 }
 
 /** `/config` 那一屏的一项——**顺序即屏上的顺序**（设计里就是这么排的）。 */
-export type ConfigItem = {
+type ConfigItem = {
 
   /** 选定之后进哪一项——落在 `PickerRow.value` 上（与 `modelActionRows` 同一姿势）。 */
   readonly key: 'model'
-  | 'mcp' | 'web' | 'paths' | 'statusLine' | 'motion' | 'turnDuration'
+  | 'mcp' | 'web' | 'paths' | 'statusLine' | 'motion' | 'turnDuration' | 'voice'
   readonly name: string
+  /**
+   * **归在哪一组**（`PickerRow.group`）——只有**实验性功能**这一组有值：那几项默认关、
+   * 边界明确、随时可能改口径，单列一栏（D75）。常态设置不给这一格（不加组头）。
+   */
+  readonly group?: string
 }
 
-export const CONFIG_ITEMS: readonly ConfigItem[] = [
+const CONFIG_ITEMS: readonly ConfigItem[] = [
   { key: 'model', name: '模型与连接' },
   { key: 'mcp', name: '外部工具' },
   { key: 'web', name: '网页查询与搜索' },
@@ -39,6 +44,8 @@ export const CONFIG_ITEMS: readonly ConfigItem[] = [
   { key: 'motion', name: '减少动效' },
   { key: 'turnDuration', name: '本轮耗时' },
   { key: 'paths', name: '数据目录与工作区根' },
+  // —— 实验性功能（D75）：默认关、边界写在 meta 里（`仅 Ghostty`）——
+  { key: 'voice', name: '语音输入', group: '实验性功能' },
 ]
 
 /** 名称那一格最宽是几个字——补齐全靠它（见 `paddedLabel`）。 */
@@ -141,6 +148,8 @@ export function configRows(input: {
   readonly statusLine: StatusLineConfig | undefined
   readonly turnDuration?: 'elapsed' | 'active'
   readonly reducedMotion: boolean
+  /** 实验性 · 语音输入开着没有（`view.voiceEnabled` · D75）——缺省＝关。 */
+  readonly voice?: boolean
 
   /** 正在筛的词——空串＝全表。 */
   readonly filter: string
@@ -152,12 +161,15 @@ export function configRows(input: {
     paths: configPathsValue(input.paths),
     statusLine: configStatusLineValue(input.statusLine),
     motion: input.reducedMotion ? '已开' : '已关',
+    // 实验性那一项：值 ＋ 边界（不写边界，用户会以为哪儿都能用）
+    voice: input.voice ? '已开 · 仅 Ghostty' : '已关 · 仅 Ghostty',
     turnDuration: input.turnDuration === 'active' ? '扣除等待用户' : '完整经过时间',
   }
   const needle = input.filter.trim().toLowerCase()
   return CONFIG_ITEMS.filter((item) => hits(needle, item.name, values[item.key])).map((item) => ({
     label: paddedLabel(item.name),
-    meta: `${values[item.key]} · ${(item.key === 'motion' || item.key === 'turnDuration') ? 'Enter 切换' : item.key === 'paths' ? 'Enter 查看路径' : 'Enter 进入'}`,
+    ...(item.group === undefined ? {} : { group: item.group }),
+    meta: `${values[item.key]} · ${(item.key === 'motion' || item.key === 'turnDuration' || item.key === 'voice') ? 'Enter 切换' : item.key === 'paths' ? 'Enter 查看路径' : 'Enter 进入'}`,
     // 这一屏没有「当前那一条」这回事（四行都是入口，不是候选项）
     current: false,
     value: item.key,
@@ -196,9 +208,6 @@ export function configHint(input: {
     ? `没有匹配「${input.filter}」的项——退格删一个字`
     : `筛选「${input.filter}」——接着打收窄，退格删一个字`
 }
-
-/** 第 4 项那一屏的抬头（纯输出那一块的头一行）。 */
-export const CONFIG_PATHS_TITLE = '数据与工作区根'
 
 /**
  * **第 4 项自己那一屏**——数据目录与工作区根，**两个完整值**（不缩、不截）。
@@ -276,7 +285,7 @@ export function configPathLines(paths: ConfigPaths): readonly string[] {
  * 只列了**可挑**的那几格，而「① 状态永不省」与「看不见的裸奔是最坏的一形」是既有的
  * 两条硬规矩（规划侧 2026-10-01 裁定：状态是这一行的锚，永远第一位、不可去）。
  */
-export const STATUS_LINE_CELLS: readonly {
+const STATUS_LINE_CELLS: readonly {
   readonly key: StatusLineCell
   readonly name: string
 
@@ -293,11 +302,14 @@ export const STATUS_LINE_CELLS: readonly {
 /**
  * **没配过时那一条**（设计：「默认给一条（不配也能用）」）。
  *
- * 两格：**会话名 ＋ 上下文占用**。⛔ **默认不放「用哪个模型」**——那是**配置回显**
- * （设计那条边界：默认那条不放配置回显，用户**自己勾**才算他要的）；用量那一格也不是
- * 回显，它是**此刻的实况**（这一问花了多少上下文）。
+ * 三格：**会话名 ＋ 模型 ＋ 上下文占用**。
+ *
+ * ⚠️ **模型这一格改过口径**（2026-11-21 用户明示）：原规「默认那条不放配置回显（用哪个
+ * 模型），用户自己勾才算他要的」**随之作废**——理由是**新开一条会话时状态行得说清「用谁在
+ * 干活」**：那两格（会话名、上下文占用）都是「这一条会话的实况」，只有模型没写时，换会话
+ * 与清屏在屏上长得一模一样。用户仍可在 `/config` 里把它挑掉（`cells` 照旧可配）。
  */
-export const STATUS_LINE_DEFAULT: readonly StatusLineCell[] = ['session', 'context']
+export const STATUS_LINE_DEFAULT: readonly StatusLineCell[] = ['session', 'model', 'context']
 
 /** 那一行要摆哪几格——**没配过就是默认那条**（`cells: []` 是合法值，会**原样保留**）。 */
 export function statusLineCellsOf(config: StatusLineConfig | undefined): readonly StatusLineCell[] {

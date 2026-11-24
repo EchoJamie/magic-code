@@ -1,6 +1,8 @@
 import { memoryWorkspace, readMemory, readMemorySource } from '@magic/host'
 import { readSessionDisplayHistory } from '@magic/conversation'
 import { normalizeDataDir } from '@magic/host'
+import { CONTROL_DIRECTORY_LIMIT, CONTROL_FRAME_BUDGET_BYTES } from '@magic/contracts'
+import { fitEntryToWire, wireBytesOf } from './wire-view.ts'
 import type { NativeProjection, NativeRequest, NativeResponse, NativeWork, NativeSession, SessionManagement, SessionManagementResult, Entry, KernelEvent, ServiceIdentity, StopPhase, Wire } from '@magic/contracts'
 import type { RecordsStore } from '@magic/data'
 import type { Link } from '@magic/host'
@@ -169,7 +171,14 @@ export function createNativeServer(options: NativeServerOptions) {
         case 'native.sessions': {
           const target = { t: 'native.sessions.result' as const, request: message.request, serviceInstance: options.identity.serviceInstance }
           void options.sessions(message).then(
-            sessions => link.send({ ...target, sessions }), error => link.send({ ...target, error: String(error) }),
+            sessions => {
+              const page = sessions.slice(0, CONTROL_DIRECTORY_LIMIT)
+              link.send({
+                ...target, sessions: page,
+                ...(sessions.length > page.length ? { total: sessions.length, truncated: true as const } : {}),
+              })
+            },
+            error => link.send({ ...target, error: String(error) }),
           )
           break
         }
@@ -190,11 +199,21 @@ export function createNativeServer(options: NativeServerOptions) {
               const anchor = message.source?.entry ?? message.source?.event
               const before = message.after === undefined && anchor !== undefined ? await options.store.readEntriesBack(session, anchor, 25) : []
               const from = message.after === undefined ? before[0]?.id ?? anchor ?? 0 : message.after + 1
+              /**
+               * 按**字节**装，不按条数——App 的 `JSONLines` 残留超过 8MiB 会抛错，
+               * 一条 9MB 的旧记录就能让整条观察连接掉线（2026-11-21 审计）。
+               * 单条先压到半帧预算；装不下下一帧就 `done:false + next`，续读不丢条。
+               */
+              const budget = CONTROL_FRAME_BUDGET_BYTES - 64 * 1024
               const entries: Entry[] = []
+              let used = wireBytesOf({ ...target, entries: [], events: [] })
               let done = true
-              for await (const entry of readSessionDisplayHistory(options.store, session, { from })) {
+              for await (const raw of readSessionDisplayHistory(options.store, session, { from })) {
+                const fitted = fitEntryToWire(raw, Math.floor(budget / 2))
+                if (entries.length > 0 && used + fitted.bytes > budget) { done = false; break }
+                entries.push(fitted.entry)
+                used += fitted.bytes
                 if (entries.length === 50) { done = false; break }
-                entries.push(entry)
               }
               const events: KernelEvent[] = []
               if (message.source?.event !== undefined) {
@@ -202,7 +221,7 @@ export function createNativeServer(options: NativeServerOptions) {
                 if (event !== undefined) events.push(event)
                 if (events.length === 0) throw new Error('原事件暂不可达，请重新读取')
               }
-              link.send({ ...target, entries, events, done, ...(!done && entries.length > 0 ? { next: entries.at(-1)!.id } : {}) })
+              link.send({ ...target, entries, events, done, ...(done ? {} : { truncated: true as const }), ...(!done && entries.length > 0 ? { next: entries.at(-1)!.id } : {}) })
             } catch (error) { link.send({ ...target, done: true, error: error instanceof Error ? error.message : String(error) }) }
           })()
           break

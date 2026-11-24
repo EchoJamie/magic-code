@@ -71,7 +71,7 @@ test('两个真实终端共享 Engine；网络、工具与 MCP 环境隔离，�
     envs[label] = { PATH: bin + ':/usr/bin:/bin', MAGIC_LOCAL_API_KEY: label, MAGIC_WEB_API_KEY: label, WORK_MARK: label, NODE_EXTRA_CA_CERTS: cert,
       http_proxy: url, https_proxy: url, all_proxy: '', no_proxy: '', HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', NO_PROXY: '' }
     fixtures.set(label, startFixture({ turns: [
-      { kind: 'tool', name: 'exec', args: { command: `env-probe; while [ ! -f '${join(sandbox.root, `release-${label}`)}' ]; do /bin/sleep 0.05; done` } },
+      { kind: 'tool', name: 'exec', args: { description: '测试命令', command: `env-probe; while [ ! -f '${join(sandbox.root, `release-${label}`)}' ]; do /bin/sleep 0.05; done` } },
       { kind: 'tool', name: 'web_fetch', args: { url: `http://work.test/web/${label}`, prompt: '总结' } },
       { kind: 'text', text: `环境${label}完成` },
     ] }))

@@ -41,7 +41,7 @@ export const MCP_CALL_TIMEOUT_MS = 120_000
  * 主防线是「游标不许重复」（同一个游标回来＝不前进，当场停）；这一道防的是**一直给新游标**
  * 那种（每页一件、游标无穷）。两道都到不了「无限等」。
  */
-export const MCP_MAX_TOOL_PAGES = 50
+const MCP_MAX_TOOL_PAGES = 50
 
 /** 我们放的还是它自己走的——读数上分得开。 */
 const RELEASED = '连接已释放'
@@ -67,7 +67,7 @@ export interface OwnedTransport extends Transport {
 }
 
 /** 一种传输要告诉内核的四件事。 */
-export type TransportDriver = {
+type TransportDriver = {
   /** 哪一种接入——读数上要说得出来（`/mcp` 那一屏按它分列）。 */
   readonly kind: 'stdio' | 'http'
   /** 造一条**新**传输（每一趟起手各一条）。**造了不等于连了**。 */

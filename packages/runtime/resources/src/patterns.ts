@@ -25,7 +25,7 @@
  * 一行就能要六十四条，再往下是随手指敲出来的规模。64 够任何讲道理的分组，
  * 越过它的写法**报错**（用户看得见是哪一条），而不是替他砍掉一半。
  */
-export const MAX_PATTERN_EXPANSIONS = 64
+const MAX_PATTERN_EXPANSIONS = 64
 
 /**
  * **同层大括号组数的上限**——递归深度就是它。
@@ -38,7 +38,7 @@ export const MAX_PATTERN_EXPANSIONS = 64
  * 故组数**在展开之前**先数一遍。16 组已是任何讲道理写法的十倍有余（宽度上限 64 早就在
  * 第 7 组前后先撞上），且它与调用栈深浅无关——同一个输入恒同一个结论。
  */
-export const MAX_BRACE_GROUPS = 16
+const MAX_BRACE_GROUPS = 16
 
 /** 模式解析的判别式——`ok: false` 带**缘由**（静默丢弃会让人对着一条不生效的规则发呆）。 */
 export type PatternExpansion =
@@ -173,7 +173,7 @@ function problemOfPattern(pattern: string): string | undefined {
  * 未展开的大括号走到这里**不会发生**（`expandPatterns` 已拆开）；万一到了，按字面处理
  * ——大括号不是通配，不会静默变成「任意」。
  */
-export function compilePattern(pattern: string): RegExp {
+function compilePattern(pattern: string): RegExp {
   let source = ''
   let index = 0
 

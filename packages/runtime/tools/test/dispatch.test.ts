@@ -37,7 +37,7 @@ describe('分发回环：请求 → 闸门 → 执行 → 结果', () => {
     const result = deps.sink.byKind('tool.result')[0]
     if (call === undefined || result === undefined) throw new Error('请求 / 结果两个事件没发全')
 
-    expect(call.data).toEqual({ name: 'exec', args: { command: 'ls -a' } })
+    expect(call.data).toEqual({ name: 'exec', args: { description: '测试命令', command: 'ls -a' } })
     expect(result.data.call).toBe(call.id)
     expect(result.data.ok).toBe(true)
     expect(result.data.output).toEqual({ text: '[退出 0 · /work/proj]\na\nb\n' })
@@ -139,15 +139,16 @@ describe('分发回环：请求 → 闸门 → 执行 → 结果', () => {
     expect(deps.sink.byKind('tool.result')[0]?.data.call).toBe(outcome.callRef)
   })
 
-  test('命令写在别的键里：报「未声明字段」而不是「没给 cmd」', async () => {
-    // 实际见过的形：模型把命令写成 command。若先跑「cmd 须为非空字符串」，
-    // 它拿到的是「你没给命令」——而它明明给了，只是键名不对，于是重试同一个键。
+  test('命令写在别的键里：报「缺 command」，并把收到的键摆出来；多给的键不拦', async () => {
+    // 用户 2026-11-20 定：只校必填，不校多给。故这里不再有「未声明字段」——
+    // 命令写在 `cmd` 里就是**没给 command**，回执把收到的键摆出来供它改。
     const deps = makeToolDeps()
 
-    const outcome = await deps.runtime.invoke({ id: 'c1', name: 'exec', args: { cmd: 'ls' } }, {})
+    const outcome = await deps.runtime.invoke({ id: 'c1', name: 'exec', args: { description: '测试命令', cmd: 'ls' } }, {})
 
     expect(outcome.ok).toBe(false)
-    expect(outcome.output).toBe('参数错误（exec）：未声明字段 cmd；可用字段：command、description、cwd、timeoutMs、background')
+    expect(outcome.output).toContain('本次收到的键')
+    expect(outcome.output).toContain('cmd')
     expect(deps.gate.requests).toHaveLength(0)
     expect(deps.sandbox.execs).toHaveLength(0)
   })
@@ -156,15 +157,17 @@ describe('分发回环：请求 → 闸门 → 执行 → 结果', () => {
     const empty = await makeToolDeps().runtime.invoke({ id: 'c1', name: 'exec', args: {} }, {})
     expect(empty.output).toBe('参数错误：exec 要的是 command（命令写在 command 里）；本次没有收到任何参数；未执行')
 
-    const cwdOnly = await makeToolDeps().runtime.invoke({ id: 'c2', name: 'exec', args: { cwd: 'src' } }, {})
-    expect(cwdOnly.output).toBe('参数错误：command 须为非空字符串；本次收到的键：cwd；未执行')
+    // `cwd` 已不是参数（用户 2026-11-20 定）：多带它不拦、也不参与执行——但 command 仍必填
+    const cwdOnly = await makeToolDeps().runtime.invoke({ id: 'c2', name: 'exec', args: { description: '测试命令', cwd: 'src' } }, {})
+    expect(cwdOnly.ok).toBe(false)
+    expect(cwdOnly.output).toContain('本次收到的键')
   })
 
   test('参数解析不出直接失败，不创建授权', async () => {
     const deps = makeToolDeps()
 
     const outcome = await deps.runtime.invoke(
-      { id: 'c1', name: 'exec', args: {}, invalid: true },
+      { id: 'c1', name: 'exec', args: { description: '测试命令',}, invalid: true },
       {},
     )
 
@@ -176,10 +179,10 @@ describe('分发回环：请求 → 闸门 → 执行 → 结果', () => {
 
   test('只有合法调用进入唯一权限闸门', async () => {
     const cases = [
-      { id: 'c1', name: 'exec', args: { command: 'ls' } },
+      { id: 'c1', name: 'exec', args: { description: '测试命令', command: 'ls' } },
       { id: 'c2', name: 'nope', args: {} },
-      { id: 'c3', name: 'exec', args: { command: 42 } },
-      { id: 'c4', name: 'exec', args: {}, invalid: true },
+      { id: 'c3', name: 'exec', args: { description: '测试命令', command: 42 } },
+      { id: 'c4', name: 'exec', args: { description: '测试命令',}, invalid: true },
     ]
 
     for (const call of cases) {
@@ -341,13 +344,39 @@ describe('内核拒的那一笔：回执指路（用户拒的那一笔照旧）'
 })
 
 
+describe('exec 的 description：必填，最多 50 字', () => {
+  test('缺 / 空 ⇒ 说清怎么写，不执行、不请求闸门', async () => {
+    for (const args of [{ command: 'ls' }, { command: 'ls', description: '' }, { command: 'ls', description: '   ' }]) {
+      const deps = makeToolDeps()
+      const outcome = await deps.runtime.invoke({ id: 'c1', name: 'exec', args }, {})
+      expect(outcome.ok).toBe(false)
+      expect(outcome.output).toContain('description 必填')
+      expect(deps.gate.requests).toHaveLength(0)
+      expect(deps.sandbox.execs).toHaveLength(0)
+    }
+  })
+
+  test('50 字整好通过，51 字当场拒——按字（码点）数，不按字节', async () => {
+    const fifty = '一'.repeat(50)
+    const ok = makeToolDeps()
+    expect((await ok.runtime.invoke({ id: 'c1', name: 'exec', args: { command: 'ls', description: fifty } }, {})).ok).toBe(true)
+
+    const tooLong = makeToolDeps()
+    const outcome = await tooLong.runtime.invoke({ id: 'c2', name: 'exec', args: { command: 'ls', description: `${fifty}多` } }, {})
+    expect(outcome.ok).toBe(false)
+    expect(outcome.output).toContain('最多 50 字')
+    expect(tooLong.sandbox.execs).toHaveLength(0)
+  })
+})
+
 describe('D58 · 无效调用不产生授权与执行', () => {
   test('错误字段、参数形态、类型和组合均直接回填失败，原始调用与结果配对', async () => {
     const cases = [
       ['exec', { cmd: 'echo wrong' }], ['exec', {}], ['exec', { command: '  ' }], ['exec', { command: 1 }],
       ...([0, -1, '5', false, Infinity] as const).map(timeoutMs => ['exec', { command: 'echo test', timeoutMs }]),
-      ['exec', { command: 'echo test', cwd: '' }], ['exec', { command: 'echo test', cwd: 3 }],
-      ['exec', { command: 'echo test', background: 'true' }], ['exec', { command: 'echo test', background: true, timeoutMs: 3 }],
+      ['exec', { command: 'echo test', cwd: 'src' }], ['exec', { command: 'echo test', description: '' }],
+      ['exec', { command: 'echo test', description: '一'.repeat(51) }], ['exec', { command: 'echo test', description: 3 }],
+      ['exec', { command: 'echo test', background: 'true' }], ['exec', { command: 'echo test', description: '测试命令', background: true, timeoutMs: 3 }],
       ['exec', null], ['exec', []], ['exec', 'bad'], ['missing', {}],
       ['read', {}], ['write', { path: 'file', content: 3 }], ['edit', { path: 'file', old: 'text', new: 3 }],
       ['grep', { pattern: '[' }], ['ls', { path: false }],
@@ -365,7 +394,7 @@ describe('D58 · 无效调用不产生授权与执行', () => {
   })
 
   test('审批期间外部修改原参数，执行仍消费已批准的命令', async () => {
-    const args: Record<string, unknown> = { command: 'echo approved' }
+    const args: Record<string, unknown> = { command: 'echo approved', description: '测试命令' }
     const deps = makeToolDeps({ decider: () => { args.command = 'echo changed'; return 'approve' } })
     const outcome = await deps.runtime.invoke({ id: 'one', name: 'exec', args }, {})
     expect(outcome.ok).toBe(true)

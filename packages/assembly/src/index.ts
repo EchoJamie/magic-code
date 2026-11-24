@@ -327,6 +327,8 @@ export function assemble(options: AssembleOptions): Assembly {
   let statusLineConfig: StatusLineConfig | undefined = loaded.config.statusLine
   let turnDuration = loaded.config.turnDuration ?? 'elapsed'
   let reducedMotion = loaded.config.motion?.reduced === true
+  /** 实验性 · 语音输入（D75）——**缺省关**；开关只在这一处读数上生效。 */
+  let experimentalVoice = loaded.config.experimental?.voice === true
 
   const modelSource = createModelConfiguration({
     loaded, magic, environment, fetch, now,
@@ -733,17 +735,20 @@ export function assemble(options: AssembleOptions): Assembly {
       if (request.statusLine !== undefined) statusLineConfig = request.statusLine
       if (request.reducedMotion !== undefined) reducedMotion = request.reducedMotion
       if (request.turnDuration !== undefined) turnDuration = request.turnDuration
+      if (request.voice !== undefined) experimentalVoice = request.voice
     }
 
     const changed: string[] = []
     if (request.statusLine !== undefined) changed.push('状态行')
     if (request.reducedMotion !== undefined) changed.push('动效')
     if (request.turnDuration !== undefined) changed.push('本轮耗时')
+    if (request.voice !== undefined) changed.push('语音输入')
 
     sink.emit(
       requireActiveStamper().stamp('prefs.state', {
         ...(statusLineConfig === undefined ? {} : { statusLine: statusLineConfig }),
         reducedMotion, turnDuration,
+        voice: experimentalVoice,
         note: outcome.ok
           ? `已更新：${changed.join(' · ')}`
           : `${changed.join(' · ')}没改成——${outcome.reason}`,
@@ -824,6 +829,7 @@ export function assemble(options: AssembleOptions): Assembly {
       statusLineConfig = current.config.statusLine
       turnDuration = current.config.turnDuration ?? 'elapsed'
       reducedMotion = current.config.motion?.reduced === true
+      experimentalVoice = current.config.experimental?.voice === true
     },
     reconnectMcp,
     compact: (session, request, signal, started) => {

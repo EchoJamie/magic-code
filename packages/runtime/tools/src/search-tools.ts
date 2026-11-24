@@ -12,6 +12,7 @@
 
 import type { ListEntry, MatchHit } from '@magic/contracts'
 import { isText } from './args.ts'
+import { byteLength } from './blobs.ts'
 import {
   cappedOutput,
   grepFailedOutput,
@@ -19,6 +20,7 @@ import {
   OUTPUT_NO_MATCH,
   OUTPUT_PATH_REQUIRED,
   OUTPUT_PATTERN_REQUIRED,
+  outputBytesTruncated,
   searchFailedOutput,
 } from './messages.ts'
 import { defineTool } from './registry.ts'
@@ -27,6 +29,15 @@ import { refused, reasonOf, rowOf } from './toolkit.ts'
 
 /** 命中上限——条（实现级常量；`grep` 的「输出截断」按它）。 */
 export const SEARCH_MAX_RESULTS = 200
+
+/**
+ * 命中文本上限——字节（实现级常量，与 `EXEC_MAX_OUTPUT_BYTES` 同一个数）。
+ *
+ * **条数上限管不住一行**：一行 5.7MB 的 JSON 也是一条命中；只按条数截，整行原文
+ * 就原样进了上下文与记录（2026-11-21 的 `session.state` 事故）。这里按字节封顶，
+ * 截断处如实说明并给出收窄范围的办法。
+ */
+export const SEARCH_MAX_OUTPUT_BYTES = 64 * 1024
 
 // ══ 参数模式（自写朴素 JSON Schema——承载形态见契约「参数键」注）═══════
 
@@ -41,7 +52,7 @@ const SCOPE_KEY = {
   description: '搜索起点——相对按工作区默认根；工作区外目标需明确授权；缺省＝工作区根',
 } as const
 
-export const GREP_PARAMETERS = {
+const GREP_PARAMETERS = {
   type: 'object',
   /**
    * **两个键各是什么，描述里就写清**（D64）——实测里模型把路径与模式传反，
@@ -62,7 +73,7 @@ export const GREP_PARAMETERS = {
   additionalProperties: false,
 } as const
 
-export const GLOB_PARAMETERS = {
+const GLOB_PARAMETERS = {
   type: 'object',
   description:
     '按文件名匹配（`*` 不跨目录、`**` 递归——如 `**/*.ts`）。只列文件，不列目录；结果有上限。',
@@ -74,7 +85,7 @@ export const GLOB_PARAMETERS = {
   additionalProperties: false,
 } as const
 
-export const LS_PARAMETERS = {
+const LS_PARAMETERS = {
   type: 'object',
   description: '列目录——目录带尾斜杠，文件带字节数。',
   properties: {
@@ -99,12 +110,47 @@ export const LS_PARAMETERS = {
 function composeHits(hits: readonly MatchHit[], limit: number): string {
   if (hits.length === 0) return OUTPUT_NO_MATCH
 
-  const lines = hits.map((hit) =>
-    hit.line === undefined ? hit.path : `${hit.path}:${hit.line}: ${hit.text ?? ''}`,
-  )
+  const lines: string[] = []
+  let used = 0
+  let cut = false
+  for (const hit of hits) {
+    const line = hit.line === undefined ? hit.path : `${hit.path}:${hit.line}: ${hit.text ?? ''}`
+    // 已用字节不含行间分隔；加下一条时把分隔那一字节也算进来。
+    const room = SEARCH_MAX_OUTPUT_BYTES - used - (lines.length === 0 ? 0 : 1)
+    if (room <= 0) { cut = true; break }
+    const bytes = byteLength(line)
+    if (bytes > room) {
+      // **单条也能超限**——留得住前缀（路径:行号）就留，留不住就只剩说明。
+      const clipped = clipUtf8(line, room)
+      if (clipped !== '') lines.push(clipped)
+      cut = true
+      break
+    }
+    lines.push(line)
+    used += bytes + (lines.length === 1 ? 0 : 1)
+  }
 
+  const notes = [
+    ...(hits.length >= limit ? [cappedOutput(limit)] : []),
+    ...(cut ? [outputBytesTruncated(SEARCH_MAX_OUTPUT_BYTES)] : []),
+  ]
   const body = lines.join('\n')
-  return hits.length >= limit ? `${body}\n${cappedOutput(limit)}` : body
+  return notes.length === 0 ? body : `${body}${body === '' ? '' : '\n'}${notes.join('\n')}`
+}
+
+/** 按 UTF-8 字节裁一段文本——逐码点累加，不把多字节字符切一半。 */
+function clipUtf8(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return ''
+  if (byteLength(text) <= maxBytes) return text
+  let used = 0
+  let out = ''
+  for (const char of text) {
+    const bytes = byteLength(char)
+    if (used + bytes > maxBytes) break
+    out += char
+    used += bytes
+  }
+  return out
 }
 
 /** 列目录摆成文本——目录带尾斜杠（一眼分辨能不能进去），文件带字节数（值不值得读）。 */

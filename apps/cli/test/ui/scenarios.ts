@@ -97,14 +97,14 @@ function hasToolDone(lines: readonly string[], output: string): boolean {
 const IDLE_STATE = '○ 空闲'
 
 /** 一条判据的结论——过了的也一并交回（给人看这一组到底判了些什么）。 */
-export type CheckOutcome = {
+type CheckOutcome = {
   readonly what: string
   readonly ok: boolean
   readonly detail: string
 }
 
 /** 判据没过——**带上判据名**（场景交付里最要紧的一句话）。 */
-export class ScenarioFailure extends Error {
+class ScenarioFailure extends Error {
   readonly what: string
   readonly detail: string
 
@@ -302,7 +302,7 @@ const modelStreamApproval: Scenario = {
     const head = [...streamed].slice(0, 3).join('')
     const tail = [...streamed].at(-1) as string
     const turns: readonly FixtureTurn[] = [
-      { kind: 'tool', name: 'exec', args: { command: 'chmod 755 . && echo hello-magic' } },
+      { kind: 'tool', name: 'exec', args: { description: '测试命令', command: 'chmod 755 . && echo hello-magic' } },
       { kind: 'text', text: streamed, chunks: 4, chunkDelayMs: 220 },
     ]
     const session = await ui.open({
@@ -1222,17 +1222,6 @@ function dividersOf(lines: readonly string[]): { readonly top: number; readonly 
   const before = lines.findLastIndex((line, at) => at < last && isRule(line))
 
   return before === -1 ? { top: last, bottom: -1 } : { top: before, bottom: last }
-}
-
-/**
- * 一帧里的**记录区**——**上沿**分隔线之上那些行。
- *
- * 「记录不丢不重」这类判据量的是它：上沿那条是活动区的顶边，它上面才是「发生过什么」。
- */
-export function recordOf(capture: Capture): readonly string[] {
-  const { top } = dividersOf(capture.lines)
-
-  return top === -1 ? capture.lines : capture.lines.slice(0, top)
 }
 
 /**

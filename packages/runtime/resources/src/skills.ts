@@ -94,7 +94,7 @@ import { isInside } from './workspace.ts'
  * 四个数各管一件事：一共几个技能 · 元数据头读多少 · 单份材料多大 · 送出去多少字符。
  * 数值本身是**实现级常量**（方向已有，量级归实现）。
  */
-export type SkillLimits = {
+type SkillLimits = {
   /** 发现面的**份数上限**——超出的报成 `problems`（不静默丢，见 `collect`）。 */
   readonly maxSkills: number
   /**
@@ -121,7 +121,7 @@ export type SkillLimits = {
  * （≈ 一万余字符），20000 给了两倍余量；再长的那份**照实说太长**，
  * 由作者拆到 `references/` 去（那正是规范推荐的做法）。
  */
-export const DEFAULT_SKILL_LIMITS: SkillLimits = {
+const DEFAULT_SKILL_LIMITS: SkillLimits = {
   maxSkills: 64,
   maxMetadataBytes: 8 * 1024,
   maxFileBytes: 256 * 1024,
@@ -737,7 +737,7 @@ type FrontMatter = {
  * YAML 交给 `Bun.YAML.parse`（与 `rules.ts` 同一处裁法：自己写词法就要自己写对 YAML 的
  * 全部边角，那不是这个单元该背的活）。
  */
-export function splitFrontMatter(text: string): FrontMatter {
+function splitFrontMatter(text: string): FrontMatter {
   const lines = text.split('\n')
   if ((lines[0] ?? '').trim() !== '---') {
     return {

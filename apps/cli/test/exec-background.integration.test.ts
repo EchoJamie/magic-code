@@ -58,7 +58,7 @@ describe('后台那一形（全链）', () => {
     try {
       const turns: readonly FauxTurn[] = [
         // ① 模型把命令交出去
-        { toolCalls: [{ name: 'exec', args: { command: `sleep 0.2; echo ${MARK}`, background: true } }] },
+        { toolCalls: [{ name: 'exec', args: { description: '测试命令', command: `sleep 0.2; echo ${MARK}`, background: true } }] },
         // ② **这一轮不等它**——模型接着说话（回执已经在手上了）
         { text: '已经交出去了，我接着做别的' },
         // ③ 由「跑完」那一条唤醒的那一轮
@@ -138,7 +138,7 @@ describe('后台那一形（全链）', () => {
 
     try {
       const turns: readonly FauxTurn[] = [
-        { toolCalls: [{ name: 'exec', args: { command: 'echo 好了', background: true } }] },
+        { toolCalls: [{ name: 'exec', args: { description: '测试命令', command: 'echo 好了', background: true } }] },
         { text: '交了' },
         { text: '看到了' },
       ]
@@ -166,7 +166,7 @@ describe('后台那一形（全链）', () => {
     try {
       const turns: readonly FauxTurn[] = [
         // 一条**永不结束**的命令（`sleep` 活到用例把它停掉为止）
-        { toolCalls: [{ name: 'exec', args: { command: 'echo 起来了; sleep 60', background: true } }] },
+        { toolCalls: [{ name: 'exec', args: { description: '测试命令', command: 'echo 起来了; sleep 60', background: true } }] },
         { text: '交出去了' },
         // 停掉之后那一轮（唤醒模型的那一条）
         { text: '知道它停了' },

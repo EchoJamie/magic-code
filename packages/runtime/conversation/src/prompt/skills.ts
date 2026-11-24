@@ -89,9 +89,6 @@ export function renderSkillsBlock(input: {
   return { id: SKILLS_BLOCK_ID, heading: SKILLS_HEADING, body, text: `${SKILLS_HEADING}\n${body}` }
 }
 
-/** 技能目录块的标识与标题——归 `./assembly.ts` 持有（块词汇一处，见其注）。 */
-export { SKILLS_BLOCK_ID, SKILLS_HEADING } from './assembly.ts'
-
 /**
  * 一行一个技能——**名称 ＋ 描述**，来源在后。
  *

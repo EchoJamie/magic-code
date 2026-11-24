@@ -87,7 +87,7 @@ export async function prepareBrief(deps: BriefDeps, entries: readonly Entry[]): 
       { role: 'user' as const, content: `${head}以下是本会话的记录（按时间顺序）：\n\n${blocks.join('\n\n')}` },
     ],
   }
-  const { text, result, failure } = await callMemoryModel({
+  const { text, reasoning, result, failure, model } = await callMemoryModel({
     purpose: 'compact', gateway: deps.gateway, request, maxOutputTokens: 8_192,
     ...(deps.signal === undefined ? {} : { signal: deps.signal }),
     sink: deps.sink, stamper: deps.stamper, now: deps.now,
@@ -96,7 +96,12 @@ export async function prepareBrief(deps: BriefDeps, entries: readonly Entry[]): 
     throw new BriefFailure(failure?.tier === 'context-limit' || result.finishReason === 'length' ? 'capacity' : 'incomplete', failure?.message ?? '交接材料没有完整生成')
   }
   const brief = text.trim()
-  if (brief === '') throw new BriefFailure('incomplete', '交接材料为空')
+  if (brief === '') {
+    // 空正文要说清是谁、回了什么：模型名、思考与正文的字数、结束原因——
+    // 只说「材料为空」让用户无从下手（2026-11-23 用户反馈）。
+    const channels = reasoning === '' ? '' : `，思考通道有 ${reasoning.length} 字未计入`
+    throw new BriefFailure('incomplete', `交接材料为空：${model ?? '未知模型'} 返回了空正文（正文 0 字${channels}，finish_reason=${result.finishReason}）。思考型模型可能只输出了推理过程——换用非思考模型后重试。`)
+  }
   return { text: brief, through: entries.at(-1)?.id ?? 0, summarized: blocks.length }
 }
 

@@ -13,7 +13,7 @@ import { describe, expect, test } from 'bun:test'
 import type { MatchHit } from '@magic/contracts'
 import { TOOLSET_V1 } from '@magic/contracts'
 import { makeFauxSandbox } from '@magic/faux'
-import { SEARCH_MAX_RESULTS } from '../src/search-tools.ts'
+import { SEARCH_MAX_OUTPUT_BYTES, SEARCH_MAX_RESULTS } from '../src/search-tools.ts'
 import { makeToolDeps } from './helpers.ts'
 
 function row(name: string): (typeof TOOLSET_V1)[number] {
@@ -85,6 +85,30 @@ describe('grep', () => {
     const result = await runtime.invoke({ id: 'c1', name: 'grep', args: { pattern: 'x' } }, {})
 
     expect(result.output.endsWith(`[命中达到上限 ${SEARCH_MAX_RESULTS}——可能还有更多]`)).toBe(true)
+  })
+
+  test('单条命中行超长 → 按字节封顶，不把整行带回', async () => {
+    const huge = 'z'.repeat(5 * 1024 * 1024)
+    const { runtime } = makeToolDeps({ sandbox: makeFauxSandbox({ hits: [hit({ text: huge })] }) })
+
+    const result = await runtime.invoke({ id: 'c1', name: 'grep', args: { pattern: 'x' } }, {})
+    const bytes = new TextEncoder().encode(result.output ?? '').byteLength
+
+    expect(bytes).toBeLessThanOrEqual(SEARCH_MAX_OUTPUT_BYTES + 256) // 说明行另算
+    expect(result.output).toContain('/work/proj/src/a.ts:3: zzz')
+    expect(result.output).toContain(`输出已截断：超过 ${SEARCH_MAX_OUTPUT_BYTES} 字节`)
+  })
+
+  test('多条命中累计超字节上限 → 截在边界并说明', async () => {
+    const line = 'w'.repeat(10 * 1024)
+    const hits = Array.from({ length: 10 }, (_, index) => hit({ line: index + 1, text: line }))
+    const { runtime } = makeToolDeps({ sandbox: makeFauxSandbox({ hits }) })
+
+    const result = await runtime.invoke({ id: 'c1', name: 'grep', args: { pattern: 'x' } }, {})
+    const bytes = new TextEncoder().encode(result.output ?? '').byteLength
+
+    expect(bytes).toBeLessThanOrEqual(SEARCH_MAX_OUTPUT_BYTES + 256)
+    expect(result.output).toContain(`输出已截断：超过 ${SEARCH_MAX_OUTPUT_BYTES} 字节`)
   })
 
   test('无效正则在审批前报参数错误', async () => {

@@ -42,11 +42,23 @@ export function callKindOf(body: Record<string, unknown>): CallKind {
   const system = messages.filter(one => one.role === 'system')
     .map(one => typeof one.content === 'string' ? one.content : JSON.stringify(one.content)).join('\n')
   if (system.includes('Arcane 只读顾问')) return 'advisor'
-  if (system.includes('单机开发智能体')) return 'agent'
+  // ⚠️ 认**段结构**（`## 身份` 是冻结的四段之一），不认身份段的具体措辞——
+  // 措辞属实现级、随内核迭代（2026-11-21 身份段从「单机开发智能体」改成搭档，
+  // 认措辞的写法当场把主 Agent 判成 internal，咨询用例全线等不到结果）。
+  // 内部调用（压缩交接 · 接续准备）的系统提示不进四段模板，故不命中。
+  if (system.includes('## 身份')) return 'agent'
   return 'internal'
 }
 
-export async function collaborationRuntime(name: string, respond: (call: HttpCall) => ModelReply | Promise<ModelReply>, options: { readonly launch?: ExecutorLauncher } = {}) {
+export async function collaborationRuntime(
+  name: string,
+  respond: (call: HttpCall) => ModelReply | Promise<ModelReply>,
+  options: {
+    readonly launch?: ExecutorLauncher
+    /** 四个档位各指哪一条（缺省＝夹具通常的默认组合）；窗口带过来的选择就按它解析。 */
+    readonly models?: Record<string, { readonly provider: string; readonly model: string }>
+  } = {},
+) {
   const root = realpathSync(tempDir('magic-collab-run-'))
   /** 这块沙地的目录名；系统提示词里带着它，可据此认出来的是不是自己人。 */
   const runtimeMarker = root.split('/').pop()!
@@ -96,7 +108,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
     }
   } })
   const configPath = join(magic.base, 'config.json')
-  writeFileSync(configPath, JSON.stringify({ dataDir, workspaceRoots: [workspace], models: {default: {provider: "controlled", model: 'entry-model'}, cantrip: {provider: "controlled", model: 'entry-model'}, spell: {provider: "controlled", model: 'member-model'}, arcane: {provider: "controlled", model: 'descendant-model'}},
+  writeFileSync(configPath, JSON.stringify({ dataDir, workspaceRoots: [workspace], models: options.models ?? {default: {provider: "controlled", model: 'entry-model'}, cantrip: {provider: "controlled", model: 'entry-model'}, spell: {provider: "controlled", model: 'member-model'}, arcane: {provider: "controlled", model: 'descendant-model'}},
     providers: { controlled: { protocol: 'chat-completions', modelOverrides: Object.fromEntries(['entry-model', 'member-model', 'descendant-model', 'changed-model'].map(id => [id, { reasoningSupport: { disable: true, levels: ['low', 'high'] } }])), baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'local-controlled-only' },
       // U94：顾问的只读工具面仍含 `web_fetch`——它需要一条已配置的网页服务连接。
       web: { vendor: 'deepseek', apiKey: 'web-controlled-only' } },

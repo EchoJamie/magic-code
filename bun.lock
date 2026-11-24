@@ -25,14 +25,11 @@
         "@magic/conversation": "workspace:*",
         "@magic/data": "workspace:*",
         "@magic/host": "workspace:*",
-        "@magic/mcp": "workspace:*",
         "@magic/model": "workspace:*",
         "@magic/resources": "workspace:*",
         "@magic/shell": "workspace:*",
         "@magic/state": "workspace:*",
         "@magic/tools": "workspace:*",
-        "@magic/transport": "workspace:*",
-        "undici": "7.29.1",
       },
       "devDependencies": {
         "@magic/engine": "workspace:*",
@@ -67,15 +64,11 @@
         "@magic/state": "workspace:*",
         "@magic/tools": "workspace:*",
         "@magic/transport": "workspace:*",
-        "undici": "7.29.1",
       },
     },
     "packages/client/local-capabilities": {
       "name": "@magic/client",
       "version": "0.0.0",
-      "dependencies": {
-        "@magic/contracts": "workspace:*",
-      },
       "devDependencies": {
         "@magic/resources": "workspace:*",
       },
@@ -421,7 +414,7 @@
 
     "merge-descriptors": ["merge-descriptors@2.0.0", "https://registry.npmmirror.com/merge-descriptors/-/merge-descriptors-2.0.0.tgz", {}, "sha512-Snk314V5ayFLhp3fkUREub6WtjBfPdCPY1Ln8/8munuLuiYhsABgBVWsozAG+MWMbVEvcdcpbi9R7ww22l9Q3g=="],
 
-    "mermaid-glyph": ["mermaid-glyph@0.1.0", "", {}, "sha512-UcLMpEW9XqWVwmowXNpKVE2H4ptkgDMfrLsa9VH11SSoI90v3wFPZNPFk1s8MV/XuPYI/ULVeuPpn/ObHd5Fcg=="],
+    "mermaid-glyph": ["mermaid-glyph@0.1.0", "https://registry.npmmirror.com/mermaid-glyph/-/mermaid-glyph-0.1.0.tgz", {}, "sha512-UcLMpEW9XqWVwmowXNpKVE2H4ptkgDMfrLsa9VH11SSoI90v3wFPZNPFk1s8MV/XuPYI/ULVeuPpn/ObHd5Fcg=="],
 
     "mime-db": ["mime-db@1.54.0", "https://registry.npmmirror.com/mime-db/-/mime-db-1.54.0.tgz", {}, "sha512-aU5EJuIN2WDemCcAp2vFBfp/m4EAhWJnUNSSw0ixs7/kXbd6Pg64EmwJkNdFhB8aWt1sH2CTXrLxo/iAGV3oPQ=="],
 
@@ -501,7 +494,7 @@
 
     "statuses": ["statuses@2.0.2", "https://registry.npmmirror.com/statuses/-/statuses-2.0.2.tgz", {}, "sha512-DvEy55V3DB7uknRo+4iOGT5fP1slR8wQohVdknigZPMpMstaKJQWhwiYBACJE3Ul2pTnATihhBYnRhZQHGBiRw=="],
 
-    "string-width": ["string-width@8.3.0", "", { "dependencies": { "get-east-asian-width": "^1.5.0", "strip-ansi": "^7.1.2" } }, "sha512-ZbmZM0JCihQN91dWnxoipT2KOEyHqEyfRXUyjuRhW8b/xnqPDoq4gWEVApTVa9db2wN8mmoikgFBbjh71+cGeQ=="],
+    "string-width": ["string-width@8.3.0", "https://registry.npmmirror.com/string-width/-/string-width-8.3.0.tgz", { "dependencies": { "get-east-asian-width": "^1.5.0", "strip-ansi": "^7.1.2" } }, "sha512-ZbmZM0JCihQN91dWnxoipT2KOEyHqEyfRXUyjuRhW8b/xnqPDoq4gWEVApTVa9db2wN8mmoikgFBbjh71+cGeQ=="],
 
     "strip-ansi": ["strip-ansi@7.2.0", "https://registry.npmmirror.com/strip-ansi/-/strip-ansi-7.2.0.tgz", { "dependencies": { "ansi-regex": "^6.2.2" } }, "sha512-yDPMNjp4WyfYBkHnjIRLfca1i6KMyGCtsVgoKe/z1+6vukgaENdgGBZt+ZmKPc4gavvEZ5OgHfHdrazhgNyG7w=="],
 

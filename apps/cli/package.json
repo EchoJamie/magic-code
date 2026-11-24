@@ -19,15 +19,12 @@
     "@magic/host": "workspace:*",
     "@magic/client": "workspace:*",
     "@magic/contracts": "workspace:*",
-    "@magic/transport": "workspace:*",
     "@magic/conversation": "workspace:*",
     "@magic/resources": "workspace:*",
-    "@magic/mcp": "workspace:*",
     "@magic/model": "workspace:*",
     "@magic/data": "workspace:*",
     "@magic/tools": "workspace:*",
     "@magic/shell": "workspace:*",
-    "undici": "7.29.1",
     "@magic/state": "workspace:*"
   },
   "devDependencies": {

@@ -109,7 +109,7 @@ export function StatusLine({
 }
 
 /** 原生示例与真正终端共享字段、省略及列宽规则。 */
-export function statusLineLayout({ status, activity, columns, cells, workspace }: Pick<StatusLineProps, 'status' | 'activity' | 'columns' | 'cells' | 'workspace'>) {
+function statusLineLayout({ status, activity, columns, cells, workspace }: Pick<StatusLineProps, 'status' | 'activity' | 'columns' | 'cells' | 'workspace'>) {
   // U129 起没有「全放行」那一格；`fixed` 这一跳留给将来同样不参与让位的东西。
   const fixed: readonly string[] = []
   const stateWidth = displayWidth(`${stateMark(activity === undefined ? status.state : 'working')} ${activity ?? stateText(status.state)}${status.amount === null ? '' : ` ${status.amount}`}`)

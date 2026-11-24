@@ -11,8 +11,8 @@ const finish = join(artifacts, 'finish')
 const copied = join(artifacts, 'clipboard')
 writeFileSync(join(artifacts, 'pbcopy'), '#!/bin/sh\ncat > "$U124_COPY_FILE"\n', { mode: 0o755 })
 const ui = await createUiSession({ columns: 200, rows: 40, label: 'background-commands-', artifacts, env: { PATH: `${artifacts}:${process.env.PATH}`, U124_COPY_FILE: copied }, argv: [], turns: [
-  { kind: 'tool', name: 'exec', args: { command: `while [ ! -f '${finish}' ]; do sleep 0.02; done; printf 后台测试完成`, background: true }, following: [
-    { name: 'exec', args: { command: 'sleep 90 # 中文常驻服务', background: true } },
+  { kind: 'tool', name: 'exec', args: { description: '测试命令', command: `while [ ! -f '${finish}' ]; do sleep 0.02; done; printf 后台测试完成`, background: true }, following: [
+    { name: 'exec', args: { description: '测试命令', command: 'sleep 90 # 中文常驻服务', background: true } },
   ] },
   { kind: 'tool', name: 'background_wait', args: { ids: ['bg-1'] } },
   { kind: 'text', text: 'U124_RESULT_RECEIVED', chunks: 1, chunkDelayMs: 0 },
@@ -32,8 +32,8 @@ try {
   await ui.wait({ text: '等待后台结果' })
   await ui.wait({ text: '2 个后台命令运行中' })
   await capture('200-等待后台结果')
-  await ui.send('/ps'); await ui.key('enter'); await ui.wait({ text: '[协作成员]' })
-  await ui.key('tab'); await ui.wait({ text: '[后台命令]' })
+  await ui.send('/ps'); await ui.key('enter'); await ui.wait({ text: '整件工作 · 子会话' })
+  await ui.key('tab'); await ui.wait({ text: '按启动顺序' })
   await capture('200-命令列表')
   await ui.key('enter'); await ui.wait({ text: '后台命令 bg-1' })
   await ui.key('enter'); await ui.wait({ text: '已复制完整输出路径' })
@@ -45,16 +45,16 @@ try {
   await ui.wait({ text: 'bg-1 已结束' })
   await capture('100-自然结束保持详情')
   assert.equal(ui.requests().filter(one => one.path.endsWith('/chat/completions')).length, 3)
-  await ui.key('esc'); await ui.wait({ text: '[后台命令]' })
+  await ui.key('esc'); await ui.wait({ text: '按启动顺序' })
   await ui.key('enter'); await ui.wait({ text: '后台命令 bg-2' })
   await ui.key('down'); await ui.key('enter'); await ui.wait({ text: '后台命令 bg-2 · 已停掉 bg-2' })
   await capture('100-明确单项停止')
   await ui.key('esc'); await ui.wait({ text: '没有后台命令' })
   await ui.key('esc'); await ui.wait({ absent: '没有后台命令' }); await ui.wait({ text: '○ 空闲' })
   await ui.send('保留中文草稿🙂'); await ui.wait({ text: '保留中文草稿🙂' }); await ui.key('left')
-  await ui.key('tab'); await ui.wait({ text: '[协作成员]' })
-  await ui.key('tab'); await ui.wait({ text: '[后台命令]' })
-  await ui.send('\x1b[Z'); await ui.wait({ text: '[协作成员]' })
+  await ui.key('tab'); await ui.wait({ text: '整件工作 · 子会话' })
+  await ui.key('tab'); await ui.wait({ text: '按启动顺序' })
+  await ui.send('\x1b[Z'); await ui.wait({ text: '整件工作 · 子会话' })
   await ui.key('esc'); await ui.wait({ text: '保留中文草稿🙂' })
   await capture('100-双tab返回草稿')
   passed = true

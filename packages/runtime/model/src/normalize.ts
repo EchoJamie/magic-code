@@ -48,7 +48,7 @@ import { inlineThinkingSplitter, passthroughSplitter } from './inline-thinking.t
  * `model.retry` 与它前后的 `model.delta` **丢掉先后的准头**，而「等之前 / 等之后」
  * 恰恰是这条事件唯一的用处。
  */
-export type RetryStreamPart = {
+type RetryStreamPart = {
   readonly type: 'retry'
   /** 下一次尝试的序号（**从 2 起**——第 1 次是首发，谈不上「重试」）。 */
   readonly attempt: number

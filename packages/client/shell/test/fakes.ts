@@ -22,7 +22,7 @@ import { makeTestStamper } from '@magic/faux'
 // —— 间谍传输 ——
 
 /** 传输上的动作（时序断言用——「先接订阅、后放开输入」是装配纪律）。 */
-export type TransportCall = 'subscribe' | 'unsubscribe' | 'send'
+type TransportCall = 'subscribe' | 'unsubscribe' | 'send'
 
 export type SpyTransport = {
   /** 交给外壳的一端（外壳只认这个）。 */

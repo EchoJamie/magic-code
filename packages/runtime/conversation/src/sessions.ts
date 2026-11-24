@@ -96,7 +96,7 @@ export type SessionInstance = {
  *
  * 缺省＝这一条命令不可用（照实回一句，不假装导出了）。
  */
-export type SaveImage = (file: {
+type SaveImage = (file: {
   readonly name: string
   readonly mime: string
   readonly bytes: Uint8Array
@@ -314,14 +314,25 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
 
     const inputs: Extract<KernelEvent,{kind:'input.local'}>[] = []
     const timing: TurnTimingEvent[] = []
+    // **最后那一次调用的读数**（见 `session.history.usage`）——与在场时状态行 ④ 同一条规矩
+    let lastUsage: { inputTokens?: number; contextWindow?: number } | undefined
+    let lastBudget: number | undefined
+    let started = false
     for await (const event of deps.records.readEvents(target)) {
       if(event.kind==='input.local') inputs.push(event)
       if(isTurnTimingEvent(event)) timing.push(event)
+      if(event.kind==='model.call.start'){ started = true; lastBudget = event.data.inputBudget }
+      if(event.kind==='model.usage') lastUsage = { inputTokens: event.data.inputTokens, contextWindow: event.data.contextWindow }
+    }
+    const usage = lastUsage === undefined ? undefined : {
+      ...(lastUsage.inputTokens === undefined ? {} : { inputTokens: lastUsage.inputTokens }),
+      ...(started ? (lastBudget === undefined ? {} : { contextWindow: lastBudget })
+        : (lastUsage.contextWindow === undefined ? {} : { contextWindow: lastUsage.contextWindow })),
     }
 
     // 末块：`done: true`（一条都没有时也发——「这条会话是空的」是要说清楚的事实，
     // 否则外壳等不到收尾，屏上永远停在「正在重建」）
-    deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: true, inputs, timing, ...(deps.readPlan === undefined ? {} : { plan: await deps.readPlan(target) }) }))
+    deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: true, inputs, timing, ...(usage === undefined ? {} : { usage }), ...(deps.readPlan === undefined ? {} : { plan: await deps.readPlan(target) }) }))
     void seen
   }
 
@@ -452,6 +463,32 @@ export function summarize(text: string, limit: number = TITLE_LIMIT): string | u
   return segments.length <= limit ? flat : `${segments.slice(0, limit).join('')}…`
 }
 
+/**
+ * 目录里「最近交代 / 最近进展」的预览上限——字素。
+ *
+ * 这两个字段只给列表的一行用（`/resume` 的详情行与开屏摘要）；原先它们带的是条目的
+ * **全文**。于是一条 5.7MB 的工具结果随目录一起下发，`session.state` 整条超过连接层的
+ * 单条上限，带会话的连接（`magic resume` / App 恢复）当场被断开（2026-11-21 事故）。
+ *
+ * 预览只取一行：折叠空白、按完整字素截断——与标题同一把尺子，只是上限不同。
+ */
+export const PREVIEW_LIMIT = 200
+
+/**
+ * 预览取材的码元上限——够 `PREVIEW_LIMIT` 个字素（含 emoji / 组合字符）即可，不再多留。
+ *
+ * 截的是**读进来之后**的字符串：记录域没有按字节读取的口子，这一层至少不让一条
+ * 5MB 的正文继续参与后续折叠与序列化。
+ */
+const PREVIEW_SOURCE_CHARS = 4 * 1024
+
+/** 取文本开头一截，且不切坏代理对（末位落在半个码点上就退一位）。 */
+function clipChars(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text
+  const last = text.charCodeAt(maxChars - 1)
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? maxChars - 1 : maxChars)
+}
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -460,7 +497,13 @@ function messageOf(error: unknown): string {
 export async function readSessionCatalog(records: SessionRecordsFace, limit = TITLE_LIMIT, query: SessionQuery = { archived: false }): Promise<readonly SessionSummary[]> {
   const rows = await records.listSessions(query)
   const userEntry = (entry: Entry) => entry.kind === 'user' && !noticeOf(entry.payload) && (entry.payload as { local?: true } | undefined)?.local !== true
-  const textOf = async (entry: Entry) => 'text' in entry.content ? entry.content.text : new TextDecoder().decode(await records.blobs.get(entry.content.blob))
+  const textOf = async (entry: Entry, maxChars = PREVIEW_SOURCE_CHARS) => clipChars(
+    'text' in entry.content ? entry.content.text : new TextDecoder().decode(await records.blobs.get(entry.content.blob)),
+    maxChars,
+  )
+  // 标题与两格预览都只要开头一截（见 `PREVIEW_LIMIT` 的注）——别让一条超长条目
+  // 既撑大目录，又在折叠空白时先复制一遍全文。
+  const previewOf = (text: string): string | undefined => summarize(text, PREVIEW_LIMIT)
   return Promise.all(rows.map(async row => {
     let title = row.title, recentInput: string | undefined, recentProgress: string | undefined
     // 默认标题只取首条真实用户交代，已命名会话不再正序读历史。
@@ -475,10 +518,10 @@ export async function readSessionCatalog(records: SessionRecordsFace, limit = TI
       if (entries.length === 0) break
       for (let index = entries.length - 1; index >= 0; index--) {
         const entry = entries[index]!
-        if (recentInput === undefined && userEntry(entry)) recentInput = await textOf(entry)
+        if (recentInput === undefined && userEntry(entry)) recentInput = previewOf(await textOf(entry))
         else if (recentProgress === undefined && (entry.kind === 'assistant' || entry.kind === 'tool-result')) {
           const text = await textOf(entry)
-          if (text.trim() !== '') recentProgress = text
+          if (text.trim() !== '') recentProgress = previewOf(text)
         }
         if (recentInput !== undefined && recentProgress !== undefined) break
       }

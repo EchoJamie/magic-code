@@ -47,7 +47,7 @@ function fakeRuns(options: {
 
 /** 带 `background: true` 的那一次调用。 */
 function backgroundCall(command: string): { id: string; name: string; args: Record<string, unknown> } {
-  return { id: 'call_bg', name: 'exec', args: { command, background: true } }
+  return { id: 'call_bg', name: 'exec', args: { description: '测试命令', command, background: true } }
 }
 
 describe('后台那一形的发起', () => {
@@ -135,8 +135,8 @@ describe('前台那一形一字不动', () => {
     const fake = fakeRuns()
     const deps = makeToolDeps({ background: fake.runs })
 
-    await deps.runtime.invoke({ id: 'c1', name: 'exec', args: { command: 'a', background: false } }, {})
-    await deps.runtime.invoke({ id: 'c2', name: 'exec', args: { command: 'b', background: 'yes' } }, {})
+    await deps.runtime.invoke({ id: 'c1', name: 'exec', args: { description: '测试命令', command: 'a', background: false } }, {})
+    await deps.runtime.invoke({ id: 'c2', name: 'exec', args: { description: '测试命令', command: 'b', background: 'yes' } }, {})
 
     expect(deps.sandbox.execs.map((one) => one.cmd)).toEqual(['a'])
     expect(deps.gate.requests).toHaveLength(1)

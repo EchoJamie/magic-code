@@ -38,7 +38,7 @@ import { planBudgetOf, planBlockOf, planScrolled } from '../boards/conversation/
 import type { PlanBlock } from '../boards/conversation/plan.ts'
 import type { Shell } from '../shell.ts'
 import { toShellKeys, type ShellKey } from '../input.ts'
-export { toShellKeys, trailingEnterOf } from '../input.ts'
+export { toShellKeys } from '../input.ts'
 import type { CompletionState, LogRow, ShellView } from '../view.ts'
 import {
   HINT_EXIT_ARMED,
@@ -52,7 +52,7 @@ import {
 import { Composer, PLACEHOLDER_LOST, clip, draftHeight, inkWidth, placeholderOf, type ComposerTone } from './composer.ts'
 import { LogRowView, needsSpacer, rowLines, spacerEnd, spacerWalk } from './log.ts'
 import { PALETTE, wrap } from './lines.ts'
-import { PickerList, pickerBudget, pickerLayout, titleLines } from './picker.ts'
+import { PickerList, hintLines, pickerBudget, pickerLayout, tabLines, titleLines } from './picker.ts'
 import { PlanList } from './plan.ts'
 import { PromptLine } from './prompt.ts'
 import { StatusLine } from './status.ts'
@@ -246,7 +246,7 @@ export function AppView({ view, columns, rows, now = null, pulseAt = null }: App
       ? []
       : [h(PlanList, { key: 'plan', block: plan, now: breathingOf(view, plan) ? motionNow : null }), ...(planGap > 0 ? [h(Text, { key: 'plan-after' }, ' ')] : [])]),
     separatorOf(columns, 'rule:record'),
-    h(Box, { key: 'dock', flexDirection: 'column' }, ...dockOf(view, columns, dockRows)),
+    h(Box, { key: 'dock', flexDirection: 'column' }, ...dockOf(view, columns, dockRows, motionNow)),
     // **下面这一条**（U45 加 · **U59 挪**）——**输入区与状态行之间**的界。状态行之下**不再有线**。
     //
     // ⚠️ **U45 把它加错了位置**：加在状态行**之下**，成了「把输入行 ＋ 状态行框起来」——
@@ -368,7 +368,7 @@ function pageOf(view: ShellView): string {
  * 晚一步（比如放进 `useEffect` 等重绘之后）就是另一种结果：新一页的头几行先写出去，
  * 再被这一串一并推进 scrollback，屏上剩下空页。
  */
-export function flipBytes(rows: number): string {
+function flipBytes(rows: number): string {
   return '\n'.repeat(Math.max(1, Math.floor(rows))) + '\u001b[H'  // CSI H ＝ 光标归位
 }
 
@@ -621,15 +621,15 @@ function voiceActivity(view: ShellView): string | undefined {
   return view.voice.state === 'recording' ? '录音中' : '转写中'
 }
 
-function dockOf(view: ShellView, columns: number, rows: number): readonly ReactElement[] {
+function dockOf(view: ShellView, columns: number, rows: number, now: number | null): readonly ReactElement[] {
   return [
     ...collaborationHeader(view).map((line, index) => h(Text, { key: `collaboration:${index}`, color: index === 0 ? PALETTE.dim : PALETTE.user }, clip(line, Math.max(1, columns)))),
     ...inputNotices(view,columns).map((line,index)=>h(Text,{key:`input-state:${index}`,color:PALETTE.faint},line)),
-    ...dockContentOf(view, columns, rows),
+    ...dockContentOf(view, columns, rows, now),
   ]
 }
 
-function dockContentOf(view: ShellView, columns: number, rows: number): readonly ReactElement[] {
+function dockContentOf(view: ShellView, columns: number, rows: number, now: number | null): readonly ReactElement[] {
   const flash =
     view.flash === null ? [] : [h(Text, { key: 'flash', color: PALETTE.warn }, `▲ ${view.flash}`)]
 
@@ -656,7 +656,7 @@ function dockContentOf(view: ShellView, columns: number, rows: number): readonly
     return [
       // `rows` 一路给到候选那一头：**半屏封顶**按它算（`maxPickerLines`），
       // 与高度账同取 `pickerLayout` 一处（见 `dockHeightOf` 里那一段注）
-      h(PickerList, { key: 'picker', picker: view.dock.picker, columns, rows }),
+      h(PickerList, { key: 'picker', picker: view.dock.picker, columns, rows, now }),
       // ⚠️ **`@` 那一栏把输入行留着**（U36）——设计「引用留在交代的位置」：用户打的路径
       // 正长在那句话里，把输入行藏掉，他就看不见它落在哪儿了（别的那几栏不必显示输入行：
       // 它们的查询是抽屉自己的，不写进草稿）。插入点也照旧摆着（真光标就在那句子里）。
@@ -836,14 +836,12 @@ function dockContentHeightOf(view: ShellView, columns: number, rows: number): nu
     // 那行说明**按实际占几行算**（U22）：`/mcp` 的说明比 `/resume` 的长得多
     // （怎么用 ＋ 那笔账），超宽会由 Ink 折行——照 1 行算，交互区就少算了一行
     // （D11 那条「行高与实际不符」的老账，正是这么来的）
-    const hint =
-      view.dock.picker.hint === undefined
-        ? 0
-        : wrap(view.dock.picker.hint, Math.max(1, columns - 5)).length
+    const hint = hintLines(view.dock.picker, columns).length
 
     // **标题那一行同一条账**（U100）——与渲染、与 `pickerBudget` **同取一处**
-    // （`titleLines`）：分头各算一次就是 U31 那一族的老病（矮终端上真光标高一行）。
-    const title = titleLines(view.dock.picker, columns)
+    // （`titleLines` / `tabLines`）：分头各算一次就是 U31 那一族的老病（矮终端上真光标高一行）。
+    // 面板式里标题不占单独一行（挪去页签行右边），换成**页签那一行 ＋ 一行留白**。
+    const title = titleLines(view.dock.picker, columns) + tabLines(view.dock.picker)
 
     // `@` 那一栏**多一行输入行**（U36：草稿照旧露着，见 `dockOf`）——与渲染**同取一处**
     // （`draftHeight`）。这一格漏了，账与屏当场分家（矮终端上真光标高一行，U31 那条老病）。
@@ -1027,9 +1025,15 @@ export function TuiApp({ shell }: TuiAppProps) {
   const pulsing = pulseAt !== null && Date.now() - pulseAt < PULSE_MS
 
   // 整轮耗时、工具和计划复用按需时钟；减少动效仅关闭动画。
+  /**
+   * **面板式选择器里「正在跑」的那一位**（`tone === 'run'`）——它的状态位要走呼吸，
+   * 故开着那一屏、且有这么一条时，钟得醒着。只是「多一个让钟醒的条件」，
+   * 不另开计时器（同 `pulseAt` 那条由头）。
+   */
+  const panelRunning = view.dock.kind === 'picker' && !view.reducedMotion && view.dock.picker.rows.some((row) => row.tone === 'run')
   const ticking =
     view.status.state !== 'lost' &&
-    ((view.round !== null && view.round.end === null) || (view.status.state !== 'waiting' && (view.rows.some(row=>row.kind==='tool'&&row.state==='running') || (!view.reducedMotion && (view.status.state==='working'||view.status.state==='retrying'||view.compactions.some(one => one.session === view.sessionId && one.state.state === 'running'))) || breathingOf(view, plan) )) || pulsing)
+    ((view.round !== null && view.round.end === null) || panelRunning || (view.status.state !== 'waiting' && (view.rows.some(row=>row.kind==='tool'&&row.state==='running') || (!view.reducedMotion && (view.status.state==='working'||view.status.state==='retrying'||view.compactions.some(one => one.session === view.sessionId && one.state.state === 'running'))) || breathingOf(view, plan) )) || pulsing)
   const now = useLiveClock(ticking)
 
   /**

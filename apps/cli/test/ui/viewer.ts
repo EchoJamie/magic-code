@@ -20,7 +20,7 @@
  *    不是拿字体去猜——猜错就与真终端对不上）。
  */
 
-import { existsSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { readRun } from './artifacts.ts'
 
@@ -85,11 +85,6 @@ export function writeViewer(runDir: string): string {
   writeFileSync(path, html, 'utf8')
 
   return path
-}
-
-/** 查看页在不在（复跑/交付时用）。 */
-export function hasViewer(runDir: string): boolean {
-  return existsSync(join(runDir, 'viewer.html'))
 }
 
 function page(data: string, run: string): string {

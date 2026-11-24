@@ -1,7 +1,7 @@
 import type { CollaborationClient, CollaborationRequest, MessagePart } from '@magic/contracts'
 import { defineTool, type ToolDefinition } from './registry.ts'
 
-export const AGENT_TOOL_NAMES = ['agent_list', 'agent_spawn', 'agent_message', 'agent_wait', 'agent_control', 'consult_arcane'] as const
+export const AGENT_TOOL_NAMES = ['agent_list', 'agent_spawn', 'agent_message', 'agent_control', 'consult_arcane'] as const
 const text = { type: 'string', minLength: 1 } as const
 const strings = { type: 'array', items: text } as const
 const bodySchema = { type: 'array', minItems: 1, items: {
@@ -16,7 +16,7 @@ const modelSchema = { type: 'object', properties: { choice: { enum: ['default', 
 /** 工具只呈现模型入口；sender、工作区、授权与当前委派由宿主绑定。 */
 export function defineAgentTools(client: CollaborationClient): readonly ToolDefinition[] {
   return [
-    tool('consult_arcane', '就具体问题请 Arcane 在后台只读查证并给建议。仅提交相关材料或原始引用；立即返回受理标识，可继续独立步骤，依赖意见时用 agent_wait，撤回复用 agent_control。重试复用 operationId。',
+    tool('consult_arcane', '就具体问题请 Arcane 在后台只读查证并给建议。仅提交相关材料或原始引用；立即返回受理标识，可继续独立步骤；顾问的交付会作为消息送达并自动唤醒你，无需等待工具。撤回复用 agent_control。重试复用 operationId。',
       { operationId: text, question: text, body: bodySchema, reasoning: modelSchema.properties.reasoning }, ['operationId', 'question'], args => ({
         action: 'consult', operationId: required(args, 'operationId'), question: required(args, 'question'),
         ...(args.body === undefined ? {} : { body: body(args.body) }),
@@ -43,11 +43,6 @@ export function defineAgentTools(client: CollaborationClient): readonly ToolDefi
         delegation: { type: 'integer' }, response: { enum: ['accept', 'reject', 'clarify'] }, reason: text,
         conclusion: text, artifacts: strings, verified: strings, unresolved: strings, message: { type: 'integer' }, discussion: { type: 'boolean' } },
       ['action'], args => messageRequest(args)),
-    tool('agent_wait', '确实依赖结果时登记有期限的持久等待并让出推进。消息/超时会唤起；不用反复查询，不阻塞其他成员。',
-      { operationId: text, agents: strings, message: { type: 'integer' }, expectation: text, deadline: { type: 'number', description: '截止点，Unix 毫秒' } },
-      ['operationId', 'agents', 'expectation', 'deadline'], args => ({ action: 'wait', operationId: required(args, 'operationId'), agents: list(args, 'agents'), expectation: required(args, 'expectation'), deadline: number(args, 'deadline'),
-        ...(args.message === undefined ? {} : { message: number(args, 'message') }),
-      })),
     tool('agent_control', '撤回指定委派及其继续分发，或由协调者整体停止/收尾。收尾须核验结果，回复结束不代表已交付。',
       { action: { enum: ['stop', 'close'] }, delegation: { type: 'integer' }, reason: text }, ['action'], args => {
         if (args.action === 'close') return { action: 'close' }
@@ -70,8 +65,6 @@ export function defineAgentTools(client: CollaborationClient): readonly ToolDefi
           const reply = await client.request({ ...request, ...(context.entry === undefined ? {} : { generatedFrom: context.entry }) })
           return reply.ok ? { ok: true, output: (request.action === 'consult' ? '咨询受理回执（不表示顾问已完成）：\n' : '') + JSON.stringify(reply.value),
             ...(reply.knowledge === undefined ? {} : { knowledge: reply.knowledge }),
-            ...(request.action === 'wait' && object(reply.value) && reply.value.ok === true
-              && object(reply.value.wait) && reply.value.wait.state === 'waiting' ? { halt: true as const } : {}),
           } : { ok: false, output: reply.reason }
         } catch (error) { return { ok: false, output: error instanceof Error ? error.message : String(error) } }
       },

@@ -1,5 +1,5 @@
 import type {
-  AgentIdentity, Collaboration, CollaborationRecords, CollaborationWait, Delegation,
+  AgentIdentity, Collaboration, CollaborationRecords, Delegation,
   ExecutionAdmission, NativeWork, SessionId,
 } from '@magic/contracts'
 
@@ -7,7 +7,6 @@ export type CollaborationNativeGroup = {
   readonly collaboration: Collaboration
   readonly members: readonly AgentIdentity[]
   readonly delegations: readonly Delegation[]
-  readonly waits: readonly CollaborationWait[]
   readonly executions: readonly ExecutionAdmission[]
 }
 
@@ -34,7 +33,7 @@ export function captureCollaborationNative(
     for (const member of members) known.add(member.sessionId)
     groups.set(id, {
       collaboration, members, delegations: records.listDelegations(id),
-      waits: records.listWaits(id), executions: records.listExecutions(id),
+      executions: records.listExecutions(id),
     })
   }
   return { sessions: [...known], groups: [...groups.values()] }
@@ -67,7 +66,7 @@ export function mergeCollaborationNative(
 }
 
 function mergeGroup(group: CollaborationNativeGroup, bySession: ReadonlyMap<SessionId, NativeWork>): NativeWork {
-  const { collaboration, members, delegations, waits, executions } = group
+  const { collaboration, members, delegations, executions } = group
   const root = collaboration.originSessionId
   const coordinator = members.find(member => member.agentId === collaboration.coordinatorId)
   const rootWork = bySession.get(root)
@@ -83,8 +82,7 @@ function mergeGroup(group: CollaborationNativeGroup, bySession: ReadonlyMap<Sess
   const pending = delegations.filter(delegation => !['received', 'rejected', 'cancelled'].includes(delegation.state)
     || (delegation.deliveryMessageId !== undefined && delegation.receivedAt === undefined))
   const open = collaboration.state === 'open' || collaboration.state === 'closing'
-  const waiting = open ? waits.find(wait => wait.state === 'waiting') : undefined
-  const current = ['unknown', 'stopping', 'waiting', 'running'].flatMap(state => rows.filter(row => row.state === state))[0]
+  const current = ['unknown', 'stopping', 'running'].flatMap(state => rows.filter(row => row.state === state))[0]
   const unconfirmed = active.find(execution => {
     const member = members.find(member => member.agentId === execution.agentId)
     const row = member === undefined ? undefined : bySession.get(member.sessionId)
@@ -113,9 +111,6 @@ function mergeGroup(group: CollaborationNativeGroup, bySession: ReadonlyMap<Sess
   } else if (collaboration.state === 'stopped') {
     status = { state: 'stopped', affected: false, since: rootWork?.since ?? collaboration.at,
       ...(collaboration.reason === undefined ? {} : { reason: collaboration.reason }) }
-  } else if (waiting !== undefined) {
-    // RunState.waiting 表示用户仍有待答项；成员等待不会凭空生成用户审批。
-    status = { state: 'idle', affected: true, since: waiting.at, action: agentDetail(waiting.agentId, `等待：${waiting.expectation}`) }
   } else {
     status = { state: pending.length > 0 || collaboration.state === 'closing' ? 'idle' : rootWork?.state ?? 'idle',
       affected: pending.length > 0 || collaboration.state === 'closing',
@@ -132,14 +127,13 @@ function mergeGroup(group: CollaborationNativeGroup, bySession: ReadonlyMap<Sess
     members: members.map(member => {
       const row = bySession.get(member.sessionId)
       const execution = active.find(one => one.agentId === member.agentId)
-      const wait = waits.find(one => one.agentId === member.agentId && one.state === 'waiting')
       const unknown = row === undefined || member.reachability === 'suspended'
         || (execution !== undefined && ['idle', 'stopped'].includes(row.state))
       return {
         session: member.sessionId, name: member.name,
         state: unknown ? 'unknown' : row.state,
         ...(unknown ? { reason: execution?.reason ?? (member.reachability === 'suspended' ? '成员连接待核实' : '成员状态待核实') } : {
-          ...(row.action === undefined ? (wait === undefined ? {} : { action: `等待：${wait.expectation}` }) : { action: row.action }),
+          ...(row.action === undefined ? {} : { action: row.action }),
           ...(row.reason === undefined ? {} : { reason: row.reason }),
         }),
       }

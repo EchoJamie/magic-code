@@ -87,7 +87,8 @@ export type ToolDeps = {
 export function makeToolDeps(options: ToolDepsOptions = {}): ToolDeps {
   const stamper = makeTestStamper({ session: SESSION })
   const sandbox =
-    options.sandbox ?? makeFauxSandbox(options.exec === undefined ? {} : { exec: options.exec })
+    // 会话目录＝工作区根（真实装配里两者同源）——`exec` 不再有 `cwd` 参数，目录只从这里来
+    options.sandbox ?? makeFauxSandbox({ sessionCwd: ROOT, ...(options.exec === undefined ? {} : { exec: options.exec }) })
   const gate =
     options.decider === 'manual'
       ? makeFauxPermissionGate()
@@ -124,12 +125,17 @@ export function makeToolDeps(options: ToolDepsOptions = {}): ToolDeps {
   return { stamper, sandbox, gate, sink, records, workspace, runtime }
 }
 
-/** 一个 `exec` 调用（用例里反复要）。 */
+/**
+ * 一个 `exec` 调用（用例里反复要）。
+ *
+ * `description` 是**必填**（用户 2026-11-20 定）——用例里的命令没什么好描述的，
+ * 统一给一句；要测那句本身（缺省 / 超长 / 类型）的用例用 `execCallWith` 自己给。
+ */
 export function execCall(
   command: string,
   id = 'call_1',
 ): { id: string; name: 'exec'; args: Record<string, unknown> } {
-  return { id, name: 'exec', args: { command } }
+  return { id, name: 'exec', args: { command, description: '测试命令' } }
 }
 
 /**
@@ -142,7 +148,8 @@ export function execCallWith(
   args: Record<string, unknown>,
   id = 'call_1',
 ): { id: string; name: 'exec'; args: Record<string, unknown> } {
-  return { id, name: 'exec', args }
+  // 缺省补一句 description（必填）；用例自己要测它时，`...args` 会覆盖这里
+  return { id, name: 'exec', args: { description: '测试命令', ...args } }
 }
 
 /**

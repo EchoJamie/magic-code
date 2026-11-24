@@ -187,7 +187,7 @@ function toModelsOf(body: unknown): readonly ModelInfo[] {
 }
 
 /** 列表请求头——认证形式由**连接的 `auth`** 定，协议要求的版本头由**协议**定。 */
-export function listHeadersOf(auth: ProviderAuth, apiKey: string, protocol: ModelProtocol = 'chat-completions'): Readonly<Record<string, string>> {
+function listHeadersOf(auth: ProviderAuth, apiKey: string, protocol: ModelProtocol = 'chat-completions'): Readonly<Record<string, string>> {
   return {
     ...(auth === 'bearer' ? { authorization: `Bearer ${apiKey}` } : auth === 'api-key' ? { 'x-api-key': apiKey } : {}),
     // Anthropic Messages 的列表接口要求带版本头；其余协议不带
@@ -197,7 +197,7 @@ export function listHeadersOf(auth: ProviderAuth, apiKey: string, protocol: Mode
 }
 
 /** Anthropic Messages 的接口版本（列表与对话同一版；官方文档 2026-09 仍是它）。 */
-export const ANTHROPIC_VERSION = '2023-06-01'
+const ANTHROPIC_VERSION = '2023-06-01'
 
 /** 发一次 GET，回 JSON——失败当场抛（**带状态码，不带响应正文里的凭据**）。 */
 async function getJson(ctx: VendorRequestContext, path: string, headers: Readonly<Record<string, string>> = listHeadersOf('bearer', ctx.apiKey)): Promise<unknown> {

@@ -4,6 +4,7 @@ import type {
   StopPhase,
   StopScope,
 } from '@magic/contracts'
+import { pendingViews } from '@magic/contracts'
 import {
   ARCHIVED_NOTE,
   actionOf,
@@ -48,7 +49,6 @@ export function installLifecycle(ctx: ManagerContext): void {
         return [member.agentId, member.reachability, run === undefined ? null : stopGeneration(run)]
       }),
       group.delegations.map(item => [item.delegationId, item.state]),
-      group.waits.map(item => [item.waitId, item.state]),
     ])
     const previous = collaborationStopVersions.get(work.collaborationId)
     if (previous?.signature === signature) return previous.gen
@@ -272,7 +272,7 @@ export function installLifecycle(ctx: ManagerContext): void {
             ...event, data: { ...settled, ...(owner.ref === undefined ? {} : { ref: owner.ref }) },
           }
         })
-        owner.conn.link.send({ t: 'ev', gen: null, event: { session: owner.target, id: 0, at: now(), turn: null, kind: 'input.pending', data: { inputs: store.serviceFor(owner.target).inputs.list() } } })
+        owner.conn.link.send({ t: 'ev', gen: null, event: { session: owner.target, id: 0, at: now(), turn: null, kind: 'input.pending', data: { inputs: pendingViews(store.serviceFor(owner.target).inputs.list()) } } })
         return
       }
     }
@@ -351,7 +351,12 @@ export function installLifecycle(ctx: ManagerContext): void {
       void collaboration.settled(event.session!, event.turn).catch(error => options.log?.(`咨询回报尚未核实：${String(error)}`))
     }
     if (shared !== undefined && ((event.kind === 'turn.end' && event.data.reason === 'error') || event.kind === 'error')) {
-      void collaboration.failed(event.session!, event.kind === 'error' ? event.data.message : '成员本轮执行失败，需要核对停点').catch(error => options.log?.(`失败回报尚未核实：${String(error)}`))
+      const reason = event.kind === 'error' ? event.data.message : '成员本轮执行失败，需要核对停点'
+      const memberName = store.collaboration.agentForSession(event.session!)?.name ?? '成员'
+      // 成员轮次失败：停点簿以**发起会话**的名义记一笔（detail 自带成员名）——
+      // 协调者的界面看得到，不再依赖「恰好有人在等」（2026-11-22 裁定：失败与交付对称推送）。
+      ctx.notify(shared.originSessionId, 'failed', `${event.session!}@${at}`, `${memberName}：${reason}`)
+      void collaboration.failed(event.session!, reason).catch(error => options.log?.(`失败回报尚未核实：${String(error)}`))
     }
     if (shared !== undefined && ['agent.state', 'turn.start', 'turn.end', 'tool.decision', 'message.assistant', 'message.user', 'model.usage'].includes(event.kind)) {
       collaboration.changed()

@@ -62,7 +62,7 @@ describe('权限是窄的', () => {
               { name: 'plan_read', args: {} },
               { name: 'read', args: { path: 'src/login.ts' } },
               // U129：第三件取**禁止清单**里的删除——前两件默认放行，只有它被内核拒。
-              { name: 'exec', args: { command: 'rm -rf build' } },
+              { name: 'exec', args: { description: '测试命令', command: 'rm -rf build' } },
             ],
           },
           { text: '好' },

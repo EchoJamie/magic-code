@@ -9,18 +9,17 @@
  * 数据面：自己开库连接（WAL 多进程），写等待给有界值——写撞上的那一刻排队而不是
  * 整轮失败。账本自己记；变动经 `ledger.owned` 自报给管理者（崩溃后的收回依据）。
  */
-import { type MagicHome, type ModelSwitchRequest } from '@magic/contracts'
+import type { MagicHome, ModelSwitchRequest } from '@magic/contracts'
 import { socketHandlers, linkOf, type Link, type ManagerToExecutor } from './wire.ts'
 import { createWorkEnvironment } from './work-environment.ts'
 import { runExecutor } from './executor.ts'
 
 export type ExecutorProcessArgs = {
   readonly executionId: string
-  /** 管理者监听的 socket——发车时直接下发，子进程不再自推导。 */
-  readonly socket: string
   readonly home: string
-  /** **解析好的统一基础路径**——发车时管理者注入，子进程不自取（「配置注入」同向）。 */
+  /** **解析好的统一基础路径与监听地址**——发车时管理者注入，子进程不自取（「配置注入」同向）。 */
   readonly base: string
+  readonly socket: string
   readonly cwd: string
   readonly session: string | null
   readonly switch?: ModelSwitchRequest | undefined
@@ -54,14 +53,15 @@ function ownEnvironment(): Record<string, string> {
 /**
  * 跑一个执行者子进程；返回退出码（0 = 正常收场，1 = 失败）。
  *
- * 与 `runEngine` 同款的身份解析：`home` 是数据实例落点，`parent` 决定基础路径。
+ * 管理者交付已解析的基础路径和监听地址，执行者使用同一运行身份。
  */
 export async function runExecutorProcess(argv: readonly string[]): Promise<number> {
   let args: ExecutorProcessArgs
   try { args = parseArgs(argv) }
   catch (error) { console.error(String(error instanceof Error ? error.message : error)); return 1 }
 
-  // 发车单已带解析好的落点——子进程不再按环境另猜一遍（与「环境归属注入」同一纪律）。
+  // 发车单已带解析好的落点与地址——子进程不自推导（「配置注入」同向）。
+
   const magic: MagicHome = { home: args.home, base: args.base }
 
   // **裸 SIGTERM/SIGINT 只记录、不响应**——停止的权威在管理者：`bye`（优雅收场）

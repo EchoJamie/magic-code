@@ -21,6 +21,15 @@ export const PALETTE = {
   danger: '#e06c75',
   /** 分隔点 / 更弱的痕（`·` 回执）。 */
   ghost: '#49505e',
+  /**
+   * **底色**（面板式那一屏用）——底色在这里也是语义：焦点在哪一行、你在哪一页。
+   *
+   * `select` 是选中那一行的整行底色（比 `USER_BG` 亮一档，落在同一族深青灰里）；
+   * `tabOn` / `tabText` 是当前页签那一段的反白块（深底上的浅块 ＋ 压到最暗的字）。
+   */
+  select: '#1b2530',
+  tabOn: '#d8dce4',
+  tabText: '#12161c',
 } as const
 
 /**
@@ -29,7 +38,7 @@ export const PALETTE = {
  * 只求「折行与截断数得对」，不求 Unicode 全覆盖（emoji / 组合字符按 1 算，
  * 顶多让某行多一列——不会串行）。
  */
-export function charWidth(char: string): number { return stringWidth(char) }
+function charWidth(char: string): number { return stringWidth(char) }
 
 /** 与 Ink 同源，按完整字素计算列宽。 */
 export function displayWidth(text: string): number { return stringWidth(text) }
@@ -38,7 +47,7 @@ export function displayWidth(text: string): number { return stringWidth(text) }
  * **一张制表位几列**——终端把 `\t` 渲染成「走到下一个 8 列的整数倍」的那一段空白
  * （`wrap-ansi` 里也是这个数：`TAB_SIZE = 8`）。
  */
-export const TAB_SIZE = 8
+const TAB_SIZE = 8
 
 /** 从第 `column` 列打一个 `\t`，它会推进几列。 */
 export function tabWidth(column: number): number {
@@ -155,12 +164,6 @@ export function truncate(text: string, width: number): string {
   }
 
   return `${kept}…`
-}
-
-/** 右侧补齐到宽度（左右两段排版用）。 */
-export function padRight(text: string, width: number): string {
-  const gap = width - displayWidth(text)
-  return gap <= 0 ? text : text + ' '.repeat(gap)
 }
 
 /** 毫秒 → 人读（`0.6s` / `800ms`）。 */

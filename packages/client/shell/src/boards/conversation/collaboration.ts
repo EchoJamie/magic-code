@@ -1,12 +1,24 @@
-import type { AgentId, AgentMessage, CollaborationMemberView, CollaborationView, Delegation, SessionId } from '@magic/contracts'
+import type { AgentMessage, CollaborationMemberView, CollaborationView, Delegation, SessionId } from '@magic/contracts'
 import { sanitizeForDisplay } from '@magic/contracts'
+import { MARKS } from './marks.ts'
 import type { PickerRow, ShellStatus, ShellView } from '../../view.ts'
 
 const clean = (text: string): string => sanitizeForDisplay(text).replace(/\s+/g, ' ').trim()
-export const collaborationRow = (value: string, label: string, meta = ''): PickerRow => ({
+export const collaborationRow = (value: string, label: string, meta = '', tone?: PickerRow['tone']): PickerRow => ({
   value, label: clean(label), meta: clean(meta), current: false, oneLine: true,
+  ...(tone === undefined ? {} : { tone }),
 })
-export const delegationState: Record<Delegation['state'], string> = {
+/**
+ * **工作那两屏的页签**（`Tab` 在「协作 ↔ 后台命令」之间切）——两屏同构，当前那一段铺反白块。
+ *
+ * 为什么收在一处：两屏的页签**必须是同一副样子**，否则按 Tab 时整行跳变（改造前就是这样：
+ * 一屏叫 `[协作] 整件工作 · 子会话`，另一屏叫 `协作成员  │  [后台命令]`，方括号还落在不同位置）。
+ */
+export const workTabs = (active: 'collaboration' | 'background'): readonly { readonly label: string; readonly active: boolean }[] => [
+  { label: '协作', active: active === 'collaboration' },
+  { label: '后台命令', active: active === 'background' },
+]
+const delegationState: Record<Delegation['state'], string> = {
   queued: '待接下', clarification: '需要澄清', accepted: '已接下', rejected: '已拒绝',
   delivered: '已回报，待核验', received: '结果已收下', cancelled: '已撤回',
 }
@@ -21,8 +33,6 @@ export function memberState(member: CollaborationMemberView): string {
   if (member.pendingDecisions > 0) return `需要你：${member.runtime?.action ?? `${member.pendingDecisions} 项操作待审批`}`
   if (member.runtime?.state === 'stopping') return '正在停止，收尾待确认'
   if (member.agent.reachability === 'suspended') return '执行中断，待处理'
-  if (member.waiting?.state === 'waiting') return `等待：${member.waiting.expectation}`
-  if (member.waiting?.state === 'expired') return `等待超时：${member.waiting.expectation}`
   if (member.delegation?.state === 'clarification') return `需要澄清：${member.delegation.reason ?? member.delegation.scope}`
   if (member.runtime?.backgroundWaiting) return '等待后台结果'
   if (member.runtime?.state === 'running') return member.runtime.action ?? '执行中'
@@ -31,6 +41,65 @@ export function memberState(member: CollaborationMemberView): string {
   if (member.runtime?.lastTurn === 'error') return '上一轮出错，待处理'
   if (member.delegation !== undefined) return `${delegationState[member.delegation.state]}${member.delegation.reason ? `：${member.delegation.reason}` : ''}`
   return member.agent.reachability === 'historical' ? '记录可查看' : '当前空闲'
+}
+
+/**
+ * 成员行的**记号**——取自 marks.ts 的额定语义位，不造新形：
+ *
+ * | 成员状态 | 记号 | 额定语义 |
+ * | --- | --- | --- |
+ * | 执行中 / 等结果 / 等后台 / 停止中 | `●` | 进行中 |
+ * | 待审批 / 待澄清 | `◊` | 要你定夺 |
+ * | 出错 / 执行中断 | `▲` | 出错 |
+ * | 失联待核实 | `■` | 放弃判断 |
+ * | 已停止 / 等待超时 | `!` | 没跑成·要你再看一眼 |
+ * | 已回报 / 已收下 | `✓` | 成 |
+ * | 已拒绝 / 已撤回 | `×` | 败·没跑成 |
+ * | 空闲 / 待接下 / 记录 | `○` | 手上没活 |
+ *
+ * `✓×!` 的额定位置在工具行行尾；成员面板的状态格是**同语义的新位置**（像 `●` 的
+ * 跨位先例：说的是同一件事）。裁定记录随实现补进 marks.ts。
+ */
+function memberMark(member: CollaborationMemberView): string {
+  if (consultationEnded(member)) return member.delegation?.state === 'cancelled' ? MARKS.fail : MARKS.ok
+  if (member.pendingDecisions > 0) return MARKS.ring
+  if (member.runtime?.state === 'stopping') return MARKS.dot
+  if (member.agent.reachability === 'suspended') return MARKS.error
+  if (member.delegation?.state === 'clarification') return MARKS.ring
+  if (member.runtime?.backgroundWaiting) return MARKS.dot
+  if (member.runtime?.state === 'running') return MARKS.dot
+  if (member.runtime?.state === 'unknown') return MARKS.unknown
+  if (member.runtime?.state === 'stopped') return MARKS.warn
+  if (member.runtime?.lastTurn === 'error') return MARKS.error
+  if (member.delegation !== undefined) {
+    switch (member.delegation.state) {
+      case 'rejected': case 'cancelled': return MARKS.fail
+      case 'delivered': case 'received': return MARKS.ok
+      default: return MARKS.idle
+    }
+  }
+  return MARKS.idle
+}
+
+/**
+ * **成员那一行的语义色**（面板式里才用）——与 `memberState` 同一套先后：先报「要你」，
+ * 再报「停了 / 断了」，最后才是「在跑」。
+ *
+ * 它只管**颜色与那个状态位**，不改任何文案：屏上说的话仍旧出自 `memberState` 一处。
+ */
+function memberTone(member: CollaborationMemberView): 'run' | 'wait' | 'danger' | 'idle' {
+  if (consultationEnded(member)) return 'idle'
+  if (member.pendingDecisions > 0) return 'wait'
+  if (member.runtime?.state === 'stopping') return 'run'
+  if (member.agent.reachability === 'suspended') return 'danger'
+  if (member.delegation?.state === 'clarification') return 'wait'
+  if (member.runtime?.backgroundWaiting) return 'run'
+  if (member.runtime?.state === 'running') return 'run'
+  if (member.runtime?.state === 'unknown') return 'danger'
+  if (member.runtime?.state === 'stopped') return 'danger'
+  if (member.runtime?.lastTurn === 'error') return 'danger'
+  if (member.delegation?.state === 'rejected') return 'wait'
+  return 'idle'
 }
 
 export function collaborationSummary(snapshot: CollaborationView | undefined): string | undefined {
@@ -43,9 +112,9 @@ export function collaborationSummary(snapshot: CollaborationView | undefined): s
   const members = snapshot.members.filter(one => !consultationEnded(one) && one.agent.reachability !== 'historical')
   const running = members.filter((one) => one.runtime?.state === 'running' && !one.runtime.backgroundWaiting && (!one.runtime.background || one.runtime.action !== undefined)).length
   const needs = members.filter((one) => one.pendingDecisions > 0 || one.delegation?.state === 'clarification')
-  const waiting = members.filter((one) => one.waiting?.state === 'waiting' || one.runtime?.backgroundWaiting).length
+  const waiting = members.filter((one) => one.runtime?.backgroundWaiting).length
   const stopping = members.some((one) => one.runtime?.state === 'stopping')
-  const blocked = members.filter((one) => (one.agent.reachability === 'suspended' && one.delegation?.state !== 'cancelled') || one.waiting?.state === 'expired' || one.runtime?.state === 'unknown' || one.runtime?.lastTurn === 'error' || one.delegation?.state === 'rejected')
+  const blocked = members.filter((one) => (one.agent.reachability === 'suspended' && one.delegation?.state !== 'cancelled') || one.runtime?.state === 'unknown' || one.runtime?.lastTurn === 'error' || one.delegation?.state === 'rejected')
   const coordinator = members.find((one) => one.agent.agentId === snapshot.collaboration?.coordinatorId)
   const interrupted = coordinator === undefined || coordinator.agent.reachability !== 'active' || coordinator.runtime?.state === 'stopped' || coordinator.runtime?.state === 'unknown' || coordinator.runtime?.lastTurn === 'error'
   const facts = [
@@ -95,7 +164,7 @@ export function collaborationStatus(view: ShellView): ShellStatus {
   const members = view.collaboration.members.filter(one => !consultationEnded(one))
   const needs = members.reduce((sum, member) => sum + member.pendingDecisions, 0)
   if (needs > 0) return { ...view.status, state: 'waiting', amount: `${needs} 项` }
-  if (members.some((member) => (member.runtime?.state === 'running' && !member.runtime.backgroundWaiting && (!member.runtime.background || member.runtime.action !== undefined)) || member.runtime?.state === 'stopping' || (member.waiting?.state === 'waiting' && !waiting))) {
+  if (members.some((member) => (member.runtime?.state === 'running' && !member.runtime.backgroundWaiting && (!member.runtime.background || member.runtime.action !== undefined)) || member.runtime?.state === 'stopping')) {
     return { ...view.status, state: 'working', amount: null }
   }
   return status
@@ -127,36 +196,72 @@ export function memberForSession(snapshot: CollaborationView | undefined, sessio
  * 当前会话**不在列表里**（D68）：主会话时不列主会话，子会话时不列当前子会话；
  * 当前会话用 `Ctrl+O` 看。派生关系只用「由 xx 派生」写在副文案里，不缩进。
  */
+/**
+ * 成员行——**Claude 式左流**：记号（色随状态）＋ 名字 ＋ 一段**内容**。
+ *
+ * 内容 ＝ 动作 / 原因 / 范围 / 数量——**不含状态词**：状态由记号与色说（●在跑
+ * ◊要你 ▲坏了 !没跑成 ✓成了 ×没成 ○没活），行文不重复记号已经说过的话
+ * （2026-11-22 用户裁定：尽量少用状态词汇，不要文字状态描述）。
+ */
 export function memberRows(snapshot: CollaborationView, currentSession?: SessionId | null): readonly PickerRow[] {
-  const coordinator = snapshot.collaboration?.coordinatorId
-  const nameOf = (id: AgentId | undefined): string =>
-    snapshot.members.find((one) => one.agent.agentId === id)?.agent.name ?? '协调'
-  const priority = (member: CollaborationMemberView): number => member.pendingDecisions > 0 ? 0 : member.waiting || member.delegation?.state === 'clarification' ? 1 : 2
+  const priority = (member: CollaborationMemberView): number => member.pendingDecisions > 0 ? 0 : member.delegation?.state === 'clarification' ? 1 : 2
   return [...snapshot.members]
     .filter((one) => currentSession == null || one.agent.sessionId !== currentSession)
     .sort((a, b) => priority(a) - priority(b))
     .map((one) => {
-      const origin = one.agent.agentId === coordinator || one.agent.createdBy === undefined
-        ? '主会话'
-        : `由 ${nameOf(one.agent.createdBy)} 派生`
-      return collaborationRow(
-        one.agent.agentId, one.agent.name, `${memberState(one)} · ${origin} · ${one.delegation?.scope ?? one.agent.role}`,
-      )
+      const mark = memberMark(one)
+      const content = memberContent(one)
+      return {
+        value: one.agent.agentId,
+        label: content === '' ? one.agent.name : `${one.agent.name} · ${content}`,
+        meta: '', current: false, oneLine: true,
+        mark, tone: memberTone(one),
+      }
     })
 }
 
-/** 协作消息的正文行——按来源标识，并入会话正文（不再有单独讨论入口）。 */
+/** 行上「·」后面那一段——**只放内容**：它正在干什么 / 为什么停 / 哪条范围。 */
+function memberContent(member: CollaborationMemberView): string {
+  if (consultationEnded(member)) {
+    if (member.delegation?.state === 'cancelled') return member.delegation.reason ?? ''
+    return member.delegation?.scope ?? ''
+  }
+  if (member.pendingDecisions > 0) return member.runtime?.action ?? `${member.pendingDecisions} 项`
+  if (member.agent.reachability === 'suspended') return ''
+  if (member.delegation?.state === 'clarification') return member.delegation.reason ?? member.delegation.scope
+  if (member.runtime?.backgroundWaiting) return `后台 ${member.runtime.background ?? 0} 个`
+  if (member.runtime?.state === 'running') return member.runtime.action ?? member.delegation?.scope ?? ''
+  if (member.runtime?.state === 'stopped') return member.runtime.reason ?? ''
+  if (member.delegation !== undefined) {
+    switch (member.delegation.state) {
+      case 'rejected': return member.delegation.reason ?? ''
+      case 'cancelled': return member.delegation.reason ?? ''
+      case 'delivered': case 'received': return member.delegation.scope
+      default: return ''
+    }
+  }
+  return ''
+}
+
+/** 协作消息并入正文——**信封式**：谁 · 什么 · 首行摘要 · 共几行；收悉回执不上屏。 */
 export function messageRows(snapshot: CollaborationView | undefined, messages: readonly AgentMessage[]): readonly {
   readonly key: string; readonly lines: readonly string[]
 }[] {
   const purpose: Record<AgentMessage['purpose'], string> = { inform: '告知', question: '提问', reply: '回复', delegation: '委派', clarification: '澄清', delivery: '交付', receipt: '收悉', constraint: '用户共同要求', decision: '决定' }
-  return messages.map((message) => ({
-    key: `am:${message.messageId}`,
-    lines: [
-      `${message.userSource === undefined ? snapshot?.members.find((one) => one.agent.agentId === message.senderId)?.agent.name ?? '协作成员' : '用户'} · ${purpose[message.purpose]}${message.withdrawn ? '（已撤回）' : ''}`,
-      ...message.body.flatMap((part) => part.kind === 'text' ? part.text.split('\n').map(sanitizeForDisplay)
-        : part.kind === 'entry' ? [`记录引用：${part.label ?? part.ref.sessionId} #${part.ref.entryId}`] : ['附件引用（正文未展开）']),
-    ],
-  }))
+  return messages.flatMap((message) => {
+    // 收悉是协议回执（「accept」一声），对人不带信息——罗列它就是把流水当正文。
+    if (message.purpose === 'receipt') return []
+    const bodyLines = message.body.flatMap((part) => part.kind === 'text' ? part.text.split('\n').map(sanitizeForDisplay)
+      : part.kind === 'entry' ? [`记录引用：${part.label ?? part.ref.sessionId} #${part.ref.entryId}`] : ['附件引用（正文未展开）'])
+    const sender = message.userSource === undefined ? snapshot?.members.find((one) => one.agent.agentId === message.senderId)?.agent.name ?? '协作成员' : '用户'
+    const first = bodyLines.find(line => line.trim() !== '') ?? ''
+    const preview = first.length > 48 ? `${first.slice(0, 48)}…` : first
+    const parts = [
+      `${sender} · ${purpose[message.purpose]}${message.withdrawn ? '（已撤回）' : ''}`,
+      ...(preview === '' ? [] : [preview]),
+      ...(bodyLines.length > 1 ? [`全文 ${bodyLines.length} 行`] : []),
+    ]
+    return [{ key: `am:${message.messageId}`, lines: [clean(parts.join(' · '))] }]
+  })
 }
 

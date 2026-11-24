@@ -37,7 +37,6 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
             collaboration,
             members: records.listMembers(collaboration.collaborationId),
             delegations: records.listDelegations(collaboration.collaborationId),
-            waits: records.listWaits(collaboration.collaborationId),
           } }
         }
         if (collaboration === undefined) {
@@ -166,15 +165,6 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
             knowledge = messages.flatMap(message => message.body.flatMap(part => part.knowledge ?? []))
             break
           }
-          case 'wait':
-            if (!Number.isFinite(request.deadline) || request.deadline <= at) throw new Error('等待截止时间必须在未来')
-            value = records.registerWait(actorId, { operationId: request.operationId, at,
-              ...generated,
-              forAgents: request.agents, expectation: request.expectation, deadline: request.deadline,
-              ...(request.message === undefined ? {} : { forMessageId: request.message }),
-              ...(accepted === undefined ? {} : { delegationId: accepted.delegationId }),
-            })
-            break
           case 'stop': {
             if (request.delegation === undefined && actorId !== collaboration.coordinatorId) throw new Error('整体停止由原入口承接')
             if (request.delegation !== undefined) {

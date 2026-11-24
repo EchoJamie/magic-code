@@ -43,7 +43,7 @@ import type { ProcessLedger } from '@magic/contracts'
 import type { OwnedTransport } from './connection.ts'
 
 /** 关 stdin 之后等它自己退多久（毫秒）——到点即按组收。 */
-export const STDIO_EXIT_GRACE_MS = 2_000
+const STDIO_EXIT_GRACE_MS = 2_000
 
 /** 组内 TERM / KILL 各等多久（毫秒）——收尾这一步**有界**，不能挂住退出。 */
 const GROUP_TERM_GRACE_MS = 1_000

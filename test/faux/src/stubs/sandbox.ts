@@ -50,7 +50,7 @@ export type FauxSandboxOptions = {
 }
 
 /** `read` 的入参——路径 ＋ 选项（`opts` 可省，故**原样记**，不改写成缺省值）。 */
-export type FauxReadCall = {
+type FauxReadCall = {
   readonly path: string
   readonly opts: { readonly maxBytes?: number; readonly from?: number; readonly lines?: number } | undefined
 }

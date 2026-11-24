@@ -1,6 +1,8 @@
 import type { NativeWork, RunRow } from '@magic/contracts'
+import { CONTROL_DIRECTORY_LIMIT, CONTROL_PREVIEW_TEXT_BYTES } from '@magic/contracts'
 import { readSessionCatalog } from '@magic/conversation'
 import type { RecordsStore } from '@magic/data'
+import { clipTextBytes } from './wire-view.ts'
 
 export type ProjectionOptions = {
   readonly candidates: readonly string[]
@@ -24,7 +26,7 @@ export async function projectWorks(
     canArchive: options?.canArchive(session) ?? false,
   }]))
   const notices = new Map(store.attention.list({ sessions: candidates }).map(notice => [notice.session, notice]))
-  const sessions = await readSessionCatalog(store, undefined, { ids: candidates, archived: false })
+  const sessions = (await readSessionCatalog(store, undefined, { ids: candidates, archived: false })).slice(0, CONTROL_DIRECTORY_LIMIT)
   return sessions.map((session): NativeWork => {
     const run = bySession.get(session.id)
     const state = facts.get(session.id)!
@@ -41,7 +43,11 @@ export async function projectWorks(
       affected: run !== undefined && (['running', 'waiting', 'stopping', 'unknown'].includes(run.state) || (run.background ?? 0) > 0),
       ...(run?.backgroundWaiting ? { action: '等待后台结果' } : run?.action === undefined ? {} : { action: run.action }),
       ...(run?.reason === undefined ? {} : { reason: run.reason }),
-      ...(notice === undefined ? {} : { currentNotice: notice }),
+      ...(notice === undefined ? {} : {
+        currentNotice: notice.detail === undefined ? notice : {
+          ...notice, detail: clipTextBytes(notice.detail, CONTROL_PREVIEW_TEXT_BYTES),
+        },
+      }),
     }
   })
 }

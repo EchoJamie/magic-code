@@ -21,7 +21,7 @@ function fakeVoice(): {
 } {
   const calls = { starts: 0, stops: 0, cancels: 0, listens: 0 }
   let handlers: Parameters<VoiceInput['start']>[0] | null = null
-  let tap: (() => void) | null = null
+  let tap: ((phase: 'down' | 'up') => void) | null = null
   return {
     calls,
     voice: {
@@ -41,7 +41,8 @@ function fakeVoice(): {
     },
     say: (text) => { handlers?.onFinal(text) },
     fail: (code, message) => { handlers?.onError(code, message) },
-    press: () => { tap?.() },
+    // 一次轻点＝两半（`down` 先、`up` 后）——与真助手同一形（D75）。
+    press: () => { tap?.('down'); tap?.('up') },
   }
 }
 
@@ -69,7 +70,9 @@ describe('语音输入', () => {
     const voice = fakeVoice()
     const shell = createShell(createSpyTransport().transport, { magicBase: '/test/.magic', voice: voice.voice })
     // 与 `run.ts` 那一跳同形：按键从本机监听来，落到同一个 `toggleVoice`。
-    const stop = voice.voice.listen(() => { shell.key({ kind: 'voice' }) })
+    // 一次轻点报**两半**（D75）——只有松开那一半（且拿了焦点）才算，这里略去闸门
+    // （准入规则在 `focus.test.ts`，这一条只量「从监听到草稿」那条链）。
+    const stop = voice.voice.listen((phase) => { if (phase === 'up') shell.key({ kind: 'voice' }) })
 
     voice.press()
     expect(shell.getView().voice).toEqual({ state: 'recording' })

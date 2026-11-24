@@ -5,7 +5,7 @@ import { messageRows } from './boards/conversation/collaboration.ts'
 import type { McpCatalog } from './boards/capabilities/mcp.ts'
 import { modelLabel } from './boards/capabilities/models.ts'
 
-import type { ModelSelectionRef } from '@magic/contracts'
+import type { ModelSelectionRef, ModelSwitchRequest } from '@magic/contracts'
 
 import type {
   AgentId,
@@ -167,12 +167,12 @@ export function isSessionRow(row: LogRow): boolean {
   return row.kind === 'user' || row.kind === 'assistant' || row.kind === 'thinking' || row.kind === 'tool'
 }
 
-export type PlanProjection = PlanSnapshot
+type PlanProjection = PlanSnapshot
 
-export const PLAN_TOOLS: ReadonlySet<string> = new Set(['plan_read', 'plan_update', 'history_read'])
+const PLAN_TOOLS: ReadonlySet<string> = new Set(['plan_read', 'plan_update', 'history_read'])
 
 /** 这个工具名是不是那三个辅助工具之一（参数由调用方给**注册名**，不是给显示名）。 */
-export function quietTool(name: string): boolean {
+function quietTool(name: string): boolean {
   return PLAN_TOOLS.has(name)
 }
 
@@ -232,6 +232,21 @@ export type PickerRow = {
   readonly faint?: boolean
   readonly oneLine?: boolean
   /**
+   * **语义色**（只给「面板式」那几屏用，见 `Picker.tabs`）——**只表状态，不做装饰**：
+   * `run` 正在跑（状态位呼吸）· `wait` 在等你 · `danger` 不可逆或已受阻 · `idle` 普通。
+   *
+   * 不给就是「无所谓」：面板式里按 `idle` 画（名称正常色、meta 压暗），
+   * 别的抽屉一律不看这一格。
+   */
+  readonly tone?: 'run' | 'wait' | 'danger' | 'idle'
+  /**
+   * 行首**状态记号**（可选）——面板式渲染时着色置于此行最前（色随 tone，`run` 走呼吸）。
+   *
+   * 由头（2026-11-22 · 协作面板改 Claude 式左流）：面板给人扫，状态靠**形＋色**一眼分类，
+   * 字只补必要的一句。字形取自 marks.ts 的白名单（面板不自带图标语言）。
+   */
+  readonly mark?: string
+  /**
    * **必留的那一段**（`oneLine` 行用）——它是 `meta` 的**前缀**（如 MCP 那行的状态说法、
    * 连接那行的连接名）。
    *
@@ -288,6 +303,14 @@ export type Picker = {
 
   readonly memory?: import('./boards/records/memory-picker.ts').MemoryPage
   readonly title?: string
+  /**
+   * **页签**（`Tab` 那两屏：协作 ↔ 后台命令）——`active` 那一段铺**反白块**（底色表「你在哪一页」），
+   * 其余留白；`title` 挪到同一行的右边，当面包屑（如「整件工作 · 子会话」）。
+   *
+   * 给了这一格，这一屏按**面板式**排版：页签行 ＋ 一行留白 ＋ 两列对齐的行
+   * （名称在左、状态在右，靠**位置**分组，不画线）；不给，则照原样画（其余抽屉先不动）。
+   */
+  readonly tabs?: readonly { readonly label: string; readonly active: boolean }[]
   readonly rows: readonly PickerRow[]
   readonly selected: number
   /** 关联记录在原交互层内阅读，不换会话、不抄进原会话日志。 */
@@ -455,7 +478,7 @@ export const HINT_LOST = '/connect 重连 · ctrl+r 刷新 · ctrl+c 退出'
 
 export const HINT_WORKING = 'Esc 停止 · ctrl+c 停或离开'
 /** 退避中右位提示（后段动态：`1.6s 后重发 · 不用管`）。 */
-export const HINT_RETRYING_TAIL = '后重发 · 不用管'
+const HINT_RETRYING_TAIL = '后重发 · 不用管'
 export const HINT_BOOTING = '启动中——恢复跑完才受理输入'
 /** 临时层提示留在菜单；纯列表支持 ← 返回，字段保留光标编辑。 */
 export const HINT_PICKER = '↑↓ 选择 · Enter 选定 · ← / Esc 返回'
@@ -472,7 +495,7 @@ export const HINT_PICKER_SESSION = '↑↓ 选择 · 打字筛选 · Ctrl+G 操�
 /** 设置筛词原位编辑；Esc 退当前层。 */
 export const HINT_PICKER_CONFIG = '↑↓ 选择 · 输入筛词 · Esc 返回'
 
-export const HINT_PICKER_TASK = '↑↓ 选 · 回车 定 · esc 返回'
+const HINT_PICKER_TASK = '↑↓ 选 · 回车 定 · esc 返回'
 
 export const STOP_KEYS_HINT = 'ctrl+x 停 · ctrl+w 只停这一轮'
 
@@ -675,6 +698,13 @@ export type ShellView = {
   readonly vendors: readonly VendorInfo[]
 
   readonly modelCurrent: ModelSelectionRef | null
+  /**
+   * **窗口自己的模型意图**（用户 2026-11-19 定：连接是核心、会话懒建立）。
+   *
+   * 还没有会话时切模型只落在这里（内存），不发给引擎；发送交代时随 `input.submit` 带过去。
+   * 引擎答复 `model.switched{ok}` 时同步成同一条——两处说的是同一件事。
+   */
+  readonly modelChoice: ModelSwitchRequest | null
 
   readonly configuredModels: NonNullable<MagicConfig['models']>
   /** **网页服务读数**（`web.state` · U94）——`/config` 与 `/web` 那一格；`null` ＝还没问到。 */
@@ -696,6 +726,13 @@ export type ShellView = {
 
   readonly turnDuration: 'elapsed' | 'active'
   readonly reducedMotion: boolean
+  /**
+   * **实验性 · 语音输入开着没有**（D75）——缺省 `false`（关）。
+   *
+   * 它只管「右 ⌥ 那一跳要不要接」：关着时监听器不起、焦点上报也不开
+   * （见 `run.ts` 的 `applyVoice`）。录音中那一格是 `view.voice`（两件不同的事）。
+   */
+  readonly voiceEnabled: boolean
 
   readonly workspace: string | null
 }
@@ -706,6 +743,7 @@ export type CreateViewInput = {
   readonly statusLine?: StatusLineConfig | undefined
   readonly turnDuration?: 'elapsed' | 'active' | undefined
   readonly reducedMotion?: boolean | undefined
+  readonly voiceEnabled?: boolean | undefined
   readonly workspace?: string | null | undefined
 }
 
@@ -751,6 +789,7 @@ export function createView(input: CreateViewInput = {}): ShellView {
     models: [],
     vendors: [],
     modelCurrent: null,
+    modelChoice: null,
     configuredModels: {},
     web: null,
     turnTools: 0,
@@ -764,6 +803,7 @@ export function createView(input: CreateViewInput = {}): ShellView {
     statusLine: input.statusLine,
     turnDuration: input.turnDuration ?? 'elapsed',
     reducedMotion: input.reducedMotion === true,
+    voiceEnabled: input.voiceEnabled === true,
     workspace: input.workspace ?? null,
   }
 }
@@ -779,7 +819,7 @@ export function workspaceLabelOf(roots: readonly string[] | undefined): string |
 
 export type SkillsCatalog = EventDataOf['skills.catalog']
 
-export type PathsCatalog = EventDataOf['paths.catalog']
+type PathsCatalog = EventDataOf['paths.catalog']
 
 // ══ 归约（事件 → 一屏）═══════════════════════════════════════════════
 
@@ -864,7 +904,7 @@ export function reduce(
       // **不沿用换之前那个模型的容量**）。**没换成＝原样不动**（切不动就不动）。
       return appendReceipt(
         event.data.ok && event.data.model !== undefined
-          ? patchStatus({ ...view, modelCurrent: event.data.provider === undefined || event.data.choice === undefined || event.data.protocol === undefined || event.data.endpoint === undefined ? view.modelCurrent : { protocol: event.data.protocol, endpoint: event.data.endpoint, choice: event.data.choice, provider: event.data.provider, model: event.data.model, ...(event.data.reasoning === undefined ? {} : { reasoning: event.data.reasoning }) } }, {
+          ? patchStatus({ ...view, modelChoice: { ...(event.data.choice === undefined ? {} : { choice: event.data.choice }), ...(event.data.reasoning === undefined ? {} : { reasoning: event.data.reasoning }) }, modelCurrent: event.data.provider === undefined || event.data.choice === undefined || event.data.protocol === undefined || event.data.endpoint === undefined ? view.modelCurrent : { protocol: event.data.protocol, endpoint: event.data.endpoint, choice: event.data.choice, provider: event.data.provider, model: event.data.model, ...(event.data.reasoning === undefined ? {} : { reasoning: event.data.reasoning }) } }, {
               model: event.data.choice === undefined ? view.status.model : modelLabel(event.data.choice),
               window: event.data.inputBudget ?? null,
             })
@@ -1226,13 +1266,23 @@ function reduceSessionState(view: ShellView, data: SessionStateData, turn: PageT
     ?? member?.agent.name
     ?? (active === view.sessionId ? view.status.session : null)
 
+  /**
+   * ④ 那一格**跟着会话走**（2026-11-21 用户明示：新开一条会话那次用量报 `0/窗口`）：
+   *
+   * - **开一条新的**（`/clear`）⇒ 这一条**一个 token 都还没用**，故是 `0`——分母照旧取
+   *   当下那个模型的（不知道就退成只报已用量 `0`，**不编一个窗口**）；
+   * - **换到另一条**（`/resume` · 或壳没发过意图的切换）⇒ 那一条用了多少**这一侧不知道**，
+   *   故是 `null`（那一格整格省掉）——**绝不沿用上一条的读数**（那是把别人的账记在它头上）。
+   */
+  const usage = turn === 'new' ? 0 : null
+
   const base: ShellView = {
     ...view,
     sessionId: active,
     notice: active === view.sessionId ? view.notice : undefined,
     archived: data.sessions.find(row => row.id === active)?.archived ?? (active === view.sessionId && view.archived),
     catalog: data.sessions,
-    status: { ...view.status, session: title },
+    status: { ...view.status, session: title, ...(turned ? { usage } : {}) },
   }
 
   const after = turned

@@ -28,7 +28,7 @@ import { DEFAULT_TEST_SESSION, makeFauxSink } from '@magic/faux'
 import type { FauxSink } from '@magic/faux'
 import type { ConversationSession, RebuildReport } from '../src/service.ts'
 import type { SessionInstance } from '../src/sessions.ts'
-import { HISTORY_CHUNK, TITLE_LIMIT, createConversationService, readSessionCatalog, summarize } from '../src/sessions.ts'
+import { HISTORY_CHUNK, PREVIEW_LIMIT, TITLE_LIMIT, createConversationService, readSessionCatalog, summarize } from '../src/sessions.ts'
 
 const T0 = 1_700_000_000_000
 const A = 's-alpha'
@@ -659,4 +659,33 @@ test('目录先筛元数据；默认标题首条即停，近期摘要只读尾�
   expect(forward).toBe(1)
   expect(backward).toBe(1)
   expect(blobs).toEqual(['latest'])
+})
+
+test('目录摘要只带一行预览——超长工具结果不随目录下发', async () => {
+  const huge = 'x'.repeat(5 * 1024 * 1024)
+  const rows = await readSessionCatalog({
+    async listSessions() { return [{ id: 'selected', at: 2, archived: false }] },
+    async *readEntries() { yield { id: 1, kind: 'user', content: { text: '交代' }, at: 1 } },
+    readEntriesBack() { return [
+      { id: 1, kind: 'user', content: { text: '最近交代\n第二行' }, at: 1 },
+      { id: 2, kind: 'tool-result', content: { text: huge }, at: 2 },
+    ] },
+    async *readEvents() {},
+    blobs: { async put() { return 'unused' }, async get() { throw new Error('不该读 blob') } },
+  })
+  expect(rows[0]?.recentInput).toBe('最近交代 第二行')
+  expect(rows[0]?.recentProgress).toBe(`${'x'.repeat(PREVIEW_LIMIT)}…`)
+})
+
+test('目录预览从 blob 读出也只留开头一截', async () => {
+  const huge = new TextEncoder().encode('y'.repeat(5 * 1024 * 1024))
+  const rows = await readSessionCatalog({
+    async listSessions() { return [{ id: 'selected', at: 2, archived: false }] },
+    async *readEntries() { yield { id: 1, kind: 'user', content: { text: '交代' }, at: 1 } },
+    readEntriesBack() { return [{ id: 2, kind: 'assistant', content: { blob: 'huge' }, at: 2 }] },
+    async *readEvents() {},
+    blobs: { async put() { return 'unused' }, async get(id) { expect(id).toBe('huge'); return huge } },
+  })
+  expect(rows[0]?.recentProgress).toBe(`${'y'.repeat(PREVIEW_LIMIT)}…`)
+  expect(rows[0]?.recentProgress?.length).toBe(PREVIEW_LIMIT + 1)
 })

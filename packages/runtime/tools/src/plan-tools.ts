@@ -19,9 +19,9 @@ import { refused, reasonOf } from './toolkit.ts'
  * 挂在工具定义旁边而不是散在各处：改名时改一处就够（另一处漏了，放行规则会静默失效，
  * 而那正是「每次都弹卡」或「悄悄免审」两头之一）。
  */
-export const PLAN_READ_TOOL = 'plan_read'
-export const PLAN_UPDATE_TOOL = 'plan_update'
-export const HISTORY_READ_TOOL = 'history_read'
+const PLAN_READ_TOOL = 'plan_read'
+const PLAN_UPDATE_TOOL = 'plan_update'
+const HISTORY_READ_TOOL = 'history_read'
 
 /** 独立计划与历史工具名——装配与权限域共用。 */
 export const PLAN_TOOL_NAMES: readonly string[] = [
@@ -32,7 +32,7 @@ export const PLAN_TOOL_NAMES: readonly string[] = [
 
 // ══ 参数模式 ══════════════════════════════════════════════════════════
 
-export const PLAN_READ_PARAMETERS = {
+const PLAN_READ_PARAMETERS = {
   type: 'object',
   description: '取当前会话的计划笔记（目标、步骤清单与辅助笔记）。没有建立过就如实说没有。',
   properties: {},
@@ -40,7 +40,7 @@ export const PLAN_READ_PARAMETERS = {
   additionalProperties: false,
 } as const
 
-export const HISTORY_READ_PARAMETERS = {
+const HISTORY_READ_PARAMETERS = {
   type: 'object',
   description:
     '读当前会话的一段实际记录（用户交代、助手答复、工具调用与结果）。' +
@@ -80,7 +80,7 @@ const STATUS_LABEL: Readonly<Record<PlanStep['status'], string>> = {
  *
  * 次序与界面**同一份**（U90）：目标在先（清单上那一行顶格）、步骤在后。
  */
-export function planTextOf(plan: PlanNote): string {
+function planTextOf(plan: PlanNote): string {
   const lines: string[] = []
 
   if (plan.goal !== undefined) lines.push(`目标：${plan.goal}`)
@@ -169,7 +169,7 @@ export function definePlanTools(reader: PlanReader): readonly ToolDefinition[] {
   return [updateTool(reader), readTool(reader), historyTool(reader)]
 }
 
-export const PLAN_UPDATE_PARAMETERS = {
+const PLAN_UPDATE_PARAMETERS = {
   type: 'object',
   description: '独立更新当前计划。steps 整体替换；goal/notes 不给时保留，空字符串时清除。清步骤不会删除工作笔记。',
   properties: {

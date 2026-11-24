@@ -7,7 +7,7 @@
  */
 import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import type { StoredRun } from './facts.ts'
-import { readRunsAt, replaceRunsAt, type RunRecord } from '@magic/data'
+import { readRunsAt, replaceRunsAt, type RecordsStore, type RunRecord } from '@magic/data'
 import type { RunPaths } from './paths.ts'
 
 export type ManagerRecord = {
@@ -104,13 +104,12 @@ function toRun(run: StoredRun, at: number): RunRecord {
   } as RunRecord
 }
 
-export function writeRuns(source: { runs: { replaceAll(records: readonly RunRecord[]): void } } | RunPaths, runs: readonly StoredRun[], at: number): void {
-  // 运行登记落在 records.db 的 runs 表；整份快照替换，保持原文件的语义。
-  // **优先走传入的连接**（管理者的，busy_timeout 有界）——此前每次现开一个缺省
-  // busy_timeout=0 的连接，与子进程的写一撞就「database is locked」。
+export function writeRuns(paths: RunPaths, runs: readonly StoredRun[], at: number, store?: Pick<RecordsStore, 'runs'>): void {
+  // 运行登记现在落在 records.db 的 runs 表；整份快照替换，保持原文件的语义。
   try {
-    if ('dataDir' in source) { replaceRunsAt(source.dataDir, runs.map(run => toRun(run, at))); return }
-    source.runs.replaceAll(runs.map(run => toRun(run, at)))
+    const records = runs.map(run => toRun(run, at))
+    if (store) store.runs.replaceAll(records)
+    else replaceRunsAt(paths.dataDir, records)
   } catch (error) {
     throw new Error(`运行归属登记失败：${String(error)}`)
   }

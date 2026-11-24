@@ -29,7 +29,7 @@ export async function runEngine(argv: readonly string[]): Promise<number> {
   try {
     const loaded = loadConfig({ magic })
     const started = await startManager({
-      paths, magic, launch: createProcessLauncher({ socket: paths.socket }), mcp: loaded.config.mcp?.servers ?? {},
+      paths, magic, launch: createProcessLauncher(), mcp: loaded.config.mcp?.servers ?? {},
       engineState: async (phase, request, error) => { state = { ...state, state: phase, request, error }; publish() },
       beforeExit: async () => { state = { ...state, state: 'stopped', error: undefined }; publish() },
       onShutdownError: error => { state = { ...state, state: 'failed', error }; publish() },

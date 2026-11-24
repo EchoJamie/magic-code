@@ -1,3 +1,4 @@
+import { pendingViews } from '@magic/contracts'
 import type { InputManage, CompactState } from '@magic/contracts'
 /**
  * **一条会话的实例**（`ConversationSession`）——`ConversationService` 的**单会话那一半**。
@@ -373,7 +374,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         }),
       )
     }
-    sink.emit(stamper.stamp('input.pending',{inputs:deps.records.inputs.list()}))
+    sink.emit(stamper.stamp('input.pending',{inputs:pendingViews(deps.records.inputs.list())}))
   }
 
   async function drain(): Promise<void> {
@@ -447,7 +448,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         const existing = deps.records.inputs.get(durable.ref)
         const row = deps.records.inputs.accept(durable,(deps.now??Date.now)())
         sink.emit(stamper.stamp('input.settled',row.state==='failed'||row.state==='withdrawn'?{ref:durable.ref,ok:false,reason:row.reason??'这条输入已撤回'}:{ref:durable.ref,ok:true,stage:row.state==='included'?'included':'accepted',...(row.input.refs===undefined?{}:{refs:row.input.refs})}))
-        sink.emit(stamper.stamp('input.pending',{inputs:deps.records.inputs.list()}))
+        sink.emit(stamper.stamp('input.pending',{inputs:pendingViews(deps.records.inputs.list())}))
         if (existing !== undefined) { done(); return }
         if (row.input.notice !== true) inputVersion++
         deps.onInput?.(row.input)
@@ -502,7 +503,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         if (row?.state === 'pending' && row.revision === command.revision) { inputs.hold(row.ref,undefined); pending.push({input:row.input,shared:false}); if (!running && compactPending === undefined) startDrain() }
         else note = '输入已消费或已改变，未继续'
       }
-      sink.emit(stamper.stamp('input.pending', {inputs:inputs.list(),...(note===undefined?{}:{note})}))
+      sink.emit(stamper.stamp('input.pending', {inputs:pendingViews(inputs.list()),...(note===undefined?{}:{note})}))
     },
     submit(input: UserInput): void {
       if (closed) return

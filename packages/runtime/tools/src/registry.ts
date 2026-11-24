@@ -127,39 +127,20 @@ export type ToolDefinition = {
   readonly via?: string
 }
 
-/** 在定义处保留解析后的参数类型；run 只接收本定义 prepare 的成功结果。 */
+/**
+ * 在定义处保留解析后的参数类型；run 只接收本定义 prepare 的成功结果。
+ *
+ * **只校必填，不校多给**（用户 2026-11-20 定）——各工具的 `prepare` 自己判「该给的有没有给」；
+ * 多出来的键**原样放行、不参与执行**。理由：模型常顺手多带一格（名称记岔、把旧的 `cwd`
+ * 又带上、从别的工具抄来一个键），为此拒掉整条调用，它要么重试同一个形状、要么改走
+ * `exec` 绕开工具语义——代价远大于「忽略一个用不上的键」。
+ * 参数模式里仍写着 `additionalProperties: false`：那是给模型看的**形状说明**，不是这里的闸门。
+ */
 export function defineTool<A extends Readonly<Record<string, unknown>>>(definition: Omit<ToolDefinition, 'prepare' | 'run'> & {
   readonly prepare: (args: Readonly<Record<string, unknown>>) => A
   readonly run: (args: A, ctx: ToolRunContext) => ToolRunResult | Promise<ToolRunResult>
 }): ToolDefinition {
-  return { ...definition,
-    prepare(args) {
-      /**
-       * **未知键先报，再谈「缺了什么」**（顺序有讲究）——
-       *
-       * 反过来的代价实测过：模型把命令写在 `command` 里时，先跑的那道「cmd 须为非空字符串」
-       * 会把它说成「你没给命令」，而它明明给了，只是键名不对；模型于是重试同一个键，
-       * 或者改用别的工具绕路。先查未声明键，它拿到的就是**改哪个键**这一句。
-       *
-       * **一次就够改**（D64）：只说「未声明字段」，模型只能猜允许哪些——
-       * 实测里它两次撞同一句，然后改走 `exec`（一条绕开工具语义的路）。
-       * 这条错要一次把**可用字段**交出来：读到 `可用字段：path`，去掉多给的键即可，
-       * 不必换工具、不必试第二遍。工具名也带上——几件工具同时在场时，光看键名不知是谁。
-       */
-      const schema = definition.spec.parameters
-      if (schema.additionalProperties === false && typeof schema.properties === 'object' && schema.properties !== null) {
-        const available = Object.keys(schema.properties)
-        const listed = available.length === 0 ? '无（本工具不接受参数）' : available.join('、')
-        for (const key of Object.keys(args)) {
-          if (!Object.hasOwn(schema.properties, key)) {
-            throw new Error(`参数错误（${definition.spec.name}）：未声明字段 ${key}；可用字段：${listed}`)
-          }
-        }
-      }
-      return definition.prepare(args)
-    },
-    run: (args, ctx) => definition.run(args as A, ctx),
-  }
+  return { ...definition, run: (args, ctx) => definition.run(args as A, ctx) }
 }
 
 /** 注册表——定义随每次调用送模型的来处（`definitions()`）。 */
