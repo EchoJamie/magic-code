@@ -11,8 +11,8 @@
   ],
   "scripts": {
     "typecheck": "bun ./node_modules/typescript/bin/tsc --noEmit",
-    "test": "bun test ./test ./packages ./apps",
-    "test:fast": "bun test ./test ./packages ./apps --path-ignore-patterns='**/*.integration.test.ts' --path-ignore-patterns='**/*.e2e.test.ts'",
+    "test": "bun test --parallel ./test ./packages ./apps",
+    "test:fast": "bun test --parallel ./test ./packages ./apps --path-ignore-patterns='**/*.integration.test.ts' --path-ignore-patterns='**/*.e2e.test.ts'",
     "test:integration": "bun scripts/test-layer.ts integration",
     "test:e2e": "bun scripts/test-layer.ts e2e",
     "check:imports": "bun scripts/import-guard.ts",

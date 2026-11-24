@@ -10,7 +10,7 @@ import { startResidentHost } from './resident-host-fixture.ts'
 import { readDatabase } from './support.ts'
 
 async function until(check: () => boolean) {
-  const end = Date.now() + 15000
+  const end = Date.now() + 30000
   while (!check()) { if (Date.now() > end) throw new Error('环境回执未到'); await Bun.sleep(20) }
 }
 
