@@ -725,7 +725,6 @@ describe('执行者进程隔离', () => {
     const records = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
     let completed = 0
     client.onEvent(event => { if (event.kind === 'turn.end' && event.data.reason === 'settled') completed++ })
-    client.onEvent(event => { if (event.kind === 'error') console.error('[dbg] error:', String(event.data.message).slice(0, 150)) })
     try {
       client.send({ type: 'session.new' })
       await submitAndWait(client, '进程隔离首轮', '首轮经子进程收束且执行者已退', () => completed === 1 && manager.executors().length === 0)

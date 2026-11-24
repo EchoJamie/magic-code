@@ -211,7 +211,7 @@ export function createProcessLauncher(options: ProcessLauncherOptions): Executor
       })
       pending.set(request.executionId, {
         channel,
-        cancel: () => { console.error(`[launcher] cancel called: ${new Error('trace').stack?.split('\n').slice(1, 4).join(' <- ')}`); child?.kill() },
+        cancel: () => child?.kill(),
         kill: () => child?.kill('SIGKILL'),
       })
       return {
@@ -222,7 +222,7 @@ export function createProcessLauncher(options: ProcessLauncherOptions): Executor
           pending.delete(request.executionId)
           try { child?.kill() } catch { /* 已退——不追 */ }
         },
-        kill() { console.error(`[launcher] kill called: ${new Error('trace').stack?.split('\n').slice(1, 4).join(' <- ')}`); try { child?.kill('SIGKILL') } catch { /* 已退——不追 */ } },
+        kill() { try { child?.kill('SIGKILL') } catch { /* 已退——不追 */ } },
       }
     },
   }
