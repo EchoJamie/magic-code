@@ -803,6 +803,8 @@ export function assemble(options: AssembleOptions): Assembly {
     onSession: (command) => conversation.handle(command),
     // 读侧命令——**原样转手**给对话域（会话与条目归它）；答复走事件（`session.history`）
     onHistoryRead: (session) => conversation.readHistory(session),
+    // 当前计划读侧（`plan.read`）——同一条姿势；答复走事件（`plan.changed`，带 `requestId`）
+    onPlanRead: (session, requestId) => conversation.readPlanSnapshot(session, requestId),
     // 模型条目表（读侧）——**归装配**（注册表在它手上，同 `model.switched` 的产出路径）；
     // 答复走事件（`model.catalog`，不落库）
     onModelList: () => listModels(),

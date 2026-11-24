@@ -1,5 +1,5 @@
 import type { AgentId, DelegationId, MessageId, SessionId } from '../shared/ids.ts'
-import type { AgentIdentity, AgentMessage, Collaboration, CollaborationWait, Delegation, MessagePart } from './collaboration.ts'
+import type { AgentIdentity, AgentMessage, Collaboration, Delegation, MessagePart } from './collaboration.ts'
 import type { ModelSwitchRequest, UserInput } from './control.ts'
 import type { Entry } from './entries.ts'
 import type { RunRow } from './runs.ts'
@@ -21,7 +21,6 @@ type CollaborationOperation =
   | { readonly action: 'deliver'; readonly operationId: string; readonly delegation: DelegationId; readonly conclusion: string; readonly artifacts: readonly string[]; readonly verified: readonly string[]; readonly unresolved: readonly string[] }
   | { readonly action: 'receive'; readonly delegation: DelegationId }
   | { readonly action: 'read'; readonly message: MessageId; readonly discussion?: boolean }
-  | { readonly action: 'wait'; readonly operationId: string; readonly agents: readonly AgentId[]; readonly message?: MessageId; readonly expectation: string; readonly deadline: number }
   | { readonly action: 'stop'; readonly delegation?: DelegationId; readonly reason: string }
   | { readonly action: 'close' }
 
@@ -35,7 +34,6 @@ export type CollaborationMemberView = {
   readonly agent: AgentIdentity
   readonly runtime?: RunRow
   readonly delegation?: Delegation
-  readonly waiting?: CollaborationWait
   readonly pendingDecisions: number
 }
 /** 关系查询的快照。成员正文仅在明确查看时取，不能复制为整体日志。 */
@@ -45,7 +43,6 @@ export type CollaborationView = {
   readonly collaboration?: Collaboration
   readonly members: readonly CollaborationMemberView[]
   readonly delegations: readonly Delegation[]
-  readonly waits: readonly CollaborationWait[]
   readonly constraints: readonly { readonly messageId: MessageId; readonly states: readonly { readonly agentId: AgentId; readonly state: 'pending' | 'consumed' | 'included' }[] }[]
   readonly selectedMember?: AgentId
   readonly entries?: readonly Entry[]

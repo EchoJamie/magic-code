@@ -27,7 +27,7 @@ test('同批立即受理与独立写入、定向种子、自行取证、幂等�
   writeFileSync(join(f.workspace, 'evidence.txt'), '关键证据-实际读取-8391')
   try {
     f.shell.key({ kind: 'paste', text: '查启动失败原因。无关历史唯一串-NOT-FOR-ADVISOR-915' }); f.shell.key({ kind: 'enter' })
-    await f.wait('同批独立动作与持久等待', () => existsSync(join(f.workspace, 'independent.txt')) && f.store.collaboration.listWaits(f.collaboration()!.collaborationId).some(one => one.state === 'waiting'))
+    await f.wait('同批独立动作与消息投递', () => existsSync(join(f.workspace, 'independent.txt')) && f.store.collaboration.listMessages(f.collaboration()!.coordinatorId).some(one => !one.withdrawn))
     expect(f.requests('descendant-model')).toHaveLength(1)
     expect(f.delegation()?.state).toBe('accepted')
     const first = f.requests('descendant-model')[0]!

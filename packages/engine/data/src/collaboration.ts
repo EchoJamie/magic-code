@@ -2,7 +2,7 @@ import type { Database, SQLQueryBindings } from 'bun:sqlite'
 import { randomUUID } from 'node:crypto'
 import type {
   AgentId, AgentIdentity, AgentMessage, AgentMessagePayload, Collaboration, CollaborationRecords,
-  CollaborationWait, DelegateInput, Delegation, EntryReference, ExecutionAdmission,
+  DelegateInput, Delegation, EntryReference, ExecutionAdmission,
   InboxItem, MessagePart, OperationResult, SharedConstraint,
 } from '@magic/contracts'
 import { entryParamsOf } from './entries.ts'
@@ -27,7 +27,6 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     collaborations: 'collaboration',
     collaboration_delegations: 'delegation',
     collaboration_messages: 'message',
-    collaboration_waits: 'wait',
     collaboration_executions: 'execution',
     collaboration_constraints: 'constraint',
   }
@@ -66,14 +65,6 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     }
     const kind = KINDS[table]
     if (kind === undefined) throw new Error(`未知协作表：${table}`)
-    if (where === "state='waiting'") {
-      return all<{ data: string }>("SELECT data FROM ledger_entries WHERE kind='wait' AND json_extract(data,'$.state')='waiting' ORDER BY id")
-        .map(row => JSON.parse(row.data) as T)
-    }
-    if (where.startsWith('agent=? AND state')) {
-      return all<{ data: string }>("SELECT data FROM ledger_entries WHERE kind='wait' AND json_extract(data,'$.agentId')=? AND json_extract(data,'$.state')<>'waiting' ORDER BY id", args[0] as string)
-        .map(row => JSON.parse(row.data) as T)
-    }
     if (where.startsWith('collaboration')) {
       const desc = where.includes('DESC')
       return all<{ data: string }>(`SELECT data FROM ledger_entries WHERE ledger = ? AND kind = ? ORDER BY id ${desc ? 'DESC' : 'ASC'}`, args[0] as string, kind)
@@ -89,12 +80,10 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
   const message = (id: number): AgentMessage => required(one<AgentMessage>('collaboration_messages', id), 'message not found')
   const members = (id: string) => many<AgentIdentity>('collaboration_agents', 'collaboration = ? ORDER BY rowid', id)
   const delegations = (id: string) => many<Delegation>('collaboration_delegations', 'collaboration = ? ORDER BY rowid', id)
-  const waits = (id: string) => many<CollaborationWait>('collaboration_waits', 'collaboration = ? ORDER BY rowid', id)
   const executions = (id: string) => many<ExecutionAdmission>('collaboration_executions', 'collaboration = ? ORDER BY rowid', id)
   const saveAgent = (a: AgentIdentity) => run('UPDATE ledger_members SET ledger=?, data=? WHERE id=?', a.collaborationId ?? '', JSON.stringify(a), a.agentId)
   const saveCollaboration = (c: Collaboration) => run('UPDATE ledgers SET data=? WHERE id=?', JSON.stringify(c), c.collaborationId)
   const saveDelegation = (d: Delegation) => run("UPDATE ledger_entries SET data=? WHERE kind='delegation' AND json_extract(data,'$.delegationId')=?", JSON.stringify(d), d.delegationId)
-  const saveWait = (w: CollaborationWait) => run("UPDATE ledger_entries SET data=? WHERE id=? AND kind='wait'", JSON.stringify(w), w.waitId)
   const saveMessage = (m: AgentMessage) => run("UPDATE ledger_entries SET data=? WHERE id=? AND kind='message'", JSON.stringify(m), m.messageId)
   const saveExecution = (e: ExecutionAdmission) => run("UPDATE ledger_entries SET data=? WHERE kind='execution' AND json_extract(data,'$.operationId')=?", JSON.stringify(e), e.operationId)
   const insertLedgerEntry = (kind: string, ledger: string, actor: string | null, at: number, data: unknown, explicitId?: number): number => {
@@ -227,14 +216,6 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     insertLedgerEntry('message', c.collaborationId, actor, input.at, m, id)
     appendReference(agent(actor), m, input.at)
     for (const recipient of recipients) enqueue(m, recipient)
-    // 普通告知与回执不解除等待。收到结果仅保存等待事实，唤起仍须过准入。
-    if (['reply', 'delivery', 'clarification'].includes(m.purpose)) {
-      for (const w of waits(c.collaborationId)) {
-        if (w.state !== 'waiting' || !recipients.includes(w.agentId) || !w.forAgents.includes(actor)) continue
-        if (w.forMessageId !== undefined && m.replyTo !== w.forMessageId && m.delegationId !== w.forMessageId) continue
-        saveWait({ ...w, state: 'resolved', resultMessageId: id, reason: m.purpose, reasonFrom: undefined })
-      }
-    }
     return m
   }
   function canRead(actor: string, m: AgentMessage): boolean {
@@ -278,10 +259,6 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     return d
   }
   const inbox = (id: string, after = 0): InboxItem[] => all<{ position: number; recipient: string; ledger_entry: number; state: InboxItem['state']; entry: number | null; consumed_at: number | null; included_at: number | null }>('SELECT * FROM ledger_deliveries WHERE recipient=? AND position>? ORDER BY position', id, after).map(row => ({ position: row.position, recipientId: row.recipient, messageId: row.ledger_entry, state: row.state, ...(row.entry === null ? {} : { entryId: row.entry }), ...(row.consumed_at === null ? {} : { consumedAt: row.consumed_at }), ...(row.included_at === null ? {} : { includedAt: row.included_at }) }))
-  function interrupt(agentId: string, reason: string, generatedFrom?: EntryReference): CollaborationWait[] {
-    const result = many<CollaborationWait>('collaboration_waits', "state='waiting'").filter(w => w.agentId === agentId || w.forAgents.includes(agentId)).map(w => ({ ...w, state: 'interrupted' as const, reason, reasonFrom: generatedFrom }))
-    result.forEach(saveWait); return result
-  }
   function closure(root: number): Delegation[] {
     return all<{ data: string }>(`WITH RECURSIVE scope(id) AS (SELECT json_extract(data,'$.delegationId') FROM ledger_entries WHERE kind='delegation' AND json_extract(data,'$.delegationId')=? UNION ALL SELECT json_extract(d.data,'$.delegationId') FROM ledger_entries d JOIN scope s ON json_extract(d.data,'$.parentDelegationId')=s.id WHERE d.kind='delegation') SELECT data FROM ledger_entries WHERE kind='delegation' AND json_extract(data,'$.delegationId') IN (SELECT id FROM scope)`, root).map(r => JSON.parse(r.data) as Delegation)
   }
@@ -304,7 +281,6 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       if (state === 'active' && a.collaborationId) requireOpen(collaboration(a.collaborationId))
       saveAgent({ ...a, reachability: state })
       if (state === 'active') enqueueConstraints(a)
-      if (state === 'historical') interrupt(id, 'agent became historical')
     }) },
     openCollaboration(actor, input) { return tx(() => {
       const old = prior(input.operationId, actor, 'collaboration')
@@ -369,9 +345,6 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       if (next !== d) {
         saveDelegation(next)
         createMessage(actor, { recipients: [d.delegatorId], purpose: input.response === 'clarify' ? 'clarification' : input.response === 'reject' ? 'decision' : 'receipt', replyTo: d.delegationId, delegationId: d.delegationId, body: input.body ?? [{ kind: 'text', text: input.reason ?? input.response }], at: input.at, ...(input.generatedFrom === undefined ? {} : { generatedFrom: input.generatedFrom }) }, input.response !== 'accept')
-        if (input.response === 'reject') for (const w of waits(d.collaborationId)) {
-          if (w.state === 'waiting' && w.forAgents.includes(actor) && (w.forMessageId === undefined || w.forMessageId === d.delegationId)) saveWait({ ...w, state: 'interrupted', reason: input.reason ?? 'delegation rejected', reasonFrom: input.generatedFrom })
-        }
       }
       const accepted = next.state === 'accepted'
       remember(input.operationId, actor, { kind: 'delegation-response', delegationId: d.delegationId, accepted, ...(reason ? { reason } : {}) })
@@ -478,54 +451,6 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
         return { agentId: a.agentId, state: i?.includedAt !== undefined ? 'included' : i?.state === 'consumed' ? 'consumed' : 'pending' }
       })
     },
-    registerWait(actor, input) { return tx(() => {
-      const old = prior(input.operationId, actor, 'wait')
-      if (old?.kind === 'wait') return { ok: true, wait: required(one<CollaborationWait>('collaboration_waits', old.waitId), 'wait not found') }
-      const c = scopeFor(actor); canAct(actor, c)
-      if (!Number.isFinite(input.deadline) || input.deadline <= input.at) throw new Error('wait requires a future finite deadline')
-      const targets = [...new Set(input.forAgents)]
-      if (!targets.length) throw new Error('wait target required')
-      targets.forEach(id => sameMember(id, c))
-      if (input.delegationId !== undefined) {
-        const d = delegation(input.delegationId)
-        if (d.assigneeId !== actor || d.state !== 'accepted') throw new Error('wait must bind active delegation')
-      } else if (actor !== c.coordinatorId) throw new Error('member wait requires active delegation')
-      if (input.forMessageId !== undefined && !api.readMessage(actor, input.forMessageId)) throw new Error('wait message not accessible')
-      const pending = waits(c.collaborationId).filter(w => w.state === 'waiting')
-      const pathToActor = (id: string, path: string[]): string[] | undefined => {
-        if (id === actor) return [...path, id]
-        if (path.includes(id)) return undefined
-        for (const edge of pending.filter(w => w.agentId === id).flatMap(w => w.forAgents)) {
-          const found = pathToActor(edge, [...path, id]); if (found) return found
-        }
-        return undefined
-      }
-      for (const id of targets) { const cycle = pathToActor(id, [actor]); if (cycle) return { ok: false, cycle } }
-      const unavailable = targets.find(id => agent(id).reachability === 'historical')
-      const found = many<AgentMessage>('collaboration_messages', 'collaboration=? ORDER BY rowid DESC', c.collaborationId).find(m => !m.withdrawn && targets.includes(m.senderId) && m.recipients.includes(actor) && ['reply','delivery','clarification'].includes(m.purpose) && input.forMessageId !== undefined && (m.replyTo === input.forMessageId || m.delegationId === input.forMessageId))
-      const w: CollaborationWait = { waitId: nextId(), collaborationId: c.collaborationId, agentId: actor, forAgents: targets, expectation: input.expectation, deadline: input.deadline, at: input.at, ...(input.generatedFrom === undefined ? {} : { generatedFrom: input.generatedFrom }), state: unavailable ? 'interrupted' : found ? 'resolved' : 'waiting', ...(unavailable ? { reason: 'target is historical' } : {}), ...(found ? { resultMessageId: found.messageId } : {}), ...(input.delegationId === undefined ? {} : { delegationId: input.delegationId }), ...(input.forMessageId === undefined ? {} : { forMessageId: input.forMessageId }) }
-      insertLedgerEntry('wait', c.collaborationId, actor, input.at, w, w.waitId)
-      remember(input.operationId, actor, { kind: 'wait', waitId: w.waitId }); return { ok: true, wait: w }
-    }) },
-    listWaits: waits,
-    expireWaits(at) { return tx(() => {
-      const result = many<CollaborationWait>('collaboration_waits', "state='waiting'").filter(w => w.deadline <= at).map(w => ({ ...w, state: 'expired' as const, reason: 'deadline reached', reasonFrom: undefined }))
-      result.forEach(saveWait); return result
-    }) },
-    consumeWaitOutcomes(id, at) { return tx(() => {
-      agent(id)
-      const result = many<CollaborationWait>('collaboration_waits', "agent=? AND state<>'waiting' ORDER BY rowid", id).filter(w => w.handledAt === undefined).map(w => ({ ...w, handledAt: at }))
-      result.forEach(saveWait); return result
-    }) },
-    markWaitOutcomesIncluded(id, ids, at) { tx(() => {
-      for (const waitId of new Set(ids)) {
-        const w = required(one<CollaborationWait>('collaboration_waits', waitId), 'wait not found')
-        if (w.agentId !== id) throw new Error('wait outcome not owned by agent')
-        if (w.state === 'waiting' || w.handledAt === undefined) throw new Error('wait outcome must be terminal and consumed before request inclusion')
-        if (w.includedAt === undefined) saveWait({ ...w, includedAt: at })
-      }
-    }) },
-    interruptWaits(id, reason, generatedFrom) { return tx(() => interrupt(id, reason, generatedFrom)) },
     checkAdmission(id, delegationId, mode = 'work') {
       const a = agent(id); const c = scopeFor(id)
       if (get<{ value: string }>("SELECT value FROM records_meta WHERE key='collaboration_host_stop'")?.value) return { allowed: false, reason: 'host admission closed' }
@@ -586,9 +511,6 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
         const holds = a.collaborationId !== undefined && delegations(a.collaborationId).some(d => d.assigneeId === id && !['cancelled', 'rejected', 'completed'].includes(d.state))
         if (!holds) saveAgent({ ...a, reachability: 'historical' })
       }
-      for (const c of cs) for (const w of waits(c.collaborationId)) {
-        if (w.state === 'waiting' && (scope.kind !== 'delegation' || (w.delegationId !== undefined && ids.has(w.delegationId)) || (w.forMessageId !== undefined && ids.has(w.forMessageId)))) saveWait({ ...w, state: 'interrupted', reason, reasonFrom: generatedFrom })
-      }
       return { agents: [...affected], delegations: [...ids], executions: es }
     }) },
     resume(scope, _at) { tx(() => {
@@ -621,7 +543,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       blockers.push(...executions(id).filter(e => e.state !== 'finished').map(e => `execution ${e.operationId}: ${e.state}`))
       if (blockers.length) return { closed: false, blockers }
       saveCollaboration({ ...c, state: 'closed' })
-      for (const a of members(id)) { saveAgent({ ...a, reachability: 'historical' }); interrupt(a.agentId, 'collaboration closed') }
+      for (const a of members(id)) saveAgent({ ...a, reachability: 'historical' })
       return { closed: true, blockers: [] }
     }) },
     operation(id) {

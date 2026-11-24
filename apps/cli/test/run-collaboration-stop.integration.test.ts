@@ -34,8 +34,7 @@ async function ready(f: StopRuntime): Promise<readonly OwnedProcess[]> {
     return work !== undefined && delegationOf(f)?.state === 'accepted' &&
       f.calls.filter(one => one.model === 'member-model').length === 3 &&
       f.launches.some(one => one.session === memberOf(f)?.sessionId && one.owned.length > 0) &&
-      f.store.collaboration.listWaits(work.collaborationId).some(one => one.state === 'waiting') &&
-      f.manager.runs().find(one => one.session === work.originSessionId)?.state === 'idle'
+            f.manager.runs().find(one => one.session === work.originSessionId)?.state === 'idle'
   })
   const member = memberOf(f)
   const owned = f.launches.find(one => one.session === member.sessionId)!.owned.map(one => ({ ...one }))
@@ -60,7 +59,6 @@ async function stopped(f: StopRuntime) {
     const delegation = f.delegations().find(one => one.assigneeId === agent.agentId)
     expect(f.store.collaboration.checkAdmission(agent.agentId, delegation?.delegationId, 'work').allowed).toBe(false)
   }
-  expect(f.store.collaboration.listWaits(work.collaborationId).map(one => one.state)).toEqual(['interrupted'])
   expect(f.delegations().every(one => one.state === 'cancelled')).toBe(true)
   return { order, calls: f.calls.length, workExecutions: f.store.collaboration.listExecutions(work.collaborationId).filter(one => one.mode === 'work').map(one => one.operationId) }
 }

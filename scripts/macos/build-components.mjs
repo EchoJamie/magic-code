@@ -1,5 +1,6 @@
 const [component, output] = process.argv.slice(2);
 if (!['cli', 'engine'].includes(component) || !output) throw new Error('用法：build-components.mjs cli|engine <outfile>');
+const version = process.env.MAGIC_BUILD_VERSION ?? (await Bun.file('package.json').json()).version;
 // Ink imports node:process, so Bun's global process.env define does not fold its DEV guard.
 // Strip that optional debugger branch at build time; ship no DevTools or external JS dependencies.
 const result = await Bun.build({
@@ -9,6 +10,14 @@ const result = await Bun.build({
   minify: { syntax: true },
   define: { 'process.env.NODE_ENV': '"production"' },
   plugins: [{
+    name: 'software-version',
+    setup(build) {
+      build.onLoad({ filter: /\/contracts\/src\/conversation\/native\.ts$/ }, async ({ path }) => ({
+        contents: (await Bun.file(path).text()).replace(/export const SOFTWARE_VERSION = '[^']+'/, `export const SOFTWARE_VERSION = ${JSON.stringify(version)}`),
+        loader: 'ts',
+      }));
+    },
+  }, {
     name: 'ink-production',
     setup(build) {
       build.onLoad({ filter: /\/ink\/build\/(ink|reconciler)\.js$/ }, async ({ path }) => ({

@@ -75,7 +75,7 @@ test('大记录接续：目录只带预览，历史按字节分批且单条裁�
   }
 })
 
-test('历史末包带 5MB input.local：帧仍在预算内，连接不断', async () => {
+test('历史末包带 5MB input.local：输入并入条目流按预算裁，末包不再带 inputs', async () => {
   const root = mkdtempSync(join(tmpdir(), 'big-meta-'))
   const magic = resolveMagicHome({}, root)
   const paths = runPathsOf(magic, tmpdir())
@@ -103,11 +103,66 @@ test('历史末包带 5MB input.local：帧仍在预算内，连接不断', asyn
     expect(client.closed).toBe(false)
     const done = events.findLast((event): event is Extract<KernelEvent, { kind: 'session.history' }> =>
       event.kind === 'session.history' && event.data.done)!
-    const inputs = done.data.inputs ?? []
-    expect(inputs).toHaveLength(1)
-    expect(inputs[0]?.data.text.length).toBeLessThan(bigText.length)
+    // 本地输入并入条目流（2026-11-24）——与其它历史条目同一条预算与预览规矩：
+    // 超预算的正文被裁并如实说明，条目不丢；末包不再单独带 inputs。
+    const entries = events.flatMap(event => event.kind === 'session.history' ? event.data.entries : [])
+    expect(entries).toHaveLength(3)
+    const localInput = entries.find(entry => entry.kind === 'user' && (entry.payload as { local?: boolean } | undefined)?.local === true)
+    expect(localInput?.content).toMatchObject({ text: expect.stringContaining('记录过大，显示已截断') })
+    expect('inputs' in done.data).toBe(false)
     const bytes = new TextEncoder().encode(JSON.stringify({ t: 'ev', gen: null, event: done })).byteLength
     expect(bytes).toBeLessThan(CONTROL_FRAME_BUDGET_BYTES + 4096)
+  } finally {
+    client.close()
+    started.manager.stop('测试收尾')
+    await started.manager.waitUntilExit()
+    store.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('plan.read 单独取计划：全文下发，零裁剪', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'plan-read-'))
+  const magic = resolveMagicHome({}, root)
+  const paths = runPathsOf(magic, tmpdir())
+  const store = createRecordsStore({ dataDir: magic.base, workspace: [root] })
+  const session = 'plan'
+  store.setSessionTitle(session, session, 1)
+  const service = store.serviceFor(session)
+  service.appendEntry({
+    kind: 'tool-result', at: 1,
+    content: { text: '已更新' },
+    payload: {
+      ok: true, output: { text: '已更新' },
+      plan: {
+        goal: '验证计划全文下发',
+        steps: Array.from({ length: 12 }, (_, index) => ({ text: `第${index + 1}步：这一步的说明足够长，落在旧 2KiB 均分预算里必然被截断——修复后必须一字不少。`.repeat(2), status: 'pending' as const })),
+        notes: '约束 · 已确认事实 · 未解决问题 · 回查线索：这条备注也要完整。',
+      },
+    },
+  })
+
+  const started = await startManager({ magic, paths, stopGraceMs: 10, stopKillMs: 10,
+    launch: { spawn() { throw new Error('读计划不能起执行者') } } })
+  if (started.role !== 'manager') throw new Error('隔离 Engine 未启动')
+  const client = await connectManager(paths.socket, { session })
+  if (!client) throw new Error('终端连接失败')
+  const events: KernelEvent[] = []
+  client.onEvent(event => events.push(event))
+  try {
+    await until(() => events.some(event => event.kind === 'session.history' && event.data.done), 20_000)
+    // 恢复不再附带计划。
+    const done = events.findLast((event): event is Extract<KernelEvent, { kind: 'session.history' }> =>
+      event.kind === 'session.history' && event.data.done)!
+    expect('plan' in done.data).toBe(false)
+    // 单独请求：全文回来，任何一步都不带截断标记。
+    client.send({ type: 'plan.read', requestId: 'probe' })
+    await until(() => events.some(event => event.kind === 'plan.changed' && event.data.requestId === 'probe'), 10_000)
+    const answer = events.findLast((event): event is Extract<KernelEvent, { kind: 'plan.changed' }> => event.kind === 'plan.changed')!
+    expect(answer.data.entry).toBe(1)
+    expect(answer.data.plan?.steps).toHaveLength(12)
+    expect(JSON.stringify(answer.data.plan)).not.toContain('记录过大，显示已截断')
+    expect(answer.data.plan?.notes).toContain('回查线索')
   } finally {
     client.close()
     started.manager.stop('测试收尾')

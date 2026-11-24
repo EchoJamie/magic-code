@@ -225,32 +225,6 @@ describe('协作记录 · 委派责任与等待', () => {
     } finally { f.close() }
   })
 
-  test('等待循环给具体链；先到结果可读；回执不解除等待；期限只产生一次事实', () => {
-    const f = fixture()
-    try {
-      const a = f.spawn('a'); const b = f.spawn('b'); f.accept(a.delegation.delegationId); f.accept(b.delegation.delegationId)
-      const ask = f.records.send(a.agent.agentId, { operationId: 'ask', recipients: [b.agent.agentId], purpose: 'question', body: body('API?'), at: 20 })
-      const waiting = f.records.registerWait(a.agent.agentId, { operationId: 'wait-a', forAgents: [b.agent.agentId], forMessageId: ask.messageId, delegationId: a.delegation.delegationId, expectation: 'API', deadline: 100, at: 21 })
-      expect(waiting.ok).toBe(true)
-      const cycle = f.records.registerWait(b.agent.agentId, { operationId: 'wait-b', forAgents: [a.agent.agentId], delegationId: b.delegation.delegationId, expectation: 'API', deadline: 100, at: 22 })
-      expect(cycle).toEqual({ ok: false, cycle: [b.agent.agentId, a.agent.agentId, b.agent.agentId] })
-      f.records.send(b.agent.agentId, { operationId: 'receipt', recipients: [a.agent.agentId], purpose: 'receipt', body: body('seen'), replyTo: ask.messageId, at: 23 })
-      expect(f.records.listWaits(f.collaboration.collaborationId)[0]?.state).toBe('waiting')
-      const reply = f.records.send(b.agent.agentId, { operationId: 'reply', recipients: [a.agent.agentId], purpose: 'reply', body: body('API ready'), replyTo: ask.messageId, at: 24 })
-      expect(f.records.listWaits(f.collaboration.collaborationId)[0]?.resultMessageId).toBe(reply.messageId)
-      const already = f.records.registerWait(a.agent.agentId, { operationId: 'already', forAgents: [b.agent.agentId], forMessageId: ask.messageId, delegationId: a.delegation.delegationId, expectation: 'API', deadline: 100, at: 25 })
-      expect(already.ok && already.wait.state).toBe('resolved')
-      const timeout = f.records.registerWait(b.agent.agentId, { operationId: 'timeout', forAgents: [f.coordinator.agentId], delegationId: b.delegation.delegationId, expectation: 'decision', deadline: 50, at: 26 })
-      expect(timeout.ok).toBe(true)
-      expect(f.records.expireWaits(49)).toEqual([])
-      expect(f.records.expireWaits(50).map(w => w.reason)).toEqual(['deadline reached'])
-      expect(f.records.expireWaits(51)).toEqual([])
-      f.records.registerWait(b.agent.agentId, { operationId: 'exit-wait', forAgents: [a.agent.agentId], delegationId: b.delegation.delegationId, expectation: 'more', deadline: 100, at: 52 })
-      f.records.setReachability(a.agent.agentId, 'historical')
-      expect(f.records.listWaits(f.collaboration.collaborationId).at(-1)?.reason).toBe('agent became historical')
-    } finally { f.close() }
-  })
-
   test('按委派来源闭包停止；其他排队责任保留；迟到结果保存但不可复活', () => {
     const f = fixture()
     try {
@@ -372,24 +346,6 @@ describe('协作记录 · 宿主接缝', () => {
     } finally { f.close() }
   })
 
-  test('等待终态独立回报，不伪造发送者；领取后跨重开不重复；旧停点不复活', () => {
-    const f = fixture()
-    try {
-      const a = f.spawn('a'); f.accept(a.delegation.delegationId)
-      f.records.registerWait(a.agent.agentId, { operationId: 'expired', forAgents: [f.coordinator.agentId], delegationId: a.delegation.delegationId, expectation: 'answer', deadline: 20, at: 15 })
-      const before = f.records.inbox(a.agent.agentId).length
-      f.records.expireWaits(20)
-      expect(f.records.inbox(a.agent.agentId)).toHaveLength(before)
-      expect(f.records.consumeWaitOutcomes(a.agent.agentId, 21)[0]?.reason).toBe('deadline reached')
-      const reopened = createRecordsStore({ dataDir: f.dir, workspace: [] })
-      try { expect(reopened.collaboration.consumeWaitOutcomes(a.agent.agentId, 22)).toEqual([]) } finally { reopened.close() }
-      f.records.registerWait(a.agent.agentId, { operationId: 'interrupted', forAgents: [f.coordinator.agentId], delegationId: a.delegation.delegationId, expectation: 'answer', deadline: 50, at: 23 })
-      f.records.stop({ kind: 'host' }, 'host stopped', 24)
-      expect(f.records.consumeWaitOutcomes(a.agent.agentId, 25)[0]?.state).toBe('interrupted')
-      expect(f.records.checkAdmission(a.agent.agentId, undefined, 'coordination').allowed).toBe(false)
-      expect(f.records.expireWaits(99)).toEqual([])
-    } finally { f.close() }
-  })
 })
 
 test('讨论邀请授权回查但不伪造原收件；发送给自己仅一条引用；普通条目口不能伪造协作来源', async () => {

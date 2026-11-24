@@ -7,7 +7,7 @@
  */
 import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import type { StoredRun } from './facts.ts'
-import { readRunsAt, replaceRunsAt, type RunRecord } from '@magic/data'
+import { readRunsAt, replaceRunsAt, type RecordsStore, type RunRecord } from '@magic/data'
 import type { RunPaths } from './paths.ts'
 
 export type ManagerRecord = {
@@ -61,11 +61,12 @@ export function clearRecord(paths: RunPaths): void {
 }
 
 /** 持久运行登记——读 `runs` 表；库还不存在＝没有登记（不是错误）。 */
-export function readRuns(paths: RunPaths): readonly StoredRun[] {
-  return readRunsAt(paths.dataDir).map(toStored)
+export function readRuns(source: { runs: { list(): readonly RunRecord[] } } | RunPaths): readonly StoredRun[] {
+  const records = 'dataDir' in source ? readRunsAt(source.dataDir) : source.runs.list()
+  return records.map(toStored)
 }
 
-function toStored(run: RunRecord): StoredRun {
+export function toStored(run: RunRecord): StoredRun {
   const state = run.state === 'failed' || run.state === 'starting' ? 'unknown' : run.state
   return {
     session: run.session ?? null,
@@ -103,10 +104,12 @@ function toRun(run: StoredRun, at: number): RunRecord {
   } as RunRecord
 }
 
-export function writeRuns(paths: RunPaths, runs: readonly StoredRun[], at: number): void {
+export function writeRuns(paths: RunPaths, runs: readonly StoredRun[], at: number, store?: Pick<RecordsStore, 'runs'>): void {
   // 运行登记现在落在 records.db 的 runs 表；整份快照替换，保持原文件的语义。
   try {
-    replaceRunsAt(paths.dataDir, runs.map(run => toRun(run, at)))
+    const records = runs.map(run => toRun(run, at))
+    if (store) store.runs.replaceAll(records)
+    else replaceRunsAt(paths.dataDir, records)
   } catch (error) {
     throw new Error(`运行归属登记失败：${String(error)}`)
   }

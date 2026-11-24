@@ -33,8 +33,6 @@ export function memberState(member: CollaborationMemberView): string {
   if (member.pendingDecisions > 0) return `需要你：${member.runtime?.action ?? `${member.pendingDecisions} 项操作待审批`}`
   if (member.runtime?.state === 'stopping') return '正在停止，收尾待确认'
   if (member.agent.reachability === 'suspended') return '执行中断，待处理'
-  if (member.waiting?.state === 'waiting') return `等待：${member.waiting.expectation}`
-  if (member.waiting?.state === 'expired') return `等待超时：${member.waiting.expectation}`
   if (member.delegation?.state === 'clarification') return `需要澄清：${member.delegation.reason ?? member.delegation.scope}`
   if (member.runtime?.backgroundWaiting) return '等待后台结果'
   if (member.runtime?.state === 'running') return member.runtime.action ?? '执行中'
@@ -67,8 +65,6 @@ function memberMark(member: CollaborationMemberView): string {
   if (member.pendingDecisions > 0) return MARKS.ring
   if (member.runtime?.state === 'stopping') return MARKS.dot
   if (member.agent.reachability === 'suspended') return MARKS.error
-  if (member.waiting?.state === 'expired') return MARKS.warn
-  if (member.waiting?.state === 'waiting') return MARKS.dot
   if (member.delegation?.state === 'clarification') return MARKS.ring
   if (member.runtime?.backgroundWaiting) return MARKS.dot
   if (member.runtime?.state === 'running') return MARKS.dot
@@ -96,8 +92,6 @@ function memberTone(member: CollaborationMemberView): 'run' | 'wait' | 'danger' 
   if (member.pendingDecisions > 0) return 'wait'
   if (member.runtime?.state === 'stopping') return 'run'
   if (member.agent.reachability === 'suspended') return 'danger'
-  if (member.waiting?.state === 'waiting') return 'run'
-  if (member.waiting?.state === 'expired') return 'danger'
   if (member.delegation?.state === 'clarification') return 'wait'
   if (member.runtime?.backgroundWaiting) return 'run'
   if (member.runtime?.state === 'running') return 'run'
@@ -118,9 +112,9 @@ export function collaborationSummary(snapshot: CollaborationView | undefined): s
   const members = snapshot.members.filter(one => !consultationEnded(one) && one.agent.reachability !== 'historical')
   const running = members.filter((one) => one.runtime?.state === 'running' && !one.runtime.backgroundWaiting && (!one.runtime.background || one.runtime.action !== undefined)).length
   const needs = members.filter((one) => one.pendingDecisions > 0 || one.delegation?.state === 'clarification')
-  const waiting = members.filter((one) => one.waiting?.state === 'waiting' || one.runtime?.backgroundWaiting).length
+  const waiting = members.filter((one) => one.runtime?.backgroundWaiting).length
   const stopping = members.some((one) => one.runtime?.state === 'stopping')
-  const blocked = members.filter((one) => (one.agent.reachability === 'suspended' && one.delegation?.state !== 'cancelled') || one.waiting?.state === 'expired' || one.runtime?.state === 'unknown' || one.runtime?.lastTurn === 'error' || one.delegation?.state === 'rejected')
+  const blocked = members.filter((one) => (one.agent.reachability === 'suspended' && one.delegation?.state !== 'cancelled') || one.runtime?.state === 'unknown' || one.runtime?.lastTurn === 'error' || one.delegation?.state === 'rejected')
   const coordinator = members.find((one) => one.agent.agentId === snapshot.collaboration?.coordinatorId)
   const interrupted = coordinator === undefined || coordinator.agent.reachability !== 'active' || coordinator.runtime?.state === 'stopped' || coordinator.runtime?.state === 'unknown' || coordinator.runtime?.lastTurn === 'error'
   const facts = [
@@ -170,7 +164,7 @@ export function collaborationStatus(view: ShellView): ShellStatus {
   const members = view.collaboration.members.filter(one => !consultationEnded(one))
   const needs = members.reduce((sum, member) => sum + member.pendingDecisions, 0)
   if (needs > 0) return { ...view.status, state: 'waiting', amount: `${needs} 项` }
-  if (members.some((member) => (member.runtime?.state === 'running' && !member.runtime.backgroundWaiting && (!member.runtime.background || member.runtime.action !== undefined)) || member.runtime?.state === 'stopping' || (member.waiting?.state === 'waiting' && !waiting))) {
+  if (members.some((member) => (member.runtime?.state === 'running' && !member.runtime.backgroundWaiting && (!member.runtime.background || member.runtime.action !== undefined)) || member.runtime?.state === 'stopping')) {
     return { ...view.status, state: 'working', amount: null }
   }
   return status
@@ -210,7 +204,7 @@ export function memberForSession(snapshot: CollaborationView | undefined, sessio
  * （2026-11-22 用户裁定：尽量少用状态词汇，不要文字状态描述）。
  */
 export function memberRows(snapshot: CollaborationView, currentSession?: SessionId | null): readonly PickerRow[] {
-  const priority = (member: CollaborationMemberView): number => member.pendingDecisions > 0 ? 0 : member.waiting || member.delegation?.state === 'clarification' ? 1 : 2
+  const priority = (member: CollaborationMemberView): number => member.pendingDecisions > 0 ? 0 : member.delegation?.state === 'clarification' ? 1 : 2
   return [...snapshot.members]
     .filter((one) => currentSession == null || one.agent.sessionId !== currentSession)
     .sort((a, b) => priority(a) - priority(b))
@@ -234,8 +228,6 @@ function memberContent(member: CollaborationMemberView): string {
   }
   if (member.pendingDecisions > 0) return member.runtime?.action ?? `${member.pendingDecisions} 项`
   if (member.agent.reachability === 'suspended') return ''
-  if (member.waiting?.state === 'expired') return member.waiting.expectation
-  if (member.waiting?.state === 'waiting') return member.waiting.expectation
   if (member.delegation?.state === 'clarification') return member.delegation.reason ?? member.delegation.scope
   if (member.runtime?.backgroundWaiting) return `后台 ${member.runtime.background ?? 0} 个`
   if (member.runtime?.state === 'running') return member.runtime.action ?? member.delegation?.scope ?? ''

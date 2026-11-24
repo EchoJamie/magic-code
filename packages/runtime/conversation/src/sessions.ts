@@ -164,6 +164,11 @@ export type SessionHost = Omit<ConversationService, 'rebuild'> & {
    */
   readHistory(session?: SessionId): Promise<void>
   /**
+   * **当前计划**（`plan.read` 的落点）——全文推 `plan.changed`（**不落库**），
+   * 零裁剪。`session` 不给＝当下这条。
+   */
+  readPlanSnapshot(session?: SessionId, requestId?: string): Promise<void>
+  /**
    * **导出原图**（`image.export` 的落点 · U110）——字节**从记录里取**（不碰原路径），
    * 落盘经装配注入的 `saveImage`；答复走事件（`image.exported`，**不落库**）。
    *
@@ -300,26 +305,20 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
     if (target === undefined || target !== active?.session) return
 
     const stamper = current().stamper
-    let batch: Entry[] = []
-    let seen = 0
 
-    for await (const entry of readSessionDisplayHistory(deps.records,target)) {
-      batch.push(entry)
-      seen += 1
-      if (batch.length >= HISTORY_CHUNK) {
-        deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: false }))
-        batch = []
-      }
-    }
-
-    const inputs: Extract<KernelEvent,{kind:'input.local'}>[] = []
+    /**
+     * 本地输入**并入条目流**（2026-11-24 收权）：它们本来就是转录里的用户行——
+     * 与其它条目同一条流、同一条规矩，不再作为 meta 单独裁剪。事件与条目共用
+     * 同一个 id 序列（`nextId`），按 id 归并即得历史原序。
+     */
+    const localInputs: Extract<KernelEvent, { kind: 'input.local' }>[] = []
     const timing: TurnTimingEvent[] = []
     // **最后那一次调用的读数**（见 `session.history.usage`）——与在场时状态行 ④ 同一条规矩
     let lastUsage: { inputTokens?: number; contextWindow?: number } | undefined
     let lastBudget: number | undefined
     let started = false
     for await (const event of deps.records.readEvents(target)) {
-      if(event.kind==='input.local') inputs.push(event)
+      if(event.kind==='input.local') localInputs.push(event)
       if(isTurnTimingEvent(event)) timing.push(event)
       if(event.kind==='model.call.start'){ started = true; lastBudget = event.data.inputBudget }
       if(event.kind==='model.usage') lastUsage = { inputTokens: event.data.inputTokens, contextWindow: event.data.contextWindow }
@@ -329,11 +328,51 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
       ...(started ? (lastBudget === undefined ? {} : { contextWindow: lastBudget })
         : (lastUsage.contextWindow === undefined ? {} : { contextWindow: lastUsage.contextWindow })),
     }
+    const woven = localInputs.map(event => ({
+      id: event.id, kind: 'user' as const, at: event.at,
+      content: { text: event.data.text }, payload: { local: true as const, inputRefs: event.data.refs },
+    })).sort((a, b) => a.id - b.id)
+    const wove = woven[Symbol.iterator]()
+
+    let batch: Entry[] = []
+    let nextInput = wove.next()
+
+    const push = (entry: Entry): void => {
+      batch.push(entry)
+      if (batch.length >= HISTORY_CHUNK) {
+        deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: false }))
+        batch = []
+      }
+    }
+
+    for await (const entry of readSessionDisplayHistory(deps.records,target)) {
+      while (nextInput.done === false && nextInput.value.id < entry.id) { push(nextInput.value); nextInput = wove.next() }
+      push(entry)
+    }
+    while (nextInput.done === false) { push(nextInput.value); nextInput = wove.next() }
 
     // 末块：`done: true`（一条都没有时也发——「这条会话是空的」是要说清楚的事实，
     // 否则外壳等不到收尾，屏上永远停在「正在重建」）
-    deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: true, inputs, timing, ...(usage === undefined ? {} : { usage }), ...(deps.readPlan === undefined ? {} : { plan: await deps.readPlan(target) }) }))
-    void seen
+    deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: true, timing, ...(usage === undefined ? {} : { usage }) }))
+  }
+
+  /**
+   * **当前计划笔记**（`plan.read` 的答复面）——全文下发，零裁剪。
+   *
+   * 计划是面板的主数据，2026-11-24 起不搭历史帧的车：命令进、事件出
+   * （`plan.changed` 带 `requestId`）。
+   */
+  async function readPlanSnapshot(session?: SessionId, requestId?: string): Promise<void> {
+    const target = session ?? active?.session
+    if (target === undefined || target !== active?.session) return
+
+    const stamper = current().stamper
+    const snapshot = deps.readPlan === undefined
+      ? { entry: null, plan: null }
+      : await deps.readPlan(target)
+    deps.sink.emit(stamper.stamp('plan.changed', {
+      ...(requestId === undefined ? {} : { requestId }), entry: snapshot.entry, plan: snapshot.plan,
+    }))
   }
 
   /**
@@ -413,6 +452,7 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
     interrupt: () => active?.service.interrupt(),
     rebuild,
     readHistory,
+    readPlanSnapshot,
     exportImage,
 
     listSessions: () => catalog(),

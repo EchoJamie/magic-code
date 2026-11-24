@@ -55,8 +55,11 @@ export async function startResidentHost(sandbox: Sandbox, evidence = join(sandbo
     }
     if (discovery?.state !== 'ready' || discovery.pid !== child.pid) throw new Error(`隔离 Engine 未就绪：${JSON.stringify(discovery)}`)
     const logs = join(discovery.base, 'logs')
+    // 进程隔离后执行者日志以**子进程自己的 pid**命名（进程内时代与引擎同 pid）——
+    // 数「本宿主起来之后新增的执行者日志」：宿主复用同一数据目录时，只数增量。
+    const knownAtStart = new Set(readdirSync(logs))
     return { pid: child.pid, discovery, evidence, close,
-      executorStarts: () => readdirSync(logs).filter(name => name.startsWith(`executor-${child.pid}-`)).reduce((sum, name) =>
+      executorStarts: () => readdirSync(logs).filter(name => name.startsWith('executor-') && !knownAtStart.has(name)).reduce((sum, name) =>
         sum + readFileSync(join(logs, name), 'utf8').split('\n').filter(line => line.includes('"event":"executor.started"')).length, 0),
     }
   } catch (error) { try { await close() } catch {} throw error }

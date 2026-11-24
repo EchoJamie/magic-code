@@ -131,66 +131,6 @@ describe('协作记录 · 共享连接上的并发请求', () => {
     } finally { f.close() }
   }, 30000)
 
-  test('并发截止只产生一次超时事实，并发唤起只允许一个运行实例', async () => {
-    const f = fixture()
-    try {
-      const a = f.spawn('a'); f.accept(a.delegation.delegationId)
-      f.records.registerWait(a.agent.agentId, { operationId: 'wait', forAgents: [f.coordinator.agentId], delegationId: a.delegation.delegationId, expectation: 'result', deadline: 50, at: 15 })
-      const result = await race(f.records, [0, 1].map(() => ({ method: 'expireWaits', args: [50] })))
-      expect(result.flatMap(r => r.ok ? r.value : [])).toHaveLength(1)
-      const started = await race(f.records, [0, 1].map(i => ({ method: 'beginExecution', args: [a.agent.agentId, { operationId: `wake-${i}`, delegationId: a.delegation.delegationId, runId: `run-${i}`, kind: 'wake', at: 51 }] })))
-      expect(started.filter(r => r.ok)).toHaveLength(1)
-      expect(started.some(r => !r.ok && r.error.includes('executor'))).toBe(true)
-    } finally { f.close() }
-  }, 30000)
-})
-
-test('等待终态多调用原子领取，断通知后可补领且仅回报一次', async () => {
-  const f = fixture()
-  try {
-    const a = f.spawn('a'); f.accept(a.delegation.delegationId)
-    f.records.registerWait(a.agent.agentId, { operationId: 'wait-outcome', forAgents: [f.coordinator.agentId], delegationId: a.delegation.delegationId, expectation: 'answer', deadline: 20, at: 15 })
-    f.records.expireWaits(20)
-    const results = await race(f.records, [0, 1].map(() => ({ method: 'consumeWaitOutcomes', args: [a.agent.agentId, 21] })))
-    expect(results.every(r => r.ok)).toBe(true)
-    expect(results.flatMap(r => r.ok ? r.value : [])).toHaveLength(1)
-    expect(f.records.consumeWaitOutcomes(a.agent.agentId, 22)).toEqual([])
-  } finally { f.close() }
-}, 30000)
-
-test('已领取等待终态的请求带入确认多调用幂等，保留首次时间且不重复领取', async () => {
-  const f = fixture()
-  try {
-    const child = f.spawn('wait-inclusion')
-    const registered = f.records.registerWait(f.coordinator.agentId, { operationId: 'wait-inclusion',
-      forAgents: [child.agent.agentId], expectation: '结果', deadline: 20, at: 15 })
-    if (!registered.ok) throw new Error('unexpected wait cycle')
-    f.records.expireWaits(20)
-    const claimed = f.records.consumeWaitOutcomes(f.coordinator.agentId, 21)[0]!
-    const results = await race(f.records, [22, 23].map(at => ({ method: 'markWaitOutcomesIncluded',
-      args: [f.coordinator.agentId, [registered.wait.waitId], at] })))
-    expect(results.every(result => result.ok)).toBe(true)
-    const confirmed = f.records.listWaits(f.collaboration.collaborationId)[0]!
-    expect(confirmed.includedAt === 22 || confirmed.includedAt === 23).toBe(true)
-    expect(confirmed).toEqual({ ...claimed, includedAt: confirmed.includedAt })
-    f.records.markWaitOutcomesIncluded(f.coordinator.agentId, [registered.wait.waitId], 24)
-    expect(f.records.listWaits(f.collaboration.collaborationId)[0]).toEqual(confirmed)
-    expect(f.records.consumeWaitOutcomes(f.coordinator.agentId, 25)).toEqual([])
-  } finally { f.close() }
-}, 30000)
-
-test('相反等待并发登记仍由同一事务拒绝形成循环的那一条', async () => {
-  const f = fixture()
-  try {
-    const a = f.spawn('a'); const b = f.spawn('b'); f.accept(a.delegation.delegationId); f.accept(b.delegation.delegationId)
-    const result = await race(f.records, [[a, b], [b, a]].map(([from, to], index) => ({ method: 'registerWait', args: [from!.agent.agentId, { operationId: `cycle-${index}`, forAgents: [to!.agent.agentId], delegationId: from!.delegation.delegationId, expectation: 'result', deadline: 50, at: 15 }] })))
-    expect(result.every(r => r.ok)).toBe(true)
-    expect(result.filter(r => r.ok && r.value.ok)).toHaveLength(1)
-    expect(result.filter(r => r.ok && !r.value.ok && r.value.cycle.length === 3)).toHaveLength(1)
-    expect(f.records.listWaits(f.collaboration.collaborationId)).toHaveLength(1)
-  } finally { f.close() }
-}, 30000)
-
 test('接受与撤回并发后责任只能是已取消，不能从迟到接受重开', async () => {
   const f = fixture()
   try {
@@ -246,3 +186,4 @@ test('接受 A 与停止 queued B/无绑定判断并发：A 先接受则不停 A
     }
   } finally { f.close() }
 }, 30000)
+})

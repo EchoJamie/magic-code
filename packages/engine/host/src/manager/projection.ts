@@ -114,7 +114,7 @@ export function installProjection(ctx: ManagerContext): void {
       const one = storedRunOf(executor.run)
       if (one !== undefined) outstanding.push(one)
     }
-    writeRuns(paths, [...history.slice(-STORED_RUNS_LIMIT), ...outstanding], now())
+    writeRuns(paths, [...history.slice(-STORED_RUNS_LIMIT), ...outstanding], now(), store)
   }
 
   function publishPreferences(except?: ClientConn): void {

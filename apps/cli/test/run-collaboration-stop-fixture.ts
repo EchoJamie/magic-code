@@ -145,7 +145,7 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
     },
     async snapshot() {
       const work = collaboration()
-      return { collaboration: work, members: members(), delegations: delegations(), waits: work && store.collaboration.listWaits(work.collaborationId),
+      return { collaboration: work, members: members(), delegations: delegations(),
         messages: work && store.collaboration.listMessages(work.coordinatorId),
         entries: Object.fromEntries(await Promise.all(members().map(async agent => [agent.sessionId, await Array.fromAsync(store.readEntries(agent.sessionId))]))),
         runs: manager.runs(), storedRuns: storedRuns(),

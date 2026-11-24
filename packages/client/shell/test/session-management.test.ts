@@ -43,7 +43,8 @@ describe('会话整理', () => {
     a.key('enter')
     expect(a.spy.commands.at(-1)).toEqual({ type: 'history.read', session: archived.id })
     expect(a.picker().reader?.title).toContain('已归档')
-    a.spy.emit(event('session.history', { session: archived.id, entries: [{ id: 1, at: 1, kind: 'assistant', content: { text: '保存的历史' } }], inputs: [event('input.local', { text: '/rename 旧工作', refs: [], ref: 'local-history' })], timing: [event('turn.start', {}, { id: 10, session: archived.id }), event('turn.end', { reason: 'settled' }, { id: 1010, session: archived.id })], done: true }))
+    // 本地输入由引擎并入条目流（2026-11-24）——历史帧不再带 `inputs` meta。
+    a.spy.emit(event('session.history', { session: archived.id, entries: [{ id: 1, at: 1, kind: 'assistant', content: { text: '保存的历史' } }, { id: 2, at: 2, kind: 'user', content: { text: '/rename 旧工作' }, payload: { local: true, inputRefs: [] } }], timing: [event('turn.start', {}, { id: 10, session: archived.id }), event('turn.end', { reason: 'settled' }, { id: 1010, session: archived.id })], done: true }))
     expect(JSON.stringify(a.picker().reader?.rows)).toContain('保存的历史')
     expect(JSON.stringify(a.picker().reader?.rows)).toContain('/rename 旧工作')
     expect(a.picker().reader?.rows.find(row => row.kind === 'round')).toMatchObject({ kind: 'round', timing: { end: 1_700_000_001_010 } })

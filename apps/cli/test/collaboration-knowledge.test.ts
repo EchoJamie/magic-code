@@ -136,9 +136,7 @@ test('实际系统请求中的职责/委派范围/等待描述保留，身份与
     const child = f.spawn('child', { sessionId: 'origin', entryId })
     expect(f.store.knowledge.write([{ ...f.change, id: 'local', topic: '下一步', conclusion: '独立当前认识' }]).ok).toBe(true)
     const own = f.store.serviceFor('child')
-    const waiting = own.appendEntry({ kind: 'tool-call', content: { text: '' }, payload: { id: 'call-fixture-2', name: 'agent_wait', args: { expectation: OLD }, knowledge: [{ id: 'K', revision: 1 }] }, at: 11 })
-    f.records.registerWait(child.agent.agentId, { operationId: 'wait', forAgents: [f.coordinator.agentId], expectation: OLD, deadline: Date.now() + 100_000,
-      delegationId: child.delegation.delegationId, generatedFrom: { sessionId: 'child', entryId: waiting }, at: 12 })
+    own.appendEntry({ kind: 'tool-call', content: { text: '' }, payload: { id: 'call-fixture-2', name: 'agent_list', args: {}, knowledge: [{ id: 'K', revision: 1 }] }, at: 11 })
     f.records.publishConstraint(f.coordinator.agentId, { operationId: 'user-constraint', source: f.origin, body: [{ kind: 'entry', ref: f.origin }], at: 13 })
     // 将既有消息放到覆盖范围之后只留下系统描述，证明来源不是被普通正文碰巧补上。
     f.records.consumeInbox(child.agent.agentId, 14)
@@ -168,7 +166,6 @@ test('实际系统请求中的职责/委派范围/等待描述保留，身份与
     expect(JSON.stringify(requests[3]!.messages)).toContain(OLD)
     expect(requests[3]!.messages.some(message => message.role === 'tool' && message.name === 'agent_list' && message.ok)).toBe(true)
     expect(f.records.getDelegation(child.delegation.delegationId)?.state).toBe('accepted')
-    expect(f.records.listWaits(f.collaboration.collaborationId)[0]?.state).toBe('waiting')
     const last = (await Array.fromAsync(own.readEntries('child'))).findLast(entry => entry.kind === 'assistant')!
     expect(last.payload !== undefined && 'knowledge' in last.payload && last.payload.knowledge?.some(reference => reference.id === 'K')).toBe(true)
   } finally { shell?.dispose(); await app?.shutdown(); f.close() }
@@ -230,8 +227,6 @@ test('实际模型交付沿调用保留来源，交付/接收事实不随遗忘�
 test('模型停止理由沿本次调用保留依赖，固定宿主理由独立保留且停止事实不变', async () => {
   const f = fixture()
   const child = f.spawn('child')
-  f.records.registerWait(f.coordinator.agentId, { operationId: 'wait-child', forAgents: [child.agent.agentId], forMessageId: child.delegation.delegationId,
-    expectation: '等待成员核对', deadline: Date.now() + 100_000, at: 10 })
   const actions = createCollaborationActions({ records: f.records, now: Date.now, origin: async () => f.origin,
     resolveModel: async () => f.model, start: async () => {}, wake: () => {}, cancel: async () => {}, changed: () => {} })
   const app = f.stage.assemble({ session: 'origin', collaboration: (session, request) => actions.request(f.records.agentForSession(session)!.agentId, request), turns: [
@@ -245,17 +240,9 @@ test('模型停止理由沿本次调用保留依赖，固定宿主理由独立�
     const stopped = f.records.getDelegation(child.delegation.delegationId)!
     expect(stopped.state).toBe('cancelled')
     expect(stopped.reasonFrom?.sessionId).toBe('origin')
-    expect(f.records.listWaits(f.collaboration.collaborationId)[0]?.reasonFrom).toEqual(stopped.reasonFrom)
     f.store.knowledge.forget({ id: 'K', expectedRevision: 1, requestId: 'forget-stop' })
-    await shell.submit('核对当前责任与等待')
+    await shell.submit('核对当前责任')
     expect(JSON.stringify(lastModel(f.stage).requests.slice(2).flatMap(request => request.messages))).toContain(OLD)
     expect(f.records.getDelegation(child.delegation.delegationId)?.state).toBe('cancelled')
-    expect(f.records.listWaits(f.collaboration.collaborationId)[0]?.state).toBe('interrupted')
-    const other = f.spawn('other')
-    f.records.registerWait(f.coordinator.agentId, { operationId: 'wait-other', forAgents: [other.agent.agentId], expectation: '独立等待', deadline: Date.now() + 100_000, at: 20 })
-    f.records.interruptWaits(f.coordinator.agentId, '用户明确的固定停止理由')
-    await shell.submit('核对用户停点')
-    expect(JSON.stringify(lastModel(f.stage).requests.at(-1)!.messages)).toContain('用户明确的固定停止理由')
-    expect(f.records.listWaits(f.collaboration.collaborationId).at(-1)?.reasonFrom).toBeUndefined()
   } finally { shell.dispose(); await app.shutdown(); f.close() }
 })

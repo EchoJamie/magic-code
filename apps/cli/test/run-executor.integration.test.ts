@@ -732,7 +732,9 @@ describe('执行者进程隔离', () => {
   test('子进程连回管理者跑完整一轮后自退；接续照旧，停止时一并收场', async () => {
     const complete = { kind: 'text' as const, text: '完成', chunks: 1, chunkDelayMs: 0 }
     const g = ground('process-isolation', 'settled', [complete, complete])
-    const manager = await standUp(g, createProcessLauncher())
+    // 执行者环境可来自窗口，临时目录不同也必须连接管理者实际监听的地址。
+    g.environment.TMPDIR = g.ws
+    const manager = await standUp(g, { launch: createProcessLauncher() })
     const client = await open(g, manager, 'isolated')
     const records = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
     let completed = 0

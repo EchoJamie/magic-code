@@ -459,10 +459,9 @@ function bodyOf(draft: string, refs: readonly DraftRef[]): string {
   return out + draft.slice(cursor)
 }
 
-/** 当前正文与目录预览共用保存历史的条目投影，保留本地命令记录。 */
+/** 当前正文与目录预览共用保存历史的条目投影。本地输入已由引擎并入条目流（2026-11-24）。 */
 function historyEntries(data: Extract<KernelEvent, { kind: 'session.history' }>['data']): Entry[] {
-  return [...data.entries, ...(data.inputs ?? []).map(event => ({ id: event.id, kind: 'user' as const, at: event.at,
-    content: { text: event.data.text }, payload: { local: true as const, inputRefs: event.data.refs } }))]
+  return [...data.entries]
 }
 
 /** 建会话壳——**构造即订阅**（先接订阅、后放开输入）。 */
@@ -1175,7 +1174,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         preview.entries.push(...historyEntries(event.data))
         preview.entries.sort((a, b) => a.at - b.at || a.id - b.id)
         const picker = view.dock.picker
-        const rebuilt = rebuild(createView(), preview.entries, { ...(event.data.plan === undefined ? {} : { plan: event.data.plan }), ...(event.data.timing === undefined ? {} : { timing: event.data.timing }) })
+        const rebuilt = rebuild(createView(), preview.entries, { ...(event.data.timing === undefined ? {} : { timing: event.data.timing }) })
         commit({ ...view, dock: { kind: 'picker', picker: { ...picker, reader: { ...picker.reader!,
           title: picker.reader!.title.replace(' · 正在读取', event.data.done ? '' : ' · 正在读取'), rows: [...rebuilt.settled, ...rebuilt.rows] } } } })
         if (event.data.done) preview = null
@@ -1417,7 +1416,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     for (const event of data.compactions ?? []) view = reduce(view, event)
     const unconfirmed = [...view.settled, ...view.rows].filter(row => row.kind === 'user' && row.inputState !== undefined && !view.pendingInputs.some(input => input.ref === row.inputRef && input.entry !== undefined))
     const rebuilt = rebuild(view, rebuildEntries, {
-      ...(data.plan === undefined ? {} : { plan: data.plan }),
       ...(data.timing === undefined ? {} : { timing: data.timing }),
       ...(data.messages === undefined ? {} : { messages: data.messages }),
     })
@@ -1442,6 +1440,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     })
     rebuildFor = null
     rebuildEntries = []
+
+    // 计划不再搭历史帧（2026-11-24）——重建收尾后单独取一次当前计划：
+    // 答复走 `plan.changed`（全文、零裁剪），清单由此上屏。
+    send({ type: 'plan.read', requestId: crypto.randomUUID(), session: data.session })
 
     drawResumed()
   }

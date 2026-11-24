@@ -5,7 +5,6 @@ import type { ExecutorToManager, Link, ManagerToExecutor, Wire } from '@magic/ho
 import { localLinks } from './wire.ts'
 import { runExecutor } from './executor.ts'
 import { runtimeLaunch } from './runtime-launch.ts'
-import { dirname } from 'node:path'
 
 export type ExecutorLauncher = {
   spawn(request: ExecutorSpawn): ExecutorSpawned
@@ -25,6 +24,8 @@ export type ExecutorSpawn = {
   readonly gen: number
   /** 发车令牌——它连上来时按这个认。 */
   readonly executionId: string
+  /** 管理者实际监听的地址，不由执行者按自己的环境重新计算。 */
+  readonly socket: string
   /** 开工那条会话（显式接续时就有）；`null` ＝ 让它自己开张（D5）。 */
   readonly session: string | null
   /** **启动目录**——工作区默认根（配置没写 `workspaceRoots` 时就是它）。 */
@@ -173,10 +174,9 @@ export function createProcessLauncher(options: ProcessLauncherOptions = {}): Exe
         ...(options.command ?? runtimeLaunch()),
         'executor',
         '--execution-id', request.executionId,
+        '--socket', request.socket,
         '--home', request.magic.home,
-        // `--parent` 是**基础路径的根**（MAGIC_HOME）——executor 那头按 root 再拼 `.magic`；
-        // 传 base 会多出一层（`…/.magic/.magic`），子进程连不上管理者的 socket（69d785a 起）。
-        '--parent', dirname(request.magic.base),
+        '--base', request.magic.base,
         '--cwd', request.cwd,
         ...(request.session === null ? [] : ['--session', request.session]),
         ...(request.switch === undefined ? [] : ['--switch', JSON.stringify(request.switch)]),
@@ -184,11 +184,25 @@ export function createProcessLauncher(options: ProcessLauncherOptions = {}): Exe
       try {
         child = Bun.spawn(argv, {
           env: childEnv(request.environment),
-          stdin: 'ignore', stdout: 'ignore', stderr: 'ignore',
+          stdin: 'ignore', stdout: 'ignore', stderr: 'inherit',
         })
       } catch (error) {
         options.log?.(`执行者子进程没起来：${String(error)}`)
         throw error
+      }
+      if (child.stderr !== undefined && typeof child.stderr !== 'number' && options.log !== undefined) {
+        const log = options.log
+        const stream = child.stderr
+        void (async () => {
+          try {
+            const reader = (stream as unknown as ReadableStream<Uint8Array>).getReader()
+            for (;;) {
+              const { done, value } = await reader.read()
+              if (done) break
+              log(new TextDecoder().decode(value).trimEnd())
+            }
+          } catch { /* 子进程已退——读流自然结束 */ }
+        })()
       }
       void child.exited.then(code => {
         pending.delete(request.executionId)
@@ -203,6 +217,7 @@ export function createProcessLauncher(options: ProcessLauncherOptions = {}): Exe
         link: channel.link,
         onExit(listener) { exitListeners.push(listener) },
         cancel() {
+          pending.delete(request.executionId)
           pending.delete(request.executionId)
           try { child?.kill() } catch { /* 已退——不追 */ }
         },

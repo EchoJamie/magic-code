@@ -1,5 +1,5 @@
 /** 同一工作的身份、持久通信与准入事实。仅宿主持有写端口；actor 由执行连接注入。 */
-import type { AgentId, CollaborationId, DelegationId, MessageId, OperationId, RecordId, SessionId, Timestamp, WaitId } from '../shared/ids.ts'
+import type { AgentId, CollaborationId, DelegationId, MessageId, OperationId, RecordId, SessionId, Timestamp } from '../shared/ids.ts'
 import type { ModelChoice, ReasoningSetting } from '../shared/model.ts'
 
 export type AgentModelConfig = import('../shared/model.ts').ModelSource & { readonly choice: ModelChoice; readonly provider: string; readonly model: string; readonly reasoning?: ReasoningSetting }
@@ -84,26 +84,6 @@ export type Delegation = {
   readonly reason?: string
   readonly at: Timestamp
 }
-export type CollaborationWait = {
-  readonly generatedFrom?: EntryReference
-  readonly reasonFrom?: EntryReference
-  readonly waitId: WaitId
-  readonly collaborationId: CollaborationId
-  readonly agentId: AgentId
-  readonly delegationId?: DelegationId
-  readonly forAgents: readonly AgentId[]
-  readonly forMessageId?: MessageId
-  readonly expectation: string
-  readonly deadline: Timestamp
-  readonly state: 'waiting' | 'resolved' | 'expired' | 'interrupted'
-  readonly reason?: string
-  readonly resultMessageId?: MessageId
-  /** 终态已由宿主领取；不代表已带入模型请求、模型理解或行动。 */
-  readonly handledAt?: Timestamp
-  /** 宿主确认终态实际进入模型请求；与领取事实分开，保留首次确认时间。 */
-  readonly includedAt?: Timestamp
-  readonly at: Timestamp
-}
 export type SharedConstraint = {
   readonly messageId: MessageId
   readonly collaborationId: CollaborationId
@@ -145,7 +125,6 @@ export type OperationResult =
   | { readonly kind: 'delegation'; readonly delegationId: DelegationId }
   /** 按受理动作区分；message 仅用于 send，不能跨动作复用 operationId。 */
   | { readonly kind: 'message' | 'delivery' | 'constraint'; readonly messageId: MessageId }
-  | { readonly kind: 'wait'; readonly waitId: WaitId }
   | { readonly kind: 'execution'; readonly operationId: OperationId }
 export type OperationInput = { readonly operationId: OperationId; readonly at: Timestamp; readonly generatedFrom?: EntryReference }
 export type RegisterAgentInput = OperationInput & { readonly sessionId: SessionId; readonly name: string; readonly role: string; readonly responsibility?: string; readonly model: AgentModelConfig }
@@ -215,14 +194,8 @@ export interface CollaborationRecords {
   publishConstraint(actor: AgentId, input: OperationInput & { readonly source: EntryReference; readonly body: readonly MessagePart[]; readonly affectedAgents?: readonly AgentId[]; readonly replaces?: MessageId }): AgentMessage
   listConstraints(collaborationId: CollaborationId): readonly SharedConstraint[]
   constraintStatus(messageId: MessageId): readonly { readonly agentId: AgentId; readonly state: 'pending' | 'consumed' | 'included' }[]
-  registerWait(actor: AgentId, input: OperationInput & { readonly forAgents: readonly AgentId[]; readonly forMessageId?: MessageId; readonly delegationId?: DelegationId; readonly expectation: string; readonly deadline: Timestamp }): { readonly ok: true; readonly wait: CollaborationWait } | { readonly ok: false; readonly cycle: readonly AgentId[] }
-  listWaits(collaborationId: CollaborationId): readonly CollaborationWait[]
-  expireWaits(at: Timestamp): readonly CollaborationWait[]
   /** 原子领取尚未领取的等待终态，不伪造成员消息，也不标记实际请求带入。 */
-  consumeWaitOutcomes(agentId: AgentId, at: Timestamp): readonly CollaborationWait[]
   /** 仅确认本 actor 已领取的终态；整批原子、幂等，空数组无事。 */
-  markWaitOutcomesIncluded(agentId: AgentId, waitIds: readonly WaitId[], at: Timestamp): void
-  interruptWaits(agentId: AgentId, reason: string, generatedFrom?: EntryReference): readonly CollaborationWait[]
   checkAdmission(agentId: AgentId, delegationId?: DelegationId, mode?: 'work' | 'coordination'): AdmissionDecision
   beginExecution(actor: AgentId, input: OperationInput & { readonly delegationId?: DelegationId; readonly runId: string; readonly kind: ExecutionAdmission['kind']; readonly mode?: 'work' | 'coordination' }): ExecutionAdmission
   finishExecution(operationId: OperationId, reason?: string): void

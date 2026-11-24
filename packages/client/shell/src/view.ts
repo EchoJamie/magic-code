@@ -1393,9 +1393,9 @@ function appendSettled(view: ShellView, row: LogRow): ShellView {
   return { ...view, settled: [...view.settled, row] }
 }
 
-export function rebuild(view: ShellView, entries: readonly Entry[], options: { readonly plan?: PlanSnapshot; readonly collapseTools?: boolean; readonly timing?: readonly TurnTimingEvent[]; readonly messages?: readonly AgentMessage[] } = {}): ShellView {
+export function rebuild(view: ShellView, entries: readonly Entry[], options: { readonly collapseTools?: boolean; readonly timing?: readonly TurnTimingEvent[]; readonly messages?: readonly AgentMessage[] } = {}): ShellView {
 
-  const projected = options.plan === undefined ? view : withPlan(view, options.plan.entry, options.plan.plan)
+  const projected = view
 
   let round: RoundTiming | null = null
   const rounds: RoundTiming[] = []

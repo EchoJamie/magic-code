@@ -20,7 +20,7 @@ function fixture(collaboration = true) {
   let background: BackgroundView = { commands, waiting: [] }
   const shell = createShell({ ...spy.transport, send(command) {
     spy.transport.send(command)
-    if (command.type === 'collaboration.read') spy.emit(event('collaboration.view', collaboration ? collaborationFixture : { originSession: 'origin', members: [], delegations: [], waits: [], constraints: [] }, { session: 'origin' }))
+    if (command.type === 'collaboration.read') spy.emit(event('collaboration.view', collaboration ? collaborationFixture : { originSession: 'origin', members: [], delegations: [], constraints: [] }, { session: 'origin' }))
     if (command.type === 'background.list') spy.emit(event('background.state', background, { session: 'origin' }))
   } }, { magicBase: '/test/.magic', copyText: async text => { copied.push(text) } })
   spy.emit(event('session.state', { active: 'origin', sessions: [{ id: 'origin', archived: false, at: 1 }] }, { session: 'origin' }))

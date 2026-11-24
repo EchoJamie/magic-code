@@ -1,4 +1,4 @@
-import type { AgentIdentity, AgentModelConfig, Collaboration, CollaborationRecords, CollaborationReply, CollaborationRequest, CollaborationWait, Delegation, EntryReference, KnowledgeRecords, KnowledgeReference, RecordsService, StopResult, ToolCall } from '@magic/contracts'
+import type { AgentIdentity, AgentModelConfig, Collaboration, CollaborationRecords, CollaborationReply, CollaborationRequest, Delegation, EntryReference, KnowledgeRecords, KnowledgeReference, RecordsService, StopResult, ToolCall } from '@magic/contracts'
 import type { CollaborationBoundary } from '@magic/conversation'
 
 /** 每个执行实例只认自己的持久身份。模型参数没有重绑身份/委派的入口。 */
@@ -18,7 +18,6 @@ export function createCollaborationBoundary(input: {
   const resourceControl = (name: string) => name === 'background_stop' || name === 'background_wait'
   const coordinating = (call?: ToolCall) => call === undefined || call.name.startsWith('agent_') || ['plan_read', 'plan_update', 'history_read', 'source_read'].includes(call.name) || input.ownNoteCall?.(call) === true || resourceControl(call.name)
   const records = input.records
-  let requestedWaits: readonly number[] = []
   const actor = (): AgentIdentity | undefined => {
     const existing = records.agentForSession(input.session)
     if (existing !== undefined) return existing
@@ -47,8 +46,6 @@ export function createCollaborationBoundary(input: {
   const scopeSource = (delegation: Delegation) => records.readMessage(delegation.assigneeId, delegation.delegationId)?.generatedFrom
   const projectDelegation = async (delegation: Delegation, provided?: Provided): Promise<Delegation> => ({ ...delegation,
     scope: (await description(delegation.scope, scopeSource(delegation), provided))!, reason: await description(delegation.reason, delegation.reasonFrom, provided) })
-  const projectWait = async (wait: CollaborationWait, provided?: Provided): Promise<CollaborationWait> => ({ ...wait,
-    expectation: (await description(wait.expectation, wait.generatedFrom, provided))!, reason: await description(wait.reason, wait.reasonFrom, provided) })
   const projectAgent = async (agent: AgentIdentity, provided?: Provided): Promise<AgentIdentity> => {
     const original = agent.collaborationId === undefined ? undefined : records.listDelegations(agent.collaborationId).find(d => d.assigneeId === agent.agentId)
     return { ...agent, responsibility: await description(agent.responsibility, original === undefined ? undefined : scopeSource(original), provided) }
@@ -58,12 +55,9 @@ export function createCollaborationBoundary(input: {
       const state = binding()
       if (state === undefined) return false
       const fresh = records.consumeInbox(state.self.agentId, input.now())
-      const outcomes = records.consumeWaitOutcomes(state.self.agentId, input.now())
-      if (fresh.length > 0 || outcomes.length > 0) input.changed()
+      if (fresh.length > 0) input.changed()
       return records.inbox(state.self.agentId).some(item => item.state === 'consumed' && item.includedAt === undefined
         && records.readMessage(state.self.agentId, item.messageId)?.purpose !== 'receipt')
-        || records.listWaits(state.collaboration.collaborationId).some(wait => wait.agentId === state.self.agentId
-          && wait.state !== 'waiting' && wait.handledAt !== undefined && wait.includedAt === undefined)
     },
     async context(provided) {
       const state = binding()
@@ -75,9 +69,6 @@ export function createCollaborationBoundary(input: {
         .map(d => projectDelegation(d, provided)))
       const constraints = records.listConstraints(collaboration.collaborationId).filter(c => c.active &&
         (c.affectedAgents === undefined || c.affectedAgents.includes(self.agentId)))
-      const waits = records.listWaits(collaboration.collaborationId).filter(w => w.agentId === self.agentId)
-      requestedWaits = waits.filter(w => w.state !== 'waiting' && w.handledAt !== undefined && w.includedAt === undefined).map(w => w.waitId)
-      const displayedWaits = await Promise.all(waits.map(wait => projectWait(wait, provided)))
       const displayedSelf = await projectAgent(self, provided)
       const current = assignments.find(item => item.delegationId === delegation?.delegationId)
       return `身份：${self.name}（${self.agentId}）。协调者：${collaboration.coordinatorId}。\n` +
@@ -85,8 +76,7 @@ export function createCollaborationBoundary(input: {
         `职责：${displayedSelf.responsibility ?? self.role}\n` +
         `当前委派：${delegation === undefined ? self.agentId === collaboration.coordinatorId ? '原入口负责推进、核验与整合，可自行执行原交代范围内的工作' : '尚无已接受委派；只能判断和澄清，不执行工作操作' : `${delegation.delegationId} · ${current?.scope}`}\n` +
         `未结束请求：${JSON.stringify(assignments)}\n` +
-        `共同约束消息：${constraints.map(c => c.messageId).join('、') || '无'}\n` +
-        `等待：${JSON.stringify(displayedWaits)}`
+        `共同约束消息：${constraints.map(c => c.messageId).join('、') || '无'}`
     },
     admit(call) {
       const state = binding()
@@ -101,11 +91,9 @@ export function createCollaborationBoundary(input: {
     },
     requested(messageIds = []) {
       const state = binding()
-      if (state === undefined || (messageIds.length === 0 && requestedWaits.length === 0)) return
+      if (state === undefined || messageIds.length === 0) return
       const consumed = new Set(records.inbox(state.self.agentId).filter(i => i.state === 'consumed').map(i => i.messageId))
       records.markIncluded(state.self.agentId, messageIds.filter(id => consumed.has(id)), input.now())
-      records.markWaitOutcomesIncluded(state.self.agentId, requestedWaits, input.now())
-      requestedWaits = []
       input.changed()
     },
     userInput(entryId, shared) {
@@ -128,11 +116,10 @@ export function createCollaborationBoundary(input: {
       const provided: Provided = items => { for (const item of items) references.set(`${item.id}\0${item.revision}`, item) }
       let value = reply.value
       if (request.action === 'list') {
-        const list = value as { self: AgentIdentity; members: readonly AgentIdentity[]; collaboration?: Collaboration; delegations?: readonly Delegation[]; waits?: readonly CollaborationWait[] }
+        const list = value as { self: AgentIdentity; members: readonly AgentIdentity[]; collaboration?: Collaboration; delegations?: readonly Delegation[] }
         value = { ...list, self: await projectAgent(list.self, provided), members: await Promise.all(list.members.map(agent => projectAgent(agent, provided))),
           ...(list.collaboration === undefined ? {} : { collaboration: { ...list.collaboration, reason: await description(list.collaboration.reason, list.collaboration.reasonFrom, provided) } }),
-          ...(list.delegations === undefined ? {} : { delegations: await Promise.all(list.delegations.map(d => projectDelegation(d, provided))) }),
-          ...(list.waits === undefined ? {} : { waits: await Promise.all(list.waits.map(wait => projectWait(wait, provided))) }) }
+          ...(list.delegations === undefined ? {} : { delegations: await Promise.all(list.delegations.map(d => projectDelegation(d, provided))) }) }
       } else if (request.action === 'spawn') {
         const spawned = value as { agent: AgentIdentity; delegation: Delegation }
         value = { ...spawned, agent: await projectAgent(spawned.agent, provided), delegation: await projectDelegation(spawned.delegation, provided) }
@@ -140,9 +127,6 @@ export function createCollaborationBoundary(input: {
       else if (request.action === 'respond') {
         const response = value as { delegation: Delegation; reason?: string }
         value = { ...response, delegation: await projectDelegation(response.delegation, provided), reason: await description(response.reason, request.generatedFrom, provided) }
-      } else if (request.action === 'wait') {
-        const response = value as { wait?: CollaborationWait }
-        if (response.wait !== undefined) value = { ...response, wait: await projectWait(response.wait, provided) }
       } else if (request.action === 'close') {
         const response = value as { pending: readonly Delegation[] }
         value = { ...response, pending: await Promise.all(response.pending.map(d => projectDelegation(d, provided))) }

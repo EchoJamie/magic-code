@@ -70,11 +70,11 @@ describe('协作 Native 整项工作投影', () => {
     const snapshot = f.snapshot()
     f.records.updateAgent(child.agent.agentId, { name: '下一拍才改名' })
     const row = mergeCollaborationNative([work('origin'), work('child', {
-      state: 'waiting', action: '确认是否写入外部路径', affected: true,
+      state: 'running', action: '确认是否写入外部路径', affected: true,
     })], snapshot)[0]!
     expect(row.members).toEqual([
       { session: 'origin', name: '协调', state: 'idle' },
-      { session: 'child', name: '真实实现成员', state: 'waiting', action: '确认是否写入外部路径' },
+      { session: 'child', name: '真实实现成员', state: 'running', action: '确认是否写入外部路径' },
       { session: missing.agent.sessionId, name: '尚未取得运行状态', state: 'unknown', reason: '成员状态待核实' },
     ])
     f.respond(child, 'accept')
@@ -87,29 +87,13 @@ describe('协作 Native 整项工作投影', () => {
     const child = f.spawn('member-session-secret')
     const current = notice('origin', { id: 'root-item', source: { session: child.agent.sessionId, event: 42 }, detail: '实现成员：批准执行测试' })
     const rows = [work('origin', { currentNotice: current, state: 'running', affected: true }),
-      work(child.agent.sessionId, { state: 'waiting', terminalOpen: true, action: '批准执行测试', affected: true })]
+      work(child.agent.sessionId, { state: 'idle', terminalOpen: true, action: '批准执行测试', affected: true })]
     const merged = mergeCollaborationNative(rows, f.snapshot())[0]!
-    expect(merged).toMatchObject({ session: 'origin', state: 'waiting', affected: true, terminalOpen: true, canArchive: false })
+    expect(merged).toMatchObject({ session: 'origin', state: 'running', affected: true, terminalOpen: true, canArchive: false })
     expect(merged.currentNotice).toEqual(current)
     expect(merged.currentNotice?.source?.session).toBe(child.agent.sessionId)
     expect('notices' in merged).toBe(false)
     expect(mergeCollaborationNative(rows.map(row => ({ ...row, state: 'idle' as const })), f.snapshot())[0]?.state).toBe('idle')
-  })
-
-  test('有效 wait 没有 executor 仍 affected；期限只能由持久终态解除，不靠投影时钟猜测', () => {
-    const child = f.spawn('child')
-    f.respond(child, 'reject')
-    expect(f.records.registerWait(f.coordinator.agentId, { operationId: 'wait', forAgents: [child.agent.agentId],
-      expectation: '等待补充说明', deadline: 100, at: 10 }).ok).toBe(true)
-    const snapshot = f.snapshot()
-    expect(snapshot.groups[0]?.waits[0]?.state).toBe('waiting')
-    expect(snapshot.groups[0]?.executions).toEqual([])
-    expect(mergeCollaborationNative([work('origin'), work('child')], snapshot)[0]).toMatchObject({
-      state: 'idle', action: '等待：等待补充说明', affected: true, gen: null,
-    })
-    f.records.expireWaits(101)
-    expect(mergeCollaborationNative([work('origin')], snapshot)[0]?.affected).toBe(true)
-    expect(mergeCollaborationNative([work('origin')], f.snapshot())[0]).toMatchObject({ state: 'idle', affected: false })
   })
 
   test('协调者 suspended 时整体待核实，其他成员继续执行的动作仍可见', () => {
@@ -209,10 +193,10 @@ describe('协作 Native 整项工作投影', () => {
     const snapshot = f.snapshot(origin.sessionId)
     expect(snapshot.groups).toHaveLength(2)
     const rows = mergeCollaborationNative([work('origin'), work('child', { state: 'running', affected: true }),
-      work(origin.sessionId, { currentNotice: notice(origin.sessionId, { source: { session: other.agent.sessionId, event: 42 } }) }), work(other.agent.sessionId, { state: 'waiting', affected: true })], snapshot)
+      work(origin.sessionId, { currentNotice: notice(origin.sessionId, { source: { session: other.agent.sessionId, event: 42 } }) }), work(other.agent.sessionId, { state: 'idle', affected: true })], snapshot)
     expect(rows).toHaveLength(2)
     expect(rows[0]).toMatchObject({ session: 'origin', state: 'running' })
-    expect(rows[1]).toMatchObject({ session: origin.sessionId, state: 'waiting' })
+    expect(rows[1]).toMatchObject({ session: origin.sessionId, state: 'idle' })
     expect(rows[1]?.currentNotice?.source?.session).toBe(other.agent.sessionId)
   })
 
