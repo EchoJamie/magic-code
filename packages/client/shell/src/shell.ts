@@ -57,6 +57,7 @@ import {
   wire,
 } from './components/inline.ts'
 import { usageLabel } from './components/lines.ts'
+import type { SessionTitleTab } from './session-title-tab.ts'
 import type { Dock, PageTurn, Picker, PickerRow, ShellView, UserImage } from './view.ts'
 import { durationText, roundDuration } from './boards/conversation/round.ts'
 import {
@@ -319,6 +320,14 @@ export type ShellOptions = {
   readonly inputReady?: boolean | undefined
 
   readonly receipts?: readonly string[] | undefined
+
+  /**
+   * **终端页签标题的写出面**（OSC 0 · `tab-title.ts`）——把 ② 那一格的会话名同步到
+   * 页签 / 窗口标题；`commit` 是视图变更唯一入口，落在这里状态行与页签**永远同源**。
+   * 无标题时页签兜底产品名（`🪄 Magic Code`）。
+   * 缺省＝不写（非终端流 / 旧装配），行为与加它之前一字不动。
+   */
+  readonly sessionTitleTab?: SessionTitleTab | undefined
 
   readonly runs?: RunFeed | undefined
 
@@ -899,6 +908,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       reading.set(next.dock.picker.reader.key, next.dock.picker.reader.top)
     }
     view = next
+    // **页签跟着 ② 走**——同一格、同一来源（见 `ShellOptions.sessionTitleTab`）；去重在写出器里
+    options.sessionTitleTab?.update(next.status.session)
     if (streaming) notifyCoalesced()
     else {
       if (pending !== undefined) {
@@ -3808,6 +3819,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       stopExitClock()
       unsubscribeTransport()
       watchers.clear()
+      // 页签标题是自己写出去的——收摊时清掉（不假装能恢复 shell 原值，见 `tab-title.ts`）
+      options.sessionTitleTab?.clear()
     },
   }
 }

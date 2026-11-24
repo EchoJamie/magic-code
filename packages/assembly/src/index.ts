@@ -127,6 +127,13 @@ export type AssembleOptions = {
    * 不给 ＝ 这次装配没有认证通道，`exec` 遇到 sudo 时如实回一句「用不了」。
    */
   readonly sudoAuth?: SudoAuth | undefined
+
+  /**
+   * **AI 标题**（docs/会话标题方案.md）——首条真实用户交代落账后，旁路调当前模型起标题，
+   * 写入与改名同一个字段（装配接自己的 `recordsStore.setSessionTitle`）。
+   * **缺省＝不做**（行为与加它之前一字不动——脚本对齐的用例不受影响）。
+   */
+  readonly aiTitle?: true | undefined
 }
 
 /** 装配产物——外壳侧一端 ＋ 自检 / 验收要用的把手。 */
@@ -385,6 +392,7 @@ export function assemble(options: AssembleOptions): Assembly {
       loaded, recordsStore, workspace, sudoAuth: options.sudoAuth, sink, now,
       signal, network, executionId, backgroundRuns,
       sandbox, projectRules, skills, materials, mcpTools,
+      setTitle: options.aiTitle === true ? (session, title, at) => recordsStore.setSessionTitle(session, title, at) : undefined,
       model: {
         create: (selection, stamper) => {
           const current = modelsOf()

@@ -10,6 +10,7 @@ import { createAgentLauncher, type ExecutorLauncher } from '@magic/host'
 import { startManager } from '@magic/host'
 import { runPathsOf } from '@magic/host'
 import { terminalOptions } from '../src/run/terminal.ts'
+import { isTitleModelCall } from './ui/fixture.ts'
 import { loadConfig } from '@magic/state'
 import { magicAt, removeDir, tempDir } from './tmp.ts'
 
@@ -69,6 +70,9 @@ export async function collaborationRuntime(
   const calls: HttpCall[] = []
   /** 不属于这块沙地的请求（端口复用后别的夹具残留的连接）——只记下，不进入本夹具的序号。 */
   const foreign: { readonly at: number; readonly model: string; readonly body: Record<string, unknown> }[] = []
+  /** **标题调用的旁路**（会话标题功能）——不是业务轮：不进 `calls`（调用计数断言的口径）、
+   *  不消费 `respond` 剧本，就地回固定标题；观察面留在这里。 */
+  const titles: { readonly at: number; readonly model: string; readonly body: Record<string, unknown> }[] = []
   const errors: string[] = []
   const events: KernelEvent[] = []
   const commands: Command[] = []
@@ -88,6 +92,13 @@ export async function collaborationRuntime(
       if (mentioned.length > 0 && !mentioned.includes(runtimeMarker)) {
         foreign.push({ at: Date.now(), model, body })
         return new Response('不是这块沙地的请求', { status: 400 })
+      }
+      // **标题调用的旁路**（会话标题功能）——与 `foreign` 同法：不计数、不回放剧本。
+      if (isTitleModelCall(body)) {
+        titles.push({ at: Date.now(), model, body })
+        const index = titles.length - 1
+        const chunk = (delta: unknown, finish?: string) => `data: ${JSON.stringify({ id: `response-${model}-title-${index}`, object: 'chat.completion.chunk', created: 1, model, choices: [{ index: 0, delta, ...(finish === undefined ? {} : { finish_reason: finish }) }] })}\n\n`
+        return new Response(chunk({ content: '自动标题' }) + chunk({}, 'stop') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
       }
       const kind = callKindOf(body)
       const call = { at: Date.now(), body, model, kind, index: calls.filter(one => one.kind === kind && one.model === model).length }
@@ -168,7 +179,7 @@ export async function collaborationRuntime(
     shell.dispose(); client.close()
     for (const window of windows) { window.shell.dispose(); window.client.close() }
   }
-  return { root, magic, workspace, dataDir, calls, foreign, errors, events, commands, lines, agentExits, closedViews, manager, store, client, shell, closeWindows,
+  return { root, magic, workspace, dataDir, calls, titles, foreign, errors, events, commands, lines, agentExits, closedViews, manager, store, client, shell, closeWindows,
     session, collaboration, members, member, delegation, wait, pick,
     requests: (model = 'entry-model') => calls.filter(call => call.model === model),
     /** 走 `Tab` → 协作列表 → Enter，切进成员子会话（与 `/resume` 同一条会话通路）。 */

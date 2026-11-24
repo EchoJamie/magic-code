@@ -122,6 +122,8 @@ export type Fixture = {
   readonly port: number
   /** 到此刻为止收到的请求（按次序）。 */
   requests(): readonly FixtureRequest[]
+  /** 标题调用（旁路，单列）——断言「起没起标题、内容是什么」用它，业务计数不含它。 */
+  titleRequests(): readonly FixtureRequest[]
   /** 停服——**端口跟着释放**（「自有端点已释放」那条判据查的就是它）。 */
   stop(): Promise<void>
 }
@@ -135,10 +137,32 @@ export type FixtureOptions = {
 /** 没给剧本时的回话——「一路顺风回一句」，只为让链子走通。 */
 const DEFAULT_TURN: FixtureTurn = { kind: 'text', text: '收到' }
 
+/**
+ * **标题调用的旁路**（会话标题功能）——生产执行者会给未命名会话旁路发一次起标题的
+ * 请求（`docs/会话标题方案.md`）。它**不是业务轮**：与 `GET /models` 探测同法，
+ * **不消费剧本序号**，就地按包进 `<session>` 的第一行回一个标题。
+ */
+export function isTitleModelCall(body: Record<string, unknown>): boolean {
+  const messages = Array.isArray(body['messages']) ? body['messages'] as { role?: unknown; content?: unknown }[] : []
+  return messages.some(one => one.role === 'system' && typeof one.content === 'string' && one.content.startsWith('根据这次编码会话'))
+}
+
+/** 标题请求的就地回话——取交代首行当标题（测试若关心具体值，以写进记录库的为准）。 */
+function titleReplyTurn(body: Record<string, unknown>): FixtureTurn {
+  const messages = Array.isArray(body['messages']) ? body['messages'] as { role?: unknown; content?: unknown }[] : []
+  const last = messages.filter(one => one.role === 'user').at(-1)
+  const text = typeof last?.content === 'string' ? last.content : ''
+  const inner = /<session>\n([\s\S]*?)\n<\/session>/u.exec(text)?.[1] ?? ''
+  return { kind: 'text', text: inner.split('\n')[0]?.trim().slice(0, 20) || '标题' }
+}
+
 export function startFixture(options: FixtureOptions): Fixture {
   const model = options.model ?? 'MiniMax-M3'
   const started = Bun.nanoseconds()
+  /** 业务请求——**不含标题调用**（那是旁路，见 `titleRequests`；与生产的用量透明同一条语义）。 */
   const requests: FixtureRequest[] = []
+  /** 标题调用——单列的观察面（要断言「起没起标题」用它，别数 `requests`）。 */
+  const titleRequests: FixtureRequest[] = []
   let index = 0
 
   const server = Bun.serve({
@@ -154,11 +178,13 @@ export function startFixture(options: FixtureOptions): Fixture {
       // 于是「第一轮模型说了什么」整个错位一格（实测栽在这儿：带思考那一回合被
       // 目录刷新领走，对话拿到的是留给下一轮的那段没思考的话，本单的要害当场没被验到）。
       // 别的请求照旧**照最后那个回合回**——判据只关心对话那几跳。
+      // **标题调用同列**（会话标题功能）：它也不是业务轮，不消费剧本，单列观察。
       const chat = /\/chat\/completions$/u.test(new URL(req.url).pathname)
-      const turn = chat ? (options.turns[index] ?? options.turns.at(-1) ?? DEFAULT_TURN) : DEFAULT_TURN
+      const title = chat && isTitleModelCall(body)
+      const turn = chat && !title ? (options.turns[index] ?? options.turns.at(-1) ?? DEFAULT_TURN) : title ? titleReplyTurn(body) : DEFAULT_TURN
 
-      requests.push({
-        n: requests.length + 1,
+      const record: FixtureRequest = {
+        n: (title ? titleRequests : requests).length + 1,
         path: new URL(req.url).pathname,
         model: typeof body['model'] === 'string' ? body['model'] : model,
         messages: messages.length,
@@ -168,8 +194,9 @@ export function startFixture(options: FixtureOptions): Fixture {
         assistantReasoning: assistantReasoningOf(messages),
         body,
         at: (Bun.nanoseconds() - started) / 1e6,
-      })
-      if (chat) index += 1
+      }
+      ;(title ? titleRequests : requests).push(record)
+      if (chat && !title) index += 1
 
       if (turn.kind === 'http') {
         return new Response(JSON.stringify({ error: { message: turn.message } }), {
@@ -178,7 +205,7 @@ export function startFixture(options: FixtureOptions): Fixture {
         })
       }
 
-      return new Response(streamOf(turn, model, requests.length), {
+      return new Response(streamOf(turn, model, (title ? titleRequests : requests).length), {
         status: 200,
         headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
       })
@@ -197,6 +224,7 @@ export function startFixture(options: FixtureOptions): Fixture {
     baseURL: `http://127.0.0.1:${port}/v1`,
     port,
     requests: () => requests,
+    titleRequests: () => titleRequests,
     stop: async () => {
       await server.stop(true)
     },
