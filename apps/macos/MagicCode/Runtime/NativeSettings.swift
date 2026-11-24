@@ -49,7 +49,7 @@ final class NativeSettings {
         guard SettingsFile.stamp(path) == stamp else { throw WireError.invalid("配置在读取期间已改变，请重新读取") }
         let status = preview?["statusLine"] ?? configuration["statusLine"]!
         return SettingsSnapshot(preview: settingsPreview(status, columns: Int(preview?["columns"].number ?? 90), reduced: preview?["reducedMotion"].flag ?? raw["motion"]["reduced"].flag),
-            configPath: path, base: base, stamp: stamp, configuration: .object(configuration), catalog: models.rows(raw, stamp: stamp),
+            configPath: path, base: base, stamp: stamp, configuration: .object(configuration), catalog: models.rows(raw),
             vendors: models.metadata["vendors"].array.map { .object($0.object.filter { ["vendor", "label", "regions", "protocols"].contains($0.key) }) }, sources: sources)
     }
     func apply(_ action: SettingsValue, stamp: String?) async throws -> String {
@@ -60,12 +60,12 @@ final class NativeSettings {
             guard let config = raw["providers"].object[action["provider"].text] else { throw WireError.invalid("连接已不存在，请重新读取") }
             async let metadataFailure = models.refreshMetadata([config], force: true)
             var listFailure: String?
-            do { try await models.refresh(action["provider"].text, config: config, stamp: stamp) } catch { listFailure = error.localizedDescription }
+            do { try await models.refresh(action["provider"].text, config: config) } catch { listFailure = error.localizedDescription }
             let failures = await [listFailure, metadataFailure].compactMap { $0 }
             if !failures.isEmpty { throw WireError.invalid(failures.joined(separator: "；")) }
             return "模型列表与 Models.dev 资料已刷新；未发起模型调用"
         }
-        let snapshots = raw["providers"].object.compactMap { id, config in models.snapshot(id, config: config, stamp: stamp).map { (id, config, $0) } }
+        let snapshots = raw["providers"].object.compactMap { id, config in models.snapshot(id, config: config).map { (id, config, $0) } }
         try SettingsFile.edit(path, expected: stamp) { current in
             let next = try self.edited(current, action: action)
             try SettingsValidation.config(next)
@@ -94,8 +94,9 @@ final class NativeSettings {
             let nextStamp = SettingsFile.stamp(path), next = try SettingsFile.read(path)
             guard SettingsFile.stamp(path) == nextStamp else { throw WireError.invalid("配置在读取期间已改变") }
             for (id, config, snapshot) in snapshots {
-                guard let after = next["providers"].object[id], ["vendor", "baseURL", "region", "apiKey", "protocol", "auth"].allSatisfy({ config.object[$0] == after.object[$0] }) else { continue }
-                try models.store(snapshot, config: after, stamp: nextStamp)
+                // 同一**数据来源**（vendor/端点/区域/协议）才落——凭据变化不作废（2026-11-24 裁定）
+                guard let after = next["providers"].object[id], ["vendor", "baseURL", "region", "protocol"].allSatisfy({ config.object[$0] == after.object[$0] }) else { continue }
+                try models.store(snapshot, config: after)
             }
         } catch { cacheNote = "；模型缓存未能更新，请重新刷新列表" }
         if type.hasPrefix("model.") || type.hasPrefix("provider.") { return "已保存；之后解析模型配置时采用，已有 Agent 的选择保留" + cacheNote }

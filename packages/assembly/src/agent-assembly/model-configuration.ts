@@ -47,7 +47,6 @@ export function createModelConfiguration(input: {
    * 本进程的唯一值——**环境变量来源**那支身份用（`persistent: false`，不落盘）。
    * 它只作「这不是别的进程」的标记，进不了磁盘文件名以外的任何地方。
    */
-  const processToken = crypto.randomUUID()
 
   /**
    * 配置指纹的**水位**（同一个文件**本身**的六件里挑出的比对串）——`syncProviderBook`
@@ -55,16 +54,12 @@ export function createModelConfiguration(input: {
    */
   let configStamp = loaded.stamp === undefined ? configStampOf(loaded.path) : loaded.stamp
 
-  const cacheAccessOf = (provider: string, config: ProviderConfig | undefined): ModelCacheAccess =>
-    // 「什么算『认证取自配置文件』」只判一处（`cache-access.ts`）——窗口那一侧算开屏的
-    // 分母时读的是**同一份**缓存，两处各判一遍迟早开成两份文件
-    cacheAccessFor({
-      provider,
-      configPath: loaded.path,
-      apiKey: config?.apiKey,
-      auth: config?.auth,
-      processToken,
-    })
+  const cacheAccessOf = (provider: string, config: ProviderConfig | undefined): ModelCacheAccess => {
+    const resolved = config === undefined ? undefined : resolveConnection({ providerId: provider, config, env: environment })
+    // 缓存身份按**连接的数据来源**（解析后的端点＋协议）锚定——判据只此一处（`cache-access.ts`），
+    // 窗口那一侧读的是**同一份**缓存，两处各判一遍迟早开成两份文件
+    return cacheAccessFor({ vendor: resolved?.config.vendor, baseURL: resolved?.baseURL, protocol: resolved?.config.protocol })
+  }
 
   /** 几段回话合成一句（一段都没有 ⇒ `undefined`，答复里就不带 `note`）。 */
   const twoNotes = (...said: readonly (string | undefined)[]): string | undefined => {

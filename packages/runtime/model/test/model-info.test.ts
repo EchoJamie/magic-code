@@ -92,7 +92,7 @@ function connectionOf(over: Partial<ModelConnection> = {}): ModelConnection {
     config: { vendor: 'deepseek' },
     baseURL: 'https://api.deepseek.com',
     apiKey: 'sk-not-a-real-key',
-    access: { id: 'cfg:test', persistent: true },
+    access: { id: 'cfg:test' },
     ...over,
   }
 }

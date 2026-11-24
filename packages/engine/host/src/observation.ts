@@ -175,12 +175,11 @@ export async function query(command: Command, context: ObservationContext): Prom
 
 export async function readModelCatalog(loaded: LoadedConfig, magic: MagicHome, selection: ModelSelectionRef | undefined, request: ModelSwitchRequest | undefined, now: () => number, providedInfo?: ModelInfoService): Promise<ModelCatalogReader> {
   const providers = loaded.config.providers
-  const processToken = crypto.randomUUID()
   const info = providedInfo ?? createModelInfoService({
-    connections: () => Object.entries(providers).map(([providerId, config]) => ({
-      ...resolveConnection({ providerId, config }),
-      access: cacheAccessFor({ provider: providerId, configPath: loaded.path, apiKey: config.apiKey, auth: config.auth, processToken }),
-    })),
+    connections: () => Object.entries(providers).map(([providerId, config]) => {
+      const resolved = resolveConnection({ providerId, config })
+      return { ...resolved, access: cacheAccessFor({ vendor: resolved.config.vendor, baseURL: resolved.baseURL, protocol: resolved.config.protocol }) }
+    }),
     cache: createFileModelInfoCache(magic.base), now, fetch: globalThis.fetch,
     metadata: createModelsDevResource(magic.base, globalThis.fetch, now),
   })

@@ -98,12 +98,11 @@ export async function resolveManagedModel(input: {
 
 async function managedModelContext(magic: MagicHome, environment: Readonly<Record<string, string>>) {
   const loaded = loadConfig({ magic })
-  const processToken = crypto.randomUUID()
   const info = createModelInfoService({
-    connections: () => Object.entries(loaded.config.providers).map(([providerId, config]) => ({
-      ...resolveConnection({ providerId, config, env: environment }),
-      access: cacheAccessFor({ provider: providerId, configPath: loaded.path, apiKey: config.apiKey, auth: config.auth, processToken }),
-    })),
+    connections: () => Object.entries(loaded.config.providers).map(([providerId, config]) => {
+      const resolved = resolveConnection({ providerId, config, env: environment })
+      return { ...resolved, access: cacheAccessFor({ vendor: resolved.config.vendor, baseURL: resolved.baseURL, protocol: resolved.config.protocol }) }
+    }),
     cache: createFileModelInfoCache(magic.base), now: Date.now,
     metadata: createModelsDevResource(magic.base, async () => { throw new Error('配置预检不允许联网') }),
     fetch: async () => { throw new Error('配置预检不允许联网') },

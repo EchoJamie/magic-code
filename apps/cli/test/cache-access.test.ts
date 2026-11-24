@@ -1,99 +1,57 @@
 import { describe, expect, test } from 'bun:test'
-import { modelCacheAccessOf } from '../src/index.ts'
-import { configFingerprintOf } from '@magic/state'
-import { utimesSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { removeDir, tempDir } from './tmp.ts'
+import { cacheAccessFor } from '../src/index.ts'
+import { connectionScopeChanged } from '@magic/host'
 
-const TOKEN = 'proc-token-1'
+/**
+ * 缓存身份的锚（2026-11-24 裁定，取代 U41 的「按接入隔离/配置指纹」）：
+ *
+ * 身份 = 连接**解析后的数据来源**（端点 ＋ 协议）——同一软件的各部分互信，同一份自己
+ * 写入的缓存不按「认证从哪来」「配置文件指纹」区分；换凭据**不**作废（第三方给的数据
+ * 本身一致，有效性只由 fetchedAt ＋ TTL 时间锚定）；指向另一个服务（端点/协议变化）
+ * 才落另一份文件。凭据或其摘要不进身份（原有裁决保留）。
+ */
+describe('身份＝连接的数据来源（端点 ＋ 协议）', () => {
+  test('同端点同协议 ⇒ 同一个身份；端点或协议变 ⇒ 身份变', () => {
+    const a = cacheAccessFor({ vendor: undefined, baseURL: 'https://api.deepseek.com', protocol: 'chat-completions' })
+    const b = cacheAccessFor({ vendor: undefined, baseURL: 'https://api.deepseek.com', protocol: 'chat-completions' })
+    expect(b.id).toBe(a.id)
 
-describe('配置来源', () => {
-  test('身份＝路径 ＋ **providers 段的内容哈希**（认证材料变了才轮转）', () => {
-    const dir = tempDir('magic-access-')
-    try {
-      const path = join(dir, 'config.json')
-      writeFileSync(path, '{"providers":{"ds":{"apiKey":"k"}}}', 'utf8')
-
-      const fingerprint = configFingerprintOf(path)
-      expect(fingerprint).toBeDefined()
-
-      const access = modelCacheAccessOf({ provider: 'ds', config: fingerprint, processToken: TOKEN })
-      expect(access.persistent).toBe(true)
-      expect(access.id.startsWith('cfg:ds:')).toBe(true)
-      // 路径与内容哈希都在（同一份内容 ⇒ 同一个身份）
-      expect(access.id).toContain(fingerprint!.hash)
-      expect(configFingerprintOf(path)?.hash).toBe(fingerprint!.hash)
-    } finally {
-      removeDir(dir)
-    }
+    expect(cacheAccessFor({ vendor: undefined, baseURL: 'https://api.deepseek.com/v2', protocol: 'chat-completions' }).id)
+      .not.toBe(a.id)
+    expect(cacheAccessFor({ vendor: undefined, baseURL: 'https://api.deepseek.com', protocol: 'messages' }).id)
+      .not.toBe(a.id)
   })
 
-  /**
-   * **反例**（裁决点名的那个）：一个**等长**、又**刻意保留 mtime** 的新文件，
-   * 不能算出同一个身份——否则它换了认证却复用旧缓存。
-   *
-   * 旧形（整文件 stat）靠 ino/ctime 兜这个底；新形（内容哈希）直接看**内容**——
-   * 认证材料变了，哈希当场变，mtime 摁不摁得住都无关。
-   */
-  test('等长且保留 mtime 的文件替换 ⇒ 身份**必须**变（内容哈希认它）', () => {
-    const dir = tempDir('magic-access-')
-    try {
-      const path = join(dir, 'config.json')
-      writeFileSync(path, '{"providers":{"ds":{"apiKey":"aaaa"}}}', 'utf8')
-      const before = configFingerprintOf(path)
-      expect(before).toBeDefined()
-
-      // 换一个**等长**的文件（认证材料不同），并把 mtime 摁回原值
-      writeFileSync(path, '{"providers":{"ds":{"apiKey":"bbbb"}}}', 'utf8')
-      const seconds = parseInt(before!.hash.slice(0, 8), 16) % 1_700_000_000
-      utimesSync(path, seconds, seconds)
-
-      const after = configFingerprintOf(path)
-      const idOf = (f: ReturnType<typeof configFingerprintOf>) =>
-        modelCacheAccessOf({ provider: 'ds', config: f, processToken: TOKEN }).id
-
-      // mtime 被摁住了——新形根本不看它
-      expect(after?.hash).not.toBe(before?.hash)
-      // 而身份**真的变了**（内容哈希认出来了）
-      expect(idOf(after)).not.toBe(idOf(before))
-    } finally {
-      removeDir(dir)
-    }
+  test('**换凭据不作废**：同一端点，key 换了身份一字不变', () => {
+    // 身份的入参里**没有** key——这一条靠形状保证（编译期就过不了带 key 的调用）；
+    // 这里锚的是行为口径：跨账号同端点的列表缓存照用，TTL 到点自然更新。
+    const official = cacheAccessFor({ vendor: undefined, baseURL: 'https://api.minimax.cn/v1', protocol: 'messages' })
+    expect(official.id).toBe('@https://api.minimax.cn/v1#messages')
+    expect(official.id).not.toContain('key')
   })
 
-  /** **非认证写**不得轮转身份（2026-11-22 收窄的由头）：/model 切档写记录，缓存范围不动。 */
-  test('providers 段之外的写（如模型映射、记录）⇒ 身份**不变**', () => {
-    const dir = tempDir('magic-access-')
-    try {
-      const path = join(dir, 'config.json')
-      writeFileSync(path, '{"providers":{"ds":{"apiKey":"k"}},"models":{}}', 'utf8')
-      const before = configFingerprintOf(path)
-
-      writeFileSync(path, '{"providers":{"ds":{"apiKey":"k"}},"models":{"cantrip":{"provider":"ds","model":"m"}},"defaultTier":"cantrip"}', 'utf8')
-      const after = configFingerprintOf(path)
-
-      expect(after?.hash).toBe(before?.hash)
-    } finally {
-      removeDir(dir)
-    }
+  test('连接的**名字**不进身份——provider 改名，缓存照用（同一端点就是同一份数据）', () => {
+    const idOf = (vendor: string | undefined, baseURL: string | undefined, protocol: string | undefined) => cacheAccessFor({ vendor, baseURL, protocol }).id
+    expect(idOf('deepseek', 'http://127.0.0.1:1/api', 'responses')).toBe(idOf('deepseek', 'http://127.0.0.1:1/api', 'responses'))
   })
 })
 
-describe('环境变量来源', () => {
-  test('没有可信身份 ⇒ `persistent: false`（**不落盘**）', () => {
-    const access = modelCacheAccessOf({ provider: 'ds', processToken: TOKEN })
+describe('范围变化的判据（connectionScopeChanged）', () => {
+  const base: import('@magic/contracts').ProviderConfig = { vendor: 'deepseek', baseURL: 'https://api.deepseek.com', protocol: 'chat-completions', apiKey: 'k' }
 
-    expect(access.persistent).toBe(false)
-    expect(access.id.startsWith('env:ds:')).toBe(true)
+  test('端点 / 协议 / 官方归属或区域变了 ⇒ 换范围（落另一份文件）', () => {
+    expect(connectionScopeChanged(base, { ...base, baseURL: 'https://api.deepseek.com/v2' })).toBe(true)
+    expect(connectionScopeChanged(base, { ...base, protocol: 'messages' })).toBe(true)
+    expect(connectionScopeChanged(base, { ...base, vendor: 'minimax' })).toBe(true)
+    expect(connectionScopeChanged(undefined, base)).toBe(true)
   })
 
-  test('配置文件此刻不可观察（不在 / 读不了）⇒ 也走不落盘那一支', () => {
-    const dir = tempDir('magic-access-')
-    try {
-      // 拿一个不存在的路径去取指纹
-      expect(configFingerprintOf(join(dir, 'nope.json'))).toBeUndefined()
-    } finally {
-      removeDir(dir)
-    }
+  test('**换凭据不换范围**：apiKey / auth 变化不再是失效依据（2026-11-24 裁定）', () => {
+    expect(connectionScopeChanged(base, { ...base, apiKey: 'another-key' })).toBe(false)
+    expect(connectionScopeChanged(base, { ...base, auth: 'none' })).toBe(false)
+  })
+
+  test('配置之外的写（模型映射、偏好）不换范围', () => {
+    expect(connectionScopeChanged(base, { ...base })).toBe(false)
   })
 })

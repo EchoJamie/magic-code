@@ -557,7 +557,7 @@ describe('manager 模型预检只读已有缓存', () => {
       configuration.providers.ds = config
       configuration.models.cantrip = { provider: 'ds', model: 'deepseek-flash' }
       writeFileSync(f.configPath, JSON.stringify(configuration))
-      await cache.replace(snapshot, cacheAccessFor({ provider: 'ds', configPath: f.configPath, apiKey: f.providers.ds.apiKey, processToken: 'test' }))
+      await cache.replace(snapshot, cacheAccessFor({ vendor: config.vendor, baseURL: config.baseURL, protocol: config.protocol }))
       const defaults = { choice: 'cantrip' as const, provider: 'ds', model: 'deepseek-flash', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'level' as const, level: 'high' } }
       await expect(resolveManagedModel({ environment: {}, magic: f.magic, defaults })).rejects.toThrow('不支持思考档位')
       expect(await resolveManagedModel({ environment: {}, magic: f.magic, defaults, model: { reasoning: { mode: 'level', level: 'low' } } })).toEqual({ ...defaults, reasoning: { mode: 'level', level: 'low' } })

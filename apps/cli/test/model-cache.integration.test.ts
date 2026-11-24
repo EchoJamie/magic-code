@@ -21,7 +21,7 @@ import type { ModelCacheAccess, ModelInfoSnapshot } from '@magic/contracts'
 import { MODEL_CACHE_DIR, createFileModelInfoCache } from '@magic/host'
 
 /** 一个接入身份——测试里的假值（真身份由装配按认证来源算，见回报）。 */
-const access = (id: string, persistent = true): ModelCacheAccess => ({ id, persistent })
+const access = (id: string): ModelCacheAccess => ({ id })
 
 /** 连接 id ＋ 身份 → 落盘文件名（与实现同一把尺子：两段 sha256 前 16 字节 ＋ `.json`）。 */
 function fileNameOf(providerId: string, accessId: string): string {

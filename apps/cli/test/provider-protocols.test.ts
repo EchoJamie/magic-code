@@ -81,11 +81,11 @@ test('旧编辑戳及无效联合容量都保留完整配置', async () => {
   expect(g.raw()).toEqual(next)
 })
 
-test('协议及认证改变作废缓存范围，普通改名可保留', () => {
+test('协议改变换缓存范围（指向另一种解析），改名与换认证不换（2026-11-24 裁定：换凭据不作废）', () => {
   const before = { baseURL: 'http://localhost:8000/v1', protocol: 'responses' as const, auth: 'none' as const }
   expect(connectionScopeChanged(before, { ...before, name: '改名' })).toBe(false)
   expect(connectionScopeChanged(before, { ...before, protocol: 'messages' })).toBe(true)
-  expect(connectionScopeChanged(before, { ...before, auth: 'bearer' })).toBe(true)
+  expect(connectionScopeChanged(before, { ...before, auth: 'bearer' })).toBe(false)
 })
 
 

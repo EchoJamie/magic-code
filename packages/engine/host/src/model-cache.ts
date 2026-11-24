@@ -154,16 +154,14 @@ export function createFileModelInfoCache(dataDir: string, options: { readonly lo
 
   return {
     read(providerId: string, access?: ModelCacheAccess): ModelInfoSnapshot | undefined {
-      // **不落盘的那一类**（环境变量来源）：盘上没有它的东西，去读只会读到别人的；
-      // **没有身份**同理——过渡期 `access` 可选只为分线各自编译得过，**不是「按老样子读」**
-      if (access === undefined || !access.persistent) return undefined
+      // **没有身份**——过渡期 `access` 可选只为分线各自编译得过，**不是「按老样子读」**
+      if (access === undefined) return undefined
 
       return readSnapshot(pathOf(providerId, access.id))
     },
 
     async replace(snapshot: ModelInfoSnapshot, access?: ModelCacheAccess): Promise<void> {
-      // 同上：不跨进程复用 / 没有身份 —— 都不落盘（进程内那份走内存，不归这里）
-      if (access === undefined || !access.persistent) return
+      if (access === undefined) return
 
       const path = pathOf(snapshot.provider, access.id)
       await withLock(path, () => {
@@ -186,7 +184,7 @@ export function createFileModelInfoCache(dataDir: string, options: { readonly lo
 
     async drop(providerId: string, access?: ModelCacheAccess): Promise<void> {
       // 没有身份就不知道该清哪一份——**不猜、也不顺手清别的范围**
-      if (access === undefined || !access.persistent) return
+      if (access === undefined) return
 
       // **只删本范围那份**：旧认证 / 别的进程那份不归这次清除管——
       // 「旧范围的清除不能碰到新范围」也靠这里

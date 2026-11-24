@@ -77,23 +77,26 @@ final class SettingsModels {
         return selected
     }
     private func scope(_ config: SettingsValue) throws -> String { config["vendor"].text + "@" + (try endpoint(config)) + "#" + (config.object["protocol"]?.text ?? "auto") }
-    /// 认证取出处：无需认证的连接没有凭据可随行，配置指纹本身就是身份（与 TS 同一把尺子）。
+    /// 认证取出处：无需认证的连接没有凭据可随行（与 TS 同一把尺子）。
     private func identityIsConfig(_ config: SettingsValue) -> Bool { config["apiKey"].nonempty || config["auth"].text == "none" }
-    private func cachePath(_ id: String, config: SettingsValue, stamp: String?) -> String? {
-        guard identityIsConfig(config), let stamp else { return nil }
+    /// 缓存按**连接的数据来源**锚定（2026-11-24 裁定）：身份就是 `scope`（`<vendor>@<端点>#<协议>`）
+    /// ——同一软件各部分互信，换凭据不作废；有效性由 fetchedAt ＋ TTL 时间锚定。
+    /// 不含凭据或其摘要（原有裁决保留）。
+    private func cachePath(_ id: String, config: SettingsValue) -> String? {
+        guard let scope = try? scope(config) else { return nil }
         func slug(_ text: String) -> String { String(Data(SHA256.hash(data: Data(text.utf8))).base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").prefix(22)) }
-        return base + "/cache/models/" + slug(id) + "." + slug("cfg:\(id):\(stamp)") + ".json"
+        return base + "/cache/models/" + slug(id) + "." + slug(scope) + ".json"
     }
-    func snapshot(_ id: String, config: SettingsValue, stamp: String?) -> SettingsValue? {
-        let value = cachePath(id, config: config, stamp: stamp).flatMap { try? SettingsFile.read($0) } ?? transient[id]
+    func snapshot(_ id: String, config: SettingsValue) -> SettingsValue? {
+        let value = cachePath(id, config: config).flatMap { try? SettingsFile.read($0) } ?? transient[id]
         guard var value, value["provider"].text == id, value["scope"].text == (try? scope(config)),
               value["fetchedAt"].number?.isFinite == true, value["models"].isArray else { return nil }
         value.put("models", .array(value["models"].array.filter { $0["id"].isText && !$0["id"].text.isEmpty }))
         return value
     }
-    func store(_ snapshot: SettingsValue, config: SettingsValue, stamp: String?) throws {
+    func store(_ snapshot: SettingsValue, config: SettingsValue) throws {
         let id = snapshot["provider"].text
-        guard let path = cachePath(id, config: config, stamp: stamp) else { transient[id] = snapshot; return }
+        guard let path = cachePath(id, config: config) else { transient[id] = snapshot; return }
         try SettingsFile.withLock(path, cache: true) {
             let existing = try? SettingsFile.read(path)
             if (existing?["fetchedAt"].number ?? 0) > (snapshot["fetchedAt"].number ?? 0) { return }
@@ -116,13 +119,13 @@ final class SettingsModels {
         if let budget = support.object["budget"], vendor(config) == nil && protocolID == "messages" { value["budget"] = budget }
         return .object(value)
     }
-    func rows(_ raw: SettingsValue, stamp: String?) -> [SettingsValue] {
+    func rows(_ raw: SettingsValue) -> [SettingsValue] {
         let resource = modelsDevSnapshot()
         return raw["providers"].object.sorted { $0.key < $1.key }.map { id, config in
             var row = config.object.filter { ["name", "vendor", "region", "baseURL", "protocol", "auth", "modelOverrides"].contains($0.key) }
             row["provider"] = .string(id)
             let source = keySource(id, config); if source != "missing" { row["keySource"] = .string(source) }
-            let snapshot = snapshot(id, config: config, stamp: stamp)
+            let snapshot = snapshot(id, config: config)
             if let snapshot { row["cache"] = .object(["snapshot": snapshot, "stale": .bool(Date().timeIntervalSince1970 * 1000 - snapshot["fetchedAt"].number! > (metadata["modelTTL"].number ?? 86_400_000))]) }
             let ids = Set((snapshot?["models"].array.map { $0["id"].text } ?? []) + Array(config["modelOverrides"].object.keys) + raw["models"].object.values.filter { $0["provider"].text == id }.map { $0["model"].text })
             let infos = Dictionary(uniqueKeysWithValues: ids.compactMap { model in
@@ -301,7 +304,7 @@ final class SettingsModels {
     private static let listProtocol = "chat-completions"
 
     /// 取一趟完整列表：**官方适配优先，其余按连接所选协议**（协议自带列表规范）。
-    func refresh(_ id: String, config: SettingsValue, stamp: String?) async throws {
+    func refresh(_ id: String, config: SettingsValue) async throws {
         let custom = vendor(config) == nil
         let protocolID = custom ? (config.object["protocol"]?.text ?? "responses") : Self.listProtocol
         let base = try endpoint(config)
@@ -337,8 +340,8 @@ final class SettingsModels {
             after = body["last_id"].text
         }
         let snapshot = SettingsValue.object(["provider": .string(id), "scope": .string(try scope(config)), "fetchedAt": .number(Date().timeIntervalSince1970 * 1000), "models": .array(models)])
-        // 迟到结果只写入发起时的认证范围；后续读取会按当前指纹选取。
-        try store(snapshot, config: config, stamp: stamp)
+        // 迟到的落定照常接纳（同一端点的数据一致）；有效性由 fetchedAt 时间锚定。
+        try store(snapshot, config: config)
     }
 
     /// Anthropic Messages 的列表行：`{ id, display_name, created_at }`（字段少，只取有用的两格）。

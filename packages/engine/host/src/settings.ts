@@ -27,7 +27,6 @@ const book = (v: unknown): Record<string, unknown> => Object.assign(Object.creat
 
 export function createSettings(context: SettingsContext) {
   const configPath = context.configPath ?? `${context.magic.base}/config.json`
-  const processToken = crypto.randomUUID()
   let currentLoaded: LoadedConfig | undefined
   let info: ModelInfoService | undefined
   /** 公共目录那份（模型信息与手动检索共用一份；按需从文件解析，不常驻轮询）。 */
@@ -38,9 +37,10 @@ export function createSettings(context: SettingsContext) {
     }
     currentLoaded = loaded
     if (info === undefined) {
-      info = createModelInfoService({ connections: () => Object.entries(currentLoaded!.config.providers).map(([providerId, config]) => ({
-        ...resolveConnection({ providerId, config, env: context.environment }), access: cacheAccessFor({ provider: providerId, configPath, apiKey: config.apiKey, auth: config.auth, processToken }),
-      })), cache: createFileModelInfoCache(context.magic.base), now: context.now ?? Date.now, fetch: context.fetch,
+      info = createModelInfoService({ connections: () => Object.entries(currentLoaded!.config.providers).map(([providerId, config]) => {
+        const resolved = resolveConnection({ providerId, config, env: context.environment })
+        return { ...resolved, access: cacheAccessFor({ vendor: resolved.config.vendor, baseURL: resolved.baseURL, protocol: resolved.config.protocol }) }
+      }), cache: createFileModelInfoCache(context.magic.base), now: context.now ?? Date.now, fetch: context.fetch,
       metadata: modelsDev })
     }
     return info
@@ -198,7 +198,9 @@ export function createSettings(context: SettingsContext) {
     const modelCache = createFileModelInfoCache(context.magic.base)
     for (const { provider, config, snapshot } of snapshots) {
       if (snapshot !== undefined && !connectionScopeChanged(config, reloaded.config.providers[provider])) {
-        const access = cacheAccessFor({ provider, configPath, apiKey: reloaded.config.providers[provider]?.apiKey, auth: reloaded.config.providers[provider]?.auth, processToken })
+        const after = reloaded.config.providers[provider]
+        const resolved = after === undefined ? undefined : resolveConnection({ providerId: provider, config: after, env: context.environment })
+        const access = cacheAccessFor({ vendor: resolved?.config.vendor, baseURL: resolved?.baseURL, protocol: resolved?.config.protocol })
         if (configStamp(configPath) !== reloaded.stamp) throw new Error('配置在读取期间已改变，请重新刷新列表')
         await modelCache.replace(snapshot, access)
       }

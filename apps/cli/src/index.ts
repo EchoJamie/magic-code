@@ -33,9 +33,7 @@ export type { LoadConfigOptions, LoadedConfig } from '@magic/state'
 //
 // 身份的**算**在装配根（它才看得见配置文件的可观察事实）；形状在 `@magic/contracts`。
 // 缓存实现的 scoped 读写与发布前核对归缓存线。
-export { modelCacheAccessOf } from '@magic/host'
-export { configFingerprintOf } from '@magic/state'
-export type { ConfigFingerprint } from '@magic/state'
+export { cacheAccessFor } from '@magic/host'
 
 // —— 模型信息缓存与配置保存（U41）——
 

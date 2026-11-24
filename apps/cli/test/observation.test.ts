@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'n
 import { join } from 'node:path'
 import type { Command, EventDataOf, EventKind, ProviderConfig } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
-import { modelSpecOf } from '@magic/model'
+import { modelSpecOf, resolveConnection } from '@magic/model'
 import { cacheAccessFor } from '@magic/host'
 import { createFileModelInfoCache } from '@magic/host'
 import { query, type ObservationContext } from '@magic/host'
@@ -78,7 +78,9 @@ describe('无执行者的真实只读目录', () => {
     const g = ground()
     const config: ProviderConfig = { vendor: 'deepseek', apiKey: 'test-secret' }
     g.configure({ ds: config }, { models: { default: { provider: 'ds', model: 'deepseek-flash' } } })
-    const access = cacheAccessFor({ provider: 'ds', configPath: join(g.base, 'config.json'), apiKey: config.apiKey, processToken: 'test' })
+    // 身份按**连接解析后的数据来源**锚定——与观察面内部同一把尺子（resolveConnection）
+    const resolved = resolveConnection({ providerId: 'ds', config, env: {} })
+    const access = cacheAccessFor({ vendor: resolved.config.vendor, baseURL: resolved.baseURL, protocol: resolved.config.protocol })
     const cache = createFileModelInfoCache(g.dataDir)
     const snapshot = { provider: 'ds', scope: 'deepseek@https://api.deepseek.com#auto', fetchedAt: 1,
       models: [{ id: 'deepseek-flash', limits: { maxInputTokens: 12_000, maxOutputTokens: 1_000 } }] }
@@ -117,7 +119,8 @@ describe('无执行者的真实只读目录', () => {
     const config: ProviderConfig = { vendor: 'deepseek', protocol: 'chat-completions', apiKey: 'local-cache-test' }
     g.configure({ ds: config, mm: { protocol: 'chat-completions', baseURL: 'http://unreachable/mm' } }, { models: { default: { provider: 'ds', model: 'deepseek-flash' }, cantrip: { provider: 'mm', model: 'deepseek-flash' }, spell: { provider: 'ds', model: 'deepseek-v4-pro' } } })
     const cache = createFileModelInfoCache(g.dataDir)
-    const access = cacheAccessFor({ provider: 'ds', configPath: join(g.base, 'config.json'), apiKey: config.apiKey, processToken: 'test' })
+    const resolvedDs = resolveConnection({ providerId: 'ds', config, env: {} })
+    const access = cacheAccessFor({ vendor: resolvedDs.config.vendor, baseURL: resolvedDs.baseURL, protocol: resolvedDs.config.protocol })
     await cache.replace({ provider: 'ds', scope: 'deepseek@https://api.deepseek.com#chat-completions', fetchedAt: 1,
       models: [{ id: 'deepseek-flash', reasoning: { levels: ['low'], disable: false } }],
     }, access)

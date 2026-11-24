@@ -23,7 +23,7 @@ import { createSettings } from '@magic/host'
 import { magicAt } from './tmp.ts'
 
 /** 一个接入身份——测试里的假值（真身份由装配按认证来源算，见回报）。 */
-const access = (id: string, persistent = true): ModelCacheAccess => ({ id, persistent })
+const access = (id: string): ModelCacheAccess => ({ id })
 
 /** 连接 id ＋ 身份 → 落盘文件名（与实现同一把尺子：两段 sha256 前 16 字节 ＋ `.json`）。 */
 function fileNameOf(providerId: string, accessId: string): string {
@@ -304,18 +304,16 @@ describe('范围隔离', () => {
     }
   })
 
-  test('不落盘的那一类（`persistent: false`）：读不到共享盘、也写不下去', async () => {
+  test('没有身份（`access` 缺省）：读不到共享盘、也写不下去——不猜、不碰别人的份', async () => {
     const dir = tempDataDir()
     try {
       const cache = createFileModelInfoCache(dir)
       await cache.replace(snapshotOf({ models: [{ id: 'ON-DISK' }] }), access('cfg:real'))
 
-      const volatile = access('env:proc-1', false)
-      // 环境变量来源的独立进程没有可验证的共同身份 ⇒ 不去读别人的东西
-      expect(await cache.read('ds', volatile)).toBeUndefined()
-      // 它自己也落不了盘
-      await cache.replace(snapshotOf({ models: [{ id: 'SHOULD-NOT-LAND' }] }), volatile)
-      await cache.drop('ds', volatile)
+      // 没有身份就不知道该读/写哪一份——**不猜、也不顺手清别的范围**
+      expect(await cache.read('ds')).toBeUndefined()
+      await cache.replace(snapshotOf({ models: [{ id: 'SHOULD-NOT-LAND' }] }))
+      await cache.drop('ds')
 
       expect(filesOf(dir)).toEqual([fileNameOf('ds', 'cfg:real')])
     } finally {
@@ -412,7 +410,7 @@ describe('真装配 · 认证轮换', () => {
   }
 
   for (const source of ['终端保存', 'App保存', '外部写入'] as const) {
-  for (const outcome of ['成功', '失败'] as const) test(`${source}换认证：新请求不等旧请求，旧认证迟到${outcome}不得污染当前读面`, async () => {
+  for (const outcome of ['成功', '失败'] as const) test(`${source}换认证：缓存沿用（在途复用），同一端点的那一趟${outcome === '成功' ? '照常接纳' : '失败照实标'}`, async () => {
     const s = await staged()
     await s.command('session.new', 'session.state')
     const registry = s.assembly.models, selection = registry?.current()
@@ -420,8 +418,8 @@ describe('真装配 · 认证轮换', () => {
     try {
       expect(s.authorization).toEqual(['Bearer fake-old'])
 
-      // **前半截直接看得见**：装配在保存认证时到底调没调 `drop`。
-      // 少了这一句，「旧那份没复活」也可能只是恰巧——把前提当结论用是这一轮的老毛病
+      // **换凭据不作废**（2026-11-24 裁定）：装配在保存认证时**不该**作废缓存——
+      // 同一端点的第三方数据照用，有效性由 fetchedAt ＋ TTL 锚定。这一条锚住「不再 drop」。
       const original = s.assembly.modelInfo.drop
       let dropped = 0
       ;(s.assembly.modelInfo as { drop(id: string): Promise<void> }).drop = (id: string) => {
@@ -430,24 +428,25 @@ describe('真装配 · 认证轮换', () => {
       }
 
       await s.rotate(source)
-      const fresh = s.assembly.modelInfo.refresh('ds')
-      // 旧响应仍扣在屏障内，新认证必须已有自己的请求，不能复用旧在途位。
-      expect(s.authorization).toEqual(['Bearer fake-old', 'Bearer fake-new'])
-      expect(dropped).toBeGreaterThan(0)
-      const current = await fresh
-      expect(current.snapshot?.models.map(one => one.id)).toEqual(['AFTER-ROTATION'])
-      expect(current.failure).toBeUndefined()
+      // 同一端点的在途**直接复用**——不因换 key 重发：旧凭据那一趟拉的也是这个端点的
+      // 同一份列表，不存在「旧范围污染」（那是被撤销的按接入隔离语义）
+      s.assembly.modelInfo.refresh('ds')
+      expect(s.authorization).toEqual(['Bearer fake-old'])
+      expect(dropped).toBe(0)
 
       s.release(outcome === '成功'
-        ? Response.json({ object: 'list', data: [{ id: 'OLD-RANGE-ONLY', object: 'model' }] })
+        ? Response.json({ object: 'list', data: [{ id: 'SAME-ENDPOINT-LIST', object: 'model' }] })
         : new Response('old authentication failed', { status: 401 }))
       await stale
-
       const after = s.assembly.modelInfo.read('ds')
-      expect(after.snapshot).toEqual(current.snapshot)
-      expect(after.snapshot?.models.map(one => one.id)).not.toContain('OLD-RANGE-ONLY')
-      expect(after.failure).toBeUndefined()
-      expect(s.authorization).toEqual(['Bearer fake-old', 'Bearer fake-new'])
+      if (outcome === '成功') {
+        // 旧凭据那一趟也是**这个端点**的数据——照常接纳
+        expect(after.snapshot?.models.map(one => one.id)).toEqual(['SAME-ENDPOINT-LIST'])
+        expect(after.failure).toBeUndefined()
+      } else {
+        // 失败照实标；不做「作废」与「换范围」，读面不编一个假空
+        expect(after.failure).toBeDefined()
+      }
       expect(s.assembly.models).toBe(registry)
       expect(s.assembly.models?.current()).toEqual(selection)
     } finally {

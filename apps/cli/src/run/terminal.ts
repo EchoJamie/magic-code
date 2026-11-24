@@ -34,7 +34,7 @@ import type {
 import { createProjectRules } from '@magic/resources'
 import { join } from 'node:path'
 import { startVoice, startVoiceHotkey, writeClipboardText } from '@magic/client'
-import { createModelRegistry } from '@magic/model'
+import { createModelRegistry, resolveConnection } from '@magic/model'
 import type { ModelRegistry } from '@magic/model'
 import type { RunTuiOptions } from '@magic/shell'
 import type { ManagerClient } from '@magic/host'
@@ -248,8 +248,8 @@ type RegistryInputs = {
  * 由 `cli.ts` 在起外壳之前调一次（**一处读**）：窗口这一侧不自己碰盘，只照结果算分母。
  *
  * 三条：**读的是本范围的哪一份**（身份只判一处，见 `cache-access.ts` 的 `cacheAccessFor`）·
- * **读不到就是读不到**（没有那份文件 / 读不懂 / 认证走环境变量 ⇒ `undefined`，
- * 屏上照旧只报已用量——**不编**）· **不触发刷新**（`read` 是纯读，见 `model-cache.ts`）。
+ * **读不到就是读不到**（没有那份文件 / 读不懂 ⇒ `undefined`，屏上照旧只报已用量——**不编**）·
+ * **不触发刷新**（`read` 是纯读，见 `model-cache.ts`）。
  */
 export async function readModelInfo(loaded: LoadedConfig, magic: MagicHome): Promise<ModelInfoLookup | undefined> {
   const provider = loaded.providerId
@@ -258,14 +258,9 @@ export async function readModelInfo(loaded: LoadedConfig, magic: MagicHome): Pro
   const entry = loaded.config.providers[provider]
   if (entry === undefined) return undefined
 
-  const access = cacheAccessFor({
-    provider,
-    configPath: loaded.path,
-    apiKey: entry.apiKey,
-    auth: entry.auth,
-    processToken: crypto.randomUUID(),
-  })
-  if (!access.persistent) return undefined // 环境变量来路：盘上根本没有它那一份
+  // 缓存身份按**连接的数据来源**（解析后的端点＋协议）锚定——与装配/设置同一把尺子
+  const resolved = resolveConnection({ providerId: provider, config: entry, env: {} })
+  const access = cacheAccessFor({ vendor: resolved.config.vendor, baseURL: resolved.baseURL, protocol: resolved.config.protocol })
 
   const cache = createFileModelInfoCache(magic.base)
   let snapshot: ModelInfoSnapshot | undefined

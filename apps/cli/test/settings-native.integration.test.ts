@@ -253,7 +253,7 @@ test('配置目标与指纹分别核对，坏 JSON 不覆盖，Engine 状态不�
 }, 60000)
 
 
-test('原生模型列表与 TS 缓存互通，非认证编辑沿用；换凭据和迟到刷新不能串用旧范围', async () => {
+test('原生模型列表与 TS 缓存互通：非认证编辑沿用，换凭据不作废，迟到刷新照常落定', async () => {
   const g = ground(), requests: string[] = []
   let hold: Promise<void> | undefined, release: (() => void) | undefined
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
@@ -281,8 +281,9 @@ test('原生模型列表与 TS 缓存互通，非认证编辑沿用；换凭据�
     await waitFor(() => requests.length === 2)
     expect((await native({ type: 'provider.save', provider: 'official', apiKey: 'SECOND_SECRET' })).saved).toBe(true)
     release!(); await late; hold = undefined
-    expect(row((await native()).snapshot!).cache).toBeUndefined()
-    expect(row(await settings.read()).cache).toBeUndefined()
+    // **换凭据不作废**（2026-11-24 裁定）：同一端点的缓存照用，迟到的刷新照常写入
+    expect(row((await native()).snapshot!).cache?.snapshot?.models[0]?.id).toBe('deepseek-chat')
+    expect(row(await settings.read()).cache?.snapshot?.models[0]?.id).toBe('deepseek-chat')
     await settings.apply({ type: 'model.refresh', provider: 'official' }, configStamp(g.configPath))
     expect(row((await native()).snapshot!).cache?.snapshot?.models).toEqual(row(await settings.read()).cache?.snapshot?.models)
     expect(requests).toEqual(['Bearer FIRST_SECRET', 'Bearer FIRST_SECRET', 'Bearer SECOND_SECRET'])
