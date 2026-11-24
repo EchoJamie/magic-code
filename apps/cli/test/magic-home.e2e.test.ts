@@ -324,7 +324,8 @@ describe('MAGIC_HOME 下的真 CLI', () => {
     const room = makeRoom()
     try {
       const config = plantTree(room.base, { provider: 'fresh', model: 'NEW-MODEL', config: {
-        models: { default: { provider: 'fresh', model: 'NEW-MODEL' }, cantrip: { provider: 'spare', model: 'SPARE-MODEL' } },
+        models: { cantrip: { provider: 'spare', model: 'SPARE-MODEL' }, arcane: { provider: 'fresh', model: 'NEW-MODEL' } },
+        defaultTier: 'arcane',
         providers: {
           fresh: { protocol: 'chat-completions', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u42-not-a-real-key' },
           spare: { protocol: 'chat-completions', baseURL: 'http://127.0.0.1:9/v1' },

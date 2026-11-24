@@ -281,7 +281,8 @@ describe('夹具沙箱化（D24）', () => {
 
 function twoProviders(): Record<string, unknown> {
   return {
-    models: {default: {provider: "alpha", model: 'alpha-1'}, cantrip: {provider: "beta", model: 'beta-1'}, spell: {provider: "alpha", model: 'alpha-1'}, arcane: {provider: "alpha", model: 'alpha-1'}},
+    models: {cantrip: {provider: "beta", model: 'beta-1'}, spell: {provider: "alpha", model: 'alpha-1'}, arcane: {provider: "alpha", model: 'alpha-1'}},
+    defaultTier: 'arcane',
     providers: {
       alpha: { protocol: 'chat-completions', baseURL: 'https://alpha.example/v1', apiKey: 'sk-alpha-key12' },
       beta: { protocol: 'chat-completions', baseURL: 'https://beta.example/v1', apiKey: 'sk-beta-key12' },
@@ -339,7 +340,7 @@ describe('入口 magic · 换模型的启动参数', () => {
       const result = await run(home, '--check', '--model', 'betta')
 
       expect(result.exitCode).toBe(1)
-      expect(result.stderr).toContain('--model 只能选择 default / cantrip / spell / arcane')
+      expect(result.stderr).toContain('--model 只能选择 cantrip / spell / arcane')
     } finally {
       removeDir(home)
     }
