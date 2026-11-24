@@ -274,6 +274,7 @@ export type ShellOptions = {
   /**
    * **终端页签标题的写出面**（OSC 0 · `tab-title.ts`）——把 ② 那一格的会话名同步到
    * 页签 / 窗口标题；`commit` 是视图变更唯一入口，落在这里状态行与页签**永远同源**。
+   * 无标题时页签兜底产品名（`🪄 Magic Code`）。
    * 缺省＝不写（非终端流 / 旧装配），行为与加它之前一字不动。
    */
   readonly tabTitle?: TabTitleWriter | undefined

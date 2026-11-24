@@ -55,12 +55,12 @@ describe('写出器（createTabTitleWriter）', () => {
     expect(writes[1]).toBe('\x1b]0;接入 OAuth 认证\x07')
   })
 
-  test('null 按状态行同一口径兜「新会话」；清洗后全空＝不写也不清', () => {
+  test('null 按页签口径兜产品名；清洗后全空＝不写也不清', () => {
     const { writes, out } = fakeOut()
     const writer = createTabTitleWriter(out)
 
     writer.update(null)
-    expect(writes).toEqual(['\x1b]0;新会话\x07'])
+    expect(writes).toEqual(['\x1b]0;🪄 Magic Code\x07'])
 
     const blank = createTabTitleWriter({ write: () => writes.push('blank') })
     blank.update('\u001b\u0007')

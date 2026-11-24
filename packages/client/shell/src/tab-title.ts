@@ -12,6 +12,7 @@
  * - **变更时才写**（缓存上一次写入的标题，去重——每帧都写既吵又有闪烁风险）；
  * - **清空 ≠ 恢复**：退出时写一条**空** OSC（`\x1b]0;\x07`）清掉自己写过的标题；
  *   「恢复 shell 之前的原标题」**不可移植**（没有跨终端的读回手段，codex 同话），不假装能；
+ * - **无标题的兜底＝产品名**（`🪄 Magic Code`——页签要的是身份，不是状态）；
  * - **清洗**：标题文本来自不可信来源（AI 生成的标题是模型输出、改名是用户输入），
  *   C0/C1 控制字符一律剔除（防截断或重塑转义序列——OSC 注入），空白折叠成单空格，
  *   按字素截到上限（多数终端对超长标题静默截断，240 留足余量）。
@@ -51,8 +52,8 @@ export type TabTitleWriter = {
   clear(): void
 }
 
-/** 造标题写出器——去重状态随实例走（一条终端一个）。 */
-export function createTabTitleWriter(out: { write(text: string): void }, fallback: string = '新会话'): TabTitleWriter {
+/** 造标题写出器——去重状态随实例走（一条终端一个）。无标题时的兜底＝产品名（页签身份）。 */
+export function createTabTitleWriter(out: { write(text: string): void }, fallback: string = '🪄 Magic Code'): TabTitleWriter {
   /** 上一次写出去的标题——去重用；`undefined` ＝ 本实例还什么都没写过。 */
   let last: string | undefined
 
