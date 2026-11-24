@@ -8,14 +8,11 @@ DEVELOPER="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 NAME="Magic Code"
 APP="$OUTPUT/$NAME.app"
 IDENTITY="${MAGIC_SIGN_IDENTITY:-Apple Development: echojamieee@outlook.com (9JHY98AJMC)}"
-VERSION="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
-# 版本号唯一来源是 package.json；这里把它对齐到 native.ts（编进组件身份的那一处）。
-node scripts/macos/sync-version.mjs
+VERSION="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')+$(date +%Y%m%d%H%M)"
 DMG="$OUTPUT/$NAME-$VERSION-arm64.dmg"
-PROTOCOL="$(python3 - "$VERSION" <<'PY'
+PROTOCOL="$(python3 - <<'PY'
 import re, pathlib, sys
 source = pathlib.Path('packages/contracts/src/conversation/native.ts').read_text()
-assert re.search(r"SOFTWARE_VERSION = '([^']+)'", source).group(1) == sys.argv[1], 'package 与 native SOFTWARE_VERSION 必须同版'
 print(re.search(r'NATIVE_PROTOCOL = ([0-9]+)', source).group(1))
 PY
 )"
@@ -40,7 +37,7 @@ inputs = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for pattern in patt
 pathlib.Path(sys.argv[1]).write_text(json.dumps([patterns, inputs]))
 PY
 bun run typecheck
-MAGIC_SIGN_IDENTITY="$IDENTITY" bash scripts/macos/build-components.sh "$TEMP/components"
+MAGIC_SIGN_IDENTITY="$IDENTITY" MAGIC_BUILD_VERSION="$VERSION" bash scripts/macos/build-components.sh "$TEMP/components"
 DEVELOPER_DIR="$DEVELOPER" xcodebuild -project apps/macos/MagicCode.xcodeproj -scheme MagicCode \
   -configuration "$CONFIGURATION" -derivedDataPath "$OUTPUT/DerivedData" -destination 'platform=macOS,arch=arm64' \
   build CODE_SIGNING_ALLOWED=NO MARKETING_VERSION="$VERSION" > "$TEMP/xcode-build.log" 2>&1 || { tail -80 "$TEMP/xcode-build.log"; exit 1; }
