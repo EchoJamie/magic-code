@@ -51,7 +51,7 @@ test('原生保存后新成员采用新档位与独立思考，入口和已有�
     const body = f.requests('descendant-model')[0]!.body
     expect(body.reasoning_effort).toBe('none')
     const toolNames = (body.tools as { function: { name: string } }[]).map(tool => tool.function.name)
-    expect(toolNames).toEqual(['read', 'write', 'edit', 'grep', 'glob', 'ls', 'source_read', 'knowledge_search', 'knowledge_read', 'knowledge_source', 'knowledge_update', 'plan_update', 'plan_read', 'agent_list', 'agent_spawn', 'agent_message', 'agent_wait', 'agent_control']) // 自身笔记和计划可用；业务执行仍按角色限制。
+    expect(toolNames).toEqual(['read', 'write', 'edit', 'grep', 'glob', 'ls', 'source_read', 'knowledge_search', 'knowledge_read', 'knowledge_source', 'knowledge_update', 'plan_update', 'plan_read', 'agent_list', 'agent_spawn', 'agent_message', 'agent_control']) // 自身笔记和计划可用；业务执行仍按角色限制。
     expect(f.requests('member-model')).toHaveLength(1); expect(f.requests('entry-model').length).toBeGreaterThanOrEqual(3)
     expect(f.store.collaboration.getAgent(f.collaboration()!.coordinatorId)?.model.model).toBe('entry-model')
     const evidence = process.env['MAGIC_SETTINGS_EVIDENCE']
