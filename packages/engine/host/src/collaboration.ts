@@ -115,8 +115,12 @@ export function createManagedCollaboration(host: CollaborationHost) {
         if (i.state !== 'pending') return false
         const message = records.readMessage(member.agentId, i.messageId)
         if (message === undefined || message.purpose === 'receipt') return false
+        // **已取消委派的交付不唤醒**（保存仍在账本，明确继续后再消费）——原只排除咨询
+        // 路径的取消后交付，普通成员的同款迟到交付漏了同款防护（2026-11-25 与 consult
+        // 排除对齐）：停止的工作不借迟到的交付恢复执行。
+        if (message.purpose === 'delivery' && message.delegationId !== undefined
+          && records.getDelegation(message.delegationId)?.state === 'cancelled') return false
         return message.purpose !== 'delivery' || records.getAgent(message.senderId)?.purpose !== 'consultation'
-          || message.delegationId === undefined || records.getDelegation(message.delegationId)?.state !== 'cancelled'
       })) wake(member.agentId)
     }
   }

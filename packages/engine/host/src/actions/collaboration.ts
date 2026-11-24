@@ -152,7 +152,13 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
             }) }]
             const message = records.deliver(actorId, { operationId: request.operationId, at,
               ...generated, delegationId: request.delegation, body })
-            for (const recipient of message.recipients) deps.wake(recipient)
+            // **已取消的委派（停止后迟到的交付）只保存、不唤醒**——同分支准入注释的那条线：
+            // 「停止后仍允许保存原委派结果……**不借迟到结果恢复执行**」。唤醒会让入口新一代
+            // 带着交付材料发起模型调用，工作就在用户未明确继续时复活了。收件留在账本里，
+            // 用户明确继续时由收件消费路径读到，结果不丢。
+            if (records.getDelegation(request.delegation)?.state !== 'cancelled') {
+              for (const recipient of message.recipients) deps.wake(recipient)
+            }
             value = message
             knowledge = message.body.flatMap(part => part.knowledge ?? [])
             break

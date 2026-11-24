@@ -66,19 +66,31 @@ async function stopped(f: StopRuntime) {
 async function reclaimed(f: StopRuntime, owned: readonly OwnedProcess[], atStop: Awaited<ReturnType<typeof stopped>>) {
   const work = f.collaboration()!
   // 协作墓碑是 stopped；正常退出的历史 Run 可以是 idle。核销依据是实际资源与 ended，非显示文案。
+  // 盘上核销记录**按会话留最新一代**（`lastRuns` 以会话为键，后代核销顶掉前代——整体停止后
+  // 入口会因「新一代接管」再起一代并退出，gen 1 的记录被 gen 3 顶掉）：故判据是「涉及到的
+  // 每个会话，其**最新一代**已核销」；member（gen 2）是其会话唯一一代，逐代精确断言保留。
+  const latestBySession = (session: string | null): number => Math.max(...f.launches.filter(one => one.session === session).map(one => one.gen))
+  const sessionReclaimed = (session: string | null): boolean => {
+    if (session === null) return true
+    const persisted = f.storedRuns().find(run => run.session === session && run.gen === latestBySession(session))
+    return persisted !== undefined && persisted.kind !== undefined && persisted.why !== undefined
+  }
+  const sessionOf = new Map(f.launches.map(one => [one.gen, one.session]))
   await f.wait('全部真实 executor onExit 与自有组回收', () => f.launches.every(one => one.exited !== undefined) &&
     f.manager.executors().length === 0 && f.manager.runs().every(one => !one.holds) &&
-    f.launches.every(one => f.storedRuns().some(run => run.gen === one.gen && run.kind !== undefined && run.why !== undefined)) &&
+    [...sessionOf.values()].every(sessionReclaimed) &&
     f.store.collaboration.listExecutions(work.collaborationId).every(one => one.state === 'finished') &&
     owned.every(one => !alive(one.pgid) && !alive(-one.pgid)))
   for (const launched of f.launches) {
     expect(launched.exited).toBeDefined()
     expect(f.members().some(one => one.sessionId === launched.session)).toBe(true)
-    const persisted = f.storedRuns().find(one => one.gen === launched.gen)!
-    expect(persisted).toMatchObject({ session: launched.session, tokenHash: launched.tokenHash })
+    expect(f.manager.runs().find(one => one.session === launched.session)?.holds).toBe(false)
+  }
+  // 盘上核销记录按会话断言（最新一代）：root 的 gen 1 记录被 gen 3 顶掉是产品语义，不是漏核销。
+  for (const session of new Set(f.launches.map(one => one.session))) {
+    const persisted = f.storedRuns().find(one => one.session === session && one.gen === latestBySession(session))!
     expect(persisted.kind).toBeDefined()
     expect(persisted.why).toBeDefined()
-    expect(f.manager.runs().find(one => one.session === launched.session)?.holds).toBe(false)
   }
   expect(work.state).toBe('stopped')
   expect(f.delegations().every(one => one.state === 'cancelled' && one.receivedAt === undefined)).toBe(true)
@@ -113,6 +125,8 @@ async function reclaimed(f: StopRuntime, owned: readonly OwnedProcess[], atStop:
     one.kind === 'session.history' && one.data.session === memberSession ? [one.data] : [])
   expect(blocks.flatMap(block => block.entries).length).toBeGreaterThan(0)
   await Bun.sleep(200) // 仅检查迟到帧/多余调用；停止证明来自 onExit、原账本与进程组探针。
+
+
   expect(f.calls).toHaveLength(atStop.calls)
   expect({ calls: f.calls.length, launches: f.launches.length }).toEqual(before)
   expect(f.manager.executors()).toEqual([])
