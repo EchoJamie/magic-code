@@ -268,9 +268,13 @@ test('咨询在途映射稳定，下次新咨询读取新映射，主 reasoning 
 }, 20000)
 
 test('缺 Arcane 配置或思考不支持在模型调用前拒绝，不换档', async () => {
+  // **用例级覆盖三档（无 default 残留）**：否则 config.ts 的读时迁移会把 default 当种子
+  // 补回被删掉的 arcane，「缺 Arcane」的拒绝永远不发生（2026-11-25 排查定位）。
   const f = await collaborationRuntime('u115-config-reject', call => call.index === 0 ? consult : call.index === 1
     ? { tool: 'consult_arcane', args: { operationId: 'unsupported', question: '不支持的思考设置', reasoning: { mode: 'level', level: 'impossible' } } }
-    : { text: '报告配置问题，不绕过咨询条件。' })
+    : { text: '报告配置问题，不绕过咨询条件。' }, {
+    models: { cantrip: { provider: 'controlled', model: 'entry-model' }, spell: { provider: 'controlled', model: 'member-model' }, arcane: { provider: 'controlled', model: 'descendant-model' } },
+  })
   const path = join(f.magic.base, 'config.json')
   try {
     const config = JSON.parse(readFileSync(path, 'utf8'))
