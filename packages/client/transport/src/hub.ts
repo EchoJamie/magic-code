@@ -110,6 +110,10 @@ export function createControlHub(onError?: (error: unknown) => void): ControlHub
         // 读侧命令——**原样转手**给对话域（会话与条目归它）。答复走事件（`session.history`）
         // ——命令面只发不收，本域也不读条目（它够不着记录域，这正是读面走控制面的由头）。
         return target.onHistoryRead(command.session)
+      case 'plan.read':
+        // 当前计划读侧（2026-11-24）——同 `history.read` 的姿势转手给对话域；
+        // 答复走事件（`plan.changed`，带 `requestId`），全文、零裁剪。
+        return target.onPlanRead?.(command.session, command.requestId)
       case 'model.list':
         // 模型条目表（读侧）——**原样转手**给**装配**（注册表在它手上）。本域不认识注册表、
         // 也不知道有哪些条目；答复走事件（`model.catalog`，不落库）——命令面只发不收。

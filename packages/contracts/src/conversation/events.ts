@@ -596,19 +596,20 @@ export type EventDataOf = {
   // 控制 · 会话——`history.read` 的答复（技术方案 · 领域划分：「读面走控制面」）。
   // **分块**推：长会话一次塞一个事件＝一个巨型载荷；块大小**实现级**。末块 `done: true`。
   // **不落库**：它是**读出来的**（条目本来就在库里），落库＝把同一段内容存第二遍。
+  //
+  // 2026-11-24 收权：本事件的字节预算**只管会话历史条目**。plan 改走 `plan.read` 命令
+  // （答复 `plan.changed`，全文、零裁剪）；本地输入（`input.local`）**并入条目流**——
+  // 它们本来就是转录里的用户行，是历史的一部分，与其它条目同一条预算与预览规矩，
+  // 不再作为 meta 被单独裁剪、也不再只带最近 20 条。
   'session.history': {
     readonly compactions?: readonly Extract<KernelEvent, { kind: 'compact.state' }>[]
-    /** 末块附实际当前计划；工作记忆投影按 revision 比较。 */
-    readonly plan?: import('./entries.ts').PlanSnapshot
     readonly error?: string
     /** 这批条目属于哪条会话——外壳据以丢弃**切走之后才到**的块（分块会跨切换）。 */
     readonly session: SessionId
-    /** 这一块（按条目序；块与块之间拼起来即全日志）。 */
+    /** 这一块（按条目序；块与块之间拼起来即全日志）。本地输入已并入。 */
     readonly entries: readonly Entry[]
     /** 已持久化的轮边界与用户审批事实；缺席不补猜计时。 */
     readonly timing?: readonly TurnTimingEvent[]
-    /** 本地命令的持久事件，仅供历史显示与召回。 */
-    readonly inputs?: readonly Extract<KernelEvent, { kind: 'input.local' }>[]
     /**
      * 子会话的协作消息（末块才给）。
      *
@@ -751,9 +752,17 @@ export type EventDataOf = {
      */
     readonly markers: readonly string[]
   }
-  /** 实际当前计划投影，来源记录号不充当工作记忆修订。 */
+  /**
+   * 实际当前计划投影，来源记录号不充当工作记忆修订。
+   *
+   * `requestId` 只在**读侧答复**（`plan.read`）时给——实时通报（`plan_update` 落账后）
+   * 不带；外壳收到哪条都照单全收，它只是对账用的号，不改变语义。
+   *
+   * `entry: null` 只出现在读侧答复「还没建立过计划」时（实时通报总有落账记录）。
+   */
   'plan.changed': {
-    readonly entry: RecordId
+    readonly requestId?: string
+    readonly entry: RecordId | null
     readonly plan: PlanNote | null
   }
   // 控制 · 模型——**读侧命令（`model.list`）的答复**（缺陷 D10 · 第 3 样）。

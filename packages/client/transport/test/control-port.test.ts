@@ -99,6 +99,9 @@ export function commandSubjectOf(command: Command): string {
     case 'history.read':
       // 第 19 轮读侧一支——不给孩子条＝读当下这条
       return `读历史：${command.session ?? '（当下这条）'}`
+    case 'plan.read':
+      // 当前计划读侧（2026-11-24）——答复走 `plan.changed`
+      return `读计划：${command.session ?? '（当下这条）'}`
     case 'model.list':
       // D10 读侧第二支——无参：问的就是「都有哪些」
       return '列模型条目'
