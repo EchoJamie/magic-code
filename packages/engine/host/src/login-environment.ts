@@ -62,9 +62,13 @@ function parseNul(bytes: Uint8Array): Record<string, string> {
 /** 采一次登录 shell 的环境；失败给 `undefined`（由调用方回落）。 */
 function capture(shell: string): Record<string, string> | undefined {
   try {
+    // ⚠️ **killSignal 用 SIGKILL**（2026-11-25 实测）：登录交互 shell 可能捕获/忽略
+    // SIGTERM，超时后 spawnSync 随之永久挂死——执行者连诊断日志都建不起来，整个
+    // 恢复链静默卡死。强杀是「采集失败就回落」这条约定能成立的前提。
     const result = spawnSync(shell, ['-ilc', 'env -0'], {
       encoding: 'buffer',
       timeout: CAPTURE_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
     })
