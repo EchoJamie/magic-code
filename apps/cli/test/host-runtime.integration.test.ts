@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test'
+import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -69,6 +70,33 @@ test('可识别配置错误记录失败并正常退出，设置及状态入口�
     expect(await f.child.exited).toBe(0)
     expect((await engineCall(f.input)).state).toBe('failed')
   } finally { await f.close() }
+}, 10000)
+
+test('运行登记遇到短暂写锁时等待释放，用户提交仍可完成', async () => {
+  const model = startFixture({ turns: [{ kind: 'text', text: '完成' }] })
+  const config = JSON.stringify({ models: { default: { provider: 'local', model: 'probe' } }, providers: { local: { protocol: 'chat-completions', apiKey: 'synthetic', baseURL: model.baseURL } } })
+  const f = await fixture(config)
+  let client: Awaited<ReturnType<typeof connectManager>>
+  let db: Database | undefined
+  let locked = false
+  try {
+    const found = await f.until()
+    client = await connectManager(found.socket, { cwd: f.input.home, environment: { PATH: '/usr/bin:/bin' } })
+    let completed = false
+    client!.onEvent(event => { if (event.kind === 'turn.end' && event.data.reason === 'settled') completed = true })
+    db = new Database(join(f.input.home, '.magic', 'records.db'))
+    db.exec('BEGIN IMMEDIATE'); locked = true
+    client!.send({ type: 'input.submit', text: '等待写锁释放后执行' })
+    await Bun.sleep(300)
+    db.exec('COMMIT'); locked = false
+    const deadline = Date.now() + 5000
+    while (!completed && Date.now() < deadline) await Bun.sleep(10)
+    expect(completed).toBe(true)
+    expect(model.requests()).toHaveLength(1)
+  } finally {
+    if (locked) db?.exec('ROLLBACK')
+    db?.close(); client?.close(); await f.close(); await model.stop()
+  }
 }, 10000)
 
 

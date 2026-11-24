@@ -7,7 +7,7 @@
  */
 import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import type { StoredRun } from './facts.ts'
-import { readRunsAt, replaceRunsAt, type RunRecord } from '@magic/data'
+import { readRunsAt, replaceRunsAt, type RecordsStore, type RunRecord } from '@magic/data'
 import type { RunPaths } from './paths.ts'
 
 export type ManagerRecord = {
@@ -103,10 +103,12 @@ function toRun(run: StoredRun, at: number): RunRecord {
   } as RunRecord
 }
 
-export function writeRuns(paths: RunPaths, runs: readonly StoredRun[], at: number): void {
+export function writeRuns(paths: RunPaths, runs: readonly StoredRun[], at: number, store?: Pick<RecordsStore, 'runs'>): void {
   // 运行登记现在落在 records.db 的 runs 表；整份快照替换，保持原文件的语义。
   try {
-    replaceRunsAt(paths.dataDir, runs.map(run => toRun(run, at)))
+    const records = runs.map(run => toRun(run, at))
+    if (store) store.runs.replaceAll(records)
+    else replaceRunsAt(paths.dataDir, records)
   } catch (error) {
     throw new Error(`运行归属登记失败：${String(error)}`)
   }

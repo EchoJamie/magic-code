@@ -76,7 +76,7 @@ export function installPlacement(ctx: ManagerContext): void {
     let spawned: ExecutorSpawned
     try {
       spawned = (options.launch ?? createAgentLauncher()).spawn({
-        gen, executionId, network, environment: network.env,
+        gen, executionId, socket: ctx.paths.socket, network, environment: network.env,
         session: input.session, cwd: input.cwd, magic: options.magic,
         records: store, ledger,
         ...(input.switch === undefined ? {} : { switch: input.switch }),

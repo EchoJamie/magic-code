@@ -24,6 +24,8 @@ export type ExecutorSpawn = {
   readonly gen: number
   /** 发车令牌——它连上来时按这个认。 */
   readonly executionId: string
+  /** 管理者实际监听的地址，不由执行者按自己的环境重新计算。 */
+  readonly socket: string
   /** 开工那条会话（显式接续时就有）；`null` ＝ 让它自己开张（D5）。 */
   readonly session: string | null
   /** **启动目录**——工作区默认根（配置没写 `workspaceRoots` 时就是它）。 */
@@ -173,7 +175,8 @@ export function createProcessLauncher(options: ProcessLauncherOptions = {}): Exe
         'executor',
         '--execution-id', request.executionId,
         '--home', request.magic.home,
-        '--parent', request.magic.base,
+        '--base', request.magic.base,
+        '--socket', request.socket,
         '--cwd', request.cwd,
         ...(request.session === null ? [] : ['--session', request.session]),
         ...(request.switch === undefined ? [] : ['--switch', JSON.stringify(request.switch)]),
