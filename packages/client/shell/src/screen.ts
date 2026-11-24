@@ -164,6 +164,9 @@ export async function runScreen(host: ScreenHost): Promise<number> {
       const body = screenLayout(rows, { columns, turnDuration: host.turnDuration?.(), screenRows: screenRows - footer.length - (title === undefined ? 0 : 1) })
       const layout = body
 
+      // **锚底**（`startTop = -1`）：首帧落位到最新那一段。此后 top 已是实值，不再触发。
+      if (state.top < 0) state = { ...state, top: layout.maxTop }
+
       const keys = queued
       queued = []
 
@@ -321,12 +324,12 @@ function paintStatus(layout: ScreenLayout, state: ScreenState, columns: number, 
 
   // 打字那一档：把词与光标摆出来（这一屏此刻归搜索）
   if (state.asking !== null) {
-    return faint(clip(`搜索：${state.asking}▏  ·  Enter 跳过去 · Esc 取消`, columns))
+    return faint(clip(`搜索：${state.asking}▏  Enter 跳过去  Esc 取消`, columns))
   }
 
   const searched = state.term === ''
     ? ''
-    : `  ·  /${state.term} 第 ${found === 0 ? 0 : state.at + 1}/${found} 处`
+    : `  /${state.term} 第 ${found === 0 ? 0 : state.at + 1}/${found} 处`
 
   /**
    * **选中一处材料时才给那两条动作**（U110 · 反向判据）：没选的时候底下这行**一个字都不提**
@@ -335,11 +338,11 @@ function paintStatus(layout: ScreenLayout, state: ScreenState, columns: number, 
   const picked = state.picked === null ? undefined : layout.materials.find((one) => one.line === state.picked)
   const actions = picked === undefined
     ? ''
-    : `  ·  ${picked.image.marker} · ${picked.image.name}：Enter 加入本次输入 · e 导出原图`
+    : `  ${picked.image.marker} ${picked.image.name}  Enter 加入本次输入  e 导出原图`
 
   const tail = state.note !== null
-    ? `  ·  ${state.note}`
-    : `${searched}${actions}  ·  ${hint}`
+    ? `  ${state.note}`
+    : `${searched}${actions}  ${hint}`
 
   return faint(clip(`${place}${tail}`, columns))
 }
@@ -352,7 +355,7 @@ function paintStatus(layout: ScreenLayout, state: ScreenState, columns: number, 
  * 早先那版（每一项都带全称）到 `{/}` 就被裁掉，`q 退出` 干脆看不见（而它是**退出**键，
  * 最不该被省的那个）。故只在认不出意思的那几个后面留一句短的，其余只报键。
  */
-const SCREEN_HINT = '↑↓ 移动 · PgUp/PgDn 翻页 · / 搜索 · n/N · Esc 返回'
+const SCREEN_HINT = '↑↓/jk 移动   space/b 翻页   G 底部   g 顶部   [/] 上一轮   / 搜索   n/N 下一处   q 退出'
 
 function paintSegment(text: string, color?: string, bold?: boolean): string {
   const head = `${bold === true ? '\u001b[1m' : ''}${color === undefined ? '' : foreground(color)}`

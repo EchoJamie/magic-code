@@ -1058,13 +1058,6 @@ export function TuiApp({ shell }: TuiAppProps) {
   }
   useEffect(() => presentNotice(view), [view, shell, waitUntilRenderFlush])
 
-  /**
-   * **上一趟退出时读到第几行**（设计：「退出保留原来的阅读位置」）——下次开屏从这儿起。
-   *
-   * ⚠️ 它是**这次会话**里的阅读位置，不是会话记录的一部分：不与记录同生共死，退出程序即忘。
-   */
-  const reading = useRef(new Map<string,number>())
-
   useFlipOnNewPage(shell, rows, inScreen)
 
   /**
@@ -1095,8 +1088,9 @@ export function TuiApp({ shell }: TuiAppProps) {
     inScreen.current = true
 
     const reader = shell.getView().dock.kind === 'picker' ? (shell.getView().dock as Extract<ShellView['dock'], {kind:'picker'}>).picker.reader : undefined
-    const key=reader?.key??`main:${shell.getView().sessionId??'new'}`
-    let top=reader?.top??reading.current.get(key)??0
+    // **打开看的是最新**（2026-11-24 裁定）：不记「上次读到哪儿」——`-1` 是锚底标记，
+    // 首帧落位到最新那一段（`screen.ts`）；要回早先的交代用 `{` / `}`、要找词用 `/`。
+    let top = reader?.top ?? -1
     let action = false
     let interrupted = false
     void suspendTerminal(async () => {
@@ -1127,7 +1121,6 @@ export function TuiApp({ shell }: TuiAppProps) {
           exportImage: (material) => shell.exportMaterial(material),
         })
       } finally {
-        reading.current.set(key,top)
         if (reader !== undefined && !action) { shell.key({kind:'readerTop',top}); if (!interrupted) shell.key({kind:'escape'}) }
       }
     }).finally(() => {

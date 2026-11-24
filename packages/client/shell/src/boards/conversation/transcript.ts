@@ -138,7 +138,9 @@ export type ScreenState = {
 
 /** 开屏时的初值——**阅读位置记着**（设计：「退出保留原来的阅读位置」）。 */
 export function screenOpened(top = 0): ScreenState {
-  return { top: Math.max(0, Math.trunc(top) || 0), asking: null, term: '', at: 0, picked: null, note: null }
+  // `top = -1` 是**锚底标记**：首帧 layout 出来后落到 `maxTop`（打开看的是最新那一段，
+  // 不是最旧的一行——2026-11-24 裁定：不再记「上次读到哪儿」）。之后照常夹取。
+  return { top: Math.trunc(top) || 0, asking: null, term: '', at: 0, picked: null, note: null }
 }
 
 /** 这一屏认的键（终端那半边把字节翻成这些，见 `./screen.ts` 的 `parseScreenKeys`）。 */
@@ -334,11 +336,12 @@ const SINGLE_KEYS: Record<string, ScreenKey> = {
   G: { kind: 'bottom' },
   b: { kind: 'pageUp' },
   ' ': { kind: 'pageDown' },
-  '{': { kind: 'turnUp' },
-  '}': { kind: 'turnDown' },
-  // 材料那一对：与 `{` / `}` 同一族（一个对交代、一个对材料），故挨着放
-  '[': { kind: 'materialPrev' },
-  ']': { kind: 'materialNext' },
+  // **轮次跳转用 `[` / `]`**（2026-11-24 裁定）：无需 Shift、好按——按交代跳是高频动作；
+  // 材料（图片）让位给 `{` / `}`——TUI 本就渲染不出图，低频操作不占好键。
+  '[': { kind: 'turnUp' },
+  ']': { kind: 'turnDown' },
+  '{': { kind: 'materialPrev' },
+  '}': { kind: 'materialNext' },
   e: { kind: 'materialExport' },
   '/': { kind: 'search' },
   n: { kind: 'matchNext' },

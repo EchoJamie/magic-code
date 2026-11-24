@@ -101,8 +101,8 @@ describe('键怎么认', () => {
       ['\u0015', state({ top: 5 }), 0],
       [' ', state({ top: 0 }), 10],
       ['b', state({ top: 10 }), 0],
-      ['}', state({ top: 0 }), 20],
-      ['{', state({ top: 20 }), 0],
+      [']', state({ top: 0 }), 20],
+      ['[', state({ top: 20 }), 0],
     ]
 
     for (const [bytes, from, top] of cases) {
@@ -298,8 +298,12 @@ describe('一帧长什么样', () => {
   test('状态行报得出「读到哪儿 / 共多少行」与键位提示', () => {
     const status = frame(state({ top: 20 }), 100).split('\r\n')[6] as string
     expect(status).toContain('21–26 / 100 行')
-    expect(status).toContain('PgUp/PgDn 翻页')
-    expect(status).toContain('Esc 返回')
+    expect(status).toContain('space/b 翻页')
+    expect(status).toContain('G 底部')
+    expect(status).toContain('g 顶部')
+    expect(status).toContain('[/] 上一轮')
+    expect(status).toContain('n/N 下一处')
+    expect(status).toContain('q 退出')
   })
 
   test('搜过的词报「第几处 / 共几处」；打字那一档报「搜索：…」', () => {
@@ -329,7 +333,7 @@ describe('一帧长什么样', () => {
     const status = screenFrame({ layout: withMaterials, state: state({ picked: 2 }), columns: 100, hits: [] })
       .split('\r\n')[6] as string
 
-    expect(status).toContain('Image#1 · 第1张.png')
+    expect(status).toContain('Image#1 第1张.png')
     expect(status).toContain('Enter 加入本次输入')
     expect(status).toContain('e 导出原图')
   })
@@ -404,11 +408,11 @@ describe('材料那一行', () => {
     expect(step(state(), { kind: 'materialPrev' }, bare)).toBe('none')
   })
 
-  test('`[` / `]` / `e` 三个键真按键走得到（字节 → 键 → 一步）', () => {
+  test('`{` / `}` / `e` 三个键真按键走得到（字节 → 键 → 一步）——材料跳转在 `{` / `}`（2026-11-24 与轮次交换）', () => {
     const open = state({ top: 0 })
-    const viaBracket = step(open, parseScreenKeys(']')[0] as ScreenKey, at)
-    expect(viaBracket).toMatchObject({ picked: at.materials[0]?.line })
-    expect(step(state({ picked: at.materials[0]?.line }), parseScreenKeys('[')[0] as ScreenKey, at)).toMatchObject({
+    const viaBrace = step(open, parseScreenKeys('}')[0] as ScreenKey, at)
+    expect(viaBrace).toMatchObject({ picked: at.materials[0]?.line })
+    expect(step(state({ picked: at.materials[0]?.line }), parseScreenKeys('{')[0] as ScreenKey, at)).toMatchObject({
       picked: at.materials[0]?.line,
     })
     expect(step(state({ picked: at.materials[0]?.line }), parseScreenKeys('e')[0] as ScreenKey, at)).toBe('export')
