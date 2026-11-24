@@ -61,11 +61,12 @@ export function clearRecord(paths: RunPaths): void {
 }
 
 /** 持久运行登记——读 `runs` 表；库还不存在＝没有登记（不是错误）。 */
-export function readRuns(paths: RunPaths): readonly StoredRun[] {
-  return readRunsAt(paths.dataDir).map(toStored)
+export function readRuns(source: { runs: { list(): readonly RunRecord[] } } | RunPaths): readonly StoredRun[] {
+  const records = 'dataDir' in source ? readRunsAt(source.dataDir) : source.runs.list()
+  return records.map(toStored)
 }
 
-function toStored(run: RunRecord): StoredRun {
+export function toStored(run: RunRecord): StoredRun {
   const state = run.state === 'failed' || run.state === 'starting' ? 'unknown' : run.state
   return {
     session: run.session ?? null,

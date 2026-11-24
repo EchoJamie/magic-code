@@ -17,6 +17,7 @@ import { runExecutor } from './executor.ts'
 export type ExecutorProcessArgs = {
   readonly executionId: string
   readonly home: string
+  /** **解析好的统一基础路径与监听地址**——发车时管理者注入，子进程不自取（「配置注入」同向）。 */
   readonly base: string
   readonly socket: string
   readonly cwd: string
@@ -35,9 +36,9 @@ function parseArgs(argv: readonly string[]): ExecutorProcessArgs {
   const switchAt = argv.indexOf('--switch')
   return {
     executionId: value('--execution-id'),
+    socket: value('--socket'),
     home: value('--home'),
     base: value('--base'),
-    socket: value('--socket'),
     cwd: value('--cwd'),
     session,
     ...(switchAt < 0 ? {} : { switch: JSON.parse(argv[switchAt + 1]!) as ModelSwitchRequest }),
@@ -59,11 +60,19 @@ export async function runExecutorProcess(argv: readonly string[]): Promise<numbe
   try { args = parseArgs(argv) }
   catch (error) { console.error(String(error instanceof Error ? error.message : error)); return 1 }
 
+  // 发车单已带解析好的落点与地址——子进程不自推导（「配置注入」同向）。
+
   const magic: MagicHome = { home: args.home, base: args.base }
 
+  // **裸 SIGTERM/SIGINT 只记录、不响应**——停止的权威在管理者：`bye`（优雅收场）
+  // 或宽限后的 SIGKILL 兜底，两者都不依赖裸信号。实测本机环境存在对子进程的
+  // **零星 SIGTERM**（来源不在本仓任何代码路径——manager 与 child 两侧都钩过
+  // `process.kill` 均无调用；独立进程组也不豁免）。若响应它，一次幽灵信号就
+  // 中断整轮工作——宁可通过管理者的停止路径收，也不吃来历不明的信号。
+  const why = (n: string): void => { console.error(`[executor-child] ${n} @${Date.now() % 100000} (仅记录)`) }
+  process.on('SIGTERM', () => why('SIGTERM'))
+  process.on('SIGINT', () => why('SIGINT'))
   const controller = new AbortController()
-  process.on('SIGTERM', () => controller.abort())
-  process.on('SIGINT', () => controller.abort())
 
   const socket = await Bun.connect({ unix: args.socket, socket: socketHandlers() })
   const link = linkOf(socket)
