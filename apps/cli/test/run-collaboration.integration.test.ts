@@ -565,9 +565,7 @@ test('U130：子会话里的模型入口只改该成员的身份与执行者', a
     await f.openMember()
 
     f.shell.key({ kind: 'paste', text: '/model ' }); f.shell.key({ kind: 'enter' })
-    await f.wait('模型选择器', () => { const dock = f.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'model' })
-    f.pick('choose')
-    await f.wait('模型档位', () => { const dock = f.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'model-choice' })
+    await f.wait('模型档位切换器', () => { const dock = f.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'model-choice' })
     f.pick('arcane')
     await f.wait('成员身份已换档', () => f.store.collaboration.getAgent(member.agentId)?.model.model === 'descendant-model')
     expect(f.store.collaboration.getAgent(coordinator.agentId)?.model.model).toBe('entry-model')

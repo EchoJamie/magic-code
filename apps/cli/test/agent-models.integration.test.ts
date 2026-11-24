@@ -23,10 +23,13 @@ function endpoint() {
     mm: { protocol: 'chat-completions', baseURL: `http://127.0.0.1:${server.port}/mm`, apiKey: 'local-mm-test' },
     missing: { protocol: 'chat-completions', modelOverrides: Object.fromEntries(['same', 'hold', 'reject', 'alternate', 'next'].map(id => [id, { reasoningSupport: { disable: true, levels: ['low', 'high'] } }])), baseURL: `http://127.0.0.1:${server.port}/missing` },
   }
-  const configuredModels = { default: { provider: 'ds', model: 'same' }, cantrip: { provider: 'mm', model: 'same' }, spell: { provider: 'missing', model: 'same' }, arcane: { provider: 'ds', model: 'hold' } }
-  return { seen, providers, configuredModels, held, entered, close() { held.resolve(); server.stop(true) } }
+  const configuredModels = { cantrip: { provider: 'mm', model: 'same' }, spell: { provider: 'ds', model: 'same' }, arcane: { provider: 'ds', model: 'hold' } }
+  const modelInfoOf = (_provider: string, model: string) => ['same', 'hold', 'reject', 'alternate', 'next'].includes(model)
+    ? { id: model, reasoning: { disable: true, levels: ['low', 'high'] } }
+    : undefined
+  return { seen, providers, configuredModels, modelInfoOf, held, entered, close() { held.resolve(); server.stop(true) } }
 }
-const defaults = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'cantrip' as const, provider: 'ds', model: 'same', reasoning: { mode: 'level' as const, level: 'high' } }
+const defaults = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'spell' as const, provider: 'ds', model: 'same', reasoning: { mode: 'level' as const, level: 'high' } }
 const reviewer: AgentRoleConfig = { name: '审查', instructions: '只给证据和结论', model: { reasoning: { mode: 'off' } } }
 const request = { model: 'ignored-by-registry', messages: [{ role: 'user' as const, content: '受控端点测试' }] }
 
@@ -52,8 +55,8 @@ describe('本地 HTTP：成员独立配置与真实出站', () => {
     try {
       const role = { ...structuredClone(reviewer) }
       const collaborationDefault = structuredClone(defaults)
-      const a = createAgentModels({ configuredModels: e.configuredModels, role, defaults: collaborationDefault, options: { providers: e.providers, stamper: makeTestStamper({ session: 'member-a' }), env: {} } })
-      const b = createAgentModels({ configuredModels: e.configuredModels, role, defaults: collaborationDefault, config: { choice: 'cantrip', reasoning: { mode: 'default' } }, options: { providers: e.providers, stamper: makeTestStamper({ session: 'member-b' }), env: {} } })
+      const a = createAgentModels({ configuredModels: e.configuredModels, role, defaults: collaborationDefault, options: { providers: e.providers, modelInfoOf: e.modelInfoOf, stamper: makeTestStamper({ session: 'member-a' }), env: {} } })
+      const b = createAgentModels({ configuredModels: e.configuredModels, role, defaults: collaborationDefault, config: { choice: 'cantrip', reasoning: { mode: 'default' } }, options: { providers: e.providers, modelInfoOf: e.modelInfoOf, stamper: makeTestStamper({ session: 'member-b' }), env: {} } })
       if (!a.ok || !b.ok) throw new Error('成员应创建成功')
       expect(a.models).not.toBe(b.models)
       expect(e.seen).toEqual([])

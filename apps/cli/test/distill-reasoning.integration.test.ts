@@ -73,7 +73,8 @@ function stageOn(
 
   return makeStage({
     config: {
-      models: {default: {provider: "local", model: SESSION_MODEL}, cantrip: {provider: options.distillVendor === undefined ? 'local' : 'distill', model: options.distillVendor === 'minimax' ? MINIMAX_DISTILL_MODEL : DISTILL_MODEL}, spell: {provider: 'switched', model: SWITCHED_MODEL}, arcane: {provider: "local", model: SESSION_MODEL}},
+      defaultTier: 'arcane',
+      models: {cantrip: {provider: options.distillVendor === undefined ? 'local' : 'distill', model: options.distillVendor === 'minimax' ? MINIMAX_DISTILL_MODEL : DISTILL_MODEL}, spell: {provider: 'switched', model: SWITCHED_MODEL}, arcane: {provider: "local", model: SESSION_MODEL}},
       providers,
 
     },

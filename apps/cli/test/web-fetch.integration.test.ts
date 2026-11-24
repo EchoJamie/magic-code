@@ -46,7 +46,8 @@ function fakeWeb(_body = PAGE_HTML): WebSource & { readonly asked: string[] } {
 function stageOn(fixture: Fixture, options: { readonly configured: boolean }) {
   return makeStage({
     config: {
-      models: {default: {provider: "local", model: SESSION_MODEL}, ...(options.configured ? { cantrip: {provider: 'local', model: DISTILL_MODEL} } : {}), spell: {provider: "local", model: SESSION_MODEL}, arcane: {provider: "local", model: SESSION_MODEL}},
+      defaultTier: 'spell',
+      models: { ...(options.configured ? { cantrip: {provider: 'local', model: DISTILL_MODEL} } : {}), spell: {provider: "local", model: SESSION_MODEL}, arcane: {provider: "local", model: SESSION_MODEL}},
       providers: {
         local: { vendor: 'deepseek', protocol: 'chat-completions', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
       },
@@ -284,12 +285,12 @@ describe('照报错那句走一遍：配上之后**不用重启**就通了', () 
       expect(saved?.data.note).toContain('已有 Agent 的选择保留')
       // 盘上真的写了那一格，且**没碰别的键**
       const onDisk = JSON.parse(readFileSync(stage.configPath, 'utf8')) as {
-        readonly models?: { readonly cantrip?: unknown; readonly default?: unknown }
+        readonly models?: { readonly cantrip?: unknown; readonly spell?: unknown; readonly arcane?: unknown }
         readonly defaultProvider?: unknown
         readonly providers: Record<string, Record<string, unknown>>
       }
       expect(onDisk.models?.cantrip).toEqual({ provider: 'local', model: DISTILL_MODEL })
-      expect(onDisk.models?.default).toEqual({ provider: 'local', model: SESSION_MODEL }) // 原样
+      expect(onDisk.models?.spell).toEqual({ provider: 'local', model: SESSION_MODEL }) // 其他档原样
       expect(onDisk.providers['local']?.['model']).toBeUndefined() // 连接的默认模型原样
 
       // ④ 反面：**当前会话的模型没被改**（这一下没换过模型）

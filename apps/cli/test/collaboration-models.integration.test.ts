@@ -555,7 +555,7 @@ describe('manager 模型预检只读已有缓存', () => {
       const snapshot: ModelInfoSnapshot = { provider: 'ds', scope: `deepseek@${config.baseURL}#chat-completions`, fetchedAt: 1, models: [{ id: 'deepseek-flash', reasoning: { levels: ['low'], disable: false } }] }
       const configuration = JSON.parse(readFileSync(f.configPath, 'utf8'))
       configuration.providers.ds = config
-      configuration.models.default = { provider: 'ds', model: 'deepseek-flash' }
+      configuration.models.cantrip = { provider: 'ds', model: 'deepseek-flash' }
       writeFileSync(f.configPath, JSON.stringify(configuration))
       await cache.replace(snapshot, cacheAccessFor({ provider: 'ds', configPath: f.configPath, apiKey: f.providers.ds.apiKey, processToken: 'test' }))
       const defaults = { choice: 'cantrip' as const, provider: 'ds', model: 'deepseek-flash', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'level' as const, level: 'high' } }
