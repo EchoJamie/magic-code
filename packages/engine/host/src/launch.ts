@@ -5,6 +5,7 @@ import type { ExecutorToManager, Link, ManagerToExecutor, Wire } from '@magic/ho
 import { localLinks } from './wire.ts'
 import { runExecutor } from './executor.ts'
 import { runtimeLaunch } from './runtime-launch.ts'
+import { dirname } from 'node:path'
 
 export type ExecutorLauncher = {
   spawn(request: ExecutorSpawn): ExecutorSpawned
@@ -173,7 +174,9 @@ export function createProcessLauncher(options: ProcessLauncherOptions = {}): Exe
         'executor',
         '--execution-id', request.executionId,
         '--home', request.magic.home,
-        '--parent', request.magic.base,
+        // `--parent` 是**基础路径的根**（MAGIC_HOME）——executor 那头按 root 再拼 `.magic`；
+        // 传 base 会多出一层（`…/.magic/.magic`），子进程连不上管理者的 socket（69d785a 起）。
+        '--parent', dirname(request.magic.base),
         '--cwd', request.cwd,
         ...(request.session === null ? [] : ['--session', request.session]),
         ...(request.switch === undefined ? [] : ['--switch', JSON.stringify(request.switch)]),

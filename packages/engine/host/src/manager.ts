@@ -111,7 +111,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   let initialConfig: ReturnType<typeof loadConfig>
   try {
     // 先让数据服务引导旧库（备份移走并建 v2），再读运行登记与配置。
-    store = createRecordsStore({ dataDir: options.magic.base, workspace: [] })
+    store = createRecordsStore({ dataDir: options.magic.base, workspace: [], busyTimeoutMs: 5_000 })
     savedRuns = readRuns(paths)
     initialConfig = loadConfig({ magic: options.magic })
   } catch (error) {

@@ -22,6 +22,9 @@ export function readRunsAt(dataDir: string): readonly RunRecord[] {
 
 /** 以全量快照替换运行登记（库不存在则建库）。 */
 export function replaceRunsAt(dataDir: string, records: readonly RunRecord[]): void {
-  const store = createRecordsStore({ dataDir, workspace: [] })
+  // **写等待**要对齐执行者那一侧（5s）：运行登记的快照替换常撞上执行者装配期的长写，
+  // 缺省 0 意味着锁冲突**当场失败**——管理者会因此把正在装配/运行的执行者当成
+  // 「工作记录处理失败」收回（SIGTERM），误杀整轮工作。
+  const store = createRecordsStore({ dataDir, workspace: [], busyTimeoutMs: 5_000 })
   try { store.runs.replaceAll(records) } finally { store.close() }
 }
