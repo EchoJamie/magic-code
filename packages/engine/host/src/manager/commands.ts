@@ -12,7 +12,6 @@ import {
   CONTROL_DIRECTORY_LIMIT,
   CONTROL_FRAME_BUDGET_BYTES,
   CONTROL_PREVIEW_TEXT_BYTES,
-  INPUT_PREVIEW_TEXT_BYTES,
   isTurnTimingEvent,
   pendingViews,
 } from '@magic/contracts'
@@ -21,7 +20,7 @@ import { ARCHIVED_NOTE, backgroundOf, controlLink, createWorkEnvironment, linkOf
 import { bindSessionReferences, createPlanReader, readSessionDisplayHistory } from '@magic/conversation'
 import type { Socket } from 'bun'
 import { sendToExecutor as send, type Executor } from '../executor-control.ts'
-import { clipEntryForWire, clipTextBytes, clipValue, wireBytesOf } from '../wire-view.ts'
+import { clipEntryForWire, clipTextBytes, wireBytesOf } from '../wire-view.ts'
 import type { ClientConn } from '../connections.ts'
 import type { ManagerContext } from './context.ts'
 
@@ -37,8 +36,7 @@ const HISTORY_BATCH_BYTES = CONTROL_FRAME_BUDGET_BYTES - 256 * 1024
 /** 单条历史记录装得下的预算——超过就裁正文（保留开头并注明），别让一条旧记录撑破连接。 */
 const HISTORY_ENTRY_BYTES = CONTROL_FRAME_BUDGET_BYTES / 2
 
-/** 末包随附的元数据上限——inputs 最近 20 条、timing 最近 1000 条、messages 最近 50 条。 */
-const HISTORY_META_INPUTS = 20
+/** 末包随附的元数据条数上限——timing 最近 1000 条、messages 最近 50 条、compactions 最近 20 条。 */
 const HISTORY_META_TIMING = 1_000
 const HISTORY_META_MESSAGES = 50
 const HISTORY_META_COMPACTIONS = 20
@@ -242,9 +240,9 @@ export function installCommands(ctx: ManagerContext): void {
     try {
       let entries: Entry[] = []
       let batchBytes = 0
-      const inputs: Extract<KernelEvent, { kind: 'input.local' }>[] = []
       const timing: TurnTimingEvent[] = []
       const compactEvents: Extract<KernelEvent, { kind: 'compact.state' }>[] = []
+      const localInputs: Extract<KernelEvent, { kind: 'input.local' }>[] = []
       // **最后那一次调用的读数**（见 `session.history.usage`）——与在场时状态行 ④ 同一条规矩：
       // 分子取 `model.usage` 的输入消耗，分母取 `model.call.start` 的预算（那一次没带预算就退回
       // 用量事件自带的窗长）。两个都只在**末次**有效：往前那些是更早的账。
@@ -252,7 +250,7 @@ export function installCommands(ctx: ManagerContext): void {
       let lastBudget: number | undefined
       let started = false
       for await (const event of store.serviceFor(session).readEvents(session)) {
-        if (event.kind === 'input.local') inputs.push(event)
+        if (event.kind === 'input.local') localInputs.push(event)
         if (isTurnTimingEvent(event)) timing.push(event)
         if (event.kind === 'compact.state') compactEvents.push(event)
         if (event.kind === 'model.call.start') { started = true; lastBudget = event.data.inputBudget }
@@ -268,25 +266,20 @@ export function installCommands(ctx: ManagerContext): void {
       const work = agent === undefined ? undefined : store.collaboration.collaborationForSession(session)
       const messages = agent === undefined || work === undefined || agent.agentId === work.coordinatorId
         ? [] : store.collaboration.listMessages(agent.agentId)
-      const plan = await createPlanReader({ records: store.serviceFor(session), session }).readPlan()
       const send = (done: boolean): void => {
         /**
-         * 末包的元数据也要有上限——`inputs` 是该会话所有 `input.local` 的全文，
-         * `timing` 随 turn 数线性增长，`messages` 来自无 LIMIT 的协作消息列表
-         * （2026-11-21 审计：只给 entries 分批，末包单独就能复现 P0）。
+         * 末包元数据的条数上限——`timing` 随 turn 数线性增长，`messages` 来自无 LIMIT
+         * 的协作消息列表（2026-11-21 审计：只给 entries 分批，末包单独就能复现 P0）。
+         *
+         * 2026-11-24 收权：字节预算只管**会话历史条目**——本地输入已并入条目流（同一条
+         * 预算与预览规矩），plan 改走 `plan.read`（全文、零裁剪），都不再在这被打折。
          */
         const meta = done ? {
-          inputs: inputs.slice(-HISTORY_META_INPUTS).map(event => ({
-            ...event,
-            data: { ...event.data, text: clipTextBytes(event.data.text, INPUT_PREVIEW_TEXT_BYTES) },
-          })),
           timing: timing.slice(-HISTORY_META_TIMING),
-          ...(plan === undefined ? {} : { plan: clipValue(plan, CONTROL_PREVIEW_TEXT_BYTES) as NonNullable<typeof plan> }),
           compactions: compactEvents.slice(-HISTORY_META_COMPACTIONS),
           ...(usage === undefined ? {} : { usage }),
           ...(messages.length === 0 ? {} : { messages: messages.slice(-HISTORY_META_MESSAGES) }),
-          ...(inputs.length > HISTORY_META_INPUTS
-            || timing.length > HISTORY_META_TIMING
+          ...(timing.length > HISTORY_META_TIMING
             || compactEvents.length > HISTORY_META_COMPACTIONS
             || messages.length > HISTORY_META_MESSAGES
             ? { truncated: true as const }
@@ -301,12 +294,17 @@ export function installCommands(ctx: ManagerContext): void {
         entries = []
         batchBytes = 0
       }
-      for await (const raw of readSessionDisplayHistory(store, session)) {
-        if (!connections.historyCurrent(conn, revision)) return
-        // **按字节分类**（2026-11-21）：条数只是上限之一；单条超预算先裁全部字段。
+      /** 一条（已裁好的）条目装进当前批——装不下就先发一批。 */
+      const admit = (entry: Entry, bytes: number): void => {
+        if (entries.length > 0 && batchBytes + bytes > HISTORY_BATCH_BYTES) send(false)
+        entries.push(entry)
+        batchBytes += bytes
+        if (entries.length === 50) send(false)
+      }
+      /** 单条过预算管线：先裁全部字段，仍装不下一批再降档，别让门面来砍。 */
+      const fit = (raw: Entry): { readonly entry: Entry; readonly bytes: number } => {
         let entry = clipEntryForWire(raw, HISTORY_ENTRY_BYTES)
         let bytes = wireBytesOf(entry)
-        // 裁剪后仍装不下一批：再降一档，别让门面来砍。
         while (bytes > HISTORY_BATCH_BYTES) {
           const tighter = clipEntryForWire(entry, Math.max(1, Math.floor(bytes / 2)))
           const next = wireBytesOf(tighter)
@@ -314,11 +312,29 @@ export function installCommands(ctx: ManagerContext): void {
           entry = tighter
           bytes = next
         }
-        if (entries.length > 0 && batchBytes + bytes > HISTORY_BATCH_BYTES) send(false)
-        entries.push(entry)
-        batchBytes += bytes
-        if (entries.length === 50) send(false)
+        return { entry, bytes }
       }
+      /**
+       * 本地输入**并入条目流**（2026-11-24 收权）：它们本来就是转录里的用户行——
+       * 是历史的一部分，与其它条目同一条预算与预览规矩，不再作为 meta 单独裁剪、
+       * 也不再只带最近 20 条。事件与条目共用同一个 id 序列，按 id 归并即得原序。
+       */
+      const woven = localInputs.map(event => ({
+        id: event.id, kind: 'user' as const, at: event.at,
+        content: { text: event.data.text }, payload: { local: true as const, inputRefs: event.data.refs },
+      })).sort((a, b) => a.id - b.id)
+      const wove = woven[Symbol.iterator]()
+      let nextInput = wove.next()
+      const admitFitted = (raw: Entry): void => {
+        const fitted = fit(raw)
+        admit(fitted.entry, fitted.bytes)
+      }
+      for await (const raw of readSessionDisplayHistory(store, session)) {
+        if (!connections.historyCurrent(conn, revision)) return
+        while (nextInput.done === false && nextInput.value.id < raw.id) { admitFitted(nextInput.value); nextInput = wove.next() }
+        admitFitted(raw)
+      }
+      while (nextInput.done === false) { admitFitted(nextInput.value); nextInput = wove.next() }
       if (connections.historyCurrent(conn, revision)) {
         // 条目与 meta 分开：先发最后一批 entries，再发空条目的 done 帧——
         // 末包再大也不会把「读完了」这件事挤掉。
@@ -442,6 +458,16 @@ export function installCommands(ctx: ManagerContext): void {
     if (command.type === 'history.read') {
       const session = command.session ?? conn.selectedSession
       if (session !== null && session !== undefined) void readHistory(conn, session)
+      return
+    }
+    if (command.type === 'plan.read') {
+      // 计划的读侧答复——**全文、零裁剪**（2026-11-24 起计划不搭历史帧的车）。
+      // 目标会话：命令点了名就点名的那条，否则连接当前选中的那条。
+      const session = command.session ?? conn.selectedSession
+      if (session === null || session === undefined) return
+      const data = await (async () => createPlanReader({ records: store.serviceFor(session), session }).readPlan())()
+        .catch(() => ({ entry: null, plan: null }))
+      if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session, kind: 'plan.changed', data: { requestId: command.requestId, entry: data.entry, plan: data.plan } } })
       return
     }
     if (command.type === 'session.list') { void catalog(conn, command.archived ?? false); return }

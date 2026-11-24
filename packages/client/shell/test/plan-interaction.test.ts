@@ -24,7 +24,7 @@ import { createShell } from '../src/shell.ts'
 import { PALETTE } from '../src/components/lines.ts'
 import { logLines, rowLines } from '../src/components/log.ts'
 import { planStyleOf } from '../src/boards/conversation/plan.ts'
-import { hasPlan, rebuild, createView, withPlan } from '../src/view.ts'
+import { hasPlan, createView, withPlan } from '../src/view.ts'
 import { createStage } from './screen.ts'
 import { blankRuns, duplicates, overflows } from './invariants.ts'
 import { event } from './events.ts'
@@ -134,14 +134,19 @@ describe('计划投影', () => {
 
   test('重开读取独立计划快照，不扫描旧工具结果', () => {
     const old = [planEntry(900, note(step('过时步骤')))]
-    const plan = { entry: 5, plan: note(step('当前步骤', 'in_progress')) }
-    expect(rebuild(createView(), old, { plan }).plan).toEqual(plan)
-    expect(hasPlan(rebuild(createView(), old))).toBe(false)
+    const stage = createStage()
+    stage.feed([event('session.state', { active: 'session-a', sessions: [] })])
+    stage.feed([event('session.history', { session: 'session-a', entries: old, done: true })])
+    // 历史帧不带计划（2026-11-24 收权）：旧工具结果里的计划不参与重建；
+    // 外壳重建收尾后单独取一次（`plan.read`），答复走 `plan.changed` 才上屏。
+    expect(hasPlan(stage.shell.getView())).toBe(false)
+    stage.feed([event('plan.changed', { entry: 5, plan: note(step('当前步骤', 'in_progress')) }, { session: 'session-a' })])
+    expect(stage.shell.getView().plan).toEqual({ entry: 5, plan: note(step('当前步骤', 'in_progress')) })
   })
 
   test('步骤清空以计划记录判断先后，迟到快照不拾回旧步骤', () => {
     const previous = withPlan(createView(), 900, note(step('旧步骤')))
-    const cleared = rebuild(previous, [planEntry(950, note(step('不能拾回')))], { plan: { entry: 1000, plan: null } })
+    const cleared = withPlan(previous, 1000, null)
     expect(cleared.plan).toEqual({ entry: 1000, plan: null })
     expect(withPlan(cleared, 950, note(step('迟到旧数据')))).toBe(cleared)
     expect(withPlan(cleared, 2000, note(step('新计划'))).plan.plan?.steps[0]?.text).toBe('新计划')
@@ -163,15 +168,15 @@ describe('计划投影', () => {
   test('重建能补上清单（重开之后清单照旧在，除非它被清空过）', () => {
     const stage = createStage()
 
+    // 历史帧不带计划（2026-11-24 收权）；重建收尾后外壳单独取一次，
+    // 答复走 `plan.changed`——清单由此补上。
     stage.feed([
-      event('session.history', {
-        session: 'session-test',
-        entries: [],
-        plan: { entry: 8, plan: note(step('还在这儿的第一步', 'completed'), step('没做完的第二步')) },
-        done: true,
-      }),
+      event('session.history', { session: 'session-test', entries: [], done: true }),
+      event('plan.changed', { requestId: 'resume-plan', entry: 8, plan: note(step('还在这儿的第一步', 'completed'), step('没做完的第二步')) }),
     ])
 
+    expect(stage.shell.getView()).toBeTruthy()
+    expect(stage.commands().at(-1)).toMatchObject({ type: 'plan.read', session: 'session-test' })
     expect(hasPlan(stage.shell.getView())).toBe(true)
     expect(stage.shell.getView().plan.entry).toBe(8)
   })

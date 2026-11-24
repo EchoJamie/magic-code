@@ -1875,6 +1875,13 @@ export type CommandRoutes = {
    */
   onHistoryRead(session?: SessionId): void
   /**
+   * 当前计划读侧命令 → 对话域（同 `onHistoryRead` 的处境与姿势）。
+   *
+   * 答复走事件（`plan.changed`，带 `requestId`）——**全文**下发，不裁剪：
+   * 计划是面板的主数据，2026-11-24 起不再搭历史帧的车（见 `PlanRead`）。
+   */
+  onPlanRead?(session?: SessionId, requestId?: string): void
+  /**
    * 模型条目表 → **装配**（它握着注册表——技术方案 · 装配视图 4）。
    *
    * 控制域**原样转手**（同 `onModelSwitch` 的姿势）——它不认识注册表，也不知道有哪些条目；

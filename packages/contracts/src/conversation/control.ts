@@ -258,6 +258,22 @@ export type HistoryRead = {
 }
 
 /**
+ * `plan.read`——**当前计划笔记的读侧命令**。
+ *
+ * **由头**（2026-11-24）：计划本来就不该搭 `session.history` 的车——历史帧预算
+ * 只管会话历史条目，计划是面板的主数据，被当「预览」裁到 2KiB 再逐层均分，
+ * resume 后 Ctrl+T 满屏截断标记。改走自己的路：**命令进、事件出**（答复走
+ * `plan.changed`，带 `requestId` 供对账），全文下发，**不做任何裁剪**。
+ *
+ * `session` 不给＝连接当前选中的那条。
+ */
+export type PlanRead = {
+  readonly type: 'plan.read'
+  readonly requestId: string
+  readonly session?: SessionId
+}
+
+/**
  * `model.list`——**模型条目表的读侧命令**（缺陷 D10 · 第 3 样）。
  *
  * **由头**：外壳的 `/model` 要列出**注册表全量**（含从未调用过的条目），而外壳够不着
@@ -519,6 +535,7 @@ export type Command = import('./background.ts').BackgroundCommandRequest
   | KnowledgeCommand
   | CompactCommand
   | HistoryRead
+  | PlanRead
   | ModelList
   | ModelRefresh
   | ModelsSearch
