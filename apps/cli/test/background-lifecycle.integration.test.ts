@@ -155,7 +155,7 @@ test('成员已交付仍持有服务；无 TUI 时异常结束在原成员协调
     const delegation = f.delegation()?.delegationId
     if (call.model === 'entry-model') {
       if (call.index === 0) return spawnMember
-      if (call.index === 1) return { tool: 'agent_wait', args: { operationId: 'wait-member', agents: [f.member()!.agentId], message: delegation, expectation: '交付结果', deadline: Date.now() + 60000 } }
+      if (call.index === 1) return { text: '已派出并等待成员交付，交付会自动唤醒我。' }
       if (call.index === 2) return { tool: 'agent_message', args: { action: 'receive', delegation } }
       if (call.index === 3) return { tool: 'agent_control', args: { action: 'close' } }
       if (call.index === 5) await preparing.promise
