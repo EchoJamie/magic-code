@@ -57,6 +57,7 @@ import type { PromptVars } from './prompt/index.ts'
 import { createRefDelivery } from './refs.ts'
 import { createRulesDelivery } from './rules.ts'
 import { createSkillsDelivery } from './skills.ts'
+import { createTitleService } from './title.ts'
 
 /**
  * 装配期构造入参——一切「谁来实现」的选择由装配根给出（本域不知道背后是谁：
@@ -151,6 +152,13 @@ export type ConversationDeps = {
    * 给了一位而它这一趟回空表＝**这一块不出现**（没有后台任务就不占位，工单明文）。
    */
   readonly background?: (() => readonly BackgroundRunning[]) | undefined
+  /**
+   * **AI 标题的写面**（docs/会话标题方案.md）——首条真实用户交代落账后，旁路调一次当前模型
+   * 起标题，写入与改名**同一个字段**（`sessions.title`）。装配接 `recordsStore.setSessionTitle`。
+   *
+   * 缺省＝这条会话**不做 AI 标题**（行为与加它之前一字不动——既有用例的脚本对齐不受影响）。
+   */
+  readonly setTitle?: ((session: SessionId, title: string, at: Timestamp) => void) | undefined
 }
 
 /**
@@ -263,6 +271,16 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     ...(deps.capacity ? { capacity: deps.capacity } : {}), inputVersion: () => inputVersion,
     sink, stamper, now: deps.now ?? Date.now, ...(policy.nearTokens === undefined ? {} : { nearTokens: policy.nearTokens }),
     compactAtFraction: policy.compactAtFraction, compactAtTokens: policy.compactAtTokens,
+  })
+
+  /**
+   * **AI 标题**（docs/会话标题方案.md）——写面接了才造（缺省＝这条会话不做，行为与
+   * 加它之前一字不动）。网关与压缩摘要同路（`continuationGateway ?? gateway`——旁路
+   * 调用不走协作包装：不登记执行、不参与停点核销，见 `title.ts` 头注）。
+   */
+  const titles = deps.setTitle === undefined ? undefined : createTitleService({
+    session: deps.session, gateway: deps.continuationGateway ?? deps.gateway,
+    records: deps.records, setTitle: deps.setTitle, now: deps.now ?? Date.now,
   })
 
   /**
@@ -406,7 +424,12 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         if (input === undefined && !(await collaboration?.consume())) continue
 
         const outcome = await agentLoop(runtime, input, controller.signal, async entry => {
-          try { await deps.collaboration?.userInput?.(entry,queued.shared) } finally { queued.done?.() }
+          try {
+            await deps.collaboration?.userInput?.(entry,queued.shared)
+            // **首条真实交代落账**——条件成立就后台起一次 AI 标题（fire-and-forget，
+            // 不阻塞轮次；notice 输入不算用户开场白，见 `title.ts`）
+            if (titles !== undefined && input !== undefined && input.notice !== true) titles.onUserEntry(input.text)
+          } finally { queued.done?.() }
         })
         queued.done?.()
         if (compactPending?.awaitInput) compactPending.awaitInput = false

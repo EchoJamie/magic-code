@@ -98,6 +98,8 @@ export function createAgentSession(input: {
   sandbox: Sandbox
   projectRules: ProjectRules
   skills: Skills
+  /** AI 标题写面（可选）——生产入口接 `recordsStore.setSessionTitle`；不接＝不做（既有用例不受影响）。 */
+  setTitle: ((session: SessionId, title: string, at: Timestamp) => void) | undefined
   materials: Materials
   mcpTools: () => readonly ToolDefinition[]
   model: {
@@ -395,6 +397,8 @@ export function createAgentSession(input: {
     },
     acceptsImages: currentAcceptsImages,
     ...(backgroundRuns === undefined ? {} : { background: () => background?.port.running() ?? [] }),
+    // AI 标题写面——与改名同一份落点（docs/会话标题方案.md）；入口不接＝不做，见 ConversationDeps
+    ...(input.setTitle === undefined ? {} : { setTitle: input.setTitle }),
   })
 
   const opened: AgentSession = { background, session, records, gate, tools, service, stamper, roleRules, models: sessionModels }

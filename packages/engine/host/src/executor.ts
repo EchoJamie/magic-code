@@ -152,6 +152,8 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
       ...(options.session === null ? {} : { session: options.session }),
       // sudo 专用认证（U129）——密码通道由这一代执行者自己的 UI 连接承载
       sudoAuth: sudo.auth,
+      // AI 标题（docs/会话标题方案.md）——写面归装配（它自己的记录库），入口只给门
+      aiTitle: true,
     })
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
