@@ -22,6 +22,12 @@
 - 清理进程按本任务 PID；用户实例与归属不明资源保留。
 - 提交内容只含本次变更的代码与测试；`.artifacts/`、`.ui-runs/`、临时诊断留在本地。
 
+## 外部调研材料
+
+- 2026-11-24 为「会话标题生成」调研克隆的外部仓库在本仓库上级目录 `~/namespace/github/magic/` 下（浅克隆）：`codex`、`opencode`、`gemini-cli`、`goose`、`cline`、`aider`。
+- 同目录 `claude-code-research/` 放 Claude Code 调研材料：反编译产物 `cc-cli.js` 与逆向笔记 `cc-arch.md`。
+- **用户没有明确提及的话不要读取**以上材料；不纳入本仓库的门禁与操作。
+
 ## 产品行为
 
 - 显示与请求解析使用同一来源；兜底值在界面标出来源。
