@@ -423,17 +423,6 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         }
         if (input === undefined && !(await collaboration?.consume())) continue
 
-        // **成员会话的第一份材料走收件消费**（委派简报落成 `agent-message` 条目，不经
-        // `prepareInput`）——标题从这里也拿得到机会，取材**委派的职责范围**（域内可达，
-        // 无需动协作契约；成员与主会话在标题这件事上同等对待）。失败照旧静默回退。
-        if (titles !== undefined && input === undefined) {
-          const agent = deps.records.collaboration.agentForSession(deps.session)
-          const delegation = agent?.collaborationId === undefined ? undefined
-            : deps.records.collaboration.listDelegations(agent.collaborationId)
-                .filter(one => one.assigneeId === agent.agentId).at(-1)
-          if (delegation !== undefined) titles.onUserEntry(delegation.scope)
-        }
-
         const outcome = await agentLoop(runtime, input, controller.signal, async entry => {
           try {
             await deps.collaboration?.userInput?.(entry,queued.shared)
