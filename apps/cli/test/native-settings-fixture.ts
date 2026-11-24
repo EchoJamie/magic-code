@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, renameSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { SettingsAction, SettingsPreview, SettingsSnapshot } from '@magic/contracts'
@@ -9,18 +10,31 @@ export const nativeModelsDevCatalog = {
   deepseek: { api: 'https://api.deepseek.com', models: { 'deepseek-flash': { id: 'deepseek-flash', reasoning_options: [{ type: 'toggle' }, { type: 'effort', values: ['low', 'high', 'max'] }] } } },
   'minimax-cn': { api: 'https://api.minimax.cn/anthropic/v1', models: { 'MiniMax-M3.1-Flash': { id: 'MiniMax-M3.1-Flash', limit: { context: 1_000_000, output: 512_000 }, modalities: { input: ['text', 'image'], output: ['text'] }, tool_call: true, reasoning_options: [{ type: 'effort', values: ['low', 'medium', 'high', 'xhigh', 'max'] }] } } },
 }
+const COMPILE_INPUTS = ['SettingsWire', 'SettingsFile', 'SettingsValidation', 'SettingsModels', 'NativeSettings', 'NativeWire', 'Diagnostics', 'PrivateFiles', 'ObserverConnection'].map(name => `apps/macos/MagicCode/Runtime/${name}.swift`)
+/** 编译输入的指纹——源码没变就复用产物（并行 worker 不再重复 swiftc）。 */
+function sourceFingerprint(): string {
+  const hash = createHash('sha256')
+  for (const file of [...COMPILE_INPUTS, 'apps/macos/MagicCodeTests/SettingsHarness.swift']) hash.update(readFileSync(resolve(import.meta.dir, '../../..', file)))
+  return hash.digest('hex').slice(0, 16)
+}
 let compiled: Promise<{ binary: string; metadata: string }> | undefined
 function nativeSettings() {
   return compiled ??= (async () => {
     const root = resolve(import.meta.dir, '../../..'), temp = mkdtempSync(join(tmpdir(), 'magic-native-settings-'))
     process.on('exit', () => rmSync(temp, { recursive: true, force: true }))
-    const binary = join(temp, 'settings-test'), metadata = join(temp, 'settings-data.json')
-    const files = ['SettingsWire', 'SettingsFile', 'SettingsValidation', 'SettingsModels', 'NativeSettings', 'NativeWire', 'Diagnostics', 'PrivateFiles', 'ObserverConnection'].map(name => `apps/macos/MagicCode/Runtime/${name}.swift`)
-    const build = Bun.spawn(['/usr/bin/xcrun', 'swiftc', '-parse-as-library', ...files, 'apps/macos/MagicCodeTests/SettingsHarness.swift', '-o', binary], {
-      cwd: root, env: { ...process.env, DEVELOPER_DIR: '/Applications/Xcode.app/Contents/Developer' }, stdout: 'pipe', stderr: 'pipe',
-    })
-    const [code, error] = await Promise.all([build.exited, new Response(build.stderr).text()])
-    if (code !== 0) throw new Error(`原生设置测试编译失败：${error}`)
+    // **编译产物按源码指纹缓存**（2026-11-24：并行 worker 各自现编译 swiftc 抢 CPU 且拖慢
+    // settings 系测试——源码没变就复用同产物；首跑重复编译由原子 rename 兜底正确性，
+    // 不引入编译锁）。产物跨进程共享；metadata 内嵌本进程的环回端点，每进程私有。
+    const binary = join(tmpdir(), `magic-settings-test-${sourceFingerprint()}`), metadata = join(temp, 'settings-data.json')
+    if (!existsSync(binary)) {
+      const files = COMPILE_INPUTS.map(name => join(root, name))
+      const build = Bun.spawn(['/usr/bin/xcrun', 'swiftc', '-parse-as-library', ...files, join(root, 'apps/macos/MagicCodeTests/SettingsHarness.swift'), '-o', `${binary}.incoming`], {
+        cwd: root, env: { ...process.env, DEVELOPER_DIR: '/Applications/Xcode.app/Contents/Developer' }, stdout: 'pipe', stderr: 'pipe',
+      })
+      const [code, error] = await Promise.all([build.exited, new Response(build.stderr).text()])
+      if (code !== 0) throw new Error(`原生设置测试编译失败：${error}`)
+      renameSync(`${binary}.incoming`, binary)
+    }
     const data = Bun.spawn([process.execPath, 'scripts/macos/build-settings-data.ts', metadata], { cwd: root, stdout: 'pipe', stderr: 'pipe' })
     const [dataCode, dataError] = await Promise.all([data.exited, new Response(data.stderr).text()])
     if (dataCode !== 0) throw new Error(`设置资料生成失败：${dataError}`)
