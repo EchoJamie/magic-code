@@ -293,7 +293,11 @@ test('同gen真实target认领保留快照缓存、Shell历史与草稿；客户
     client.onResumed((_gen, value) => late.push(value))
     await waitFor(() => late.length === 1)
     expect(late).toEqual([snapshot])
-    expect(server.messages.filter((message) => message.t === 'cmd').map(message=>message.cmd)).toEqual([{type:'history.read',session:'real-session'}])
+    // 历史重建收尾会单独取一次当前计划（2026-11-24：计划不再搭历史帧）——history.read 之外多一条 plan.read（带随机 requestId）
+    const cmds = server.messages.filter((message) => message.t === 'cmd').map(message=>message.cmd)
+    expect(cmds).toHaveLength(2)
+    expect(cmds[0]).toEqual({ type: 'history.read', session: 'real-session' })
+    expect(cmds[1]).toMatchObject({ type: 'plan.read', session: 'real-session' })
     expect(server.messages.some((message) => message.t === 'read')).toBe(false)
   } finally { shell.dispose(); client.close(); server.close(); g.close() }
 })
