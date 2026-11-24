@@ -22,6 +22,22 @@
  * - **竞争**：写前再读一次行内标题，期间被改名（或另一次生成已写入）就静默放弃——
  *   同一字段后写者胜，用户改名随时覆盖 AI 值。
  * - **进程退出**：生成随进程消失，无持久痕迹；下次触发条件仍在，损失为零。
+ * ## 功能足迹（找齐整个功能从这里出发）
+ *
+ * 本文件是标题功能的**规则中心**（触发条件 · 单飞 · 调用 · 后处理 · 写入裁决）。
+ * 周边只有**接线**与**展示**——各自一到几行，无业务规则；新增落账路径时先来这里登记，
+ * 并回答「这条路径的材料算不算第一条真实内容」：
+ *
+ * - **触发①（主路径）**——`service.ts` drain 循环 `accepted` 回调：真实用户条目落账时
+ *   调 `onUserEntry`（notice 输入由调用方排除）；
+ * - **触发②（已评估并否决）**——协作成员的收件消费路径**不触发**：目录读面过滤成员、
+ *   身份由 agent 名与委派 scope 承载，标题无可见价值（docs/会话标题方案.md §3.6，2026-11-25 定）；
+ * - **写入落点**——装配把 `recordsStore.setSessionTitle` 接成 `ConversationDeps.setTitle`
+ *   （`AssembleOptions.aiTitle` 门 → `agent-assembly/session.ts` 透传 → 生产入口 `executor.ts`）；
+ * - **展示**——`packages/client/shell/src/session-title-tab.ts`（OSC 0 页签同步，
+ *   `ShellOptions.sessionTitleTab`）；
+ * - **兜底与改名**——`sessions.ts` 的 `summarize` / `readSessionCatalog`（现算摘要与
+ *   改名裁剪，先于本功能存在，是本功能的失败回退）。
  */
 
 import type { ModelGateway, RecordsService, SessionId, Timestamp } from '@magic/contracts'
