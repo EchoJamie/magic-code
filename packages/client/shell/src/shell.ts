@@ -2163,8 +2163,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         workRow('broadcast', '向所有成员补充', '共同要求送达相关成员'),
         workRow('constraints', '共同补充的带入情况'),
         workRow('default-model', '后续派生的默认模型', '按需配置'),
-        workRow('stop-work', '停止整件工作', '覆盖全部成员及继续委派', 'danger'),
-        ...(snapshot.collaboration.state === 'stopped' ? [workRow('resume-work', '明确继续整件工作', '先核对停点', 'wait')] : [])] : []),
+        workRow('stop-work', '停止整件工作', '覆盖全部成员及继续委派', 'danger')] : []),
     ]
     // 从子会话打开时主会话在列表里并预选（Enter 返回）；在主会话时它不出现。
     const preselected = selected ?? (member === undefined ? undefined : snapshot?.collaboration?.coordinatorId)
@@ -2242,9 +2241,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       return
     }
     if (row.value === 'default-model') configureCollaboration()
-    else if (row.value === 'stop-work' || row.value === 'resume-work') {
+    else if (row.value === 'stop-work') {
       commit(closePicker(view))
-      send({ type: row.value === 'stop-work' ? 'collaboration.stop' : 'collaboration.resume' })
+      send({ type: 'collaboration.stop' })
     } else if (row.value === 'constraints') {
       openRecords('constraints', '共同补充 · 带入不代表已遵守', snapshot.constraints.map((constraint, index) => ({
         kind: 'output', key: String(constraint.messageId), lines: [`共同补充 ${index + 1}`, ...constraint.states.map((state) =>

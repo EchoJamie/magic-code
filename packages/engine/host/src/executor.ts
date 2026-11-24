@@ -424,6 +424,9 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   const compactControllers = new Map<string, AbortController>()
   link.onMessage((message: ManagerToExecutor) => {
     diagnosticLog?.write('trace', `control.${message.t}`)
+    // **有动静就不收缩**：管理者的消息（哪怕只是送达一条输入）先重置收缩计时——
+    // 否则恢复后的空闲收缩会与送达赛跑，输入落进收尾的 hold 里变成幽灵（真帧量到过）。
+    if (shrinkTimer !== undefined) { clearTimeout(shrinkTimer); shrinkTimer = undefined }
     try { switch (message.t) {
       case 'compact': {
         if (compactControllers.has(message.request.requestId)) return

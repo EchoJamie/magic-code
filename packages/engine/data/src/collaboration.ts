@@ -454,6 +454,10 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     checkAdmission(id, delegationId, mode = 'work') {
       const a = agent(id); const c = scopeFor(id)
       if (get<{ value: string }>("SELECT value FROM records_meta WHERE key='collaboration_host_stop'")?.value) return { allowed: false, reason: 'host admission closed' }
+      // **协调者对已停止协作的 coordination 准入放行**（2026-11-24 裁定「直接打字即继续」）：
+      // resume 仅切界面、不恢复运行——恢复的入口新一代接管原工作，不属于旧协作的执行
+      // （成员不复活、协作状态不变）。非协调者的成员与 work 准入照旧拦下。
+      if (mode === 'coordination' && a.agentId === c.coordinatorId && a.reachability !== 'historical') return { allowed: true }
       if (!['open', 'closing'].includes(c.state) || a.reachability !== 'active') return { allowed: false, reason: 'collaboration or agent admission closed' }
       if (delegationId !== undefined) {
         const d = delegation(delegationId)

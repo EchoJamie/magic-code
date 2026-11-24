@@ -212,11 +212,11 @@ export function createManagedCollaboration(host: CollaborationHost) {
             : records.listMembers(collaboration.collaborationId).find(a => a.agentId === command.member)
           if (target === undefined) throw new Error('成员不属于当前工作')
           if (target.purpose === 'consultation') throw new Error('咨询详情只供查看；相关纠正请补充给原工作')
-          if (!admission(target)) throw new Error('这份工作已停止；请先明确继续')
+          // **直接打字即继续**（2026-11-24 裁定）：停止的工作上，用户的输入就是新一代接管——
+          // 不再要求「先明确继续」的独立步骤；归档的拦截在更上游（isSessionArchived）保留。
           const shared = command.shared === true
           const receiver = shared ? records.getAgent(collaboration.coordinatorId)! : target ?? records.getAgent(collaboration.coordinatorId)!
           await host.start(receiver)
-          if (!admission(receiver)) throw new Error('这份工作已停止；原稿保留')
           host.input(receiver.sessionId, command.input, shared)
           break
         }
@@ -228,9 +228,8 @@ export function createManagedCollaboration(host: CollaborationHost) {
           break
         }
         case 'collaboration.resume':
-          records.resume({ kind: 'collaboration', collaborationId: collaboration.collaborationId }, host.now())
-          // 只接回入口；不重启所有旧成员、不重放工具。
-          await host.start(records.getAgent(collaboration.coordinatorId)!)
+          // **resume 只切界面**（2026-11-24 裁定）：不恢复运行、不动协作状态——继续一件
+          // 已停止的工作靠明确输入（新一代接管原工作）。这一支只回协作视图，界面照实显示。
           break
         case 'collaboration.configure': {
           const actor = command.member === undefined ? undefined : records.listMembers(collaboration.collaborationId).find(a => a.agentId === command.member)

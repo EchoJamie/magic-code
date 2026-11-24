@@ -449,7 +449,9 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         const row = deps.records.inputs.accept(durable,(deps.now??Date.now)())
         sink.emit(stamper.stamp('input.settled',row.state==='failed'||row.state==='withdrawn'?{ref:durable.ref,ok:false,reason:row.reason??'这条输入已撤回'}:{ref:durable.ref,ok:true,stage:row.state==='included'?'included':'accepted',...(row.input.refs===undefined?{}:{refs:row.input.refs})}))
         sink.emit(stamper.stamp('input.pending',{inputs:pendingViews(deps.records.inputs.list())}))
-        if (existing !== undefined) { done(); return }
+        // 已消费/已失败的历史输入不重复驱动；**仍在 pending 的被再次提交＝用户明确要它跑**
+        // （宿主重启后恢复的会话里，重新提交同一条就是「继续」——2026-11-24 裁定），照常入队。
+        if (existing !== undefined && existing.state !== 'pending') { done(); return }
         if (row.input.notice !== true) inputVersion++
         deps.onInput?.(row.input)
         if (running && row.purpose==='current') supplements.push({input:row.input,shared,done})
