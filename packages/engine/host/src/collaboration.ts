@@ -83,6 +83,13 @@ export function createManagedCollaboration(host: CollaborationHost) {
   function wake(agentId: string): void {
     const agent = records.getAgent(agentId)
     if (agent === undefined || !admission(agent) || waking.has(agentId)) return
+    // **总闸：工作已整体停止，协作唤醒到此为止**——收件留在账本，等用户明确继续
+    // （新一代接管或恢复）后再消费。不设这一闸，「停止后借迟到的协作消息恢复执行」
+    // 会在每一个 wake 调用点各漏一遍（2026-11-25 实锤：迟到的交付唤醒入口发起了
+    // 模型调用）。协调者的准入例外只保证**用户会话**仍可达，不豁免协作唤醒。
+    // closing 一并挡（收尾中的工作同样不该被协作消息拉回模型）。
+    const work = agent.collaborationId === undefined ? undefined : records.getCollaboration(agent.collaborationId)
+    if (work !== undefined && work.state !== 'open') return
     const pending = (async () => {
       try { await host.start(agent); if (admission(agent)) host.wake(agent.sessionId) }
       catch { host.changed() }
