@@ -41,5 +41,7 @@ if (files.length === 0) {
 }
 
 console.log(`运行 ${files.length} 个 ${suite} 测试`)
-const child = Bun.spawn(['bun', 'test', ...files], { cwd: root, stdio: ['inherit', 'inherit', 'inherit'] })
+// **委托统一入口**——并行与结果落盘由 test-record.sh 提供（文件级 worker + 双份落盘），
+// 与 `test` / `test:fast` 同一投递方式：分层收集在这里，运行纪律不另起一套。
+const child = Bun.spawn(['bash', join(root, 'scripts', 'test-record.sh'), suite, '--parallel', ...files], { cwd: root, stdio: ['inherit', 'inherit', 'inherit'] })
 process.exit(await child.exited)

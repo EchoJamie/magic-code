@@ -13,6 +13,7 @@
 
 - 提交前跑 `bun run check:commit`（typecheck + check:imports + test:fast；pre-commit 自动执行）。
 - 合并前跑 `bun run check`（含 check:imports）；Swift／原生／打包改动加 `bun run check:macos`；发布前跑 `bun run check:all`。
+- 大范围回归（多文件、目录、全仓）**必须带 bun 原生并行参数**：`bun test --parallel <路径>`（文件级 worker，缺省按核数）——这是执行的底线，不是推荐。推荐走自带结果落盘的入口：`bun run check`（全量）/ `test:integration` / `test:e2e`，JUnit 与日志落 `.artifacts/test-results/`，失败定位先读落盘记录。不带 `--parallel` 的多文件运行属于执行错误，其结果不作为合入或合并的结论。
 - CI 只在 PR／手动触发；直接合并 `main` 时在本地补跑完整门禁。
 - 新工作树先 `bun install`；新增 workspace 包后 `bun install --force`。
 
