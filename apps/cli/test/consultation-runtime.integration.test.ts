@@ -14,7 +14,7 @@ test('同批立即受理与独立写入、定向种子、自行取证、幂等�
     if (call.kind === 'agent') {
       if (call.index === 0) return { tools: [consult as Extract<ModelReply, { tool: string }>, { tool: 'write', args: { path: 'independent.txt', content: '独立动作已经执行' } }], usage }
       if (call.index === 1) return { ...consult, usage }
-      if (call.index === 2) return { tool: 'agent_wait', args: { operationId: 'wait-advisor', agents: [f.member()!.agentId], message: f.delegation()!.delegationId, expectation: '取得顾问实际证据', deadline: Date.now() + 60000 }, usage }
+      if (call.index === 2) return { text: '顾问证据已经通过消息投递，等待被唤醒后继续核对。', usage }
       expect(requestText(call)).toContain('关键证据-实际读取-8391')
       expect(requestText(call)).toContain('来自顾问')
       await final.promise

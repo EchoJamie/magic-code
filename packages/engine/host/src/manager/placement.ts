@@ -2,7 +2,7 @@ import type { Command } from '@magic/contracts'
 import { ARCHIVED_NOTE, createWorkEnvironment } from '@magic/host'
 import { createProcessLedger } from '@magic/resources'
 import { newRunRecord, refresh } from '@magic/host'
-import { createAgentLauncher, type ExecutorSpawned } from '../launch.ts'
+import type { ExecutorSpawned } from '../launch.ts'
 import { sendToExecutor as send, type Executor } from '../executor-control.ts'
 import type { ClientConn } from '../connections.ts'
 import type { ManagerContext, SpawnInput } from './context.ts'
@@ -75,7 +75,7 @@ export function installPlacement(ctx: ManagerContext): void {
     })
     let spawned: ExecutorSpawned
     try {
-      spawned = (options.launch ?? createAgentLauncher()).spawn({
+      spawned = options.launch.spawn({
         gen, executionId, socket: ctx.paths.socket, network, environment: network.env,
         session: input.session, cwd: input.cwd, magic: options.magic,
         records: store, ledger,

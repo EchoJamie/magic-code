@@ -110,6 +110,8 @@ export function createManagedCollaboration(host: CollaborationHost) {
     if (closing) return
     const ids = await collaborations()
     if (closing) return
+    // **墓碑收件不唤醒的裁决由 wake() 的生命周期总闸承担**（develop c419cf0）——
+    // schedule 只是唤醒触发点之一，逐点设门会漏（总闸口径见 wake）。
     for (const id of ids) for (const member of records.listMembers(id)) {
       if (records.inbox(member.agentId).some(i => {
         if (i.state !== 'pending') return false

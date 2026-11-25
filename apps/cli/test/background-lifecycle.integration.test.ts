@@ -2,7 +2,8 @@ import { expect, test } from 'bun:test'
 import { writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RecordsStore } from '@magic/data'
-import { createAgentLauncher, type ExecutorLauncher, type ExecutorToManager, type Link } from '@magic/host'
+import { type ExecutorLauncher, type ExecutorToManager, type Link } from '@magic/host'
+import { createAgentLauncher } from './executor-test-channel.ts'
 import { collaborationRuntime, latch, requestText, spawnMember } from './run-collaboration-fixture.ts'
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`

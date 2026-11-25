@@ -7,14 +7,12 @@ const delivery = { conclusion: 'LATE_DELIVERY_ORIGINAL_CONCLUSION', artifacts: [
 const spawnDescendant: ModelReply = { tool: 'agent_spawn', args: { operationId: 'spawn-descendant', name: '后代 B', responsibility: '独立核对细节', scope: '回调细节', body: [{ kind: 'text', text: '核对细节后回报 A' }], model: { choice: 'arcane' }, modelReason: '复杂细节需要独立核对' } }
 const memberOf = (f: StopRuntime) => f.members().find(one => one.model.model === 'member-model')!
 const delegationOf = (f: StopRuntime) => f.delegations().find(one => one.assigneeId === memberOf(f)?.agentId)!
-
 /** 每案经真实工具先 accept，再起一组可证明归属的后台进程，第三个响应才抵达屏障。 */
 async function scenario(name: string, reply: (f: StopRuntime) => ModelReply | Promise<ModelReply>, gate = false) {
-  const deadline = Date.now() + 3600_000
   const f = await stopRuntime(name, async call => {
     if (call.model === 'entry-model') {
       if (call.index === 0) return spawnMember
-      if (call.index === 1) return { tool: 'agent_wait', args: { operationId: 'stop-wait', agents: [memberOf(f).agentId], message: delegationOf(f).delegationId, expectation: '等待成员交付', deadline } }
+      if (call.index === 1) return { text: '已派出，成员交付会自动唤醒我；交付前保持等待。' }
       return { text: 'UNEXPECTED_ENTRY_REAWAKEN' }
     }
     if (call.model === 'member-model') {
@@ -66,19 +64,22 @@ async function stopped(f: StopRuntime) {
 async function reclaimed(f: StopRuntime, owned: readonly OwnedProcess[], atStop: Awaited<ReturnType<typeof stopped>>) {
   const work = f.collaboration()!
   // 协作墓碑是 stopped；正常退出的历史 Run 可以是 idle。核销依据是实际资源与 ended，非显示文案。
+  // 落盘按会话断言：同会话的旧代（入口被迟到交付唤醒后新一代接管）会被 lastRuns 按
+  // session 键挤掉——产品落盘语义是「每会话保留最新一代」，核销看最终那一代的 kind/why。
   await f.wait('全部真实 executor onExit 与自有组回收', () => f.launches.every(one => one.exited !== undefined) &&
     f.manager.executors().length === 0 && f.manager.runs().every(one => !one.holds) &&
-    f.launches.every(one => f.storedRuns().some(run => run.gen === one.gen && run.kind !== undefined && run.why !== undefined)) &&
+    f.launches.every(one => { const session = one.session; return f.storedRuns().some(run => run.session === session && run.kind !== undefined && run.why !== undefined) }) &&
     f.store.collaboration.listExecutions(work.collaborationId).every(one => one.state === 'finished') &&
     owned.every(one => !alive(one.pgid) && !alive(-one.pgid)))
-  for (const launched of f.launches) {
-    expect(launched.exited).toBeDefined()
-    expect(f.members().some(one => one.sessionId === launched.session)).toBe(true)
-    const persisted = f.storedRuns().find(one => one.gen === launched.gen)!
-    expect(persisted).toMatchObject({ session: launched.session, tokenHash: launched.tokenHash })
+  for (const session of new Set(f.launches.map(one => one.session))) {
+    const latest = f.launches.filter(one => one.session === session).sort((a, b) => b.gen - a.gen)[0]!
+    expect(latest.exited).toBeDefined()
+    expect(f.members().some(one => one.sessionId === session)).toBe(true)
+    const persisted = f.storedRuns().find(one => one.gen === latest.gen)!
+    expect(persisted).toMatchObject({ session, tokenHash: latest.tokenHash })
     expect(persisted.kind).toBeDefined()
     expect(persisted.why).toBeDefined()
-    expect(f.manager.runs().find(one => one.session === launched.session)?.holds).toBe(false)
+    expect(f.manager.runs().find(one => one.session === session)?.holds).toBe(false)
   }
   expect(work.state).toBe('stopped')
   expect(f.delegations().every(one => one.state === 'cancelled' && one.receivedAt === undefined)).toBe(true)
@@ -146,13 +147,12 @@ test('整体停止与成员后代派生竞争：按持久准入结果回收全�
 
 test('后代已登记、真实启动并持有后台进程后整体 stop：入口及 A/B 全部核销', async () => {
   const spawn = latch(), descendantResponse = latch()
-  const deadline = Date.now() + 3600_000
   const descendantOf = () => f.members().find(one => one.model.model === 'descendant-model')
   const childDelegation = () => f.delegations().find(one => one.assigneeId === descendantOf()?.agentId)
   const f = await stopRuntime('stop-after-descendant-started', async call => {
     if (call.model === 'entry-model') {
       if (call.index === 0) return spawnMember
-      if (call.index === 1) return { tool: 'agent_wait', args: { operationId: 'stop-wait', agents: [memberOf(f).agentId], message: delegationOf(f).delegationId, expectation: '等待成员交付', deadline } }
+      if (call.index === 1) return { text: '已派出，成员交付会自动唤醒我；交付前保持等待。' }
     }
     if (call.model === 'member-model') {
       if (call.index === 0) return { tool: 'agent_message', args: { action: 'respond', operationId: 'stop-accept', delegation: delegationOf(f).delegationId, response: 'accept' } }
