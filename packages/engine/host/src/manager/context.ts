@@ -57,7 +57,8 @@ export type ManagerOptions = {
   /** 这一摊运行的三条路径（`runPathsOf` 算出来的）。 */
   readonly paths: RunPaths
   /** 起执行者的方式——见 `ExecutorLauncher`。 */
-  readonly launch?: ExecutorLauncher
+  /** **必填**——发车方式由装配点显式声明：真实引擎用独立子进程，不存在生产缺省。 */
+  readonly launch: ExecutorLauncher
 
   readonly magic: MagicHome
 

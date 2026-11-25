@@ -17,7 +17,7 @@
  */
 
 import { existsSync, writeFileSync } from 'node:fs'
-import { createAgentLauncher } from '@magic/host'
+import { createAgentLauncher } from './executor-test-channel.ts'
 import { runPathsOf } from '@magic/host'
 import { startManager } from '@magic/host'
 

@@ -9,7 +9,7 @@ import { createRecordsStore } from '@magic/data'
 import { createShell } from '@magic/shell'
 import { loadConfig } from '@magic/state'
 import { connectManager } from '@magic/host'
-import { createAgentLauncher } from '@magic/host'
+import { createAgentLauncher } from './executor-test-channel.ts'
 import { startManager } from '@magic/host'
 import { runPathsOf } from '@magic/host'
 import { terminalOptions } from '../src/run/terminal.ts'
@@ -125,7 +125,7 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
   const wait = async (what: string, condition: () => boolean | Promise<boolean>, timeout = 10000) => {
     const end = Date.now() + timeout
     while (!(await condition())) {
-      if (Date.now() > end) throw new Error(`等不到 ${what}: ${JSON.stringify({ launches, calls: calls.map(({ model, index }) => ({ model, index })), errors, events: events.slice(-3), journal: journal.slice(-8) })}`)
+      if (Date.now() > end) throw new Error(`等不到 ${what}: ${JSON.stringify({ launches, calls: calls.map(({ model, index }) => ({ model, index })), errors, events: events.slice(-3), journal: journal.slice(-90), runs: manager.runs(), storedRuns: storedRuns(), executors: manager.executors().map(one => one.gen) })}`)
       await Bun.sleep(10)
     }
   }

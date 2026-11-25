@@ -6,7 +6,8 @@ import type { Command, KernelEvent } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
 import { createShell } from '@magic/shell'
 import { connectManager } from '@magic/host'
-import { createAgentLauncher, type ExecutorLauncher } from '@magic/host'
+import { type ExecutorLauncher } from '@magic/host'
+import { createAgentLauncher } from './executor-test-channel.ts'
 import { startManager } from '@magic/host'
 import { runPathsOf } from '@magic/host'
 import { terminalOptions } from '../src/run/terminal.ts'
@@ -185,6 +186,8 @@ export async function collaborationRuntime(
     /** 走 `Tab` → 协作列表 → Enter，切进成员子会话（与 `/resume` 同一条会话通路）。 */
     async openMember(target = shell) {
       const session = member()!.sessionId
+      // Tab 开协作列表的前提是协作快照已到 TUI；受理完成的视图推送晚于「成员执行中」判据（异步通道下不再同步先到），先等快照再按 Tab。
+      await wait('协作快照已到界面', () => target.getView().collaboration?.collaboration !== undefined)
       target.key({ kind: 'tab' })
       await wait('协作列表', () => { const dock = target.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'collaboration' })
       pick(member()!.agentId, target)

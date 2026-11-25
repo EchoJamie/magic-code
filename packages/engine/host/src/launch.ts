@@ -1,9 +1,7 @@
 import type { MagicHome, ModelSwitchRequest, ProcessLedger } from '@magic/contracts'
 import type { RecordsStore } from '@magic/data'
 import type { WorkEnvironment } from '@magic/host'
-import type { ExecutorToManager, Link, ManagerToExecutor, Wire } from '@magic/host'
-import { localLinks } from './wire.ts'
-import { runExecutor } from './executor.ts'
+import type { ExecutorToManager, Link, Wire } from '@magic/host'
 import { runtimeLaunch } from './runtime-launch.ts'
 
 export type ExecutorLauncher = {
@@ -53,29 +51,8 @@ export type ExecutorSpawned = {
   kill?(): void
 }
 
-/** Agent 是 Engine 内的异步实例；取消与完成只作用于本次运行。 */
-export function createAgentLauncher(): ExecutorLauncher {
-  return {
-    spawn(request: ExecutorSpawn): ExecutorSpawned {
-      const controller = new AbortController()
-      const [link, agentLink] = localLinks<ExecutorToManager, ManagerToExecutor>()
-      const done = Promise.resolve().then(() => runExecutor({
-        ...request,
-        link: agentLink,
-        signal: controller.signal,
-      }))
-        .then(outcome => outcome.kind === 'ok' ? '执行实例已释放' : outcome.reason,
-          error => `执行实例失败：${error instanceof Error ? error.message : String(error)}`)
-      return {
-        link,
-        onExit(listener) { void done.then(listener) },
-        cancel() { controller.abort() },
-      }
-    },
-  }
-}
-
 // ══ 进程隔离：执行者跑在独立子进程里 ════════════════════════════════════
+// （同进程形态已清退到测试域 `apps/cli/test/executor-test-channel.ts`——生产只有这一种发车方式。）
 
 /**
  * **待认领通道**——发车那一刻建，子进程连上来（`executor.hello` 配对）才绑定真连接。

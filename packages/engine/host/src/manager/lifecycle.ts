@@ -254,6 +254,9 @@ export function installLifecycle(ctx: ManagerContext): void {
   /** 一条内核事件——**广播给盯着这一代的窗口**，顺带把登记里那几格更新到与内核一致。 */
   function onEvent(executor: Executor, event: KernelEvent): void {
     diagnosticLog.write(event.kind === 'error' ? 'error' : 'trace', `kernel.${event.kind}`, { ...identity, run: String(executor.gen), ...(event.session ? { session: event.session } : {}) })
+    // 已核销的执行者的**迟到事件只留诊断**：行上的在途格（busy/turnActive）属于活者，
+    // 不因迟到帧翻回「在跑」——投递异步化后，close 前入队的帧会在核销后一拍才到。
+    if (executor.run.ended !== undefined) return
     if (event.kind === 'background.state') {
       executor.run.backgroundView = event.data
       refresh(executor.run, now())

@@ -7,14 +7,12 @@ const delivery = { conclusion: 'LATE_DELIVERY_ORIGINAL_CONCLUSION', artifacts: [
 const spawnDescendant: ModelReply = { tool: 'agent_spawn', args: { operationId: 'spawn-descendant', name: '后代 B', responsibility: '独立核对细节', scope: '回调细节', body: [{ kind: 'text', text: '核对细节后回报 A' }], model: { choice: 'arcane' }, modelReason: '复杂细节需要独立核对' } }
 const memberOf = (f: StopRuntime) => f.members().find(one => one.model.model === 'member-model')!
 const delegationOf = (f: StopRuntime) => f.delegations().find(one => one.assigneeId === memberOf(f)?.agentId)!
-
 /** 每案经真实工具先 accept，再起一组可证明归属的后台进程，第三个响应才抵达屏障。 */
 async function scenario(name: string, reply: (f: StopRuntime) => ModelReply | Promise<ModelReply>, gate = false) {
-  const deadline = Date.now() + 3600_000
   const f = await stopRuntime(name, async call => {
     if (call.model === 'entry-model') {
       if (call.index === 0) return spawnMember
-      if (call.index === 1) return { tool: 'agent_wait', args: { operationId: 'stop-wait', agents: [memberOf(f).agentId], message: delegationOf(f).delegationId, expectation: '等待成员交付', deadline } }
+      if (call.index === 1) return { text: '已派出，成员交付会自动唤醒我；交付前保持等待。' }
       return { text: 'UNEXPECTED_ENTRY_REAWAKEN' }
     }
     if (call.model === 'member-model') {
@@ -160,13 +158,12 @@ test('整体停止与成员后代派生竞争：按持久准入结果回收全�
 
 test('后代已登记、真实启动并持有后台进程后整体 stop：入口及 A/B 全部核销', async () => {
   const spawn = latch(), descendantResponse = latch()
-  const deadline = Date.now() + 3600_000
   const descendantOf = () => f.members().find(one => one.model.model === 'descendant-model')
   const childDelegation = () => f.delegations().find(one => one.assigneeId === descendantOf()?.agentId)
   const f = await stopRuntime('stop-after-descendant-started', async call => {
     if (call.model === 'entry-model') {
       if (call.index === 0) return spawnMember
-      if (call.index === 1) return { tool: 'agent_wait', args: { operationId: 'stop-wait', agents: [memberOf(f).agentId], message: delegationOf(f).delegationId, expectation: '等待成员交付', deadline } }
+      if (call.index === 1) return { text: '已派出，成员交付会自动唤醒我；交付前保持等待。' }
     }
     if (call.model === 'member-model') {
       if (call.index === 0) return { tool: 'agent_message', args: { action: 'respond', operationId: 'stop-accept', delegation: delegationOf(f).delegationId, response: 'accept' } }

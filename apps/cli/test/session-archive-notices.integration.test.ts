@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolveMagicHome, type EventDataOf, type EventKind, type KernelEvent, type NativeRequest, type NativeResponse, type SessionManagement, type Wire } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
-import { startManager, localLinks, type ExecutorSpawn, type ExecutorToManager, type Link, type ManagerToExecutor } from '@magic/host'
+import { startManager, type ExecutorSpawn, type ExecutorToManager, type Link, type ManagerToExecutor } from '@magic/host'
+import { localLinks } from './executor-test-channel.ts'
 import { connectManager, type ManagerClient } from '@magic/host'
 import { runPathsOf } from '@magic/host'
 import { linkOf, socketHandlers } from '@magic/host'
@@ -133,7 +134,8 @@ test('输入先受理：启动与投递消费间隙都拒归档，结束后才�
     expect(f.launches).toHaveLength(1)
     expect(f.store.isSessionArchived('a')).toBe(false)
     f.ready()
-    expect(f.commands.some(message => message.t === 'cmd' && message.cmd.type === 'input.submit')).toBe(true)
+    // ready 帧与补发命令都走异步投递（与跨进程同语义）：等两拍到齐再断言。
+    await until(() => f.commands.some(message => message.t === 'cmd' && message.cmd.type === 'input.submit'))
     // 执行者已收到命令但尚未发 turn.start；不能借此间隙归档。
     expect((await f.manage([{ session: 'a', action: 'archive' }, { session: 'b', action: 'archive' }])).results.map(result => result.ok)).toEqual([false, true])
     expect((await f.manage([{ session: 'b', action: 'restore' }], 'old-instance')).results[0]?.ok).toBe(false)
@@ -219,7 +221,8 @@ test('当前通知取真实回复、替换旧来源；新轮清掉旧呈现，�
     expect(notice.source).toEqual({ session: 'a', event: stop.id, entry })
     expect((await f.inspect()).work).toMatchObject({ currentNotice: notice, terminalOpen: true })
     f.event('a', 'turn.start', {}, 2)
-    expect(f.store.attention.list({ sessions: ['a'] })).toEqual([])
+    // turn.start 经异步投递到管理者才清通知：等清理落地再断言。
+    await until(() => f.store.attention.list({ sessions: ['a'] }).length === 0)
     f.event('a', 'turn.end', { reason: 'aborted' }, 2)
     f.event('a', 'agent.state', { state: 'waiting' })
     expect((await f.inspect()).work?.currentNotice).toBeUndefined()

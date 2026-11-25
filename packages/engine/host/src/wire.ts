@@ -424,26 +424,5 @@ export function socketHandlers(onOpen?: (socket: Socket<LinkSlot>) => void) {
   }
 }
 
-/** Engine 内部通道，不建立 socket、生命握手或心跳。 */
-export function localLinks<A extends Wire, B extends Wire>(): [Link<A>, Link<B>] {
-  let closed = false
-  const listeners: ((message: Wire) => void)[][] = [[], []]
-  const closers: (() => void)[] = []
-  const endpoint = (side: number): Link => ({
-    get closed() { return closed },
-    send(message) {
-      if (closed) return false
-      for (const listener of [...listeners[1 - side]!]) listener(message)
-      return true
-    },
-    onMessage(listener) { listeners[side]!.push(listener) },
-    onClose(listener) { if (closed) listener(); else closers.push(listener) },
-    close() {
-      if (closed) return
-      closed = true
-      for (const listener of closers.splice(0)) listener()
-      listeners[0] = []; listeners[1] = []
-    },
-  })
-  return [endpoint(0) as Link<A>, endpoint(1) as Link<B>]
-}
+/** 进程内通道已清退到测试域（`apps/cli/test/executor-test-channel.ts`）——
+ * 生产执行者一律独立子进程（`createProcessLauncher`），不经内存直呼通道。 */
