@@ -2,7 +2,7 @@
  * 记录库 schema v2——一次建齐，只认新库。
  *
  * 0.2.0 不迁移旧库：启动前由 `bootstrap.ts` 备份并移走 `records.db`；本文件遇到
- * 已有表但没有 `schema_version = 2` 的库直接拒绝，不 ALTER、不补列、不双读。
+ * 已有表但没有 `schema_version = 3` 的库直接拒绝，不 ALTER、不补列、不双读。
  *
  * 列口径以《0.2.0 迁移执行计划》§2 为准：
  * - `turns`：id、session、seq、status、started_at、ended_at、run、generation；
@@ -11,13 +11,13 @@
  * - `events`：turn_id、step_id、generation；
  * - `inputs`：待提交输入，`turn`；
  * - `attention_items`：未读/通知；
- * - `records_meta`：schema_version = 2、next_id；
+ * - `records_meta`：schema_version = 3、next_id；
  * - `runs` / `run_journal`：执行状态与恢复索引；
  * - 协作 ledger：ledgers / ledger_members / ledger_entries / ledger_refs。
  */
 import type { Database } from 'bun:sqlite'
 
-const SCHEMA_VERSION = '2'
+export const SCHEMA_VERSION = '3'
 
 export const SESSIONS_TABLE = 'sessions'
 export const TURNS_TABLE = 'turns'
@@ -66,6 +66,9 @@ CREATE TABLE IF NOT EXISTS ${TURNS_TABLE} (
 CREATE INDEX IF NOT EXISTS turns_by_session ON ${TURNS_TABLE} (session, id);
 
 CREATE TABLE IF NOT EXISTS ${STEPS_TABLE} (
+  -- **会话维度必须有**：turn 的编号是会话内序号，没有 session 列时两个会话
+  -- 并发首跑会互踩 (turn, seq) 槽位（2026-11-26 实锤：双终端同批首跑撞唯一键）。
+  session    TEXT    NOT NULL,
   id         INTEGER NOT NULL,
   turn       INTEGER NOT NULL,
   seq        INTEGER NOT NULL,
@@ -74,10 +77,10 @@ CREATE TABLE IF NOT EXISTS ${STEPS_TABLE} (
   ended_at   INTEGER,
   provider   TEXT,
   model      TEXT,
-  PRIMARY KEY (turn, id),
-  UNIQUE(turn, seq)
+  PRIMARY KEY (session, turn, id),
+  UNIQUE(session, turn, seq)
 );
-CREATE INDEX IF NOT EXISTS steps_by_turn ON ${STEPS_TABLE} (turn, id);
+CREATE INDEX IF NOT EXISTS steps_by_turn ON ${STEPS_TABLE} (session, turn, id);
 
 CREATE TABLE IF NOT EXISTS ${ENTRIES_TABLE} (
   id            INTEGER PRIMARY KEY,

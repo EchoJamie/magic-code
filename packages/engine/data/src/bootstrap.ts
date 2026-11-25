@@ -33,7 +33,7 @@ const LOCK = '.records.lock'
 const BACKUP_DIR = 'backup'
 
 /** 读 schema 版本；库不存在或读不出都返回 undefined。 */
-function schemaVersionOf(path: string): string | undefined {
+export function schemaVersionOf(path: string): string | undefined {
   if (!existsSync(path)) return undefined
   try {
     const db = new Database(path, { readonly: true })
@@ -58,7 +58,7 @@ function stampOf(now: number): string {
 export function prepareDataDir(dataDir: string, now = Date.now()): void {
   const databasePath = join(dataDir, DATABASE)
   if (!existsSync(databasePath)) return
-  if (schemaVersionOf(databasePath) === '2') return
+  if (schemaVersionOf(databasePath) === '3') return
 
   const backup = backupDirOf(dataDir, now)
   mkdirSync(backup, { recursive: true })

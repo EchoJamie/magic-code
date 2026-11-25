@@ -56,6 +56,15 @@ function ownEnvironment(): Record<string, string> {
  * 管理者交付已解析的基础路径和监听地址，执行者使用同一运行身份。
  */
 export async function runExecutorProcess(argv: readonly string[]): Promise<number> {
+  try {
+    return await runExecutorProcessInner(argv)
+  } catch (error) {
+    console.error(`[executor-child] 致命异常：${error instanceof Error ? (error.stack ?? error.message) : String(error)}`)
+    return 1
+  }
+}
+
+async function runExecutorProcessInner(argv: readonly string[]): Promise<number> {
   let args: ExecutorProcessArgs
   try { args = parseArgs(argv) }
   catch (error) { console.error(String(error instanceof Error ? error.message : error)); return 1 }
@@ -79,12 +88,15 @@ export async function runExecutorProcess(argv: readonly string[]): Promise<numbe
   // 报到——配不上号（管理者不认识这个令牌）连接会被当场关掉，装配那头经 onClose 收摊。
   link.send({ t: 'executor.hello', executionId: args.executionId })
 
+
   const { createRecordsStore } = await import('@magic/data')
   const store = createRecordsStore({ dataDir: magic.base, workspace: [], busyTimeoutMs: 5_000 })
   const { createProcessLedger } = await import('@magic/resources')
   const ledger = createProcessLedger(owned => { link.send({ t: 'ledger.owned', owned }) })
 
+
   const environment = ownEnvironment()
+
   const outcome = await runExecutor({
     executionId: args.executionId,
     network: createWorkEnvironment(environment),
@@ -99,5 +111,6 @@ export async function runExecutorProcess(argv: readonly string[]): Promise<numbe
     ...(args.switch === undefined ? {} : { switch: args.switch }),
   })
   store.close()
+  if (outcome.kind !== 'ok') console.error(`[executor-child] 收场异常：${'reason' in outcome ? outcome.reason : ''}`);
   return outcome.kind === 'ok' ? 0 : 1
 }

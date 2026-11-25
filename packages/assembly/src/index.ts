@@ -378,6 +378,9 @@ export function assemble(options: AssembleOptions): Assembly {
 
   let chain: AgentSession | undefined
   const chains = new Map<SessionId, AgentSession>()
+  // **唤醒早于会话建立**时记下（wake 是幂等的「有输入待消费，看一眼」）——
+  // 多终端并发首跑时，协作唤醒会先于成员会话的装配完成到达，此处丢弃后无人再喊。
+  let pendingWake = false
 
   const open = (session: SessionId): SessionInstance => {
     const previous = chains.get(session)
@@ -406,6 +409,7 @@ export function assemble(options: AssembleOptions): Assembly {
     })
     chains.set(session, opened)
     chain = opened
+    if (pendingWake) { pendingWake = false; opened.service.wake() }
     sink.emit(opened.stamper.stamp('background.state', opened.background?.view() ?? { commands: [], waiting: [] }))
     return opened
   }
@@ -859,7 +863,7 @@ export function assemble(options: AssembleOptions): Assembly {
       return target.service.compact(request, signal, started)
     },
     hasPendingInput: () => [...chains.values()].some(one => one.service.busy()),
-    wakeCollaboration: () => chain?.service.wake(),
+    wakeCollaboration: () => { if (chain === undefined) { pendingWake = true; return } chain.service.wake() },
     supplementCollaboration: async (input, shared) => {
       if (chain === undefined) throw new Error('当前没有已装配的成员会话')
       await chain.service.supplement(input, shared)

@@ -253,6 +253,9 @@ async function mcpFetch(request: Request): Promise<Response> {
 const server = Bun.serve({
   port: PORT,
   hostname: '127.0.0.1',
+  // GET 那条 SSE 通知流是长连接——缺省 10 秒空闲超时会把它掐断（多终端并发场景下
+  // 客户端的初始化会撞上断流窗口），禁用之，断开由用例显式驱动。
+  idleTimeout: 0,
   fetch(request) {
     record({
       kind: 'http',

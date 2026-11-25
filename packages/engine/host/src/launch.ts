@@ -161,8 +161,14 @@ export function createProcessLauncher(options: ProcessLauncherOptions = {}): Exe
       try {
         child = Bun.spawn(argv, {
           env: childEnv(request.environment),
-          stdin: 'ignore', stdout: 'ignore', stderr: 'inherit',
+          stdin: 'ignore', stdout: 'ignore', stderr: 'pipe',
         })
+        // **stderr 显式接走**——inherit 经 Engine 再到宿主，早退现场（装配失败的缘由）
+        // 曾在挂住时读不到；pipe 后转给管理者日志，executor 的每一句都有处可查。
+        const stderrStream = child.stderr
+        if (stderrStream !== undefined && typeof stderrStream !== 'number') {
+          void (async () => { try { for await (const chunk of stderrStream) options.log?.(`[executor-stderr] ${Buffer.from(chunk).toString().trim()}`) } catch { /* 进程已退出 */ } })()
+        }
       } catch (error) {
         options.log?.(`执行者子进程没起来：${String(error)}`)
         throw error

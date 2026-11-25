@@ -64,7 +64,7 @@ import { assertEntryShape, entryOfRow, entryParamsOf, type EntryRow } from './en
 import { eventOfRow, eventParamsOf, isTransientEvent, type EventRow } from './events.ts'
 import { scanForRecovery, type RecoveryScan } from './recovery.ts'
 import { createIdSpace } from './ids.ts'
-import { acquireDataLock, prepareDataDir } from './bootstrap.ts'
+import { acquireDataLock, prepareDataDir, schemaVersionOf } from './bootstrap.ts'
 import { createRunRecords } from './runs.ts'
 import { createLedgerRecords } from './ledger.ts'
 import {
@@ -76,6 +76,7 @@ import {
   TURNS_TABLE,
   initSchema,
   assertCurrentSchema,
+  SCHEMA_VERSION,
   type NamedParams,
 } from './schema.ts'
 
@@ -306,13 +307,19 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   const dataDir = assertPlainDataDir(options.dataDir)
   mkdirSync(dataDir, { recursive: true })
 
-  // 引导旧库时独占（避免两个进程同时备份/移走），开库后立即释放：
-  // 正常运行时引擎与多个执行者可以同开一个库（SQLite WAL 允许多进程）。
-  const releaseLock = acquireDataLock(dataDir)
-  try {
-    prepareDataDir(dataDir)
-  } finally {
-    releaseLock()
+  // 引导锁只包**真的要备份/重建的旧库**：版本已达标（v3）或全新目录都是零锁直通——
+  // 引导是一次性动作，锁却曾被每个执行者启动抢一遍，两个会话并发首跑时后到者
+  // 直接撞死在「记录库已被进程占用」（多终端共享 Engine 的并发场景实锤）。
+  const version = schemaVersionOf(join(dataDir, DATABASE_FILE))
+  if (version !== SCHEMA_VERSION) {
+    // 引导旧库时独占（避免两个进程同时备份/移走），开库后立即释放：
+    // 正常运行时引擎与多个执行者可以同开一个库（SQLite WAL 允许多进程）。
+    const releaseLock = acquireDataLock(dataDir)
+    try {
+      prepareDataDir(dataDir)
+    } finally {
+      releaseLock()
+    }
   }
 
   const blobsDir = join(dataDir, BLOBS_DIR)
@@ -392,17 +399,17 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     `UPDATE ${TURNS_TABLE} SET status = ?, ended_at = ?
       WHERE session = ? AND id = ? AND ended_at IS NULL`,
   )
-  const maxStepSeq = db.query<{ seq: number }, [number]>(
-    `SELECT COALESCE(MAX(seq), 0) AS seq FROM ${STEPS_TABLE} WHERE turn = ?`,
+  const maxStepSeq = db.query<{ seq: number }, [string, number]>(
+    `SELECT COALESCE(MAX(seq), 0) AS seq FROM ${STEPS_TABLE} WHERE session = ? AND turn = ?`,
   )
-  const insertStep = db.query<never, [number, number, number, number, string | null, string | null]>(
-    `INSERT INTO ${STEPS_TABLE} (turn, id, seq, status, started_at, provider, model)
-     VALUES (?, ?, ?, 'running', ?, ?, ?)`,
+  const insertStep = db.query<never, [string, number, number, number, number, string | null, string | null]>(
+    `INSERT INTO ${STEPS_TABLE} (session, turn, id, seq, status, started_at, provider, model)
+     VALUES (?, ?, ?, ?, 'running', ?, ?, ?)`,
   )
-  const finishStep = db.query<never, [string, number, string | null, string | null, number, number]>(
+  const finishStep = db.query<never, [string, number, string | null, string | null, string, number, number]>(
     `UPDATE ${STEPS_TABLE}
         SET status = ?, ended_at = ?, provider = COALESCE(?, provider), model = COALESCE(?, model)
-      WHERE turn = ? AND id = ? AND ended_at IS NULL`,
+      WHERE session = ? AND turn = ? AND id = ? AND ended_at IS NULL`,
   )
   // 历史累计（U28）：两条判据都在这一句里——**是裁决**（`kind`）× **是本工作区的会话**
   // （`sessions.workspace` 那一列，归属缺席的不进子查询）。全表扫一遍：`events` 上没有
@@ -480,14 +487,14 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     finishTurn.run(status, at, session, turn)
   }
 
-  function beginStep(turn: TurnId, at: Timestamp, identity?: StepIdentity): StepId {
-    const id = (maxStepSeq.get(turn)?.seq ?? 0) + 1
-    insertStep.run(turn, id, id, at, identity?.provider ?? null, identity?.model ?? null)
+  function beginStep(session: SessionId, turn: TurnId, at: Timestamp, identity?: StepIdentity): StepId {
+    const id = (maxStepSeq.get(session, turn)?.seq ?? 0) + 1
+    insertStep.run(session, turn, id, id, at, identity?.provider ?? null, identity?.model ?? null)
     return id
   }
 
-  function endStep(turn: TurnId, step: StepId, status: StepStatus, at: Timestamp, identity?: StepIdentity): void {
-    finishStep.run(status, at, identity?.provider ?? null, identity?.model ?? null, turn, step)
+  function endStep(session: SessionId, turn: TurnId, step: StepId, status: StepStatus, at: Timestamp, identity?: StepIdentity): void {
+    finishStep.run(status, at, identity?.provider ?? null, identity?.model ?? null, session, turn, step)
   }
 
   /** keyset 分页——每块一条语句，取完即散（无活游标）。 */
@@ -739,8 +746,8 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
         nextId: () => ids.next(),
         allocateTurn: (at, after) => allocateTurn(session, at, after),
         endTurn: (turn, status, at) => endTurn(session, turn, status, at),
-        beginStep,
-        endStep,
+        beginStep: (turn, at, identity) => beginStep(session, turn, at, identity),
+        endStep: (turn, step, status, at, identity) => endStep(session, turn, step, status, at, identity),
         appendEntry: (entry) => appendEntry(session, entry),
         appendEvent: (event) => appendEvent(session, event),
         readEntries: (sessionId, range) => readEntries(sessionId, range),
