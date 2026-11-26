@@ -1,6 +1,28 @@
 import type { AgentIdentity, AgentModelConfig, Collaboration, CollaborationRecords, CollaborationReply, CollaborationRequest, Delegation, EntryReference, KnowledgeRecords, KnowledgeReference, RecordsService, StopResult, ToolCall } from '@magic/contracts'
 import type { CollaborationBoundary } from '@magic/conversation'
 
+/**
+ * **准入拒绝理由 → 面向模型/用户的文案**（T2.2 · N14）。
+ *
+ * 账本层的拒绝理由是英文代码 token（`checkAdmission` 的 reason），原样漏进回执就是
+ * 一句谁也读不懂的话。N14 的定案：准入失败＝**这一轮没有开始执行**（输入还在账本上，
+ * 会自动继续——engine 对账兜底补发），用户的动作是**立即再试**（触发 consume，非 retry
+ * ——输入没失败过，retry 是错误出口）。未知 token 原样带出（不吞原因）。
+ */
+function admissionRefusalOf(reason: string): string {
+  const cause =
+    reason === 'host admission closed' ? '宿主正在退出'
+    : reason === 'collaboration or agent admission closed' ? '协作已停止或成员准入已关闭'
+    : reason === 'delegation not accepted or cancelled' ? '当前委派未接受或已取消'
+    : reason === 'active delegation binding required' ? '这一成员须先接受委派，才能执行工作操作'
+    : reason === 'cancellation settling' ? '停止请求正在收尾'
+    : reason
+  return (
+    `这一轮没有开始执行（${cause}）——这一条会自动继续，不需要重发。` +
+    '需要用户：可在输入管理里「立即再试」（立即消费这条输入；不是重试——它没有失败过）。'
+  )
+}
+
 /** 每个执行实例只认自己的持久身份。模型参数没有重绑身份/委派的入口。 */
 export function createCollaborationBoundary(input: {
   readonly records: CollaborationRecords
@@ -87,7 +109,7 @@ export function createCollaborationBoundary(input: {
       }
       const decision = records.checkAdmission(state.self.agentId, state.delegation?.delegationId,
         coordinating(call) ? 'coordination' : 'work')
-      return decision.allowed ? undefined : decision.reason
+      return decision.allowed ? undefined : admissionRefusalOf(decision.reason)
     },
     requested(messageIds = []) {
       const state = binding()
