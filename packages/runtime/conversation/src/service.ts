@@ -50,7 +50,8 @@ import type {
 import type { LoopRuntime } from './loop-runtime.ts'
 import type { CollaborationBoundary } from './collaboration.ts'
 import { agentLoop } from './agent-loop.ts'
-import { prepareInput } from './input-intake.ts'
+import { messageOf, prepareInput } from './input-intake.ts'
+import { acceptInput, manageInput } from './input-ledger.ts'
 import { createCompactor } from './compact.ts'
 import { DEFAULT_CONTEXT_POLICY } from './policy.ts'
 import type { ContextPolicy } from './policy.ts'
@@ -233,11 +234,19 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
    */
   let turnFloor = 0
   let started = false
-  let running = false
-  let closed = false
   let flight: Promise<void> = Promise.resolve()
-  /** 在途工作的中止手柄——`interrupt` 的唯一着力点（空闲时为 `undefined`）。 */
-  let current: AbortController | undefined
+
+  /**
+   * **队列状态束**（T2.5 第四刀 · 分治的载体）——消费队列的共享可变状态收拢一处，
+   * 供输入受理（`input-ledger.ts`）与队列本体（本文件）共用：布尔位按对象属性共享
+   * （原始值传参不共享），队列数组按引用共享。
+   */
+  const state = {
+    closed: false,
+    running: false,
+    /** 在途工作的中止手柄——`interrupt` 的唯一着力点（空闲时为 `undefined`）。 */
+    current: undefined as AbortController | undefined,
+  }
   /**
    * 排队中的交代——**整份 `UserInput`**（U33 起；此前是 `string[]`）。
    *
@@ -251,13 +260,13 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     context: () => Promise.resolve(undefined),
     requested: () => {},
     ...deps.collaboration,
-    admit: call => current?.signal.aborted === true ? '已停止，未消费输入' : deps.collaboration?.admit(call),
+    admit: call => state.current?.signal.aborted === true ? '已停止，未消费输入' : deps.collaboration?.admit(call),
     async consume() {
       await flushCompact()
       let changed = false
       for (const next of supplements.splice(0)) {
         try {
-          const prepared = await prepareInput(runtime, next.input, entry => deps.collaboration?.userInput?.(entry, next.shared), current?.signal)
+          const prepared = await prepareInput(runtime, next.input, entry => deps.collaboration?.userInput?.(entry, next.shared), state.current?.signal)
           changed ||= prepared !== undefined
         } finally { next.done() }
       }
@@ -321,7 +330,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   function flushCompact(): Promise<void> {
     if (compactFlight !== undefined) return compactFlight
     const operation = compactPending
-    if (operation === undefined || (!operation.signal.aborted && (pending.length > 0 || supplements.length > 0 || (operation.awaitInput && running)))) return Promise.resolve()
+    if (operation === undefined || (!operation.signal.aborted && (pending.length > 0 || supplements.length > 0 || (operation.awaitInput && state.running)))) return Promise.resolve()
     compactFlight = Promise.resolve().then(async () => {
       const base = { requestId: operation.request.requestId, ...(operation.request.focus === undefined ? {} : { focus: operation.request.focus }), accepted: true as const }
       try {
@@ -344,10 +353,17 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
       } catch (error) { operation.finish({ ...base, state: operation.signal.aborted ? 'cancelled' : 'failed', reason: messageOf(error), notesSaved: operation.notesSaved }); if (compactPending === operation) compactPending = undefined }
       finally {
         compactFlight = undefined
-        if (!closed && !running && pending.length > 0) startDrain()
+        if (!state.closed && !state.running && pending.length > 0) startDrain()
       }
     })
     return compactFlight
+  }
+
+  /** 输入受理的依赖束——账本操作（input-ledger.ts）经它拿队列状态与触发排空。 */
+  const bundle = {
+    deps, sink, stamper, state, pending, supplements,
+    onVersionBump: () => { inputVersion++ },
+    startDrainIfIdle: () => { if (!state.running && compactPending === undefined) startDrain() },
   }
 
   const runtime: LoopRuntime = {
@@ -398,8 +414,8 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
   async function drain(): Promise<void> {
     const controller = new AbortController()
-    current = controller
-    running = true
+    state.current = controller
+    state.running = true
 
     // 起 · 干活——转场**当场**发生（首个 `await` 之前），外壳不必等模型
     if (!started) {
@@ -410,7 +426,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
     try {
       for (;;) {
-        if (closed || controller.signal.aborted) break
+        if (state.closed || controller.signal.aborted) break
         // 包括阶段整理等待期间受理的补充；每次消费前统一收取。
         pending.unshift(...supplements.splice(0))
         if (pending.length === 0) break
@@ -451,8 +467,8 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
       // 端口是 `void`，不兜则调用方那头永远看不见这次拒绝
       sink.emit(stamper.stamp('error', { message: `对话域异常：${messageOf(error)}` }))
     } finally {
-      running = false
-      current = undefined
+      state.running = false
+      state.current = undefined
       if (compactPending !== undefined) void flushCompact()
       // 回到等待输入——收束 / 中止 / 出错**都**回到这里（首站只有这一个稳定态）
       sink.emit(stamper.stamp('agent.state', { state: 'waiting' }))
@@ -465,33 +481,12 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   }
   let failure: unknown
 
-  function enqueue(input:UserInput,shared:boolean,done:()=>void=()=>{}):void {
-      if (closed) { done(); return }
-      const durable = {...input,ref:input.ref??crypto.randomUUID()}
-      try {
-        const existing = deps.records.inputs.get(durable.ref)
-        const row = deps.records.inputs.accept(durable,(deps.now??Date.now)())
-        sink.emit(stamper.stamp('input.settled',row.state==='failed'||row.state==='withdrawn'?{ref:durable.ref,ok:false,reason:row.reason??'这条输入已撤回'}:{ref:durable.ref,ok:true,stage:row.state==='included'?'included':'accepted',...(row.input.refs===undefined?{}:{refs:row.input.refs})}))
-        sink.emit(stamper.stamp('input.pending',{inputs:pendingViews(deps.records.inputs.list())}))
-        // 已消费/已失败的历史输入不重复驱动；**仍在 pending 的被再次提交＝用户明确要它跑**
-        // （宿主重启后恢复的会话里，重新提交同一条就是「继续」——2026-11-24 裁定），照常入队。
-        if (existing !== undefined && existing.state !== 'pending') { done(); return }
-        if (row.input.notice !== true) inputVersion++
-        deps.onInput?.(row.input)
-        if (running && row.purpose==='current') supplements.push({input:row.input,shared,done})
-        else pending.push({input:row.input,shared,done})
-        if (!running && compactPending === undefined) startDrain()
-      } catch(error) {
-        sink.emit(stamper.stamp('input.settled',{ref:durable.ref,ok:false,reason:`受理失败：${messageOf(error)}`}))
-        done()
-      }
-  }
 
   function wake(): void {
-    if (closed || deps.collaboration === undefined || pending.some(one=>one.input===undefined) || current?.signal.aborted===true) return
-    if (!running && waitingForDelegations(pending[0]?.input)) return
+    if (state.closed || deps.collaboration === undefined || pending.some(one=>one.input===undefined) || state.current?.signal.aborted===true) return
+    if (!state.running && waitingForDelegations(pending[0]?.input)) return
     pending.unshift({input:undefined,shared:false})
-    if (!running && compactPending === undefined) startDrain()
+    if (!state.running && compactPending === undefined) startDrain()
   }
   function waitingForDelegations(input:UserInput|undefined):boolean {
     if(input?.purpose!=='next')return false
@@ -503,62 +498,35 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   }
   return {
     compact(request, signal, started) {
-      if (closed || compactPending !== undefined) return Promise.resolve({ requestId: request.requestId, state: 'failed', reason: closed ? '执行实例已关闭' : '已有压缩请求' })
+      if (state.closed || compactPending !== undefined) return Promise.resolve({ requestId: request.requestId, state: 'failed', reason: state.closed ? '执行实例已关闭' : '已有压缩请求' })
       return new Promise(resolve => {
         const controller = new AbortController()
-        const combined = AbortSignal.any([signal, controller.signal, ...(current === undefined ? [] : [current.signal])])
+        const combined = AbortSignal.any([signal, controller.signal, ...(state.current === undefined ? [] : [state.current.signal])])
         const onAbort = () => { if (compactFlight === undefined) void flushCompact() }
         compactPending = { request, controller, signal: combined, started, notesSaved: false, awaitInput: false, finish: state => { combined.removeEventListener('abort', onAbort); resolve(state) } }
         combined.addEventListener('abort', onAbort, { once: true })
-        if (!running || combined.aborted) void flushCompact()
+        if (!state.running || combined.aborted) void flushCompact()
       })
     },
     supplement(input, shared) {
-      return new Promise(resolve => enqueue(input,shared,resolve))
+      return new Promise(resolve => acceptInput(bundle, input, shared, resolve))
     },
     wake,
 
     manage(command) {
-      if (closed) return
-      const inputs = deps.records.inputs
-      let note: string | undefined
-      if (command.action === 'edit') note = inputs.edit(command.ref, command.revision, command.input) ? '已保存未消费输入' : '输入已消费或已改变，未修改'
-      if (command.action === 'withdraw') note = inputs.withdraw(command.ref, command.revision) ? '已撤回未消费输入' : '输入已消费或已改变，未撤回'
-      // **retry 与立即消费分离**（N14 · 契约 `InputManage`）：
-      // - `retry` 只从 failed/rejected 起（账本 `retry` 校验状态）；按 `failedFrom` 分文案
-      //   （G3/M4）：执行前失败的重提是「重试」；执行中重提＝「重新执行（可能重复副作用）」
-      //   ——那一轮跑过什么无从判定，重提是把同一次调用再发一遍。
-      // - `consume`（旧名 `continue` 并入）只对 pending：清除 hold、立即入队消费——
-      //   准入失败（N14）的出路是**再消费一次**，不是把失败当重试。
-      if (command.action === 'retry') {
-        const row = inputs.get(command.ref)
-        if (row !== undefined && row.revision === command.revision && inputs.retry(command.ref, command.revision)) {
-          const fresh = inputs.get(command.ref)!
-          pending.push({ input: fresh.input, shared: false })
-          if (!running && compactPending === undefined) startDrain()
-          note = fresh.failedFrom === 'executing'
-            ? '已重新入队——重新执行（可能重复副作用；先前那一轮跑到哪一步无从判定，先核对再继续）'
-            : '已重新入队——重试'
-        } else note = '输入不在可重试状态（只从失败/被拒起）或已改变，未重试'
-      }
-      if (command.action === 'consume' || command.action === 'continue') {
-        const row = inputs.get(command.ref)
-        if (row?.state === 'pending' && row.revision === command.revision) { inputs.hold(row.ref,undefined); pending.push({input:row.input,shared:false}); if (!running && compactPending === undefined) startDrain() }
-        else note = command.action === 'continue' ? '输入已消费或已改变，未继续' : '输入不在待消费状态（立即消费只对未开始的输入），未消费'
-      }
-      sink.emit(stamper.stamp('input.pending', {inputs:pendingViews(inputs.list()),...(note===undefined?{}:{note})}))
+      manageInput(bundle, command)
     },
     submit(input: UserInput): void {
-      if (closed) return
+      if (state.closed) return
       if (input.local === true) {
         sink.emit(stamper.stamp('input.local',{text:input.text,refs:input.refs??[],ref:input.ref??crypto.randomUUID()}))
         return
       }
-      enqueue(input,false)
+      acceptInput(bundle, input, false)
     },
 
     interrupt(): void {
-      current?.abort()
+      state.current?.abort()
       compactPending?.controller.abort()
       // 「停下」就是停下——排队那几条**保留并标为未执行**（U50 · 见 `holdQueued`）：
       // 不丢、不接着跑、逐条说清它们还没轮到
@@ -566,16 +534,16 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     },
 
     async shutdown() {
-      closed = true
+      state.closed = true
       compactPending?.controller.abort()
-      current?.abort()
+      state.current?.abort()
       holdQueued()
       await flight
       await compactFlight
       if (failure !== undefined) throw failure
     },
 
-    busy: () => running || pending.length > 0 || compactPending !== undefined,
+    busy: () => state.running || pending.length > 0 || compactPending !== undefined,
 
     /**
      * 重建（恢复 ⑤）——**认下应用层算好的两件**，其余什么都不做。
@@ -590,7 +558,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
      * **不发事件**：本面只是记账，过程流里那几笔归应用层（它编排了②③④）。
      */
     rebuild(handoff: RebuildHandoff): RebuildReport {
-      if (running) {
+      if (state.running) {
         throw new Error(
           '重建要在**放开输入之前**调（装配纪律：先接订阅、后放开输入）——在干活时重建会与循环抢同一条记录流',
         )
@@ -604,6 +572,3 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   }
 }
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
