@@ -286,24 +286,26 @@ function frameOf(cells: Awaited<ReturnType<typeof screenCells>>, columns: number
  */
 export type RunsFeed = {
   current(): readonly RunRow[]
-  subscribe(listener: (rows: readonly RunRow[]) => void): void
-  /** 推一份新的事实（＝管理者那一下推送）。 */
-  push(rows: readonly RunRow[]): void
+  subscribe(listener: (rows: readonly RunRow[], revision?: number) => void): void
+  /** 推一份新的事实（＝管理者那一下推送）；显式给 `at` ＝ 指定投影版本（旧拍判弃用）。 */
+  push(rows: readonly RunRow[], at?: number): void
 }
 
 /** 造一份可推的运行事实（初值 ＋ 此后由 `push` 推）。 */
 export function createRunsFeed(initial: readonly RunRow[] = []): RunsFeed {
   let rows = initial
-  const listeners = new Set<(rows: readonly RunRow[]) => void>()
+  const listeners = new Set<(rows: readonly RunRow[], revision?: number) => void>()
+  let revision = 0
 
   return {
     current: () => rows,
     subscribe: (listener) => {
       listeners.add(listener)
     },
-    push: (next) => {
+    push: (next, at) => {
       rows = next
-      for (const listener of [...listeners]) listener(rows)
+      revision = at ?? revision + 1
+      for (const listener of [...listeners]) listener(rows, revision)
     },
   }
 }

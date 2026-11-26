@@ -23,7 +23,7 @@ import {
 import type {
   SessionScope,
 } from '../src/boards/records/sessions.ts'
-import { createStage } from './screen.ts'
+import { createRunsFeed, createStage } from './screen.ts'
 import type { Frame } from './screen.ts'
 
 /** 取景用的尺寸——与别的 spec 同一档（80×24，`dock.test.ts` 同此）。 */
@@ -397,5 +397,18 @@ describe('投影字段上详情（T3.1 · 字段缺席＝与从前一字不差�
     const said = runDetail(run('s-1', 'waiting', { since: 1_000, blocked: { kind: 'awaiting-approval', by: 'entry-1', since: 190_000 } }), now, { inActiveSection: true })
     expect(said).toContain('等批准（entry-1）')
     expect(said).toContain('批准／拒绝')
+  })
+
+  test('runs 修订：旧拍后到不回写——跳号合法、单调判弃（P26/P2①）', () => {
+    const feed = createRunsFeed()
+    const stage = createStage({ runsFeed: feed })
+    const rowsA: readonly RunRow[] = [run('s-9', 'running', { since: 5_000 })]
+    const rowsOld: readonly RunRow[] = [run('s-8', 'stopped', { since: 1_000 })]
+    feed.push(rowsA, 9)
+    feed.push(rowsOld, 3) // 旧拍（3 < 9）后到——不回写
+    expect(stage.shell.getView().runs).toEqual(rowsA)
+
+    feed.push(rowsOld, 12) // 新拍（跳号 9→12）——跟随
+    expect(stage.shell.getView().runs).toEqual(rowsOld)
   })
 })
