@@ -2308,7 +2308,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   }
 
   const manageInput = (command: import('@magic/contracts').InputManage):void => send({...command,...(view.inputMember===undefined?{}:{member:view.inputMember})})
-  const inputStateText = (state: import('@magic/contracts').StoredInput['state']):string => ({pending:'待带入',consumed:'待请求带入',included:'已带入实际请求',withdrawn:'已撤回',failed:'受理失败'})[state]
+  const inputStateText = (state: import('@magic/contracts').StoredInput['state']):string => ({pending:'待带入',rejected:'未受理',executing:'执行中',consumed:'待请求带入',included:'已带入实际请求',withdrawn:'已撤回',failed:'受理失败'})[state]
   const openPendingInputs=():void=>{
     const focus=view.dock.kind==='picker'&&view.dock.picker.source==='input-pending'?picked(view)?.value:undefined
     const rows=view.pendingInputs.map(one=>collaborationRow(one.ref,one.input.text,`${one.purpose==='next'?'下一件':'当前补充'} · ${one.reason??inputStateText(one.state)}`))
