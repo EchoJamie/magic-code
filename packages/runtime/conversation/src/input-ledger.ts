@@ -49,7 +49,10 @@ export function acceptInput(bundle: QueueBundle, input: UserInput, shared: boole
       ? { ref: durable.ref, ok: false, reason: row.reason ?? '这条输入已撤回' }
       : { ref: durable.ref, ok: true, stage: row.state === 'included' ? 'included' : 'accepted', ...(row.input.refs === undefined ? {} : { refs: row.input.refs }) }))
     sink.emit(stamper.stamp('input.pending', { inputs: pendingViews(deps.records.inputs.list()) }))
-    if (existing !== undefined && existing.state !== 'pending') { done(); return }
+    if (existing !== undefined && existing.state !== 'pending' && existing.state !== 'executing') { done(); return }
+    // ⚠️ **executing 也放行**（T2.1 dequeue 流）：那是本执行者刚出队的行——准入与 dequeue
+    // 在信号点完成（见 assembly 的 `consumeLedgerInputs`），消费动作（inputs.consume 与
+    // 落条目原子）在落账时发生。单活执行者前提下，executing 行只属于这一代。
     if (row.input.notice !== true) bundle.onVersionBump()
     deps.onInput?.(row.input)
     if (state.running && row.purpose === 'current') bundle.supplements.push({ input: row.input, shared, done })

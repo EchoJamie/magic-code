@@ -456,6 +456,26 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   }
 
   const compactControllers = new Map<string, AbortController>()
+
+  /**
+   * **closing/archived 的拒收回执**（§四#7 · T2.1）——账本里还没消费的 pending 行逐条
+   * 发 `input.rejected`：engine 据它 `rejectPending`（只认执行者自己会话），原稿留在账上
+   * （rejected 行可 retry——用户恢复会话后重新提交即继续）。普通输入与协作补充的待办
+   * 都在账本上，一并收尾——它们等不到这一代消费了。
+   */
+  function rejectPendingInputs(kind: 'closing' | 'archived'): void {
+    const session = options.session
+    if (session === null) return
+    const inputs = options.records.serviceFor(session).inputs
+    for (const row of inputs.list()) {
+      if (row.state !== 'pending' || row.entry !== undefined) continue
+      link.send({
+        t: 'input.rejected', session, ref: row.ref, kind,
+        reason: kind === 'archived' ? '会话已归档，请先明确恢复' : '会话正在停止',
+      })
+    }
+  }
+
   link.onMessage((message: ManagerToExecutor) => {
     diagnosticLog?.write('trace', `control.${message.t}`)
     // **有动静就不收缩**：管理者的消息（哪怕只是送达一条输入）先重置收缩计时——
@@ -499,15 +519,24 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
         return
       /**
        * **消费信号**（T2.1 · §四#1）——engine 受理即落账（`inputs.accept`），帧退化为信号
-     * （不再携带正文；`collaboration.wake` 与 `collaboration.input` 语义合并）。
+       * （不再携带正文；`collaboration.wake` 与 `collaboration.input` 语义合并）。
        * 响应＝把账本里 pending 的输入捞出来消费（正文从账本读，`consumeLedgerInputs`），
-     * 并唤起协作收件箱。closing/archived 的显式回执待契约帧落地（见 `T2.1` 报备）。
+       * 并唤起协作收件箱。
+       *
+       * **closing/archived 显式回执**（§四#7）——受理之后才发生的状态变化由这条兜住：
+       * 账本里 pending 的输入逐条回执（engine `rejectPending` 转 rejected，原稿留账可 retry）。
+       * 受理时就已可见的拒收不经这里（engine 受理时直接落 rejected）。
        */
       case 'collaboration.input':
-      case 'collaboration.wake':
-        if (closing || (options.session !== null && options.records.isSessionArchived(options.session))) return
-        assembly.consumeLedgerInputs()
+      case 'collaboration.wake': {
+        const archived = options.session !== null && options.records.isSessionArchived(options.session)
+        if (closing || archived) {
+          rejectPendingInputs(archived ? 'archived' : 'closing')
+          return
+        }
+        void assembly.consumeLedgerInputs()
         return
+      }
       case 'cmd':
         if (closing) return
         assembly.shell.send(message.cmd)

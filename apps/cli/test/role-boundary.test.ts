@@ -82,7 +82,10 @@ for (const state of ['accepted', 'queued', 'stopped'] as const) test(`显式read
       expect(outcomes.get(`write:${join(stage.dataDir, 'notes', 'member', 'MEMORY.md')}`)).toBe(true)
       expect(outcomes.get('read:probe.txt')).toBe(false)
       expect(outcomes.get('write:probe.txt')).toBe(false)
-      expect(outputs.some(event => JSON.stringify(event.data).includes('active delegation binding required'))).toBe(true)
+      // 准入拒绝的文案（T2.2 · N14 定案）：英文 token 已在产生点映射为三段式，
+      // 断言锁新文案里能锁语义的两段——「这一轮没有开始执行」与「立即再试」（非 retry）。
+      expect(outputs.some(event => JSON.stringify(event.data).includes('这一轮没有开始执行'))).toBe(true)
+      expect(outputs.some(event => JSON.stringify(event.data).includes('立即再试'))).toBe(true)
     } else {
       expect(outputs.some(event => event.data.ok)).toBe(false)
       expect(app.records.collaboration.getCollaboration(collaboration.collaborationId)?.state).toBe('stopped')

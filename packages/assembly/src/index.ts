@@ -134,8 +134,8 @@ export type Assembly = {
   wakeCollaboration(): void
   /** 原样保留输入引用，由会话读取、接收并发布共享约束。 */
   supplementCollaboration(input: UserInput, shared: boolean): Promise<void>
-  /** 消费信号（T2.1）：账本 pending 输入入队 ＋ 协作收件箱唤起——engine 受理落账后发帧用。 */
-  consumeLedgerInputs(): void
+  /** 消费信号（T2.1）：账本 pending 行准入+出队后入队消费 ＋ 协作收件箱唤起。 */
+  consumeLedgerInputs(): Promise<void>
   /**
    * **换模型**——装配侧的**唯一**切换入口：命令面（`model.switch`）与 `--script` 的
    * `{switch}` 都调它，**成败都发一条 `model.switched`（落库）**（缺陷 D16 收拢的产出路径）。
@@ -526,14 +526,49 @@ export function assemble(options: AssembleOptions): Assembly {
     hasPendingInput: () => [...chains.values()].some(one => one.service.busy()),
     wakeCollaboration: () => { if (chain === undefined) { pendingWake = true; return } chain.service.wake() },
     /** 消费信号（T2.1：engine 受理落账后发信号帧，正文以账本为准）——
-     * 把账本里 pending 且未消费的输入重新过一遍入队（accept 幂等，返回现有行），
-     * 再唤起协作收件箱。信号丢了不丢输入：账本在，下次信号或对账照补。 */
-    consumeLedgerInputs: () => {
+     * 消费流（裁定 · 信号先于出队）：读账本 pending → 协作成员请求 run 级准入
+     * （beginExecution 经帧）→ 请求 dequeue（engine 唯一写权，现读 revision，撤回竞态
+     * SQL 原子判负）→ 回执里的行入队消费。失败/未出队的行留账本（对账兜底，不重复消费）。 */
+    consumeLedgerInputs: async () => {
       const active = chain
       if (active === undefined) { pendingWake = true; return }
       const pending = active.records.inputs.list().filter(row => row.state === 'pending' && row.entry === undefined)
-      for (const row of pending) conversation.submit(row.input)
-      if (pending.length > 0) active.service.wake()
+      if (pending.length === 0) { active.service.wake(); return }
+      const refs = pending.map(row => row.ref)
+
+      // **run 级准入**（协作成员；普通会话无协作身份，跳过）——beginExecution 一次，
+      // 不随每个工具调用重复（T2.2 降频）。准入失败＝这一轮没有开始执行（N14），留账待再试。
+      if (recordsStore.collaboration.agentForSession(active.session) !== undefined && options.collaboration !== undefined) {
+        try {
+          await options.collaboration(active.session, {
+            action: 'beginExecution', operationId: `run:${executionId}:${crypto.randomUUID()}`,
+            at: now(), runId: executionId, kind: 'model', mode: 'work',
+          })
+        } catch { /* 准入帧失败＝未准入：行留 pending，用户可「立即再试」 */ }
+      }
+
+      // **dequeue 请求**——无协作 client 的单机形态退化为本地 dequeue（engine 与执行者
+      // 同体，写权语义不跨进程）；有 client 走帧（engine 唯一写者）。
+      let dequeued: ReadonlySet<string>
+      if (options.collaboration === undefined) {
+        const sessionRecords = active.records
+        dequeued = new Set(refs.filter(ref => {
+          const revision = sessionRecords.inputs.get(ref)?.revision
+          return revision !== undefined && sessionRecords.inputs.dequeue(ref, revision)
+        }))
+      } else {
+        const reply = await options.collaboration(active.session, {
+          action: 'dequeue', operationId: `dequeue:${executionId}:${crypto.randomUUID()}`, refs, at: now(),
+        }).catch(() => undefined)
+        const value = reply?.ok === true ? reply.value as { dequeued?: readonly string[] } : undefined
+        dequeued = new Set(value?.dequeued ?? [])
+      }
+
+      for (const row of pending) {
+        if (!dequeued.has(row.ref)) continue
+        conversation.submit(row.input)
+      }
+      active.service.wake()
     },
     supplementCollaboration: async (input, shared) => {
       // **会话链未开不再抛**（边界方案 T2.1：删 throw 路径）——抛会让执行者把自己收摊
