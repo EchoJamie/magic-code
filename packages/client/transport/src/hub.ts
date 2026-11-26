@@ -86,6 +86,8 @@ export function createControlHub(onError?: (error: unknown) => void): ControlHub
       case 'collaboration.stop':
       case 'collaboration.resume':
       case 'collaboration.configure':
+      case 'collaboration.receive':
+      case 'collaboration.abandon':
         return target.onCollaboration?.(command)
       case 'input.manage':
         return target.onInputManage?.(command)

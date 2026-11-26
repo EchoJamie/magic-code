@@ -51,7 +51,7 @@ export function fakeApp(
   const links: Link<ClientToManager>[] = []
   const welcome: Extract<ManagerToClient, { t: 'welcome' }> = {
     t: 'welcome', identity: ground.identity, conn: 1, base: ground.base,
-    mcp: [], runs: [], notices: [{ id: 'unread', session: 'real-session', kind: 'needs-you', at: 1, unread: true }],
+    revision: 1, mcp: [], runs: [], notices: [{ id: 'unread', session: 'real-session', kind: 'needs-you', at: 1, unread: true }],
   }
   const server = Bun.listen({
     unix: ground.discovery.socket,
