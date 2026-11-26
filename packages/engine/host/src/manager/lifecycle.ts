@@ -155,9 +155,31 @@ export function installLifecycle(ctx: ManagerContext): void {
       case 'collaboration.request': {
         const session = executor.run.session
         if (session === null) { send(executor, { t: 'collaboration.reply', requestId: message.requestId, reply: { ok: false, reason: '执行身份尚未绑定' } }); return }
+        if (message.request.action === 'dequeue') {
+          // **dequeue**（T1.1 增补）：pending→executing 的唯一触发路径——执行者
+          // beginExecution（准入）后请求。engine 自己绝不先 dequeue 再发信号。
+          // revision 从账面现读（dequeue 只从 pending；与撤回的竞态由 SQL 原子判负）。
+          const records = store.serviceFor(session)
+          const dequeued: string[] = []
+          for (const ref of message.request.refs) {
+            const revision = records.inputs.get(ref)?.revision
+            if (revision !== undefined && records.inputs.dequeue(ref, revision)) dequeued.push(ref)
+          }
+          send(executor, { t: 'collaboration.reply', requestId: message.requestId, reply: { ok: true, value: { dequeued } } })
+          ctx.pushRuns()
+          return
+        }
         void collaboration.request(session, message.request).then(reply => {
           send(executor, { t: 'collaboration.reply', requestId: message.requestId, reply })
         })
+        return
+      }
+      case 'input.rejected': {
+        // 执行者 closing/archived 分支的显式回执——engine 把已受理的 pending 行转
+        // rejected（§五「已受理后拒」）。只认执行者自己绑定会话的输入，不跨会话拒。
+        if (message.session !== executor.run.session) return
+        store.serviceFor(message.session).inputs.rejectPending(message.ref, message.reason)
+        ctx.pushRuns()
         return
       }
       case 'collaboration.configured':

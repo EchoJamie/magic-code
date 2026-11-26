@@ -28,6 +28,12 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
         const generated = request.generatedFrom === undefined ? {} : { generatedFrom: request.generatedFrom }
         if ('operationId' in request) request = { ...request, operationId: `${actorId}:${request.operationId}` }
         const at = deps.now()
+        if (request.action === 'registerIdentity') {
+          // 执行者连回登记（registry 段）：身份由宿主核对（连接绑定的 actorId 与载荷 session 一致），
+          // 认不出即拒——不新建成员、不展开协作；普通会话（无协作）的执行者同样登记。
+          if (request.session !== actor.sessionId) throw new Error('执行身份与连接不符，未登记')
+          return { ok: true, value: { agentId: actorId, name: actor.name } }
+        }
         let collaboration = actor.collaborationId === undefined ? undefined : records.getCollaboration(actor.collaborationId)
         let initialModel: AgentModelConfig | undefined
         if (request.action === 'list') {
@@ -192,6 +198,33 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
             records.beginClosing(id, at)
             value = { closing: true, note: '已停止新派生；说明整合结果后结束本轮，宿主将按已收下结果和实际在途事实核销。',
               pending: records.listDelegations(id).filter(d => !['received', 'rejected', 'cancelled'].includes(d.state)) }
+            break
+          // —— 执行宿主边界的账本写（T1.1 增补 · registry 段）——
+          // 身份由宿主按连接绑定（actorId 来自 session 解析），载荷不自报；回执按 operationId 走 collaboration.reply。
+          case 'consumeInbox':
+            value = records.consumeInbox(actorId, request.at, request.limit)
+            break
+          case 'markIncluded':
+            records.markIncluded(actorId, request.messageIds, request.at)
+            value = { included: request.messageIds.length }
+            break
+          case 'beginExecution':
+            value = records.beginExecution(actorId, {
+              operationId: request.operationId, at: request.at, ...generated,
+              ...(request.delegationId === undefined ? {} : { delegationId: request.delegationId }),
+              runId: request.runId, kind: request.kind, ...(request.mode === undefined ? {} : { mode: request.mode }),
+            })
+            break
+          case 'finishExecution':
+            records.finishExecution(request.execution, request.reason)
+            value = { finished: request.execution }
+            break
+          case 'publishConstraint':
+            value = records.publishConstraint(actorId, {
+              operationId: request.operationId, at: request.at, ...generated, source: request.source, body: request.body,
+              ...(request.affectedAgents === undefined ? {} : { affectedAgents: request.affectedAgents }),
+              ...(request.replaces === undefined ? {} : { replaces: request.replaces }),
+            })
             break
         }
         deps.changed()

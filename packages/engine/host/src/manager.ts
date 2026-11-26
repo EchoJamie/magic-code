@@ -228,14 +228,28 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     wake: session => { if (sessions.isArchived(session)) return; const live = ctx.liveOf(session); if (live !== undefined) send(live, { t: 'collaboration.wake' }) },
     cancel: ids => ctx.cancelMembers(ids),
     input: (session, input, shared) => {
-      if (sessions.isArchived(session)) throw new Error(ARCHIVED_NOTE)
+      const records = store.serviceFor(session)
+      // **受理前移**（边界方案 §四#1/§五）：拒收与受理都是 engine 落账——帧只是加速信号。
+      const durable = { ...input, ref: input.ref ?? crypto.randomUUID() }
+      const work = store.collaboration.collaborationForSession(session)
+      if (sessions.isArchived(session) || work?.state === 'closing' || work?.state === 'closed') {
+        // closing/archived 拒收：**不经 pending 直接落 rejected 行**（原稿留账可 retry），
+        // 回执 (session,ref) 由调用方的 catch 发出。
+        records.inputs.reject(durable, ARCHIVED_NOTE, now())
+        throw new Error(ARCHIVED_NOTE)
+      }
+      // 受理即落账（事务性发件箱：受理事实持久存在；同 ref 幂等，执行者侧 enqueue 再
+      // accept 不冲突）。落账后送达失败不再是受理失败——成员没起/失联时等它起来消费，
+      // 对账器兜底（界面只说「已受理，重启后自动继续」，N25）。
+      records.inputs.accept(durable, now())
       const live = ctx.liveOf(session)
-      if (live === undefined || live.link.closed) throw new Error('输入目标已失联')
+      if (live === undefined || live.link.closed) return
       live.run.busy = true
       refresh(live.run, now())
       ctx.clearTurnNotice(session)
       ctx.stopGenerations.set(live.run, ctx.nextStopGeneration++)
-      send(live, { t: 'collaboration.input', input, shared })
+      // 帧已退化为信号（正文在账上）；shared 位随信号走（消费侧据此走 publish 语义）。
+      send(live, { t: 'collaboration.input', shared })
     },
     configure: async (session, model) => {
       const live = ctx.liveOf(session)

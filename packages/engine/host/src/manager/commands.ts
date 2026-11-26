@@ -72,6 +72,22 @@ export function installCommands(ctx: ManagerContext): void {
   const { clients } = connections
   const { workRoot, isArchived, manageSession } = sessions
 
+  /**
+   * **受理前移**（T1.1 · 事务性发件箱）：deliver 前把输入落账（`inputs.accept` 落 pending）
+   * ——受理事实持久存在，帧丢失/执行器死亡不影响最终消费（对账兜底）。返回带 `ref` 的
+   * 命令：执行者侧 `enqueue` 对同 ref 幂等（DO NOTHING），账上行与消费动作单一对齐。
+   * 会话未建立（新窗口首条输入）时账仍由执行者建会话后落——受理账随会话键存在。
+   */
+  function acceptBeforeDelivery(
+    session: string | null,
+    command: Extract<Command, { readonly type: 'input.submit' }>,
+  ): Command {
+    if (session === null) return command
+    const ref = command.ref ?? crypto.randomUUID()
+    store.serviceFor(session).inputs.accept({ ...command, ref }, now())
+    return { ...command, ref }
+  }
+
   function accept(socket: Socket<unknown>): void {
     /**
      * **这条连接上的坏事要留痕**（D75）：`terminate` 那一路对端只看到「没原因」，
@@ -352,7 +368,16 @@ export function installCommands(ctx: ManagerContext): void {
     const execution = command.type === 'input.submit' || command.type === 'collaboration.input' || command.type === 'collaboration.resume' || (command.type === 'input.manage' && command.action !== 'list')
     if (session !== null && execution && isArchived(session)) {
       const input = command.type === 'input.submit' ? command : command.type === 'collaboration.input' ? command.input : undefined
-      if (input !== undefined) conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'input.settled', data: { ok: false, ref: input.ref, reason: ARCHIVED_NOTE } } })
+      if (input !== undefined) {
+        if (command.type === 'input.submit') {
+          // **拒收落账**（T1.1）：不经 pending 直接落 rejected 行，原稿留账可 retry；回执 (session,ref)。
+          const ref = command.ref ?? crypto.randomUUID()
+          store.serviceFor(session).inputs.reject({ ...command, ref }, ARCHIVED_NOTE, now())
+          conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'input.settled', data: { ok: false, ref, reason: ARCHIVED_NOTE } } })
+        } else {
+          conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'input.settled', data: { ok: false, ref: input.ref, reason: ARCHIVED_NOTE } } })
+        }
+      }
       else conn.link.send({ t: 'line', text: ARCHIVED_NOTE })
       return
     }
@@ -694,7 +719,7 @@ export function installCommands(ctx: ManagerContext): void {
         return
       }
       connections.bind(conn, spawned)
-      ctx.deliver(spawned, command)
+      ctx.deliver(spawned, command.type === 'input.submit' ? acceptBeforeDelivery(session, command) : command)
       // ⚠️ **这一条不能省**（main 的 `retarget` 新起一代那一支末尾也有它）：为这条会话新起的
       // 那一代是**带着会话号装配**的，`switchTo` 判「已经在的那条 ＝ 无事」——`session.open`
       // 过去一声不响，窗口就此停在旧那一页上。`session.list` 一定会报一次状态，窗口据此重画。
@@ -708,7 +733,7 @@ export function installCommands(ctx: ManagerContext): void {
       return
     }
 
-    ctx.deliver(target, command)
+    ctx.deliver(target, command.type === 'input.submit' ? acceptBeforeDelivery(target.run.session ?? conn.selectedSession, command) : command)
   }
 
   async function collaborationCommand(conn: ClientConn, command: CollaborationCommand): Promise<void> {

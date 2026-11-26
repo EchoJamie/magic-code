@@ -42,6 +42,13 @@ type CollaborationOperation =
   | { readonly action: 'publishConstraint'; readonly operationId: OperationId; readonly at: Timestamp; readonly source: import('./collaboration.ts').EntryReference; readonly body: readonly MessagePart[]; readonly affectedAgents?: readonly AgentId[]; readonly replaces?: MessageId }
   /** 执行者登记身份（连回后第一件事；身份归属由宿主核对，不在载荷自报）。 */
   | { readonly action: 'registerIdentity'; readonly operationId: OperationId; readonly at: Timestamp; readonly session: SessionId }
+  /**
+   * **dequeue**（pending → executing 的唯一触发路径）：执行者收到消费信号后，先
+   * `beginExecution`（run 级准入）再请求 dequeue，然后本地 consume（executing→consumed
+   * 与落条目原子）。**engine 绝不允许先 dequeue 再发信号**——信号是唯一启动键，
+   * dequeue 只由执行者在准入通过后请求；回执按 operationId 走 collaboration.reply。
+   */
+  | { readonly action: 'dequeue'; readonly operationId: OperationId; readonly refs: readonly string[]; readonly at: Timestamp }
 
 export type CollaborationReply = { readonly ok: true; readonly value: unknown; readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[] } | { readonly ok: false; readonly reason: string }
 export type CollaborationClient = { request(input: CollaborationRequest): Promise<CollaborationReply> }

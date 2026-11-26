@@ -2,9 +2,8 @@ import type { Diagnostics } from '../shared/diagnostics.ts'
 import type { McpCatalogRow } from '../conversation/events.ts'
 import type { AgentModelConfig } from '../conversation/collaboration.ts'
 import type { CollaborationReply, CollaborationRequest } from '../conversation/collaboration-control.ts'
-import type { UserInput } from '../conversation/control.ts'
 import type { NativeRequest, NativeResponse, ServiceIdentity } from '../conversation/native.ts'
-import type { RecordId } from '../shared/ids.ts'
+import type { RecordId, SessionId } from '../shared/ids.ts'
 import type {
   Command,
   KernelEvent,
@@ -13,7 +12,6 @@ import type {
   RunNotice,
   RunRow,
   RunSnapshot,
-  SessionId,
   StopPhase,
   StopScope,
 } from '../index.ts'
@@ -269,6 +267,13 @@ export type ExecutorToManager =
    * 两个都可缺省：纯判活心跳不带（缺省＝没有这一件，不拿 0 冒充）。
    */
   | { readonly t: 'heartbeat'; readonly watermark?: RecordId; readonly settled?: number }
+  /**
+   * **拒收显式回执**（§四#7）——执行者在 closing/archived 分支对拒收输入回话：
+   * engine 据它把已受理的 pending 行转 rejected（rejectPending，§五「已受理后拒」）。
+   * 受理**时**就已可见的 archived/closing 拒收不经这条（engine 直接落 rejected）；
+   * 这条兜住受理之后才发生的状态变化。
+   */
+  | { readonly t: 'input.rejected'; readonly session: SessionId; readonly ref: string; readonly reason: string }
 
 /** 管理者 → 执行者。 */
 export type ManagerToExecutor =
@@ -281,7 +286,13 @@ export type ManagerToExecutor =
   | { readonly t: 'collaboration.reply'; readonly requestId: string; readonly reply: CollaborationReply }
   | { readonly t: 'collaboration.wake' }
   | { readonly t: 'collaboration.configure'; readonly requestId: string; readonly model: AgentModelConfig }
-  | { readonly t: 'collaboration.input'; readonly input: UserInput; readonly shared: boolean }
+  /**
+   * **协作输入的消费信号**（边界方案 §四#1：帧退化为信号，不再携带正文）——
+   * **正文只存账本**（engine 发帧前已 `inputs.accept` 落 pending）；执行者收到即消费
+   * 自己账上的待办（与 `collaboration.wake` 同形的信号，多一位 `shared`：这份输入是
+   * 走「用户来源共同约束」通道进协作账本的——消费侧据此走 publish 语义）。
+   */
+  | { readonly t: 'collaboration.input'; readonly shared: boolean }
   | { readonly t: 'cmd'; readonly cmd: Command }
   /** **要一份接回快照**——管理者在把某个窗口挂到这一代上时发（见 `ManagerToClient` 的 `resumed`）。 */
   | { readonly t: 'snapshot'; readonly seq: number }
