@@ -72,11 +72,9 @@ import {
   appendOutput,
   appendPageNote,
   appendReceipt,
-  applyResume,
   closePicker,
   closePrompt,
   createView,
-  finishExecution,
   hasPlan,
   hasRunningTool,
   matchCommands,
@@ -111,6 +109,7 @@ import { mcpHint, mcpRows, mcpToolRows } from './boards/capabilities/mcp.ts'
 import { configReasoningOf, reasoningText } from './boards/capabilities/models.ts'
 import { runSummary } from './boards/records/sessions.ts'
 import { HELP_LINES, HELP_TITLE, shellQuote, spokenOf, submittable } from './shell-commands.ts'
+import { createConnectionControl } from './shell-connection.ts'
 import { STATUS_TITLE, STATUSLINE_TITLE, statusLines } from './shell-status.ts'
 
 export type { ShellKey } from './input.ts'
@@ -1334,43 +1333,35 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // 答复走 `plan.changed`（全文、零裁剪），清单由此上屏。
     send({ type: 'plan.read', requestId: crypto.randomUUID(), session: data.session })
 
-    drawResumed()
+    connection.draw()
   }
 
   const unsubscribeTransport = transport.subscribe(onEvent)
 
-  let pendingResume: RunSnapshot | null = null
-  /** 那一份暂存的快照最多等多久（毫秒）——见 `drawResumed`。 */
-  const RESUME_SETTLE_MS = 300
-  let resumeTimer: ReturnType<typeof setTimeout> | undefined
-
-  const drawResumed = (): void => {
-    if (resumeTimer !== undefined) {
-      clearTimeout(resumeTimer)
-      resumeTimer = undefined
-    }
-    if (pendingResume === null) return
-    if (rebuildFor !== null) return // 记录区正在重建——等它铺完（`accumulate` 那一跳）
-    const snapshot = pendingResume
-    pendingResume = null
-    const held=view
-    const resumed=applyResume(view,snapshot)
-    commit({...resumed,dock:held.dock,draft:held.draft,refs:held.refs,caret:held.caret,stashed:held.stashed,status:resumed.status})
-  }
-
   /**
-   * 收下一份快照，**等历史铺完再画**（见 `pendingResume` 的注）。
-   *
-   * 「等」有一个**上界**（`RESUME_SETTLE_MS`）：一旦这一趟并没有换会话（比如就那么
-   * 重绑回原来那条），`session.history` 那一趟根本不会来——那时死等就是**把事实扣在手里**。
-   * 到点照画：画的是**此刻的事实**，不是「等一个可能不来的东西」。
+   * 连接管理（重连／断开／接回快照的收与画）——T3.4 阶段二拆出，实现在 `shell-connection.ts`。
+   * 迟定义的依赖（`readHistory` / `settleDraft` / `exitWait`）用 lambda 包住递入，构造时不求值。
    */
-  const holdResumed = (snapshot: RunSnapshot): void => {
-    pendingResume = snapshot
-    if (resumeTimer !== undefined) clearTimeout(resumeTimer)
-    resumeTimer = setTimeout(drawResumed, RESUME_SETTLE_MS)
-    resumeTimer.unref?.()
-  }
+  const connection = createConnectionControl({
+    isDisposed: () => disposed,
+    isConnected: () => connected,
+    setConnected: (value) => { connected = value },
+    isReopening: () => reopening,
+    setReopening: (value) => { reopening = value },
+    getView: () => view,
+    setView: (next) => { view = next },
+    commit,
+    send,
+    readHistory: () => readHistory(),
+    memoryReconnected: () => memory.reconnected(),
+    memoryDisconnected: () => memory.disconnected(),
+    clearSudoPassword: () => { sudoPassword = '' },
+    lastSubmitRef: () => lastSubmit?.ref ?? null,
+    settleDraft: (ref, keepDraft) => settleDraft(ref, keepDraft),
+    isRebuilding: () => rebuildFor !== null,
+    takeExitWait: () => { const waiting = exitWait !== null; exitWait = null; return waiting },
+    options,
+  })
 
   // —— 选择器 ——
 
@@ -1491,23 +1482,17 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   })
 
   /**
-   * **接回快照到了**——先收着，等记录区铺完再画（见 `pendingResume`）。
+   * **接回快照到了**——先收着，等记录区铺完再画（收画逻辑在 `shell-connection.ts`）。
    *
    * ⚠️ **断了的那条不算**：`disposed` 之后什么都不做（收摊之后画的每一帧都是白画）。
    */
   options.resumed?.subscribe((_gen, snapshot) => {
     if (disposed) return
-    holdResumed(snapshot)
+    connection.hold(snapshot)
   })
-  const finishCurrent = (): void => {
-    pendingResume = null
-    if (resumeTimer !== undefined) clearTimeout(resumeTimer)
-    resumeTimer = undefined
-    commit(finishExecution(view))
-  }
   options.detached?.(() => {
     if (disposed) return
-    finishCurrent()
+    connection.finishCurrent()
     // 尚未收到服务端接收回执的输入仍是草稿，执行者退出不能把它丢掉。
     const held = view.inputMember === undefined ? lastSubmit : inputContexts.get(undefined)?.lastSubmit
     if (held?.local !== true) settleDraft(held?.ref, true)
@@ -2558,41 +2543,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     options.stop?.(target, 'run')
   }
 
-  const reconnect = (): ShellEffect => {
-    if (reopening || options.reopen === undefined) return NONE
-    reopening = true
-    commit(view)
-    void options.reopen().then(() => {
-      if (disposed) return
-      connected = true
-      commit(appendReceipt(withRunFacts(patchStatus({ ...view, flash: null }, { state: 'idle', amount: null, hint: HINT_IDLE }), options.runs?.current() ?? view.runs), 'Magic Code 已连接，正在刷新当前会话。草稿未发送。'))
-      readHistory()
-      memory.reconnected()
-      for (const one of view.compactions) if (['pending', 'running', 'unknown'].includes(one.state.state)) send({ type: 'compact.query', session: one.session, requestId: one.state.requestId })
-    }, error => {
-      if (!disposed) commit(appendReceipt(view, `重新连接失败：${String(error)}`))
-    }).finally(() => { reopening = false; if (!disposed) commit(view) })
-    return NONE
-  }
-
-  const disconnect = (why?: string): void => {
-    if (disposed || !connected) return
-    connected = false
-    memory.disconnected()
-    view = { ...view, compactions: view.compactions.map(one => ['pending', 'running'].includes(one.state.state) ? { ...one, state: { ...one.state, state: 'unknown' } } : one) }
-    view = { ...view, background: { commands: view.background?.commands ?? [], waiting: [], unknown: true }, sudo: null }
-    sudoPassword = ''
-    const unconfirmed = new Set([...view.settled, ...view.rows].filter(row => row.kind === 'user' && row.inputState === '提交中').map(row => row.kind === 'user' ? row.inputRef : undefined))
-    if (lastSubmit !== null && unconfirmed.has(lastSubmit.ref)) settleDraft(lastSubmit.ref, true)
-    const mark = (row: import('./view.ts').LogRow) => row.kind === 'user' && unconfirmed.has(row.inputRef) ? { ...row, inputState: '未确认接收（连接已断开）' } : row
-    pendingResume = null
-    if (resumeTimer !== undefined) clearTimeout(resumeTimer)
-    resumeTimer = undefined
-    const waiting = exitWait !== null
-    exitWait = null
-    commit(patchStatus(appendReceipt({ ...view, settled: view.settled.map(mark), rows: view.rows.map(mark) }, `连接已断开${why ? `（${why}）` : ''}，暂时无法确认任务状态。${waiting ? '停止尚未确认。' : ''}`), { state: 'lost', amount: null, hint: HINT_LOST }))
-  }
-
   let verticalColumn:number|null=null
   /** sudo 组件开着时，所有键归它——密码不进草稿、不回显、不静默吞。 */
   const sudoKey = (input: ShellKey): ShellEffect | undefined => {
@@ -2708,7 +2658,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       commit({ ...view, voice: null })
       return NONE
     }
-    if (input.kind === 'ctrl+r') { managementPending = null; return reconnect() }
+    if (input.kind === 'ctrl+r') { managementPending = null; return connection.reconnect() }
     if (managementPending !== null && input.kind !== 'ctrl+c') return NONE
     if (input.kind === 'enter' && view.dock.kind === 'picker' && view.dock.picker.source === 'session' && view.flash?.endsWith(' · Enter 重试')) { directory.query(); return NONE }
     if (input.kind === 'ctrl+g') {
@@ -2729,7 +2679,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
     if (input.kind === 'enter' && view.dock.kind === 'input' && view.draft.trim() === '/connect') {
       commit({ ...view, draft: '', caret: 0, refs: [], completion: null })
-      return reconnect()
+      return connection.reconnect()
     }
     if (!connected && input.kind === 'enter' && view.dock.kind === 'input' && !view.draft.trim().startsWith('/')) {
       commit(noteResult(view, options.settingsOnly ? '本地设置不发送任务，草稿已保留；退出后运行 magic 开始工作。' : '连接已断开，草稿未发送。输入 /connect 或按 Ctrl+R 重连。'))
@@ -3672,7 +3622,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     readHistory,
     attachMaterial,
     exportMaterial,
-    hostGone: () => disconnect('Magic Code 已退出'),
+    hostGone: () => connection.disconnect('Magic Code 已退出'),
 
     /**
      * 放开输入——`boot` 完成那一下（真外壳在 `run.ts` 里按这个次序调）。
@@ -3686,7 +3636,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       commit({ ...view, status: { ...view.status, hint: idleHintOf(view) } })
     },
 
-    disconnected: disconnect,
+    disconnected: connection.disconnect,
 
     dispose: () => {
       disposed = true
