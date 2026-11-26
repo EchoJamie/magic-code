@@ -134,6 +134,8 @@ export type Assembly = {
   wakeCollaboration(): void
   /** 原样保留输入引用，由会话读取、接收并发布共享约束。 */
   supplementCollaboration(input: UserInput, shared: boolean): Promise<void>
+  /** 消费信号（T2.1）：账本 pending 输入入队 ＋ 协作收件箱唤起——engine 受理落账后发帧用。 */
+  consumeLedgerInputs(): void
   /**
    * **换模型**——装配侧的**唯一**切换入口：命令面（`model.switch`）与 `--script` 的
    * `{switch}` 都调它，**成败都发一条 `model.switched`（落库）**（缺陷 D16 收拢的产出路径）。
@@ -523,8 +525,22 @@ export function assemble(options: AssembleOptions): Assembly {
     },
     hasPendingInput: () => [...chains.values()].some(one => one.service.busy()),
     wakeCollaboration: () => { if (chain === undefined) { pendingWake = true; return } chain.service.wake() },
+    /** 消费信号（T2.1：engine 受理落账后发信号帧，正文以账本为准）——
+     * 把账本里 pending 且未消费的输入重新过一遍入队（accept 幂等，返回现有行），
+     * 再唤起协作收件箱。信号丢了不丢输入：账本在，下次信号或对账照补。 */
+    consumeLedgerInputs: () => {
+      const active = chain
+      if (active === undefined) { pendingWake = true; return }
+      const pending = active.records.inputs.list().filter(row => row.state === 'pending' && row.entry === undefined)
+      for (const row of pending) conversation.submit(row.input)
+      if (pending.length > 0) active.service.wake()
+    },
     supplementCollaboration: async (input, shared) => {
-      if (chain === undefined) throw new Error('当前没有已装配的成员会话')
+      // **会话链未开不再抛**（边界方案 T2.1：删 throw 路径）——抛会让执行者把自己收摊
+      // （执行者侧 trackOperation 的失败路径发 done 并走 closeOut），而协作输入在 engine
+      // 侧账本仍持有（受理前移：T1.1 起 engine 先 `inputs.accept` 再发帧），对账器会补发
+      // wake 补消费。执行者活着、账本为真源，信号丢了不丢输入。
+      if (chain === undefined) return
       await chain.service.supplement(input, shared)
     },
     shell,

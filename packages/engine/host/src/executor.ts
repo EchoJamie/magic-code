@@ -6,6 +6,7 @@ import type { ProcessLedger } from '@magic/contracts'
 
 import type {
   CollaborationReply,
+  EventKind,
   KernelEvent,
   MagicHome,
   ModelSwitchRequest,
@@ -17,7 +18,11 @@ import { assemble } from '@magic/assembly'
 import type { Assembly } from '@magic/assembly'
 import { loadConfig } from '@magic/state'
 import { isProgress, progressOf, tailOf } from '@magic/host'
+import { TRANSIENT_EVENT_KINDS } from '@magic/contracts'
 import type { ExecutorToManager, Link, ManagerToExecutor } from '@magic/host'
+
+/** 瞬时类不落库（契约 `TRANSIENT_EVENT_KINDS`）——持久事件计数按它排除。 */
+const TRANSIENT: ReadonlySet<EventKind> = new Set(TRANSIENT_EVENT_KINDS)
 
 /**
  * 收缩前那一段余量（毫秒）——见 `considerShrink` 的注。
@@ -34,6 +39,14 @@ const SHRINK_SETTLE_MS = 400
  * **绝大多数接回都不必截断**——而真截断的时候要**说得出来**（`textTruncated`）。
  */
 const SNAPSHOT_TEXT_LIMIT = 100_000
+
+/**
+ * **心跳周期**（边界方案 §五）——每 5s 发一帧 `heartbeat`，**与业务事件解耦**：
+ * 进程活着就发（空闲、忙、长思考都发），engine 据它维护 `lastSeen` 判活租约
+ * （3 周期无心跳 → 收尾为可见结局）。水位与持久事件计数随帧带出（可合并的上报兜底）；
+ * 两者是**当下读数**，不带判活语义——判活只看「帧到没到」。
+ */
+const HEARTBEAT_MS = 5_000
 
 /** 快照里一条在飞工具的输出留多少行——取**末尾**（末尾才是「刚才在说什么」）。 */
 const SNAPSHOT_OUTPUT_LINES = 20
@@ -212,6 +225,9 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   const live = {
     /** 水位——这一头见过的**最后一条事件的 id**（快照就停在这儿）。 */
     lastId: 0,
+    /** 持久事件计数——**非瞬时类**事件数（与记录域 `appendEvent` 同源同串：装配的 sink
+     * 对同一串事件先落库再转发，本头照 `TRANSIENT_EVENT_KINDS` 数出的就是落库那一份）。 */
+    settled: 0,
     /** 这一轮开着吗（`turn.start` 之后、`turn.end` 之前）。 */
     turnOpen: false,
     /** 在飞的助手正文 / 思考（按通道攒）。 */
@@ -281,6 +297,8 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     diagnosticLog?.write(event.kind === 'error' ? 'error' : event.kind === 'turn.start' || event.kind === 'turn.end' ? 'info' : 'trace', `kernel.${event.kind}`, { ...(event.session ? { session: event.session } : {}) })
     // 水位跟着事件走——快照停在「这一条上」，水位之后的都还没发生
     live.lastId = event.id
+    // 持久事件计数随走随加——与装配 sink 的落库同一串（见 `live.settled` 注）
+    if (!TRANSIENT.has(event.kind)) live.settled += 1
 
     if (isProgress(event)) {
       const what = progressOf(event)
@@ -359,6 +377,19 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   /** 收缩的等待器——只留一个（重新判一次就够，不必每个事件都排一个）。 */
   let shrinkTimer: ReturnType<typeof setTimeout> | undefined
 
+  /**
+   * **心跳**——ready 之后起、收尾即停。**与业务事件解耦**：不挂在 track / considerShrink
+   * 上（那些是业务路径，被收尾与冷却左右），一个独立 interval，活着就发。
+   * 收尾路径（`closeOnce`）里清——closing 之后不再发（租约由 engine 的对账兜底收场）。
+   */
+  let heartbeat: ReturnType<typeof setInterval> | undefined
+  function startHeartbeat(): void {
+    heartbeat ??= setInterval(() => {
+      if (closing) return
+      link.send({ t: 'heartbeat', watermark: live.lastId, settled: live.settled })
+    }, HEARTBEAT_MS)
+  }
+
   /** 合并相邻事件后再确认无责任，避免当前调用链尚未派完就释放进程。 */
   function considerShrink(): void {
     if (closing) return
@@ -403,6 +434,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     closing = true
     lifetime.abort()
     if (shrinkTimer !== undefined) clearTimeout(shrinkTimer)
+    if (heartbeat !== undefined) { clearInterval(heartbeat); heartbeat = undefined }
     options.log?.(`执行者收摊（${why}）`)
 
     /**
@@ -465,13 +497,16 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
         if (closing) return
         link.send({ t: 'collaboration.configured', requestId: message.requestId, result: assembly.applyModel(message.model) })
         return
+      /**
+       * **消费信号**（T2.1 · §四#1）——engine 受理即落账（`inputs.accept`），帧退化为信号
+     * （不再携带正文；`collaboration.wake` 与 `collaboration.input` 语义合并）。
+       * 响应＝把账本里 pending 的输入捞出来消费（正文从账本读，`consumeLedgerInputs`），
+     * 并唤起协作收件箱。closing/archived 的显式回执待契约帧落地（见 `T2.1` 报备）。
+       */
       case 'collaboration.input':
-        if (closing || (options.session !== null && options.records.isSessionArchived(options.session))) return
-        trackOperation(assembly.supplementCollaboration(message.input, message.shared))
-        return
       case 'collaboration.wake':
         if (closing || (options.session !== null && options.records.isSessionArchived(options.session))) return
-        assembly.wakeCollaboration()
+        assembly.consumeLedgerInputs()
         return
       case 'cmd':
         if (closing) return
@@ -518,6 +553,8 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
       if (closing) return
       assembly.shell.send({ type: 'background.list' })
       link.send({ t: 'ready' } satisfies ExecutorToManager)
+      // 心跳在 ready 之后起（此前 engine 还没把这一代登记为可判活的对象）
+      startHeartbeat()
       considerShrink()
     })()
     try { await initialization }
