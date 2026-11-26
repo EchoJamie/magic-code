@@ -57,16 +57,15 @@ export type ExecutorSpawned = {
 /**
  * **待认领通道**——发车那一刻建，子进程连上来（`executor.hello` 配对）才绑定真连接。
  *
- * 绑定前的发送**先攒着**（「先攒后送」的既有纪律在连接层同样成立——子进程装配是
- * 秒级，窗口早就在等了）；攒的量有上界，超了当通道死了。绑定后全部直通：入站转发
- * 给放置层的处理器，出站直写 socket。
+ * T1.2 送达链重构：**绑定前不缓冲任何帧**——待办已落账（受理前移），帧只是加速信号，
+ * 绑定前的发送一律拒绝（返回 `false`）；ready 后由 ready 处理与对账器补发消费信号。
+ * （原先的 256 帧缓冲与溢出判死已删：缓冲让「账本为真源」变成两处真相。）
  */
 export function createDeferredChannel(): {
   readonly link: Link<ExecutorToManager>
   readonly attached: boolean
   attach(real: Link<Wire>): void
 } {
-  const buffered: Wire[] = []
   let real: Link<Wire> | undefined
   let closed = false
   let listeners: ((message: ExecutorToManager) => void)[] = []
@@ -87,11 +86,7 @@ export function createDeferredChannel(): {
   const link: Link<ExecutorToManager> = {
     send(message) {
       if (closed) return false
-      if (real === undefined) {
-        if (buffered.length >= 256) { settle(new Error('执行者迟迟未连回，通道溢出')); return false }
-        buffered.push(message)
-        return true
-      }
+      if (real === undefined) return false
       return real.send(message)
     },
     onMessage(listener) {
@@ -118,7 +113,6 @@ export function createDeferredChannel(): {
       real = one
       one.onMessage(forward)
       one.onClose(error => settle(error))
-      for (const message of buffered.splice(0)) one.send(message)
     },
   }
 }

@@ -196,6 +196,7 @@ export type ManagerContext = {
   closeConfigWatch: () => Promise<void>
   runStops: RunStops
   probe: ReturnType<typeof setInterval>
+  reconcileTimer?: ReturnType<typeof setInterval>
   shutdownInFlight: Promise<void> | undefined
   admissionClosed: boolean
 

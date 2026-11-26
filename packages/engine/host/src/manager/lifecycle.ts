@@ -215,12 +215,10 @@ export function installLifecycle(ctx: ManagerContext): void {
         // 故在这儿清）——`busy` 不动：它说的是**内核**手上有活没有，与本跳无关
         executor.run.action = undefined
         refresh(executor.run, now())
-        const queued = executor.queued
-        executor.queued = []
-        for (const one of queued) {
-          if (executor.run.ended !== undefined) break
-          executor.link.send(one)
-        }
+        executor.lastSeenAt = now()
+        // T1.2：ready 后补发消费信号（queued 缓冲已删）——账本为真源，执行者从账上捞待办。
+        executor.lastWakeAt = now()
+        send(executor, { t: 'collaboration.wake' })
         ctx.saveRuns()
         ctx.pushRuns()
         return
@@ -239,7 +237,12 @@ export function installLifecycle(ctx: ManagerContext): void {
         control.synced(executor, message)
         return
       }
+      case 'heartbeat':
+        // **心跳租约**（T1.2）——heartbeat 与 ev 都是「活着」的证据，都刷新 lastSeen。
+        executor.lastSeenAt = now()
+        return
       case 'ev':
+        executor.lastSeenAt = now()
         onEvent(executor, message.event)
         return
       case 'done':
@@ -434,7 +437,6 @@ export function installLifecycle(ctx: ManagerContext): void {
     refresh(executor.run, at)
 
     executors.delete(executor)
-    executor.queued = []
 
     // **留一条「最近一次运行」**——列表上「当前/最近状态」那一格要它
     lastRuns.set(executor.run.session ?? executor.executionId, executor.run)

@@ -12,10 +12,7 @@ export const ARCHIVED_NOTE = '会话已归档，请在会话管理或 /resume �
 export function createSessionManagement(input: {
   store: RecordsStore
   now: () => number
-  liveOf: (session: string) => {
-    readonly run: Readonly<RunRecord>
-    readonly queued: readonly unknown[]
-  } | undefined
+  liveOf: (session: string) => { readonly run: Readonly<RunRecord> } | undefined
   lastRuns: ReadonlyMap<string, Readonly<RunRecord>>
   accepting: () => boolean
   terminalOpen: (session: string) => boolean
@@ -35,9 +32,10 @@ export function createSessionManagement(input: {
       const executor = liveOf(member)
       const run = executor?.run ?? lastRuns.get(member)
       if (run !== undefined && !canArchiveRun(run)) return false
-      if (executor !== undefined && (executor.queued.length > 0 || store.serviceFor(member).inputs.list().some(
+      // T1.2：queued 帧缓冲已删（待办落账、帧只是信号）——归档资格只看账上真正的待办。
+      if (executor !== undefined && store.serviceFor(member).inputs.list().some(
         input => input.state === 'pending' && input.reason === undefined,
-      ))) return false
+      )) return false
     }
     if (group !== undefined) {
       if (group.executions.some(e => e.state !== 'finished')) return false

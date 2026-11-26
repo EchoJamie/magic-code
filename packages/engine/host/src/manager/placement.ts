@@ -106,7 +106,6 @@ export function installPlacement(ctx: ManagerContext): void {
       spawned,
       exited: false,
       link,
-      queued: [],
     }
 
     environments.set(root ?? executionId, network)

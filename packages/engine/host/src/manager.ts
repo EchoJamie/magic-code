@@ -68,6 +68,10 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   const probeIntervalMs = options.probeIntervalMs ?? PROBE_INTERVAL_MS
   const stopGraceMs = options.stopGraceMs ?? STOP_GRACE_MS
   const stopKillMs = options.stopKillMs ?? STOP_KILL_MS
+  // T1.2 对账器时限（§附：心跳 5s < 假死 15s < 慢消费者 30s，无冲突）。
+  const HEARTBEAT_TIMEOUT_MS = 15_000
+  const RECONCILE_INTERVAL_MS = 1_000
+  const WAKE_COOLDOWN_MS = 5_000
 
   // 共享上下文：可变状态与跨模块助手都挂在这一份对象上。
   const ctx = {} as ManagerContext
@@ -396,6 +400,36 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   }, probeIntervalMs)
   probe.unref?.()
   ctx.probe = probe
+
+  // **对账器**（T1.2 · 边界方案 §四#8/§五 N3/G5）：周期 1s，按执行者有界扫——
+  // ① 该会话有 pending 待办而执行者空闲 → 补发消费信号（5s 冷却去抖；信号丢失的兜底）；
+  // ② 有 executing 输入而心跳缺失超 15s（3 心跳）→ failed(执行中断/无进展)，failedFrom='executing'。
+  // 判据是「心跳缺失 3 周期」不是「无事件」——长思考有心跳，不触发；lastSeenAt 缺省
+  // （还没收到过任何心跳）不判死（保守，等第一个心跳）。
+  const reconcileTimer = setInterval(() => {
+    for (const executor of executors) {
+      if (executor.run.ended !== undefined || !executor.run.ready) continue
+      const session = executor.run.session
+      if (session === null || sessions.isArchived(session)) continue
+      const records = store.serviceFor(session)
+      const executing = records.inputs.list().filter(one => one.state === 'executing')
+      const lastSeen = executor.lastSeenAt
+      if (executing.length > 0 && lastSeen !== undefined && now() - lastSeen > HEARTBEAT_TIMEOUT_MS) {
+        for (const row of executing) records.inputs.fail(row.ref, '执行中断/无进展')
+        ctx.saveRuns()
+        ctx.pushRuns()
+        continue
+      }
+      const hasPending = records.inputs.list().some(one => one.state === 'pending')
+      const lastWake = executor.lastWakeAt
+      if (hasPending && !executor.run.busy && (lastWake === undefined || now() - lastWake >= WAKE_COOLDOWN_MS)) {
+        executor.lastWakeAt = now()
+        send(executor, { t: 'collaboration.wake' })
+      }
+    }
+  }, RECONCILE_INTERVAL_MS)
+  reconcileTimer.unref?.()
+  ctx.reconcileTimer = reconcileTimer
 
   await recovering
   await compactions.recover()

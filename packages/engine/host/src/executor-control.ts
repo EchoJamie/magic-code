@@ -14,20 +14,26 @@ export type Executor = {
   readonly run: RunRecord
   readonly spawned: ExecutorSpawned
   exited: boolean
-  /** 启动时建立的进程内协议端点；就绪前的命令仍须排队。 */
+  /** 启动时建立的进程内协议端点。 */
   readonly link: Link<ExecutorToManager>
-  /** 还没送出去的东西（**先攒后送**：没人接的话发出去就是「敲了没反应」）。 */
-  queued: ManagerToExecutor[]
-
+  /**
+   * **最后已知活跃时刻**（T1.2 心跳租约）——收到 `heartbeat` 或 `ev` 帧即刷新；
+   * 对账器据它判「executing 超 15s（3 心跳）无进展」→ failed。缺省＝还没有过心跳（不判死）。
+   */
+  lastSeenAt?: number
+  /** 上次补发消费信号的时刻（对账器补发 wake 的去抖）。 */
+  lastWakeAt?: number
 }
 
+/**
+ * 发送。**ready 前一律不发**（T1.2 送达链重构）：待办已落账（受理前移），帧只是
+ * 加速信号——ready 后由 ready 处理与对账器补发消费信号，执行者从账本捞待办。
+ * 连接层未绑定（子进程未连回）同样不发；有回执的请求（settings/compact）由各自
+ * 超时兜底给「未确认」与出路（N22）。
+ */
 export function sendToExecutor(executor: Executor, message: ManagerToExecutor): void {
   if (executor.run.ended !== undefined) return
-
-  if (!executor.run.ready) {
-    executor.queued.push(message)
-    return
-  }
+  if (!executor.run.ready) return
   executor.link.send(message)
 }
 
