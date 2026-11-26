@@ -1296,6 +1296,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         collaborationRow('stop', '停止这条会话', '失联中也可能仍在跑——停止先请求、按实际回话'),
         collaborationRow('reopen', '接回（切过去查看）', '以它此刻的实况为准'),
       ] : []),
+      // **等认收**（§3.6）：认收／放弃——命令面已落（collaboration.receive/abandon），
+      // 出口对准协作快照里 delivered 未认收的那份委派。
+      ...(!archived && view.runs.find(one => one.session === session)?.blocked?.kind === 'awaiting-receipt'
+        ? (view.collaboration?.delegations ?? [])
+          .filter(one => one.state === 'delivered' && one.deliveryMessageId !== undefined && one.receivedAt === undefined)
+          .flatMap(one => [
+            collaborationRow(`receive:${one.delegationId}`, '认收', '确认已收到这份交付'),
+            collaborationRow(`abandon:${one.delegationId}`, '放弃（记未完成）', '不算完成，也不再阻塞'),
+          ])
+        : []),
       ...(session === view.sessionId && archived ? [collaborationRow('draft', '查看／复制原草稿')] : [])]
     if (push) enterLayer()
     commit(openPicker(view, { source: 'session-actions', title: `${nameOfSession(session)}${archived ? ' · 已归档' : ''}`,
@@ -1381,7 +1391,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   // 仅保留当前工作的提醒来源；真实内容呈现后确认，不追加同义摘要。
   options.notices?.((notice) => {
     if (disposed || !notice.unread) return
-    const forHere = notice.session === view.sessionId || notice.session === view.collaboration?.originSession
+    const forHere = notice.session === view.sessionId
+      // **P27**：「别处」按**焦点会话**算——入口会话（origin）的通知在你身处成员会话时
+      // 同样是别处（交付待认收正是它需要你）；同协作成员的通知维持原路径。
       || view.collaboration?.members.some(one => one.agent.sessionId === notice.session) === true
     if (!forHere) {
       // **P27 逃逸口**：别的会话需要你——不丢弃、不打扰（不进记录区），状态行右位留一行
@@ -2948,6 +2960,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
           return NONE
         }
         else if (row.value === 'reopen') { openSession(sessionTarget, nameOfSession(sessionTarget)); return NONE }
+        else if (row.value.startsWith('receive:') || row.value.startsWith('abandon:')) {
+          // **认收／放弃**（§3.6 等认收行）：requestId 回执走 `collaboration.view`——
+          // 快照刷新后，delivering 的那行状态格与阻塞态都会跟着走。
+          const [kind, raw] = row.value.split(':')
+          send({ type: kind === 'receive' ? 'collaboration.receive' : 'collaboration.abandon', requestId: crypto.randomUUID(), delegation: Number(raw) })
+          popLayer()
+          return NONE
+        }
         return NONE
       }
       if (view.dock.picker.source === 'input-purpose') {
@@ -2971,8 +2991,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
               ? collaborationRow(`retry:${input.ref}`,'重新执行','可能重复之前的副作用')
               : collaborationRow(`retry:${input.ref}`,'重试','副作用未发生，安全')]
             : input.state === 'rejected'
-              ? [collaborationRow(`retry:${input.ref}`,'重发','原稿逐字保留，无需复制粘贴')]
-              : []
+            ? [input.rejectedKind === 'archived'
+              ? collaborationRow(`recover-retry:${input.ref}`, '恢复并重发', '先恢复会话，再重发这一条')
+              : collaborationRow(`retry:${input.ref}`, input.rejectedKind === 'closing' ? '稍后重发' : '重发', '原稿逐字保留，无需复制粘贴')]
+            : []
         commit(openPicker(view,{source:'input-detail',title: input.purpose==='current'?'当前补充':'下一件', selected:0,detail:[`状态：${input.reason??inputStateText(input.state)}`,input.input.text],rows:[collaborationRow('back','返回'),...actionRows],hint:'↑↓ 选择 · Enter 执行 · Esc 返回'}))
         return NONE
       }
@@ -2986,6 +3008,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
           editingPending={ref:input.ref,revision:input.revision,back:layerNow(),purpose:input.purpose}
           commit({...closePicker(view),draft:input.input.text,caret:input.input.text.length,refs:(input.input.refs??[]).map(({at,...ref})=>({...ref,start:at,end:at+ref.marker.length}))})
         }else if(action==='withdraw'||action==='continue'||action==='retry'){manageInput({type:'input.manage',action,ref:input.ref,revision:input.revision});popLayer()}
+        else if(action==='recover-retry'){
+          // **恢复并重发**（§3.5 archived 行的合成动作）：先恢复会话（会话命令），再重发
+          // （账本 retry）——帧按序到达，engine 先落恢复、后迁 rejected→pending。
+          send({ type: 'session.restore', session: view.sessionId ?? '' })
+          manageInput({ type: 'input.manage', action: 'retry', ref: input.ref, revision: input.revision })
+          popLayer()
+        }
         return NONE
       }
 

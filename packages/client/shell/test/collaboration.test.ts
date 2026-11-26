@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import { createElement as h } from 'react'
 import { renderToString } from 'ink'
 import type { CollaborationView } from '@magic/contracts'
@@ -508,4 +508,23 @@ test('面板式：按 Tab 切到后台那一屏，页签同构、只换点亮的
   const rows = new Map(list.picker.rows.map((row) => [row.value, row] as const))
   expect(rows.get('stop-work')?.tone).toBe('danger')
   expect(rows.get('worker')?.tone).toBe('run')
+})
+
+describe('归并后的成员格（T1.4 · merged 唯一归并语义）', () => {
+  const base = collaborationFixture.members[1]!
+
+  test('merged 与 runtime 冲突时 merged 赢——TUI 不自判（unknown 降级以 engine 为准）', () => {
+    const member = { ...base, runtime: { ...base.runtime!, state: 'stopped' as const }, merged: { state: 'unknown' as const, reason: '成员状态待核实' } }
+    expect(memberState(member)).toBe('成员状态待核实')
+  })
+
+  test('merged=running：动作来自 merged；merged=idle：落回委派尾巴（不再读 runtime 自判）', () => {
+    expect(memberState({ ...base, runtime: { ...base.runtime!, state: 'idle' }, merged: { state: 'running', action: '正在核对' } })).toBe('正在核对')
+    // runtime 说 running、merged 说 idle：以 merged 为准——委派尾巴（「已接下」），不是 runtime 的动作。
+    expect(memberState({ ...base, merged: { state: 'idle' as const } })).toBe('已接下')
+  })
+
+  test('merged 缺席（旧快照）：原推导链一字不变', () => {
+    expect(memberState(base)).toBe(memberState({ ...base, merged: undefined }))
+  })
 })

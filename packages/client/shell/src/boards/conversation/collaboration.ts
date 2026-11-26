@@ -31,14 +31,23 @@ export function memberState(member: CollaborationMemberView): string {
       : member.delegation.reason ?? (member.delegation.state === 'received' ? '建议已收下，采纳需核验' : '已完成，建议待核验')
   }
   if (member.pendingDecisions > 0) return `需要你：${member.runtime?.action ?? `${member.pendingDecisions} 项操作待审批`}`
-  if (member.runtime?.state === 'stopping') return '正在停止，收尾待确认'
-  if (member.agent.reachability === 'suspended') return '执行中断，待处理'
+  // **归并后的成员格**（T1.4）：呈现态读 engine 的 `merged`（唯一归并语义，与 App 投影同一份），
+  // 不再从 runtime 自判。缺席（旧快照）才落回下面的原推导链。
+  const merged = member.merged?.state
+  if (merged !== undefined && merged !== 'idle') {
+    if (merged === 'running') return member.merged?.action ?? '执行中'
+    if (merged === 'unknown') return member.merged?.reason ?? '运行情况待核实'
+    if (merged === 'stopped') return `已停止${member.merged?.reason ? `：${member.merged.reason}` : ''}`
+    if (merged === 'stopping') return '正在停止，收尾待确认'
+    if (merged === 'waiting') return `需要你：${member.merged?.action ?? '等你定夺'}`
+  }
+  if (member.merged === undefined && member.agent.reachability === 'suspended') return '执行中断，待处理'
   if (member.delegation?.state === 'clarification') return `需要澄清：${member.delegation.reason ?? member.delegation.scope}`
-  if (member.runtime?.backgroundWaiting) return '等待后台结果'
-  if (member.runtime?.state === 'running') return member.runtime.action ?? '执行中'
-  if (member.runtime?.state === 'unknown') return '运行情况待核实'
-  if (member.runtime?.state === 'stopped') return `已停止${member.runtime.reason ? `：${member.runtime.reason}` : ''}`
-  if (member.runtime?.lastTurn === 'error') return '上一轮出错，待处理'
+  if (member.merged === undefined && member.runtime?.backgroundWaiting) return '等待后台结果'
+  if (member.merged === undefined && member.runtime?.state === 'running') return member.runtime.action ?? '执行中'
+  if (member.merged === undefined && member.runtime?.state === 'unknown') return '运行情况待核实'
+  if (member.merged === undefined && member.runtime?.state === 'stopped') return `已停止${member.runtime.reason ? `：${member.runtime.reason}` : ''}`
+  if (member.merged === undefined && member.runtime?.lastTurn === 'error') return '上一轮出错，待处理'
   if (member.delegation !== undefined) return `${delegationState[member.delegation.state]}${member.delegation.reason ? `：${member.delegation.reason}` : ''}`
   return member.agent.reachability === 'historical' ? '记录可查看' : '当前空闲'
 }
@@ -63,14 +72,21 @@ export function memberState(member: CollaborationMemberView): string {
 function memberMark(member: CollaborationMemberView): string {
   if (consultationEnded(member)) return member.delegation?.state === 'cancelled' ? MARKS.fail : MARKS.ok
   if (member.pendingDecisions > 0) return MARKS.ring
-  if (member.runtime?.state === 'stopping') return MARKS.dot
-  if (member.agent.reachability === 'suspended') return MARKS.error
+  // **归并后的成员格**（T1.4）：记号同读 `merged`（唯一归并语义）；idle 落回委派尾巴。
+  const merged = member.merged?.state
+  if (merged !== undefined && merged !== 'idle') {
+    if (merged === 'stopping' || merged === 'running') return MARKS.dot
+    if (merged === 'waiting') return MARKS.ring
+    if (merged === 'unknown') return MARKS.unknown
+    if (merged === 'stopped') return MARKS.warn
+  }
+  if (member.merged === undefined && member.agent.reachability === 'suspended') return MARKS.error
   if (member.delegation?.state === 'clarification') return MARKS.ring
-  if (member.runtime?.backgroundWaiting) return MARKS.dot
-  if (member.runtime?.state === 'running') return MARKS.dot
-  if (member.runtime?.state === 'unknown') return MARKS.unknown
-  if (member.runtime?.state === 'stopped') return MARKS.warn
-  if (member.runtime?.lastTurn === 'error') return MARKS.error
+  if (member.merged === undefined && member.runtime?.backgroundWaiting) return MARKS.dot
+  if (member.merged === undefined && member.runtime?.state === 'running') return MARKS.dot
+  if (member.merged === undefined && member.runtime?.state === 'unknown') return MARKS.unknown
+  if (member.merged === undefined && member.runtime?.state === 'stopped') return MARKS.warn
+  if (member.merged === undefined && member.runtime?.lastTurn === 'error') return MARKS.error
   if (member.delegation !== undefined) {
     switch (member.delegation.state) {
       case 'rejected': case 'cancelled': return MARKS.fail
@@ -90,14 +106,20 @@ function memberMark(member: CollaborationMemberView): string {
 function memberTone(member: CollaborationMemberView): 'run' | 'wait' | 'danger' | 'idle' {
   if (consultationEnded(member)) return 'idle'
   if (member.pendingDecisions > 0) return 'wait'
-  if (member.runtime?.state === 'stopping') return 'run'
-  if (member.agent.reachability === 'suspended') return 'danger'
+  // **归并后的成员格**（T1.4）：语义色同读 `merged`；idle 落回委派尾巴。
+  const merged = member.merged?.state
+  if (merged !== undefined && merged !== 'idle') {
+    if (merged === 'stopping' || merged === 'running') return 'run'
+    if (merged === 'waiting') return 'wait'
+    if (merged === 'unknown' || merged === 'stopped') return 'danger'
+  }
+  if (member.merged === undefined && member.agent.reachability === 'suspended') return 'danger'
   if (member.delegation?.state === 'clarification') return 'wait'
-  if (member.runtime?.backgroundWaiting) return 'run'
-  if (member.runtime?.state === 'running') return 'run'
-  if (member.runtime?.state === 'unknown') return 'danger'
-  if (member.runtime?.state === 'stopped') return 'danger'
-  if (member.runtime?.lastTurn === 'error') return 'danger'
+  if (member.merged === undefined && member.runtime?.backgroundWaiting) return 'run'
+  if (member.merged === undefined && member.runtime?.state === 'running') return 'run'
+  if (member.merged === undefined && member.runtime?.state === 'unknown') return 'danger'
+  if (member.merged === undefined && member.runtime?.state === 'stopped') return 'danger'
+  if (member.merged === undefined && member.runtime?.lastTurn === 'error') return 'danger'
   if (member.delegation?.state === 'rejected') return 'wait'
   return 'idle'
 }
