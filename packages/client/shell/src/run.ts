@@ -114,6 +114,10 @@ export type RunTuiOptions = {
   readonly openingSession?: string | undefined
   /** **停一条运行**（U50）——整体 / 局部，由用户明确选择。见 `ShellOptions.stop`。 */
   readonly stop?: ((session: SessionId, scope: StopScope) => void) | undefined
+  /** **强制确认已停**（N11 · T3.3）——外壳确认盒过了风险句才发。见 `ShellOptions.confirmStop`。 */
+  readonly confirmStop?: ((session: SessionId) => void) | undefined
+  /** **证据目录**（§六 · T3.3）——welcome 帧带来的路径。见 `ShellOptions.evidencePaths`。 */
+  readonly evidencePaths?: readonly string[] | undefined
   /** **停止走到了哪一拍**（U50）——受理 / 已核销 / 没能证实，各落一行回执。见 `ShellOptions.stopped`。 */
   readonly stopped?: ((listener: (report: StopReport) => void) => void) | undefined
   /** **管理者说的那句话**（U50 接上）——见 `ShellOptions.lines`。 */
@@ -170,6 +174,8 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     voiceEnabled: options.voiceEnabled,
     stop: options.stop,
     stopped: options.stopped,
+    confirmStop: options.confirmStop,
+    evidencePaths: options.evidencePaths,
     lines: options.lines,
     notices: options.notices,
     sudo: options.sudo,

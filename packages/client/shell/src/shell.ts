@@ -220,6 +220,19 @@ export type ShellOptions = {
 
   readonly stop?: ((session: SessionId, scope: StopScope) => void) | undefined
 
+  /**
+   * **强制确认已停**（N11 · T3.3）——停止走到 `unconfirmed`（等核销）后的退出动作。
+   * 语义＝**停止追踪**：engine 核销为已停、不再重试回收，**不保证执行器已停**；
+   * 确认框必须先把那句风险说给用户（见 `session-actions` 的确认盒），确认才发。
+   */
+  readonly confirmStop?: ((session: SessionId) => void) | undefined
+
+  /**
+   * **证据目录**（§六 · T3.3）——engine 的日志路径（仅路径不含正文），welcome 帧带来。
+   * 呈现在设置页「数据与工作区」与失败输入的详情旁；缺席＝engine 没给（不编）。
+   */
+  readonly evidencePaths?: readonly string[] | undefined
+
   readonly stopped?: ((listener: (report: StopReport) => void) => void) | undefined
 
   readonly lines?: ((listener: (text: string) => void) => void) | undefined
@@ -276,7 +289,11 @@ export type StopReport = {
 
 export type RunFeed = {
   readonly current: () => readonly RunRow[]
-  readonly subscribe: (listener: (rows: readonly RunRow[]) => void) => void
+  /**
+   * 订阅运行事实——**带着投影版本**（P26/P2①）：`revision` 单调递增、允许跳号，
+   * 消费方对**旧拍后到**判弃（不回写）。旧 feed 不带 revision（缺席＝不判弃，行为同前）。
+   */
+  readonly subscribe: (listener: (rows: readonly RunRow[], revision?: number) => void) => void
 }
 
 export type ResumeFeed = {
@@ -1296,6 +1313,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         collaborationRow('stop', '停止这条会话', '失联中也可能仍在跑——停止先请求、按实际回话'),
         collaborationRow('reopen', '接回（切过去查看）', '以它此刻的实况为准'),
       ] : []),
+      // **等核销**（§3.6）：强制确认已停——风险句先进确认盒（N11），确认才发。
+      ...(!archived && view.runs.find(one => one.session === session)?.blocked?.kind === 'awaiting-settlement'
+        ? [collaborationRow('confirm-stop', '强制确认已停', '停止追踪：不保证执行器已停')]
+        : []),
       // **等认收**（§3.6）：认收／放弃——命令面已落（collaboration.receive/abandon），
       // 出口对准协作快照里 delivered 未认收的那份委派。
       ...(!archived && view.runs.find(one => one.session === session)?.blocked?.kind === 'awaiting-receipt'
@@ -1345,8 +1366,15 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
    * 两件都要：视图那一格是**下一次**开列表时的取材；而列表**此刻开着**时，用户正看着
    * 它——「它刚变成需要你了」这件事得当场看得见（那正是这张表存在的理由）。
    */
-  options.runs?.subscribe((rows) => {
+  /** **已见的运行投影版本**（P26/P2①）——旧拍后到判弃；跳号合法，单调即可。 */
+  let runRevisionSeen = 0
+  options.runs?.subscribe((rows, revision) => {
     if (disposed) return
+    // **旧拍后到不回写**（P26/P2①）：revision 允许跳号但须单调；缺席（旧 feed）＝不判弃。
+    if (revision !== undefined) {
+      if (revision < runRevisionSeen) return
+      runRevisionSeen = revision
+    }
 
     commit(withRunFacts(view, rows))
     directory.refresh()
@@ -2101,6 +2129,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   }
 
   const manageInput = (command: import('@magic/contracts').InputManage):void => send({...command,...(view.inputMember===undefined?{}:{member:view.inputMember})})
+  /** **证据路径**（§六 · T3.3）——engine 给的日志路径，按文件名标来源；可复制（终端选择）。 */
+  const evidenceLines = (): readonly string[] =>
+    (options.evidencePaths ?? []).map((path) => {
+      const base = path.split('/').pop() ?? path
+      const source = base.startsWith('manager') ? '引擎日志' : base.startsWith('executor') ? '执行器日志' : '日志'
+      return `证据 · ${source}：${path}`
+    })
   const inputStateText = (state: import('@magic/contracts').StoredInput['state']):string => ({pending:'待带入',rejected:'未受理',executing:'执行中',consumed:'待请求带入',included:'已带入实际请求',withdrawn:'已撤回',failed:'受理失败'})[state]
   const openPendingInputs=():void=>{
     const focus=view.dock.kind==='picker'&&view.dock.picker.source==='input-pending'?picked(view)?.value:undefined
@@ -2968,6 +3003,17 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
           popLayer()
           return NONE
         }
+        else if (row.value === 'confirm-stop') {
+          // **强制确认已停**（N11）：风险句先进确认盒——确认才发，engine 据确认落账不再另问。
+          const target = sessionTarget
+          enterLayer()
+          prompt.open({
+            label: '强制确认已停：若执行器仍活，确认后仍可能有副作用',
+            secret: false, value: '', caret: 0, placeholder: '回车确认 · Esc 取消',
+            submit: () => { options.confirmStop?.(target); prompt.clear(); popLayer(); popLayer(); return null },
+          })
+          return NONE
+        }
         return NONE
       }
       if (view.dock.picker.source === 'input-purpose') {
@@ -2995,7 +3041,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
               ? collaborationRow(`recover-retry:${input.ref}`, '恢复并重发', '先恢复会话，再重发这一条')
               : collaborationRow(`retry:${input.ref}`, input.rejectedKind === 'closing' ? '稍后重发' : '重发', '原稿逐字保留，无需复制粘贴')]
             : []
-        commit(openPicker(view,{source:'input-detail',title: input.purpose==='current'?'当前补充':'下一件', selected:0,detail:[`状态：${input.reason??inputStateText(input.state)}`,input.input.text],rows:[collaborationRow('back','返回'),...actionRows],hint:'↑↓ 选择 · Enter 执行 · Esc 返回'}))
+        commit(openPicker(view,{source:'input-detail',title: input.purpose==='current'?'当前补充':'下一件', selected:0,detail:[`状态：${input.reason??inputStateText(input.state)}`,input.input.text,...(input.state==='failed'?evidenceLines():[])],rows:[collaborationRow('back','返回'),...actionRows],hint:'↑↓ 选择 · Enter 执行 · Esc 返回'}))
         return NONE
       }
       if(view.dock.picker.source==='input-detail'){
@@ -3091,7 +3137,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
           workspaceRoots: options.workspaceRoots,
         })
         enterLayer()
-        commit(openPicker(view, { source:'paths-info', title:'数据与工作区', rows:[collaborationRow('back','返回')], selected:0, detail:lines, hint:'Esc 返回' }))
+        // **证据路径**（§六 · T3.3）：可复制（终端选择），来源已标注；engine 没给就整段缺席。
+        commit(openPicker(view, { source:'paths-info', title:'数据与工作区', rows:[collaborationRow('back','返回')], selected:0, detail:[...lines, ...evidenceLines()], hint:'Esc 返回' }))
         return NONE
       }
 

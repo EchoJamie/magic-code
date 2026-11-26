@@ -137,6 +137,10 @@ export async function terminalOptions(inputs: TerminalInputs): Promise<RunTuiOpt
     // 目录拼——故这一跳**原样转手**，一个字都不加工（见 `wire.ts` 的 `stopped`）。
     stop: (session, scope) => client.stop(session, scope),
     stopped: (listener) => client.onStopped((report) => listener(report)),
+    // **强制确认已停**（N11 · T3.3）——外壳的确认盒过了风险句才发；语义＝停止追踪。
+    confirmStop: (session) => client.confirmStop(session),
+    // **证据目录**（§六 · T3.3）——welcome 帧带来的路径，设置页与失败详情的取材。
+    evidencePaths: client.evidencePaths,
     // **管理者说的那句话**（U50 接上）——U48 起了这条线、U49 没用上，屏上一直没有它
     // （「这一代已经过去了」「起不了执行者」那些话全落在空气里）。
     lines: (listener) => client.onLine((text) => listener(text)),
@@ -423,6 +427,8 @@ export function terminalConnection(
     onClose: feed((client, listener) => client.onClose(listener), true),
     send: (command) => current.send(command),
     stop: (session, scope) => current.stop(session, scope),
+    confirmStop: (session) => current.confirmStop(session),
+    get evidencePaths() { return current.evidencePaths },
     markRead: (ids) => current.markRead(ids),
     answerSudo: (requestId, password) => current.answerSudo(requestId, password),
     close: () => { closed = true; current.close() },
