@@ -17,13 +17,12 @@ import {
 } from '@magic/host'
 import type { CollaborationNativeGroup, RunRecord } from '@magic/host'
 import { sendToExecutor as send, type Executor } from '../executor-control.ts'
-import { clearRecord } from '../run-store.ts'
-import { createRunStops } from '../stopping.ts'
+import { installStopping } from './lifecycle-stopping.ts'
 import type { ManagerContext } from './context.ts'
 
 /** 执行者交接、停止等待与最终收摊。 */
 export function installLifecycle(ctx: ManagerContext): void {
-  const { options, paths, now, store, executors, lastRuns, connections, sessions, control, collaboration, compactions, environments, closingEnvironments, diagnosticLog, identity, stopReports, stopGenerations, stopContent, collaborationStopVersions, sudoRequests, collaborationInputs } = ctx
+  const { options, now, store, executors, lastRuns, connections, sessions, control, collaboration, diagnosticLog, identity, stopReports, stopGenerations, stopContent, collaborationStopVersions, sudoRequests, collaborationInputs } = ctx
   const { clients } = connections
   const { workRoot, isArchived } = sessions
 
@@ -113,38 +112,10 @@ export function installLifecycle(ctx: ManagerContext): void {
     })))
   }
 
-  /** 等待者绑定具体执行者代次，旧代异步核销不能兑现同会话的后继代。 */
-  const settledRuns = ctx.settledRuns
+  // **停止编排**（T1.7）：runStops 装配/停止标记/整体停止收尾在 lifecycle-stopping.ts。
+  const stopping = installStopping(ctx)
+  const { stopExecution } = stopping.runStops
 
-  installRunStops()
-
-  function installRunStops(): void {
-    ctx.runStops = createRunStops({
-      now, liveOf: session => ctx.liveOf(session), lastRuns, stopGraceMs: ctx.stopGraceMs, stopKillMs: ctx.stopKillMs,
-      deliver: (executor, command) => ctx.deliver(executor, command),
-      reportStop,
-      changed: (immediate = false) => { ctx.saveRuns(immediate); ctx.pushRuns() },
-      log: options.log,
-      onSettled(run, note) {
-        if (note === undefined && run.ended !== undefined && !run.reclaimPending && run.reclaimNote === undefined &&
-          run.session !== null && run.executionId !== undefined && !ctx.storeClosed && !settledRuns.has(run)) {
-          void collaboration.executorExited(run.session, run.executionId, run.ended.why)
-          settledRuns.add(run)
-        }
-      },
-    })
-  }
-
-  const { stopExecution, settleStop, reclaimStale, reclaimRun, escalateStop } = ctx.runStops
-
-  function markStopping(executor: Executor, why: string): void {
-    if (executor.run.ended !== undefined) return
-    executor.run.stopping = true
-    refresh(executor.run, now())
-    options.log?.(`第 ${executor.gen} 代受理了停止：${why}`)
-    ctx.saveRuns()
-    ctx.pushRuns()
-  }
 
   function onExecutorMessage(executor: Executor, message: import('@magic/host').ExecutorToManager): void {
 
@@ -249,10 +220,10 @@ export function installLifecycle(ctx: ManagerContext): void {
           for (const conn of connections.watching(executor)) conn.link.send({ t: 'line', text: message.why })
         }
         // **自己受理了收摊**——记成「停止中」，核销等进程真退（见 `retire`）
-        markStopping(executor, message.why)
+        stopping.markStopping(executor, message.why)
         return
       case 'stopping':
-        markStopping(executor, message.why)
+        stopping.markStopping(executor, message.why)
         return
       case 'snapshot':
         connections.onSnapshot(executor, message.seq, message.snapshot)
@@ -457,101 +428,15 @@ export function installLifecycle(ctx: ManagerContext): void {
       )
     }
 
-    afterEnd(executor.run)
+    ctx.afterEnd(executor.run)
   }
 
-  function afterEnd(run: RunRecord): void {
-    ctx.releaseEnvironments()
-    void reclaimRun(run).then((note) => { ctx.releaseEnvironments(); settleStop(run, note) })
-  }
-
-  function stop(why: string): void {
-    void beginStop(why).catch(error => {
-      const reason = `未能确认全部工作已停止：${String(error)}`
-      options.log?.(reason)
-      diagnosticLog.write('error', 'manager.shutdown.failed', identity)
-      options.onShutdownError?.(reason)
-    })
-  }
-
-  function beginStop(why: string): Promise<void> {
-    if (ctx.storeClosed) return Promise.resolve()
-    if (ctx.shutdownInFlight !== undefined) return ctx.shutdownInFlight
-    ctx.stopped = true
-    clearInterval(ctx.probe)
-    if (ctx.pushTimer !== undefined) clearTimeout(ctx.pushTimer)
-    ctx.native.changed()
-    try {
-      if (!ctx.admissionClosed) {
-        collaboration.shutdown(why)
-        options.lifecycle?.closeAdmission()
-        ctx.admissionClosed = true
-      }
-    } catch (error) { return Promise.reject(error) }
-    ctx.shutdownInFlight = shutdown(why).finally(() => { ctx.shutdownInFlight = undefined })
-    return ctx.shutdownInFlight
-  }
-
-  async function shutdown(why: string): Promise<void> {
-    const owned = [...executors]
-    for (const executor of owned) {
-      executor.run.stopping = true
-      refresh(executor.run, now())
-      executor.link.send({ t: 'bye', why })
-    }
-    ctx.saveRuns(true)
-    // 扩展收尾与所属工具回收并行，扩展不能阻止目标 Agent 取消。
-    const extension = Promise.all([compactions.close(), Promise.resolve().then(() => options.lifecycle?.shutdown())])
-    let extensionTimer: ReturnType<typeof setTimeout> | undefined
-    const extensionResult = Promise.race([
-      extension.then(() => undefined, (error: unknown) => String(error)),
-      new Promise<string>((resolve) => {
-        extensionTimer = setTimeout(() => resolve('协作收尾尚未确认'), ctx.stopGraceMs + 2 * ctx.stopKillMs)
-      }),
-    ]).finally(() => { if (extensionTimer !== undefined) clearTimeout(extensionTimer) })
-    await Promise.all(owned.map(executor => escalateStop(executor)))
-    if (owned.some((one) => !one.exited && one.run.ended === undefined)) throw new Error('仍有执行资源未核销')
-    await ctx.runStops.drainReclaims()
-    for (const run of lastRuns.values()) {
-      if (run.ended === undefined) {
-        await reclaimStale(run)
-      }
-      if (run.owned.length > 0) await reclaimRun(run)
-      if (run.reclaimNote !== undefined) throw new Error(run.reclaimNote)
-      settleStop(run)
-    }
-    const extensionError = await extensionResult
-    if (extensionError !== undefined) throw new Error(extensionError)
-    await Promise.all([...environments.values()].map(network => network.close()))
-    await Promise.all([...closingEnvironments])
-    environments.clear()
-    if (ctx.saveTimer !== undefined) clearTimeout(ctx.saveTimer)
-    ctx.saveRuns(true)
-    // 关闭连接后由客户端呈现断线状态，保留其草稿与重连入口。
-    connections.close()
-    await ctx.closeConfigWatch()
-    ctx.native.close()
-    ctx.server.stop(true)
-    clearRecord(paths)
-    ctx.storeClosed = true
-    store.close()
-    options.log?.(`管理者收摊（${why}）`)
-    diagnosticLog.write('info', 'manager.stopped', identity)
-    await diagnosticLog.close()
-    await options.beforeExit?.()
-    ctx.settle()
-  }
 
   ctx.workStopGeneration = workStopGeneration
   ctx.reportStop = reportStop
   ctx.startMember = startMember
   ctx.cancelMembers = cancelMembers
-  ctx.markStopping = markStopping
   ctx.onExecutorMessage = onExecutorMessage
   ctx.onEvent = onEvent
   ctx.retire = retire
-  ctx.afterEnd = afterEnd
-  ctx.stop = stop
-  ctx.beginStop = beginStop
-  ctx.shutdown = shutdown
 }

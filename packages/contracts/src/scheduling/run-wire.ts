@@ -82,6 +82,13 @@ export type ClientToManager =
    * ——用户按会话/工作操作（设计：「PID 和创建时间仅作诊断」），故按会话点名。
    */
   | { readonly t: 'stop'; readonly session: SessionId; readonly scope: StopScope }
+  /**
+   * **强制确认已停**（N11 · T1.6b）：停止走到 `unconfirmed`（执行器是否真停**未证实**）
+   * 之后的退出命令。语义＝**停止追踪**：engine 把这条运行核销为已停、不再重试回收；
+   * ⚠️ **不保证执行器已停**——它原命令的副作用可能仍在发生。确认框必须把这句
+   * 风险说给用户（N11 定案文案），engine 据确认落账与诊断，不再另问。
+   */
+  | { readonly t: 'stop.confirm'; readonly session: SessionId }
   | { readonly t: 'bye'; readonly why: string }
   | { readonly t: 'read'; readonly ids: readonly string[] }
   /**
@@ -111,6 +118,8 @@ export type ManagerToClient =
       readonly mcp: readonly McpProbeRow[]
       /** **这一摊的投影修订**（单调递增可跳号）——runs 推送与之同源，TUI 按它判新旧。 */
       readonly revision: number
+      /** 证据目录路径列表（§3.1：仅路径不含正文）——设置页/取证直接读。 */
+      readonly evidencePaths?: readonly string[]
       /**
        * **这条窗口服务不了**（`magic resume` 打错一个字母是唯一一条）。
        *

@@ -307,9 +307,13 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   ctx.runtime = runtime
   ctx.configuration = { stamp: null }
 
+  /** 证据目录（§3.1）：路径列表，native 投影与 welcome 帧共用同一来源。 */
+  const evidencePathsOf = (): readonly string[] => [join(options.magic.base, 'logs')]
+  ctx.evidencePaths = evidencePathsOf
+
   const native = createNativeServer({
     configuration: () => ctx.configuration,
-    evidencePaths: () => [join(options.magic.base, 'logs')],
+    evidencePaths: evidencePathsOf,
     identity, store, accepting: () => !ctx.stopped, runtime,
     async engineStop(request, idleOnly) {
       // 核责任与关闭准入之间没有 await，新提交不能穿过实例切换。

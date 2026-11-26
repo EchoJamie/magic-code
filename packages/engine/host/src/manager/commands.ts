@@ -2,104 +2,26 @@ import type {
   ClientToManager,
   CollaborationCommand,
   Command,
-  Entry,
-  KernelEvent,
   StopScope,
-  TurnTimingEvent,
   Wire,
 } from '@magic/contracts'
-import {
-  CONTROL_DIRECTORY_LIMIT,
-  CONTROL_FRAME_BUDGET_BYTES,
-  CONTROL_PREVIEW_TEXT_BYTES,
-  PENDING_INPUT_LIMIT,
-  isTurnTimingEvent,
-  pendingViews,
-} from '@magic/contracts'
 import { loadConfig, setPrefs } from '@magic/state'
-import { ARCHIVED_NOTE, backgroundOf, controlLink, createWorkEnvironment, linkOf, memoryWorkspace, query as observe, readMemory, readMemorySource, readReferenceSessions, workspaceOf } from '@magic/host'
-import { bindSessionReferences, createPlanReader, readSessionDisplayHistory } from '@magic/conversation'
+import { ARCHIVED_NOTE, backgroundOf, controlLink, createWorkEnvironment, linkOf, memoryWorkspace, query as observe, readMemory } from '@magic/host'
+import { bindSessionReferences } from '@magic/conversation'
+import { installInputCommands } from './commands-input.ts'
 import type { Socket } from 'bun'
 import { sendToExecutor as send, type Executor } from '../executor-control.ts'
-import { clipEntryForWire, clipTextBytes, wireBytesOf } from '../wire-view.ts'
+import { installReadCommands, READONLY_COMMANDS, welcomeNotices } from './commands-read.ts'
 import type { ClientConn } from '../connections.ts'
 import type { ManagerContext } from './context.ts'
-
-/**
- * 历史分批发给窗口的字节预算——产生侧单帧预算减去给末包元数据留的余量。
- *
- * 原先按「50 条一批」发：条数不是字节数。一批里只要有几条几十万字的工具结果，
- * 单条 `session.history` 就能逼近甚至超过连接层上限（与 2026-11-21 接续事故同形）。
- * 现在按整帧字节累计；单条再大也只占单帧预算的一半，装得进任何一批。
- */
-const HISTORY_BATCH_BYTES = CONTROL_FRAME_BUDGET_BYTES - 256 * 1024
-
-/** 单条历史记录装得下的预算——超过就裁正文（保留开头并注明），别让一条旧记录撑破连接。 */
-const HISTORY_ENTRY_BYTES = CONTROL_FRAME_BUDGET_BYTES / 2
-
-/** 末包随附的元数据条数上限——timing 最近 1000 条、messages 最近 50 条、compactions 最近 20 条。 */
-const HISTORY_META_TIMING = 1_000
-const HISTORY_META_MESSAGES = 50
-const HISTORY_META_COMPACTIONS = 20
-
-/** welcome 里最多带多少条未读提醒——其余由后续读取补，不能压住握手帧。 */
-const WELCOME_NOTICE_LIMIT = 20
-
-/** 目录视图：active 在首位，超出上限的会话由后续分页/搜索补。 */
-function directoryView<T extends { readonly id: string }>(sessions: readonly T[], active: string): readonly T[] {
-  const head = sessions.find(one => one.id === active)
-  return [
-    ...(head === undefined ? [] : [head]),
-    ...sessions.filter(one => one.id !== active),
-  ].slice(0, CONTROL_DIRECTORY_LIMIT)
-}
-
-/**
- * welcome 的提醒视图：条数有上限、正文按预算截断。
- *
- * 提醒的 `detail` 可能是助手最终回复的全文（`notices.ts` 的完成提醒）；
- * 握手帧必须**按构造**装得下，不能等 `wire` 兜底。
- */
-function welcomeNotices<T extends { readonly detail?: string }>(notices: readonly T[]): readonly T[] {
-  return notices.slice(0, WELCOME_NOTICE_LIMIT).map(one => {
-    if (one.detail === undefined) return one
-    return { ...one, detail: clipTextBytes(one.detail, CONTROL_PREVIEW_TEXT_BYTES) }
-  })
-}
 
 /** 客户端命令的受理、路由与回执。 */
 export function installCommands(ctx: ManagerContext): void {
   const { options, now, store, lastRuns, connections, sessions, mcpCatalog, compactions, control, collaboration, environments, collaborationInputs, sudoRequests, diagnosticLog, identity } = ctx
   const { clients } = connections
   const { workRoot, isArchived, manageSession } = sessions
-
-  /**
-   * **受理前移**（T1.1/T1.1b · 事务性发件箱）：deliver 前把输入落账（`inputs.accept` 落 pending）
-   * ——受理事实持久存在，帧丢失/执行器死亡不影响最终消费（对账兜底）。返回带 `ref` 的
-   * 命令：执行者侧 `enqueue` 对同 ref 幂等（DO NOTHING），账上行与消费动作单一对齐。
-   *
-   * - **容量**：每会话 pending 上限 `PENDING_INPUT_LIMIT`——到限当场拒（落 `rejected` 行
-   *   `rejectedKind='capacity'` + 回执），原稿留输入位（动作＝一键重发）。
-   * - **会话未建立**（新窗口首条）：会话 id 生成移到引擎——建会话行（workspace 留 NULL，
-   *   执行者 assembled 后一次性锚定）→ 受理 → spawn 带显式 session（D5 不冲突：记录仍因
-   *   首条真实交代才存在）。
-   * 返回 `undefined` ＝ 已拒（回执已发），调用方直接返回。
-   */
-  function acceptInput(conn: ClientConn, command: Extract<Command, { readonly type: 'input.submit' }>): { readonly command: Command; readonly session: string } | undefined {
-    const existing = conn.selectedSession
-    const session = existing ?? crypto.randomUUID()
-    const records = store.serviceFor(session)
-    if (existing !== null && records.inputs.list().filter(one => one.state === 'pending').length >= PENDING_INPUT_LIMIT) {
-      const ref = command.ref ?? crypto.randomUUID()
-      records.inputs.reject({ ...command, ref }, '待办已满', now(), 'capacity')
-      conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'input.settled', data: { ok: false, ref, reason: '待办已满', rejectedKind: 'capacity' } } })
-      return undefined
-    }
-    if (existing === null) store.createSession(session, now())
-    const ref = command.ref ?? crypto.randomUUID()
-    records.inputs.accept({ ...command, ref }, now())
-    return { command: { ...command, ref }, session }
-  }
+  const read = installReadCommands(ctx)
+  const inputCommands = installInputCommands(ctx)
 
   function accept(socket: Socket<unknown>): void {
     /**
@@ -185,6 +107,7 @@ export function installCommands(ctx: ManagerContext): void {
             base: options.magic.base,
             mcp: ctx.probed,
             revision: ctx.currentRevision(),
+            evidencePaths: ctx.evidencePaths(),
             // 开屏那张摘要据它说「这一摊有几项在跑」——**接上就读得到**，不必先问一次
             runs: ctx.runsView(),
             // 汇总只读；具体事项另行确认已读。条数与正文都要有上限——
@@ -225,6 +148,7 @@ export function installCommands(ctx: ManagerContext): void {
             void ctx.onCommand(client, message.gen, message.cmd)
           }
           if (message.t === 'stop') ctx.stopRun(client, message.session, message.scope)
+          if (message.t === 'stop.confirm') ctx.confirmStop(client, message.session)
           if (message.t === 'sudo.answer') ctx.answerSudo(client, message)
           if (message.t === 'bye') ctx.dropConnection(client.id)
           return
@@ -243,147 +167,6 @@ export function installCommands(ctx: ManagerContext): void {
       ctx.dropConnection(client.id)
     })
   }
-
-  async function catalog(conn: ClientConn, archived = false): Promise<void> {
-    try {
-      const all = await ctx.nativeSessions({ archived })
-      if (conn.link.closed) return
-      const active = conn.selectedSession ?? ''
-      const sessions = directoryView(all, active)
-      conn.link.send({
-        t: 'ev', gen: null, event: {
-          id: 0, turn: null, at: now(), session: active, kind: 'session.state',
-          data: {
-            active, sessions,
-            ...(all.length > sessions.length ? { total: all.length, truncated: true as const } : {}),
-          },
-        }
-      })
-      if (conn.selectedSession !== null) { const session = conn.selectedSession; conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'session.changed', data: { session: workRoot(session), archived: isArchived(session), canArchive: ctx.sessions.canArchive(session), terminalOpen: ctx.terminalClients(session).length > 0 } } }) }
-      if (conn.selectedSession !== null) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: conn.selectedSession, kind: 'input.pending', data: { inputs: pendingViews(store.serviceFor(conn.selectedSession).inputs.list()) } } })
-    } catch { if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session: conn.selectedSession ?? '', kind: 'session.state', data: { active: conn.selectedSession ?? '', sessions: [], note: '无法读取会话目录' } } }) }
-  }
-
-  async function readHistory(conn: ClientConn, session: string): Promise<void> {
-    if (!store.hasSession(session)) { conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'session.history', data: { session, entries: [], done: true, error: '会话已不可达' } } }); return }
-    const revision = connections.beginHistory(conn, session)
-    if (revision === undefined) return
-    try {
-      let entries: Entry[] = []
-      let batchBytes = 0
-      const timing: TurnTimingEvent[] = []
-      const compactEvents: Extract<KernelEvent, { kind: 'compact.state' }>[] = []
-      const localInputs: Extract<KernelEvent, { kind: 'input.local' }>[] = []
-      // **最后那一次调用的读数**（见 `session.history.usage`）——与在场时状态行 ④ 同一条规矩：
-      // 分子取 `model.usage` 的输入消耗，分母取 `model.call.start` 的预算（那一次没带预算就退回
-      // 用量事件自带的窗长）。两个都只在**末次**有效：往前那些是更早的账。
-      let lastUsage: { inputTokens?: number; contextWindow?: number } | undefined
-      let lastBudget: number | undefined
-      let started = false
-      for await (const event of store.serviceFor(session).readEvents(session)) {
-        if (event.kind === 'input.local') localInputs.push(event)
-        if (isTurnTimingEvent(event)) timing.push(event)
-        if (event.kind === 'compact.state') compactEvents.push(event)
-        if (event.kind === 'model.call.start') { started = true; lastBudget = event.data.inputBudget }
-        if (event.kind === 'model.usage') lastUsage = { inputTokens: event.data.inputTokens, contextWindow: event.data.contextWindow }
-      }
-      const usage = lastUsage === undefined ? undefined : {
-        ...(lastUsage.inputTokens === undefined ? {} : { inputTokens: lastUsage.inputTokens }),
-        ...(started ? (lastBudget === undefined ? {} : { contextWindow: lastBudget })
-          : (lastUsage.contextWindow === undefined ? {} : { contextWindow: lastUsage.contextWindow })),
-      }
-      // 子会话正文里的 `agent-message` 条目只带引用；正文随末块交给外壳并入正文。
-      const agent = store.collaboration.agentForSession(session)
-      const work = agent === undefined ? undefined : store.collaboration.collaborationForSession(session)
-      const messages = agent === undefined || work === undefined || agent.agentId === work.coordinatorId
-        ? [] : store.collaboration.listMessages(agent.agentId)
-      const send = (done: boolean): void => {
-        /**
-         * 末包元数据的条数上限——`timing` 随 turn 数线性增长，`messages` 来自无 LIMIT
-         * 的协作消息列表（2026-11-21 审计：只给 entries 分批，末包单独就能复现 P0）。
-         *
-         * 2026-11-24 收权：字节预算只管**会话历史条目**——本地输入已并入条目流（同一条
-         * 预算与预览规矩），plan 改走 `plan.read`（全文、零裁剪），都不再在这被打折。
-         */
-        const meta = done ? {
-          timing: timing.slice(-HISTORY_META_TIMING),
-          compactions: compactEvents.slice(-HISTORY_META_COMPACTIONS),
-          ...(usage === undefined ? {} : { usage }),
-          ...(messages.length === 0 ? {} : { messages: messages.slice(-HISTORY_META_MESSAGES) }),
-          ...(timing.length > HISTORY_META_TIMING
-            || compactEvents.length > HISTORY_META_COMPACTIONS
-            || messages.length > HISTORY_META_MESSAGES
-            ? { truncated: true as const }
-            : {}),
-        } : {}
-        conn.link.send({
-          t: 'ev', gen: null, event: {
-            id: 0, turn: null, at: now(), session, kind: 'session.history',
-            data: { session, entries, done, ...meta },
-          }
-        })
-        entries = []
-        batchBytes = 0
-      }
-      /** 一条（已裁好的）条目装进当前批——装不下就先发一批。 */
-      const admit = (entry: Entry, bytes: number): void => {
-        if (entries.length > 0 && batchBytes + bytes > HISTORY_BATCH_BYTES) send(false)
-        entries.push(entry)
-        batchBytes += bytes
-        if (entries.length === 50) send(false)
-      }
-      /** 单条过预算管线：先裁全部字段，仍装不下一批再降档，别让门面来砍。 */
-      const fit = (raw: Entry): { readonly entry: Entry; readonly bytes: number } => {
-        let entry = clipEntryForWire(raw, HISTORY_ENTRY_BYTES)
-        let bytes = wireBytesOf(entry)
-        while (bytes > HISTORY_BATCH_BYTES) {
-          const tighter = clipEntryForWire(entry, Math.max(1, Math.floor(bytes / 2)))
-          const next = wireBytesOf(tighter)
-          if (next >= bytes) break
-          entry = tighter
-          bytes = next
-        }
-        return { entry, bytes }
-      }
-      /**
-       * 本地输入**并入条目流**（2026-11-24 收权）：它们本来就是转录里的用户行——
-       * 是历史的一部分，与其它条目同一条预算与预览规矩，不再作为 meta 单独裁剪、
-       * 也不再只带最近 20 条。事件与条目共用同一个 id 序列，按 id 归并即得原序。
-       */
-      const woven = localInputs.map(event => ({
-        id: event.id, kind: 'user' as const, at: event.at,
-        content: { text: event.data.text }, payload: { local: true as const, inputRefs: event.data.refs },
-      })).sort((a, b) => a.id - b.id)
-      const wove = woven[Symbol.iterator]()
-      let nextInput = wove.next()
-      const admitFitted = (raw: Entry): void => {
-        const fitted = fit(raw)
-        admit(fitted.entry, fitted.bytes)
-      }
-      for await (const raw of readSessionDisplayHistory(store, session)) {
-        if (!connections.historyCurrent(conn, revision)) return
-        while (nextInput.done === false && nextInput.value.id < raw.id) { admitFitted(nextInput.value); nextInput = wove.next() }
-        admitFitted(raw)
-      }
-      while (nextInput.done === false) { admitFitted(nextInput.value); nextInput = wove.next() }
-      if (connections.historyCurrent(conn, revision)) {
-        // 条目与 meta 分开：先发最后一批 entries，再发空条目的 done 帧——
-        // 末包再大也不会把「读完了」这件事挤掉。
-        if (entries.length > 0) send(false)
-        send(true)
-        const notice = ctx.reconcileNotice(workRoot(session))
-        if (conn.selectedSession === session && notice?.unread) conn.link.send({ t: 'notice', notice })
-      }
-    } catch { if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'session.history', data: { session, entries: [], done: true, error: '无法读取会话记录' } } }) }
-    finally { connections.finishHistory(conn, revision) }
-  }
-
-  const READONLY_COMMANDS = new Set([
-    'session.list', 'session.open', 'session.references', 'history.read', 'plan.read',
-    'model.list', 'model.refresh', 'models.search', 'provider.list', 'skills.list',
-    'paths.list', 'paths.identify', 'mcp.list', 'knowledge.query', 'knowledge.read',
-    'memory.read', 'memory.source', 'collaboration.read', 'compact.query',
-  ])
 
   async function onCommand(conn: ClientConn, gen: number | null, command: Command): Promise<void> {
     // **第二读者只读**（T1.6 · N5）：这条会话的执行器被另一窗口占为写者——本连接
@@ -444,6 +227,8 @@ export function installCommands(ctx: ManagerContext): void {
   }
 
   async function acceptCommand(conn: ClientConn, gen: number | null, command: Command): Promise<void> {
+    // **读面先走**（T1.7）：纯读分发/目录/历史在 commands-read.ts——归不了读面才进写面。
+    if (await read.handleReadCommand(conn, command)) return
     if (command.type === 'compact.request' || command.type === 'compact.query' || command.type === 'compact.cancel') {
       const request = command
       const state = request.type === 'compact.query' ? await compactions.query(request.session, request.requestId)
@@ -469,66 +254,7 @@ export function installCommands(ctx: ManagerContext): void {
       if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: request.session, kind: 'compact.state', data: state } })
       return
     }
-    if (command.type === 'session.references') {
-      const data = await readReferenceSessions(store, command).catch(error => ({ requestId: command.requestId, query: command.query, offset: command.offset ?? 0, rows: [], error: String(error) }))
-      if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'session.references', data } })
-      return
-    }
-    if (command.type === 'memory.read') {
-      const data = await (async () => readMemory(store, command.session, await memoryWorkspace(store, command.session, command.session === undefined ? workspaceOf(loadConfig({ magic: options.magic }), conn.cwd).roots() : []), command))().catch(error => ({ ...(command.session === undefined ? {} : { session: command.session }), workspace: [], error: String(error) }))
-      if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: command.session ?? '', kind: 'memory.state', data: { requestId: command.requestId, ...data } } })
-      return
-    }
-    if (command.type === 'memory.source') {
-      const result = await (async () => {
-        const workspace = await memoryWorkspace(store, command.session, command.session === undefined ? workspaceOf(loadConfig({ magic: options.magic }), conn.cwd).roots() : [])
-        return readMemorySource(store.forWorkspace(workspace), command)
-      })().then(page => ({ page }), error => ({ error: String(error) }))
-      if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: command.session ?? '', kind: 'memory.source', data: { requestId: command.requestId, ...(command.session === undefined ? {} : { session: command.session }), ...result } } })
-      return
-    }
-    if (command.type === 'knowledge.query' || command.type === 'knowledge.read') {
-      const data = await (async () => {
-        const workspace = await memoryWorkspace(store, command.session, command.session === undefined ? workspaceOf(loadConfig({ magic: options.magic }), conn.cwd).roots() : [])
-        const knowledge = store.forWorkspace(workspace).knowledge
-        if (command.type === 'knowledge.query') return { workspace, page: knowledge.search(command.query) }
-        const item = knowledge.read(command.id)
-        if (item === undefined) throw new Error('知识已不可读取或不在当前范围')
-        return { workspace, item }
-      })().catch(error => ({ workspace: [], error: String(error) }))
-      if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: command.session ?? '', kind: 'knowledge.state', data: { requestId: command.requestId, ...(command.session === undefined ? {} : { session: command.session }), ...data } } })
-      return
-    }
-    if (command.type === 'knowledge.forget' || command.type === 'knowledge.forget-result') {
-      const data = await (async () => {
-        const workspace = await memoryWorkspace(store, command.session, command.session === undefined ? workspaceOf(loadConfig({ magic: options.magic }), conn.cwd).roots() : [])
-        const knowledge = store.forWorkspace(workspace).knowledge
-        const current = knowledge.read(command.id)
-        if (current !== undefined && (current.scope.kind !== command.scope.kind || (current.scope.kind === 'project'
-          && command.scope.kind === 'project' && JSON.stringify(current.scope.workspace) !== JSON.stringify(command.scope.workspace)))) throw new Error('知识范围与所见对象不一致，未执行遗忘')
-        const request = { requestId: command.requestId, id: command.id, expectedRevision: command.expectedRevision }
-        return { result: command.type === 'knowledge.forget' ? knowledge.forget(request) : knowledge.forgetResult(request) }
-      })().catch(error => ({ error: String(error) }))
-      if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: command.session ?? '', kind: 'knowledge.forgotten', data: { requestId: command.requestId, ...(command.session === undefined ? {} : { session: command.session }), ...data } } })
-      return
-    }
     if (command.type === 'background.list' || command.type === 'background.stop') { ctx.backgroundCommand(conn, command); return }
-    if (command.type === 'history.read') {
-      const session = command.session ?? conn.selectedSession
-      if (session !== null && session !== undefined) void readHistory(conn, session)
-      return
-    }
-    if (command.type === 'plan.read') {
-      // 计划的读侧答复——**全文、零裁剪**（2026-11-24 起计划不搭历史帧的车）。
-      // 目标会话：命令点了名就点名的那条，否则连接当前选中的那条。
-      const session = command.session ?? conn.selectedSession
-      if (session === null || session === undefined) return
-      const data = await (async () => createPlanReader({ records: store.serviceFor(session), session }).readPlan())()
-        .catch(() => ({ entry: null, plan: null }))
-      if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session, kind: 'plan.changed', data: { requestId: command.requestId, entry: data.entry, plan: data.plan } } })
-      return
-    }
-    if (command.type === 'session.list') { void catalog(conn, command.archived ?? false); return }
     if (command.type === 'session.archive' || command.type === 'session.restore' || command.type === 'session.rename') {
       const result = manageSession({ session: command.session, action: command.type === 'session.archive' ? 'archive' : command.type === 'session.restore' ? 'restore' : 'rename', ...('title' in command ? { title: command.title } : {}) })
       conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: result.session, kind: 'session.managed', data: result } })
@@ -606,45 +332,8 @@ export function installCommands(ctx: ManagerContext): void {
     }
     if (command.type === 'session.new') connections.selectMember(conn, undefined)
 
-    if (command.type === 'input.manage') {
-      const origin = conn.selectedSession
-      const work = origin === null ? undefined : store.collaboration.collaborationForSession(origin)
-      const member = command.member === undefined ? undefined : work === undefined ? undefined : store.collaboration.listMembers(work.collaborationId).find(one => one.agentId === command.member)
-      const session = command.member === undefined ? origin : member?.sessionId
-      if (session == null) { conn.link.send({ t: 'line', text: '当前输入目标不存在，未修改' }); return }
-      if (member?.purpose === 'consultation' && command.action !== 'list') { conn.link.send({ t: 'line', text: '咨询详情只供查看；相关纠正请补充给原工作' }); return }
-      const inputs = store.serviceFor(session).inputs
-      let note: string | undefined
-      if (command.action === 'edit') {
-        try {
-          const input = await bindSessionReferences(command.input, store)
-          for (const ref of input.refs ?? []) {
-            if (ref.kind === 'memory' && ref.scope.kind === 'session') throw new Error('旧事项引用已退出使用')
-            if (ref.kind !== 'note') continue
-            if (ref.session !== session) throw new Error('纠正对象与发送目标不一致')
-            if (!(await readMemory(store, session, [], { path: ref.source })).notes?.page) throw new Error('所选笔记已不可读取；原稿保留')
-          }
-          note = inputs.edit(command.ref, command.revision, input) ? '已保存未消费输入' : '输入已消费或已改变，未修改'
-        } catch (error) { note = `未修改输入：${String(error)}` }
-      }
-      if (command.action === 'withdraw') note = inputs.withdraw(command.ref, command.revision) ? '已撤回未消费输入' : '输入已消费或已改变，未撤回'
-      if (command.action === 'continue') {
-        const row = inputs.get(command.ref)
-        if (row?.state !== 'pending' || row.revision !== command.revision) note = '输入已消费或已改变，未继续'
-        else if (work?.state === 'stopped') note = '这份工作已停止，请先明确继续工作'
-        else {
-          const executor = ctx.liveOf(session) ?? ctx.spawn({ session, explicit: true, cwd: member?.workspace[0] ?? conn.cwd, environment: conn.environment })
-          if (executor === undefined) note = '当前执行者不可用，输入保留'
-          else {
-            if (member === undefined) connections.bind(conn, executor)
-            else collaborationInputs.set(row.ref, { conn, session: origin!, target: session, ref: row.ref })
-            ctx.deliver(executor, command)
-          }
-        }
-      }
-      conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session, kind: 'input.pending', data: { inputs: pendingViews(inputs.list()), ...(note === undefined ? {} : { note }) } } })
-      return
-    }
+    // **输入账**（T1.7）：input.manage 各支（edit/withdraw/continue|consume/retry）在 commands-input.ts。
+    if (command.type === 'input.manage') { await inputCommands.handleInputManage(conn, command); return }
     // 当前会话是子会话时，输入只发给这条子会话；入口会话默认只给入口自己（不再广播给成员）。
     const currentAgent = originSession == null ? undefined : store.collaboration.agentForSession(originSession)
     const subSession = activeCollaboration === undefined || currentAgent === undefined
@@ -718,7 +407,7 @@ export function installCommands(ctx: ManagerContext): void {
 
       // 新对话只是清空连接目标；首条明确输入才启动执行者并创建持久会话。
       connections.selectSession(conn, null)
-      void catalog(conn)
+      void read.catalog(conn)
       return
     }
 
@@ -752,7 +441,7 @@ export function installCommands(ctx: ManagerContext): void {
         return
       }
       connections.bind(conn, spawned)
-      const accepted = command.type === 'input.submit' ? acceptInput(conn, command) : { command, session }
+      const accepted = command.type === 'input.submit' ? inputCommands.acceptInput(conn, command) : { command, session }
       if (accepted === undefined) return
       ctx.deliver(spawned, accepted.command)
       // ⚠️ **这一条不能省**（main 的 `retarget` 新起一代那一支末尾也有它）：为这条会话新起的
@@ -765,7 +454,7 @@ export function installCommands(ctx: ManagerContext): void {
     if (command.type === 'input.submit') {
       // T1.1b：会话 id 生成移到引擎——建会话行 → 受理落账 → spawn 带显式 session
       //（spawnFresh 的 session-null 形态对输入退役；执行者 session=null 分支休眠不删）。
-      const accepted = acceptInput(conn, command)
+      const accepted = inputCommands.acceptInput(conn, command)
       if (accepted === undefined) return
       const choice = accepted.command.type === 'input.submit' ? accepted.command.model : undefined
       const picked = choice ?? conn.switch
@@ -835,8 +524,23 @@ export function installCommands(ctx: ManagerContext): void {
     }
   }
 
-  function stopRun(conn: Pick<ClientConn, 'id'>, session: string, scope: StopScope): void {
-    const work = store.collaboration.collaborationForSession(session)
+  /**
+   * **强制确认已停**（N11 · 停止追踪语义）：unconfirmed 的退出命令——核销为已停、
+   * 停止重试回收；⚠️ 不保证执行器已停（原命令的副作用可能仍在发生——确认框已明示）。
+   */
+  function confirmStop(conn: Pick<ClientConn, 'id' | 'link'>, session: string): void {
+    const run = lastRuns.get(session)
+    if (run === undefined || run.ended === undefined || (!run.reclaimPending && run.reclaimNote === undefined)) {
+      conn.link.send({ t: 'line', text: '这条会话没有待确认的停止——没有要确认的事' })
+      return
+    }
+    diagnosticLog.write('warn', 'stop.confirmed-unverified', { ...identity, session, run: String(run.gen) })
+    ctx.runStops.settleStop(run, '已按用户确认收尾；执行器是否已停未证实，其原命令可能仍在运行')
+    ctx.saveRuns(true)
+    ctx.pushRuns()
+  }
+
+  function stopRun(conn: Pick<ClientConn, 'id'>, session: string, scope: StopScope): void {    const work = store.collaboration.collaborationForSession(session)
     if (work !== undefined) {
       const agent = store.collaboration.agentForSession(session)
       const delegation = agent?.agentId === work.coordinatorId ? undefined : store.collaboration.listDelegations(work.collaborationId).find(d => d.assigneeId === agent?.agentId && d.state === 'accepted')?.delegationId
@@ -886,12 +590,13 @@ export function installCommands(ctx: ManagerContext): void {
   }
 
   ctx.accept = accept
-  ctx.catalog = catalog
-  ctx.readHistory = readHistory
+  ctx.catalog = read.catalog
+  ctx.readHistory = read.readHistory
   ctx.onCommand = onCommand
   ctx.acceptCommand = acceptCommand
   ctx.collaborationCommand = collaborationCommand
   ctx.stopRun = stopRun
+  ctx.confirmStop = confirmStop
   ctx.dropConnection = dropConnection
   ctx.answerSudo = answerSudo
   ctx.cancelSudo = cancelSudo

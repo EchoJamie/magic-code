@@ -197,6 +197,8 @@ export type ManagerContext = {
   runStops: RunStops
   probe: ReturnType<typeof setInterval>
   reconcileTimer?: ReturnType<typeof setInterval>
+  evidencePaths: () => readonly string[]
+  confirmStop(conn: Pick<ClientConn, 'id' | 'link'>, session: string): void
   shutdownInFlight: Promise<void> | undefined
   admissionClosed: boolean
 
