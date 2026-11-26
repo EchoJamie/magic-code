@@ -523,10 +523,27 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
       let note: string | undefined
       if (command.action === 'edit') note = inputs.edit(command.ref, command.revision, command.input) ? '已保存未消费输入' : '输入已消费或已改变，未修改'
       if (command.action === 'withdraw') note = inputs.withdraw(command.ref, command.revision) ? '已撤回未消费输入' : '输入已消费或已改变，未撤回'
-      if (command.action === 'continue') {
+      // **retry 与立即消费分离**（N14 · 契约 `InputManage`）：
+      // - `retry` 只从 failed/rejected 起（账本 `retry` 校验状态）；按 `failedFrom` 分文案
+      //   （G3/M4）：执行前失败的重提是「重试」；执行中重提＝「重新执行（可能重复副作用）」
+      //   ——那一轮跑过什么无从判定，重提是把同一次调用再发一遍。
+      // - `consume`（旧名 `continue` 并入）只对 pending：清除 hold、立即入队消费——
+      //   准入失败（N14）的出路是**再消费一次**，不是把失败当重试。
+      if (command.action === 'retry') {
+        const row = inputs.get(command.ref)
+        if (row !== undefined && row.revision === command.revision && inputs.retry(command.ref, command.revision)) {
+          const fresh = inputs.get(command.ref)!
+          pending.push({ input: fresh.input, shared: false })
+          if (!running && compactPending === undefined) startDrain()
+          note = fresh.failedFrom === 'executing'
+            ? '已重新入队——重新执行（可能重复副作用；先前那一轮跑到哪一步无从判定，先核对再继续）'
+            : '已重新入队——重试'
+        } else note = '输入不在可重试状态（只从失败/被拒起）或已改变，未重试'
+      }
+      if (command.action === 'consume' || command.action === 'continue') {
         const row = inputs.get(command.ref)
         if (row?.state === 'pending' && row.revision === command.revision) { inputs.hold(row.ref,undefined); pending.push({input:row.input,shared:false}); if (!running && compactPending === undefined) startDrain() }
-        else note = '输入已消费或已改变，未继续'
+        else note = command.action === 'continue' ? '输入已消费或已改变，未继续' : '输入不在待消费状态（立即消费只对未开始的输入），未消费'
       }
       sink.emit(stamper.stamp('input.pending', {inputs:pendingViews(inputs.list()),...(note===undefined?{}:{note})}))
     },

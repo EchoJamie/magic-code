@@ -217,3 +217,34 @@ describe('执行域——单根＝启动目录（缺省）／多根＝配置接�
     }
   })
 })
+
+describe('生命周期统一——空壳零落库（T2.2）', () => {
+  /**
+   * 「装配后建空壳，不写库」的可执行证明（边界方案 T2.2 · 生命周期统一）。
+   *
+   * `registerAgent` 会顺手写 `sessions` 行（账本成员登记锚定会话），故
+   * **`listSessions()` 为空就同时证明了**：没有会话行被建、没有身份被登记——
+   * 「空壳零落库」的一条断言，两件事实。装配期只允许读（身份查询是只读的；
+   * `registerAgent` 惰性——首条输入/首次协作动作才登记）。
+   */
+  test('无 session 装配：不写会话行、不登记身份（boot 后仍为零）', async () => {
+    const stage = makeStage()
+
+    try {
+      const assembly = stage.assemble()
+
+      expect(assembly.session).toBeUndefined()
+      expect(await assembly.records.listSessions()).toEqual([])
+
+      // boot（恢复那一步）也不许落库——无 session 时它无事可做，但断言钉住「零副作用」
+      await assembly.boot()
+      expect(await assembly.records.listSessions()).toEqual([])
+      // 模型信息热身（ready）同样是只读路径——顺带钉住
+      // （不 await ready：它要 warmup，空装配下也该无害，但与本断言无关）
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
