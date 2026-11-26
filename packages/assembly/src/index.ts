@@ -2,13 +2,14 @@
  * 共享配置不携带 Agent 选择；当前展示只指向一条会话链。
  * 调用方先订阅 shell，再 boot/恢复，最后放开输入。
  */
-import { createModelConfiguration } from './agent-assembly/model-configuration.ts'
 import { createAgentSession, type AgentSession, type EnvironmentVars } from './agent-assembly/session.ts'
-import { noticesOf, providerRemovedNote } from '@magic/host'
-import { createWorkEnvironment, type WorkEnvironment } from '@magic/host'
+import { noticesOf } from '@magic/host'
+import type { WorkEnvironment } from '@magic/host'
 export type { EnvironmentVars } from './agent-assembly/session.ts'
 export { createStamper } from './agent-assembly/events.ts'
 export { workspaceOf } from '@magic/host'
+import { createModelDomain } from './model-registry.ts'
+import { createSharedResources } from './shared-resources.ts'
 
 import type { SessionPorts } from '@magic/host'
 import { createActions } from '@magic/host'
@@ -18,69 +19,44 @@ import type {
   CollaborationRequest,
   ControlTransport,
   EventDataOf,
-  EventKind,
-  EventSink,
   EventStamper,
   MagicHome,
   McpConnectionState,
   McpToolRejection,
   ModelGateway,
   ModelSwitchRequest,
-  PrefsSetRequest,
   ProcessLedger,
   RulesLoad,
   SessionId,
   SkillCatalog,
-  StatusLineConfig,
   SudoAuth,
   Timestamp,
   UserInput,
   WebSource,
 } from '@magic/contracts'
-import { TRANSIENT_EVENT_KINDS } from '@magic/contracts'
-import { createControlHub, createInProcessTransportPair } from '@magic/transport'
+import { createInProcessTransportPair } from '@magic/transport'
 import type { ContextPolicy, SessionInstance } from '@magic/conversation'
 import { createConversationService, createPlanReader } from '@magic/conversation'
 import {
-  createBackgroundRuns,
   type BackgroundRegistry,
-  createBunProcessPort,
-  createMaterials,
-  createProcessLedger,
-  createProjectRules,
-  createSandbox,
-  createSkills,
   createWorkspaceService,
   imageBytesOf,
   reapOwned,
 } from '@magic/resources'
 import { readClipboardImage } from '@magic/client'
-import type { McpServers } from '@magic/mcp'
-import { createMcpServers } from '@magic/mcp'
 import type { FetchLike, ModelInfoService, ModelRegistry, ModelSwitchResult } from '@magic/model'
 import { selectModel } from '@magic/model'
 import type { RecordsStore } from '@magic/data'
 import { createRecordsStore } from '@magic/data'
-import type { ToolDefinition } from '@magic/tools'
-import { defineMcpTools } from '@magic/tools'
-import { tmpdir } from 'node:os'
-import { resolveModelChoice, validateSelection } from '@magic/host'
 import type { LoadedConfig } from '@magic/state'
 import { loadConfig } from '@magic/state'
 import { saveImageFile } from './image-file.ts'
-import type { ModelCatalogReader } from '@magic/host'
 import {
   mcpCatalog,
-  modelCatalog,
   pathsCatalog,
-  providerCatalog,
   skillsCatalog,
   workspaceOf,
 } from '@magic/host'
-import { backgroundOutputDirOf, runPathsOf } from '@magic/host'
-
-/** 瞬时类不落库（契约 `TRANSIENT_EVENT_KINDS`——记录 schema v0 规则 ①）。 */
-const TRANSIENT: ReadonlySet<EventKind> = new Set(TRANSIENT_EVENT_KINDS)
 
 /** 装配入参——一切「从外面拿的」都经此进来（测试与入口复用同一条路径）。 */
 export type AssembleOptions = {
@@ -137,8 +113,6 @@ export type AssembleOptions = {
 }
 
 /** 装配产物——外壳侧一端 ＋ 自检 / 验收要用的把手。 */
-/** 注册表缺席时那条切换结果的缘由（注入了替身网关＝这批装配换不了模型）。 */
-const NO_REGISTRY = '本次装配没有供应商注册表（注入了替身网关）'
 
 export type McpServerView = {
   readonly server: string
@@ -217,12 +191,6 @@ export type Assembly = {
 }
 
 export function assemble(options: AssembleOptions): Assembly {
-  // 入口拥有位置选择权；装配与下游共用传入结果。
-  const network = options.network ?? createWorkEnvironment(options.environment ?? process.env)
-  const environment = network.env
-  const fetch: FetchLike = (input, init) => (options.modelFetch ?? network.fetch)(input, { ...init, signal: init?.signal == null ? signal : AbortSignal.any([signal, init.signal]) })
-  const lifetime = new AbortController()
-  const signal = options.signal === undefined ? lifetime.signal : AbortSignal.any([lifetime.signal, options.signal])
   const magic = options.magic
   const loaded = options.config ?? loadConfig({ magic })
   const now = options.now ?? Date.now
@@ -239,82 +207,18 @@ export function assemble(options: AssembleOptions): Assembly {
     ? workspaceOf(loaded, options.cwd)
     : createWorkspaceService({ roots: savedAgent.workspace })
 
-  const ledger = options.ledger ?? createProcessLedger()
-
-  const executionId = options.executionId ?? crypto.randomUUID()
-  const backgroundDir = ((): string | undefined => {
-    try {
-      return `${backgroundOutputDirOf(runPathsOf(magic, tmpdir()))}/${executionId}`
-    } catch {
-      return undefined
-    }
-  })()
-
-  const backgroundRuns: BackgroundRegistry | undefined =
-    backgroundDir === undefined
-      ? undefined
-      : createBackgroundRuns({ dir: backgroundDir, workspace, ledger, env: environment, signal, ...(environment['SHELL'] === undefined ? {} : { shell: environment['SHELL'] }) })
-
-  const sandbox = createSandbox({
-    env: environment,
-    workspace,
-    ledger,
-    ...(environment['SHELL'] === undefined ? {} : { shell: environment['SHELL'] }),
-  })
-
-  const mcp: McpServers = createMcpServers({
-    environment, cwd: workspace.defaultRoot(), signal, fetch: network.fetch,
-    process: createBunProcessPort(),
-    servers: savedAgent?.purpose === 'consultation' ? {} : loaded.config.mcp?.servers ?? {},
-    ledger,
-    ...(options.mcpTimeouts?.connectTimeoutMs === undefined
-      ? {}
-      : { connectTimeoutMs: options.mcpTimeouts.connectTimeoutMs }),
-    ...(options.mcpTimeouts?.callTimeoutMs === undefined
-      ? {}
-      : { callTimeoutMs: options.mcpTimeouts.callTimeoutMs }),
-  })
-
-  const mcpTools = (): readonly ToolDefinition[] =>
-    mcp.connections.flatMap((connection) => [...defineMcpTools(connection)])
-
-  const projectRules = createProjectRules({
-    signal,
-    workspace,
-    sources: loaded.config.rules?.sources ?? [],
-    // 两张名册两件事（契约 `RulesConfig`）：`sources` 读进来，`linkSources` 只放行链接
-    linkSources: loaded.config.rules?.linkSources ?? [],
-  })
-
-  const skills = createSkills({
-    signal,
-    workspace,
-    magicBase: magic.base,
-    home: magic.home,
-    sources: loaded.config.skills?.sources ?? [],
-  })
-
-  const materials = createMaterials({ workspace })
-
-  const recordsStore = options.records?.forWorkspace(workspace.roots()) ?? createRecordsStore({
-    dataDir: magic.base,
-    workspace: workspace.roots(),
-  })
-
-  // 所有会话共享控制广播与记录连接；信封仍由各自的铸造器生成。
-  const hub = createControlHub(error => {
-    if (chain === undefined) throw error
-    sink.emit(chain.stamper.stamp('error', { message: `控制操作失败：${error instanceof Error ? error.message : String(error)}` }))
-  })
-  const sink: EventSink = {
-    emit(event) {
-      // ① 控制广播**全部**（含瞬时增量——渲染要实时）
-      //    先广播后落库：反过来的话，落库一炸（载荷非 JSON 等）就是外壳**静默**漏事件
-      //    ——比如一条裁决询问没显示出来，用户永远等不到提示。丢持久可查、丢渲染会挂。
-      hub.emit(event)
-      if (!TRANSIENT.has(event.kind)) recordsStore.appendEvent(event)
+  // 共享资源构造归编排域（shared-resources.ts）；这里只交入参与收把手。
+  const resources = createSharedResources({
+    options: {
+      ledger: options.ledger, environment: options.environment, network: options.network,
+      signal: options.signal, records: options.records, modelFetch: options.modelFetch,
+      executionId: options.executionId, mcpTimeouts: options.mcpTimeouts,
     },
-  }
+    magic, loaded, workspace, savedAgent,
+    onHubError: onHubErrorOf,
+  })
+  const { network, environment, fetch, lifetime, signal, ledger, backgroundRuns, sandbox, mcp, mcpTools, projectRules, skills, materials, recordsStore, hub, sink } = resources
+  const executionId = options.executionId ?? crypto.randomUUID()
 
   /** 当前展示会话的控制面事件使用转发铸造器；执行链使用自己的铸造器。 */
   const forwardStamper: EventStamper = {
@@ -331,50 +235,26 @@ export function assemble(options: AssembleOptions): Assembly {
     return chain.stamper
   }
 
-  let statusLineConfig: StatusLineConfig | undefined = loaded.config.statusLine
-  let turnDuration = loaded.config.turnDuration ?? 'elapsed'
-  let reducedMotion = loaded.config.motion?.reduced === true
-  /** 实验性 · 语音输入（D75）——**缺省关**；开关只在这一处读数上生效。 */
-  let experimentalVoice = loaded.config.experimental?.voice === true
+  /** 控制广播出错——有活跃会话就发一条 error 事件；没有就原样上抛（装配次序错误）。 */
+  function onHubErrorOf(error: unknown): void {
+    if (chain === undefined) throw error
+    sink.emit(chain.stamper.stamp('error', { message: `控制操作失败：${error instanceof Error ? error.message : String(error)}` }))
+  }
 
-  const modelSource = createModelConfiguration({
+  const modelDomain = createModelDomain({
     loaded, magic, environment, fetch, now,
-    onError: message => {
-      if (chain !== undefined) sink.emit(chain.stamper.stamp('error', { message }))
-    },
-    onChange: () => {
-      if (chain !== undefined) sink.emit(chain.stamper.stamp('model.catalog', catalogOf(modelsOf())))
-    },
+    sink,
+    forwardStamper,
+    chain: () => chain,
+    recordsStore,
+    collaborationChanged: options.collaborationChanged,
+    ensureSession: () => ensureSession(),
+    requireActiveStamper: () => requireActiveStamper(),
+    modelGateway: options.modelGateway,
+    startup,
+    savedAgent,
   })
-  const modelInfo = modelSource.info
-
-  let initialModels: ModelRegistry | undefined
-  // 会话建立后，模型选择只存于该会话链；开局选择只用于首次构造。
-  const modelsOf = (): ModelRegistry | undefined => chain === undefined ? initialModels : chain.models
-  if (options.modelGateway === undefined) {
-    if (startup !== undefined && savedAgent === undefined) {
-      throw new Error('该工作缺少已保存的模型组合，无法按历史接回——请在 /config · 模型与连接 配置模型档位，/model 切到档位后继续；历史记录已保留')
-    }
-    const initial = savedAgent === undefined ? resolveModelChoice({ providers: modelSource.providers, configuredModels: modelSource.configured, defaultTier: modelSource.defaultTier, modelInfoOf: modelSource.knownModel }) : { ok: true as const, selection: savedAgent.model }
-    initialModels = modelSource.registry(initial.ok ? initial.selection : undefined, forwardStamper)
-  }
-
-  const rebuildRegistry = (): { readonly ok: true } | { readonly ok: false; readonly reason: string } => {
-    if (options.modelGateway !== undefined) return { ok: true }
-
-    const kept = modelsOf()?.current()
-
-    try {
-      const candidate = modelSource.registry(kept, chain?.stamper ?? forwardStamper)
-      if (chain === undefined) initialModels = candidate
-      else chain.models = candidate
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      return { ok: false, reason: `配置已保存，但这次装配还用不上它：${reason}` }
-    }
-
-    return { ok: true }
-  }
+  const modelInfo = modelDomain.info
 
   let chain: AgentSession | undefined
   const chains = new Map<SessionId, AgentSession>()
@@ -398,13 +278,13 @@ export function assemble(options: AssembleOptions): Assembly {
       setTitle: options.aiTitle === true ? (session, title, at) => recordsStore.setSessionTitle(session, title, at) : undefined,
       model: {
         create: (selection, stamper) => {
-          const current = modelsOf()
-          return current === undefined ? undefined : modelSource.registry(selection ?? current.current(), stamper)
+          const current = modelDomain.modelsOf()
+          return current === undefined ? undefined : modelDomain.source.registry(selection ?? current.current(), stamper)
         },
-        cantrip: modelSource.cantrip,
-        canDistill: () => { modelSource.sync(); return modelSource.configured?.cantrip !== undefined },
-        connections: () => Object.keys(modelSource.providers).length,
-        webSource: modelSource.webSource,
+        cantrip: modelDomain.source.cantrip,
+        canDistill: () => { modelDomain.source.sync(); return modelDomain.source.configured?.cantrip !== undefined },
+        connections: () => Object.keys(modelDomain.source.providers).length,
+        webSource: modelDomain.source.webSource,
       },
     })
     chains.set(session, opened)
@@ -453,98 +333,9 @@ export function assemble(options: AssembleOptions): Assembly {
 
   const actions = createActions({ conversation, sink, now })
 
-  const commitModel = (checked: ModelSwitchResult): ModelSwitchResult => {
-    const models = modelsOf()
-    if (chain === undefined) {
-      if (models === undefined) return { ok: false, reason: NO_REGISTRY }
-      if (!checked.ok) return checked
-      try {
-        initialModels = modelSource.registry(checked.selection, forwardStamper)
-        return checked
-      } catch (error) {
-        return { ok: false, reason: error instanceof Error ? error.message : String(error) }
-      }
-    }
-
-    // 注册表缺席（注入了替身网关）＝如实报「这批装配换不了模型」——同样是一条**切换结果**
-    if (models === undefined) {
-      const missing: ModelSwitchResult = { ok: false, reason: NO_REGISTRY }
-      sink.emit(forwardStamper.stamp('model.switched', missing))
-      return missing
-    }
-
-    let result: ModelSwitchResult
-    if (recordsStore.collaboration.agentForSession(chain.session)?.purpose === 'consultation') result = { ok: false, reason: '咨询固定使用启动时解析的 Arcane，不开放成员换模' }
-    else if (!checked.ok) result = checked
-    else {
-      try {
-        const candidate = modelSource.registry(checked.selection, chain.stamper)
-        const identity = recordsStore.collaboration.agentForSession(chain.session)
-        // 持久更新失败不发布新网关；入口与成员都只改自己的身份，不碰协作派生默认。
-        if (identity !== undefined) recordsStore.collaboration.updateAgent(identity.agentId, { model: checked.selection })
-        chain.models = candidate
-        result = checked
-      } catch (error) {
-        result = { ok: false, reason: error instanceof Error ? error.message : String(error) }
-      }
-    }
-
-    const budget = result.ok
-      ? chain.models?.capacityOf(result.selection.provider, result.selection.model)?.inputBudget
-      : undefined
-
-    sink.emit(
-      result.ok
-        ? forwardStamper.stamp('model.switched', {
-          ok: true,
-          choice: result.selection.choice,
-          ...(result.selection.reasoning === undefined ? {} : { reasoning: result.selection.reasoning }),
-          provider: result.selection.provider,
-          model: result.selection.model,
-          protocol: result.selection.protocol,
-          endpoint: result.selection.endpoint,
-          ...(budget === undefined ? {} : { inputBudget: budget }),
-        })
-        : forwardStamper.stamp('model.switched', { ok: false, reason: result.reason }),
-    )
-
-    if (result.ok) {
-      // 主会话切档成功 ⇒ 开局档位记录跟着走（新会话从这次的选择继续）；成员不写记录。
-      // 落笔失败不动摇已完成的切换——如实报一声，不吞掉。信封**同步预铸**：
-      // 写回是异步的，回调时链条可能已收摊，那时再铸会炸。
-      if (result.selection.choice !== undefined && recordsStore.collaboration.agentForSession(chain.session) === undefined) {
-        const recordMiss = forwardStamper.stamp('error', { message: '模型已切换，但开局档位记录未写回（配置可能被并发修改）；下次切档会再试' })
-        void modelSource.persistDefaultTier(result.selection.choice).then(ok => {
-          if (!ok) { try { sink.emit(recordMiss) } catch { /* 收摊后的迟到通知无处可去 */ } }
-        }).catch(() => {
-          try { sink.emit(recordMiss) } catch { /* 同上 */ }
-        })
-      }
-      try { options.collaborationChanged?.() }
-      catch (error) { sink.emit(forwardStamper.stamp('error', { message: `模型已切换，但协作状态通知失败：${String(error)}` })) }
-    }
-    return result
-  }
-
-  const switchModel = (request: ModelSwitchRequest): ModelSwitchResult => {
-    modelSource.sync()
-    const models = modelsOf()
-    const checked = models === undefined ? { ok: false as const, reason: NO_REGISTRY }
-      : validateSelection({ models, configuredModels: modelSource.configured, providers: modelSource.providers, config: request, modelInfoOf: modelSource.knownModel })
-    return commitModel(checked)
-  }
-
-  // 仅受信任的宿主内部配置消息使用已解析组合，不重新读取可变映射。
-  const applyModel = (selection: AgentModelConfig): ModelSwitchResult =>
-    commitModel((modelsOf() === undefined ? undefined : selectModel({ providers: modelSource.providers, modelInfoOf: modelSource.knownModel }, selection)) ?? { ok: false, reason: NO_REGISTRY })
-
-  const listModels = async (note?: string, saved?: boolean): Promise<void> => {
+  /** 与 `listModels` 同一条起手：还没有会话就先开一条（信封铸造器要它就位）。 */
+  const ensureSession = async (): Promise<void> => {
     if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
-    const catalog = catalogOf(modelsOf())
-    sink.emit(requireActiveStamper().stamp('model.catalog', {
-      ...catalog, stamp: modelSource.stamp,
-      ...(note === undefined ? {} : { note }), ...(saved === undefined ? {} : { saved })
-    }))
   }
 
   const listSkills = async (): Promise<void> => {
@@ -633,17 +424,6 @@ export function assemble(options: AssembleOptions): Assembly {
 
   const skillCatalogOf = async (): Promise<EventDataOf['skills.catalog']> => skillsCatalog((await skills.discover()))
 
-  const contextWindowOf = (registry: ModelRegistry | undefined): number | null => {
-    if (registry === undefined) return null
-
-    // 还没有去向（没配缺省连接 / 还没选过模型）⇒ **没有分母可言**——不取列表第一项，
-    // 也不拿别的模型的窗长顶上（「拿不到的不编」）
-    const current = registry.current()
-    if (current === undefined) return null
-
-    return registry.capacityOf(current.provider, current.model)?.inputBudget ?? null
-  }
-
   const listMcp = async (note?: string): Promise<void> => {
     if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
     sink.emit(requireActiveStamper().stamp('mcp.catalog', mcpCatalogOf(note)))
@@ -678,121 +458,6 @@ export function assemble(options: AssembleOptions): Assembly {
   /** 技能目录的按需读数——见 `Assembly.readSkills`。 */
   const readSkills = async (): Promise<SkillCatalog> => (await skills.discover())
 
-  /** 纯目录投影与常驻观察面共用；活跃执行者仍提供真实内存选中与缓存。 */
-  const catalogReader = (registry: ModelRegistry | undefined): ModelCatalogReader => {
-    modelSource.sync()
-    const current = registry?.current()
-    return {
-      providers: modelSource.providers,
-      configuredModels: modelSource.configured,
-      entries: Object.keys(modelSource.providers).map(id => ({ id })),
-      ...(current === undefined ? {} : { current }),
-      read: (provider) => modelInfo.read(provider),
-      describe: modelInfo.describe,
-      inputBudget: (provider, model) => registry?.capacityOf(provider, model)?.inputBudget,
-    }
-  }
-
-  const catalogOf = (registry: ModelRegistry | undefined): EventDataOf['model.catalog'] =>
-    registry === undefined ? { entries: [], note: NO_REGISTRY } : modelCatalog(catalogReader(registry), modelSource.configured)
-
-  const providerCatalogOf = (note?: string): EventDataOf['provider.catalog'] => providerCatalog(catalogReader(modelsOf()), note)
-
-  const listProviders = async (note?: string, saved?: boolean): Promise<void> => {
-    if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
-    sink.emit(requireActiveStamper().stamp('provider.catalog', { ...providerCatalogOf(note), stamp: modelSource.stamp, ...(saved === undefined ? {} : { saved }) }))
-  }
-
-  const refreshModels = async (provider?: string): Promise<void> => {
-    const target = provider ?? modelsOf()?.current()?.provider ?? modelSource.configured?.[modelSource.defaultTier ?? 'cantrip']?.provider
-    if (target === undefined) {
-      listModels('还没有可刷新的连接——先接入一个供应商')
-      return
-    }
-    listModels()
-    await modelInfo.refresh(target)
-  }
-
-  /**
-   * 保存供应商、模型信息与档位映射，成功后同步配置读面。
-   * 当前 Agent 的有效选择仍只由明确应用动作改变。
-   */
-  const saveModelSettings = async (action: Extract<import('@magic/contracts').SettingsAction, { type: 'provider.save' | 'model.configure' | 'model.override' }>): Promise<void> => {
-    const { note, saved } = await modelSource.save(action)
-    if (action.type === 'provider.save') await listProviders(note, saved)
-    else await listModels(note, saved)
-  }
-
-  /** 网页服务读数（U94）——读的是盘上当下的配置；不发起网页或模型推理请求。 */
-  const emitWebState = (note?: string, saved?: boolean): void => {
-    const config = loadConfig({ path: loaded.path, magic }).config
-    sink.emit(requireActiveStamper().stamp('web.state', {
-      ...(config.web === undefined ? {} : { provider: config.web.provider }),
-      ...(config.models?.cantrip === undefined ? {} : { cantrip: config.models.cantrip }),
-      ...(saved === undefined ? {} : { saved }),
-      ...(note === undefined ? {} : { note }),
-    }))
-  }
-
-  /** 与 `listModels` 同一条起手：还没有会话就先开一条（信封铸造器要它就位）。 */
-  const ensureSession = async (): Promise<void> => {
-    if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
-  }
-
-  const listWeb = async (): Promise<void> => {
-    await ensureSession()
-    emitWebState('读的是已保存的配置；浏览不发起网页或模型调用')
-  }
-
-  const configureWebCommand = async (provider: string | null): Promise<void> => {
-    await ensureSession()
-    const { note, saved } = await modelSource.save({ type: 'web.configure', provider })
-    emitWebState(note, saved)
-  }
-
-  const setPrefsCommand = async (request: PrefsSetRequest): Promise<void> => {
-    const outcome = await modelSource.setPrefs(request)
-
-    if (outcome.ok) {
-      // 保存成功后更新当前偏好读数。
-      if (request.statusLine !== undefined) statusLineConfig = request.statusLine
-      if (request.reducedMotion !== undefined) reducedMotion = request.reducedMotion
-      if (request.turnDuration !== undefined) turnDuration = request.turnDuration
-      if (request.voice !== undefined) experimentalVoice = request.voice
-    }
-
-    const changed: string[] = []
-    if (request.statusLine !== undefined) changed.push('状态行')
-    if (request.reducedMotion !== undefined) changed.push('动效')
-    if (request.turnDuration !== undefined) changed.push('本轮耗时')
-    if (request.voice !== undefined) changed.push('语音输入')
-
-    sink.emit(
-      requireActiveStamper().stamp('prefs.state', {
-        ...(statusLineConfig === undefined ? {} : { statusLine: statusLineConfig }),
-        reducedMotion, turnDuration,
-        voice: experimentalVoice,
-        note: outcome.ok
-          ? `已更新：${changed.join(' · ')}`
-          : `${changed.join(' · ')}没改成——${outcome.reason}`,
-      }),
-    )
-  }
-
-  const removeProviderCommand = async (provider: string): Promise<void> => {
-    const outcome = await modelSource.remove(provider)
-    if (!outcome.ok) {
-      await listProviders(outcome.reason)
-      return
-    }
-    const rebuilt = rebuildRegistry()
-    const note = providerRemovedNote(provider, {
-      connections: Object.keys(modelSource.providers).length,
-      hasModel: modelsOf() === undefined || modelsOf()?.current() !== undefined,
-    })
-    listProviders([note, rebuilt.ok ? undefined : rebuilt.reason, outcome.note].filter(one => one !== undefined).join('；'))
-  }
-
   hub.bind({
     // 提交输入前也同步一次（裁决：「配置变更时**重取实际连接资料**」——用户改完配置
     // 直接发消息、不看 `/model` 的那条路也要用上新资料）
@@ -806,12 +471,12 @@ export function assemble(options: AssembleOptions): Assembly {
     },
     onInputManage: command => conversation.manage(command),
     onInput: (input) => {
-      modelSource.sync()
+      modelDomain.source.sync()
       conversation.submit(input)
     },
     onInterrupt: () => conversation.interrupt(),
     // 换模型（阶段 2）——**判别式处置**（技术方案 · 领域划分：「切不动就不动」）
-    onModelSwitch: (request) => switchModel(request),
+    onModelSwitch: (request) => modelDomain.switchModel(request),
     onSession: (command) => conversation.handle(command),
     // 读侧命令——**原样转手**给对话域（会话与条目归它）；答复走事件（`session.history`）
     onHistoryRead: (session) => conversation.readHistory(session),
@@ -819,16 +484,16 @@ export function assemble(options: AssembleOptions): Assembly {
     onPlanRead: (session, requestId) => conversation.readPlanSnapshot(session, requestId),
     // 模型条目表（读侧）——**归装配**（注册表在它手上，同 `model.switched` 的产出路径）；
     // 答复走事件（`model.catalog`，不落库）
-    onModelList: () => listModels(),
-    onModelRefresh: (provider) => refreshModels(provider),
-    onModelConfigure: (request) => saveModelSettings({ ...request, type: 'model.configure' }),
-    onModelOverride: (request) => saveModelSettings(request),
-    onPrefsSet: (request) => setPrefsCommand(request),
-    onWebList: () => listWeb(),
-    onWebConfigure: (provider) => configureWebCommand(provider),
-    onProviderList: () => listProviders(),
-    onProviderSave: (request) => saveModelSettings({ ...request, type: 'provider.save' }),
-    onProviderRemove: (provider) => removeProviderCommand(provider),
+    onModelList: () => modelDomain.listModels(),
+    onModelRefresh: (provider) => modelDomain.refreshModels(provider),
+    onModelConfigure: (request) => modelDomain.saveModelSettings({ ...request, type: 'model.configure' }),
+    onModelOverride: (request) => modelDomain.saveModelSettings(request),
+    onPrefsSet: (request) => modelDomain.setPrefsCommand(request),
+    onWebList: () => modelDomain.listWeb(),
+    onWebConfigure: (provider) => modelDomain.configureWebCommand(provider),
+    onProviderList: () => modelDomain.listProviders(),
+    onProviderSave: (request) => modelDomain.saveModelSettings({ ...request, type: 'provider.save' }),
+    onProviderRemove: (provider) => modelDomain.removeProviderCommand(provider),
 
     // 技能目录（读侧 · U33）——**归装配**（执行域的发现面是它组起来的，同 `model.list`
     // 之于注册表、`grants.list` 之于授权文件）；答复走事件（`skills.catalog`，不落库）
@@ -849,13 +514,7 @@ export function assemble(options: AssembleOptions): Assembly {
   hub.attach(kernel)
 
   return {
-    refreshSettings() {
-      const current = loadConfig({ path: loaded.path, magic })
-      statusLineConfig = current.config.statusLine
-      turnDuration = current.config.turnDuration ?? 'elapsed'
-      reducedMotion = current.config.motion?.reduced === true
-      experimentalVoice = current.config.experimental?.voice === true
-    },
+    refreshSettings: () => modelDomain.refreshSettings(),
     reconnectMcp,
     compact: (session, request, signal, started) => {
       const target = chains.get(session)
@@ -876,10 +535,10 @@ export function assemble(options: AssembleOptions): Assembly {
     },
     config: loaded,
     magic,
-    get models() { return modelsOf() },
+    get models() { return modelDomain.modelsOf() },
     modelInfo,
-    switchModel,
-    applyModel,
+    switchModel: modelDomain.switchModel,
+    applyModel: modelDomain.applyModel,
     records: recordsStore,
     paths: recordsStore.paths,
     readRules,
@@ -895,10 +554,10 @@ export function assemble(options: AssembleOptions): Assembly {
     mcpServers,
     ready: async () => {
       await modelInfo.warmup()
-      const models = modelsOf()
+      const models = modelDomain.modelsOf()
       const selection = models?.current()
       if (models !== undefined && selection !== undefined) {
-        const checked = selectModel({ providers: modelSource.providers, modelInfoOf: modelSource.knownModel }, selection)
+        const checked = selectModel({ providers: modelDomain.source.providers, modelInfoOf: modelDomain.source.knownModel }, selection)
         if (!checked.ok) throw new Error(`成员模型配置不可用：${checked.reason}`)
       }
       await mcp.ready()
@@ -935,14 +594,14 @@ export function assemble(options: AssembleOptions): Assembly {
     // `--model` 是**开局就落地**的选中（`cli.ts` 在起外壳之前先跑 `applySwitch`），
     // 快照会把缺省条目的数报成选中条目的——**报错一个数比不报更坏**。
     get contextWindow(): number | null {
-      return contextWindowOf(modelsOf())
+      return modelDomain.contextWindowOf(modelDomain.modelsOf())
     },
     workspaceRoots: workspace.roots(),
     boot: async () => {
       if (startup !== undefined) await actions.recover(actionPorts())
     },
     close: () => {
-      initialModels = modelsOf()
+      modelDomain.suspend()
       chain = undefined
       recordsStore.close()
     },
