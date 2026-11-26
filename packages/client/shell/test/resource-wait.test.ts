@@ -1,0 +1,59 @@
+import { describe, expect, test } from 'bun:test'
+import { resourceWaitLine, resourceWaitOf } from '../src/resource-wait.ts'
+
+/**
+ * T3.5 契约测试（先行的那一半）——《边界方案》§3.3 动作映射表逐行 + 未知 quotaClass 兜底。
+ *
+ * 已知三值按表给文案与动作；**未知值不崩溃、显示通用「资源不足」、不编动作**。
+ * 权威枚举落地（contracts T0.1）后，这里补「枚举值与映射表同步」的断言。
+ */
+describe('quotaClass → 用户文案与动作（边界方案 §3.3）', () => {
+  test('executor：等执行资源，等／抢占（preemptible 时），占用方会话原样带出', () => {
+    const plain = resourceWaitOf('executor')
+    expect(plain.label).toBe('等执行资源')
+    expect(plain.actions.map(one => one.kind)).toEqual(['wait'])
+
+    const preemptible = resourceWaitOf('executor', { preemptible: true, occupantSessions: ['session-a', 'session-b'] })
+    expect(preemptible.actions.map(one => one.kind)).toEqual(['wait', 'preempt'])
+    expect(preemptible.occupantSessions).toEqual(['session-a', 'session-b'])
+
+    // 占用方缺席/空：不拿空列表冒充一格（缺席＝没有这一件）。
+    expect(resourceWaitOf('executor', { occupantSessions: [] }).occupantSessions).toBeUndefined()
+  })
+
+  test('model：等模型配额，换模型／等配额恢复——不给「并发满了才该说的」话', () => {
+    const wait = resourceWaitOf('model')
+    expect(wait.label).toBe('等模型配额')
+    expect(wait.actions.map(one => one.kind)).toEqual(['switch-model', 'await-quota'])
+    expect(wait.occupantSessions).toBeUndefined()
+  })
+
+  test('input-capacity：待办已满，一键重发', () => {
+    const wait = resourceWaitOf('input-capacity')
+    expect(wait.label).toBe('待办已满')
+    expect(wait.actions.map(one => one.kind)).toEqual(['resubmit'])
+    expect(wait.occupantSessions).toBeUndefined()
+  })
+
+  test('未知 quotaClass：不崩溃、通用「资源不足」、不编动作（契约锁点）', () => {
+    // 引擎将来新增的资源类型（枚举加值而前端未跟上）与一切杂值——都走同一兜底。
+    for (const unknown of ['gpu', 'seat', '', 'EXECUTOR', 'executor ', 'model-quota', 'null', 'undefined']) {
+      const wait = resourceWaitOf(unknown)
+      expect(wait.label).toBe('资源不足')
+      expect(wait.actions).toEqual([])
+      expect(wait.occupantSessions).toBeUndefined()
+    }
+  })
+
+  test('未知值在纯文本读法里也不崩溃，且给出的是兜底文案而非内部分类名', () => {
+    for (const unknown of ['gpu', '', 'executor ']) {
+      const line = resourceWaitLine(resourceWaitOf(unknown))
+      expect(line).toBe('资源不足')
+    }
+    // 已知值的整句：文案 + 动作一步可达（P31——出路跟着错误一起出现）。
+    expect(resourceWaitLine(resourceWaitOf('input-capacity'))).toBe('待办已满 可做：一键重发')
+    expect(resourceWaitLine(resourceWaitOf('executor', { preemptible: true, occupantSessions: ['s1'] })))
+      .toBe('等执行资源 （占用：s1） 可做：等／抢占')
+    expect(resourceWaitLine(undefined)).toBeUndefined()
+  })
+})
