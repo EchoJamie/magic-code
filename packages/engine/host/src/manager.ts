@@ -418,6 +418,9 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       const executing = records.inputs.list().filter(one => one.state === 'executing')
       const lastSeen = executor.lastSeenAt
       if (executing.length > 0 && lastSeen !== undefined && now() - lastSeen > HEARTBEAT_TIMEOUT_MS) {
+        // **用户输入被收尾是大事，不能静默**（T1.5）：至少一条 manager 诊断事件。
+        diagnosticLog.write('warn', 'reconcile.input-failed', { ...identity, session,
+          reason: '执行中断/无进展', count: executing.length })
         for (const row of executing) records.inputs.fail(row.ref, '执行中断/无进展')
         ctx.saveRuns()
         ctx.pushRuns()
@@ -427,6 +430,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       const lastWake = executor.lastWakeAt
       if (hasPending && !executor.run.busy && (lastWake === undefined || now() - lastWake >= WAKE_COOLDOWN_MS)) {
         executor.lastWakeAt = now()
+        diagnosticLog.write('debug', 'reconcile.redeliver', { ...identity, session })
         send(executor, { t: 'collaboration.wake' })
       }
     }

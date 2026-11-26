@@ -106,6 +106,7 @@ export function installPlacement(ctx: ManagerContext): void {
       spawned,
       exited: false,
       link,
+      diagnostic: (level, event, data) => diagnosticLog.write(level, event, { ...identity, run: String(gen), ...(data ?? {}) }),
     }
 
     environments.set(root ?? executionId, network)

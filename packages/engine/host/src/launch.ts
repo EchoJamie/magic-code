@@ -2,6 +2,8 @@ import type { MagicHome, ModelSwitchRequest, ProcessLedger } from '@magic/contra
 import type { RecordsStore } from '@magic/data'
 import type { WorkEnvironment } from '@magic/host'
 import type { ExecutorToManager, Link, Wire } from '@magic/host'
+import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { runtimeLaunch } from './runtime-launch.ts'
 
 export type ExecutorLauncher = {
@@ -157,29 +159,30 @@ export function createProcessLauncher(options: ProcessLauncherOptions = {}): Exe
           env: childEnv(request.environment),
           stdin: 'ignore', stdout: 'ignore', stderr: 'pipe',
         })
-        // **stderr 显式接走**——inherit 经 Engine 再到宿主，早退现场（装配失败的缘由）
-        // 曾在挂住时读不到；pipe 后转给管理者日志，executor 的每一句都有处可查。
+        // **stderr 转发必填**（T1.5 · §六）：executor 的每一句 stderr 都有处可查——
+        // 独立文件落盘（`<base>/logs/executor-stderr-<pid>.log`，10MiB 轮转，同配额纪律）
+        // **不依赖注入链**（serve 模式下 log 可能未接，缺省也落）；管理者另传 log 时双写转发。
         const stderrStream = child.stderr
         if (stderrStream !== undefined && typeof stderrStream !== 'number') {
-          void (async () => { try { for await (const chunk of stderrStream) options.log?.(`[executor-stderr] ${Buffer.from(chunk).toString().trim()}`) } catch { /* 进程已退出 */ } })()
+          const stderrFile = join(request.magic.base, 'logs', `executor-stderr-${child.pid ?? 'na'}.log`)
+          try { mkdirSync(dirname(stderrFile), { recursive: true }) } catch { /* 目录已存在 */ }
+          void (async () => {
+            try {
+              for await (const chunk of stderrStream) {
+                const line = Buffer.from(chunk).toString().trim()
+                if (line === '') continue
+                try {
+                  if (existsSync(stderrFile) && statSync(stderrFile).size > 10 * 1024 * 1024) writeFileSync(stderrFile, '')
+                  appendFileSync(stderrFile, `${new Date().toISOString()} ${line}\n`)
+                } catch { /* 落盘失败不反噬管道 */ }
+                options.log?.(`[executor-stderr] ${line}`)
+              }
+            } catch { /* 进程已退出 */ }
+          })()
         }
       } catch (error) {
         options.log?.(`执行者子进程没起来：${String(error)}`)
         throw error
-      }
-      if (child.stderr !== undefined && typeof child.stderr !== 'number' && options.log !== undefined) {
-        const log = options.log
-        const stream = child.stderr
-        void (async () => {
-          try {
-            const reader = (stream as unknown as ReadableStream<Uint8Array>).getReader()
-            for (;;) {
-              const { done, value } = await reader.read()
-              if (done) break
-              log(new TextDecoder().decode(value).trimEnd())
-            }
-          } catch { /* 子进程已退——读流自然结束 */ }
-        })()
       }
       void child.exited.then(code => {
         pending.delete(request.executionId)

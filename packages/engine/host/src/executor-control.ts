@@ -16,6 +16,8 @@ export type Executor = {
   exited: boolean
   /** 启动时建立的进程内协议端点。 */
   readonly link: Link<ExecutorToManager>
+  /** 诊断留痕（T1.5：manager DiagnosticLog 的定向计数通道；发送失败/超时类在此分计）。 */
+  readonly diagnostic: (level: 'debug' | 'warn' | 'error', event: string, data?: Record<string, unknown>) => void
   /**
    * **最后已知活跃时刻**（T1.2 心跳租约）——收到 `heartbeat` 或 `ev` 帧即刷新；
    * 对账器据它判「executing 超 15s（3 心跳）无进展」→ failed。缺省＝还没有过心跳（不判死）。
@@ -30,11 +32,15 @@ export type Executor = {
  * 加速信号——ready 后由 ready 处理与对账器补发消费信号，执行者从账本捞待办。
  * 连接层未绑定（子进程未连回）同样不发；有回执的请求（settings/compact）由各自
  * 超时兜底给「未确认」与出路（N22）。
+ * 发送失败（通道拒收）按帧类分计（T1.5）：wake 用 `wake.write-fail`，其余 `send.write-fail`。
  */
 export function sendToExecutor(executor: Executor, message: ManagerToExecutor): void {
   if (executor.run.ended !== undefined) return
   if (!executor.run.ready) return
-  executor.link.send(message)
+  if (!executor.link.send(message)) {
+    executor.diagnostic('warn', message.t === 'collaboration.wake' ? 'wake.write-fail' : 'send.write-fail',
+      { gen: executor.gen, session: executor.run.session, kind: message.t })
+  }
 }
 
 /** 执行者协议的待确认请求；回执必须来自原对象，不能跨代完成。 */
