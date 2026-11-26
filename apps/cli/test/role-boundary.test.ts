@@ -50,7 +50,19 @@ for (const state of ['accepted', 'queued', 'stopped'] as const) test(`显式read
   ] }, { text: '已核对' }]
   const requests: ModelRequest[] = []
   let app!: Assembly
-  app = stage.assemble({ session: 'member', collaboration: async () => ({ ok: false, reason: '未调用协作操作' }), modelGateway(stamper) {
+  // 协作通道的替身——模拟 engine 侧的 action 分发（T1.1 后收件箱消费/标记/约束经帧）：
+  // registry 段经**同一份 store 方法**真实落账（engine 的处理器就是调它——共享库语义
+  // 在单进程替身里由「同一 store」承接）；模型可见的协作操作仍拒（身份由宿主绑定，
+  // 载荷不能自报）。dequeue 不在此路径（消费流属 executor 信号处理，此测试不建 engine）。
+  app = stage.assemble({ session: 'member', collaboration: async (_session, request) => {
+    const records = app.records.collaboration
+    const actor = records.agentForSession('member')
+    if (actor === undefined) return { ok: false, reason: '成员身份未登记' }
+    if (request.action === 'consumeInbox') return { ok: true, value: records.consumeInbox(actor.agentId, request.at) }
+    if (request.action === 'markIncluded') return { ok: true, value: records.markIncluded(actor.agentId, request.messageIds, request.at) }
+    if (request.action === 'publishConstraint') return { ok: true, value: records.publishConstraint(actor.agentId, request) }
+    return { ok: false, reason: '未调用协作操作' }
+  }, modelGateway(stamper) {
     const gateway = createFauxGateway({ stamper, turns })
     return { stream(request, options) {
       requests.push(request)

@@ -51,7 +51,18 @@ for (const limited of [false, true]) test(`可信用途优先于普通全工具�
     { name: 'write', args: { path: join(stage.dataDir, 'notes', 'origin', 'MEMORY.md'), content: '越权写入' } },
   ] }, { text: '建议' }]
   let gateway: ReturnType<typeof createFauxGateway> | undefined
-  const app = stage.assemble({ session: 'advisor', collaboration: async () => ({ ok: false, reason: '未调用协作操作' }), modelGateway(stamper) {
+  // 协作通道的替身——模拟 engine 侧 action 分发（T1.1 后收件箱消费/标记/约束经帧）：
+  // registry 段经同一份 store 方法真实落账（engine 处理器就是调它）；模型可见的协作
+  // 操作仍拒（咨询详情只供查看，载荷不能自报）。
+  const app = stage.assemble({ session: 'advisor', collaboration: async (_session, request) => {
+    const records = app.records.collaboration
+    const actor = records.agentForSession('advisor')
+    if (actor === undefined) return { ok: false, reason: '成员身份未登记' }
+    if (request.action === 'consumeInbox') return { ok: true, value: records.consumeInbox(actor.agentId, request.at) }
+    if (request.action === 'markIncluded') return { ok: true, value: records.markIncluded(actor.agentId, request.messageIds, request.at) }
+    if (request.action === 'publishConstraint') return { ok: true, value: records.publishConstraint(actor.agentId, request) }
+    return { ok: false, reason: '未调用协作操作' }
+  }, modelGateway(stamper) {
     gateway = createFauxGateway({ stamper, turns })
     return gateway
   } })

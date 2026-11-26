@@ -194,6 +194,9 @@ export function createAgentSession(input: {
     model: () => opened.models?.current() as AgentModelConfig | undefined,
     tools: () => tools.definitions().map(tool => tool.name),
     now, changed: () => collaborationChanged?.(),
+    // **账本写经帧**（T2.2）：装配接了协作通道（executor 形态）就走 engine 唯一写者；
+    // 直写留给单机 cli 形态（engine 与执行者同体）。
+    ...(collaboration === undefined ? {} : { write: request => collaboration(session, request) }),
   })
   const background = backgroundRuns === undefined ? undefined : createBackgroundSession({
     runs: backgroundRuns, session, execution: executionId,

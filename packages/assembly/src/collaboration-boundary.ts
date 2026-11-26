@@ -36,10 +36,24 @@ export function createCollaborationBoundary(input: {
   readonly tools: () => readonly string[] | undefined
   readonly changed: () => void
   readonly now: () => number
+  /**
+   * **账本写经帧**（T2.2 · engine 唯一写者）——给了就把能异步走的写（consumeInbox /
+   * publishConstraint / markIncluded）改经 collaboration.request 帧；缺省＝直写
+   * （单机 cli 形态：engine 与执行者同体，写权不跨进程）。同步签名约束的写点
+   * （beginExecution/finishExecution——工具域钩子是同步的）本轮保持直写，见报备。
+   */
+  readonly write?: (request: import('@magic/contracts').CollaborationRequest) => Promise<import('@magic/contracts').CollaborationReply>
 }) {
   const resourceControl = (name: string) => name === 'background_stop' || name === 'background_wait'
   const coordinating = (call?: ToolCall) => call === undefined || call.name.startsWith('agent_') || ['plan_read', 'plan_update', 'history_read', 'source_read'].includes(call.name) || input.ownNoteCall?.(call) === true || resourceControl(call.name)
   const records = input.records
+  /** 经帧的账本写；没接帧＝直写（单机形态）。失败原样抛——调用方按各自语义处置。 */
+  const writeViaFrame = async (request: import('@magic/contracts').CollaborationRequest): Promise<import('@magic/contracts').CollaborationReply | undefined> => {
+    if (input.write === undefined) return undefined
+    const reply = await input.write(request)
+    if (!reply.ok) throw new Error(reply.reason)
+    return reply
+  }
   const actor = (): AgentIdentity | undefined => {
     const existing = records.agentForSession(input.session)
     if (existing !== undefined) return existing
@@ -76,8 +90,14 @@ export function createCollaborationBoundary(input: {
     async consume() {
       const state = binding()
       if (state === undefined) return false
-      const fresh = records.consumeInbox(state.self.agentId, input.now())
-      if (fresh.length > 0) input.changed()
+      // **消费写经帧**（T2.2）：engine 是收件箱唯一写者——经帧消费；直写只在单机形态。
+      // 消费后的本地重读（inbox 窄口）给 changed 与「有待并入」判定——读照旧直读。
+      if (input.write !== undefined) {
+        await writeViaFrame({ action: 'consumeInbox', operationId: `inbox:${input.session}:${crypto.randomUUID()}`, at: input.now() })
+      } else {
+        records.consumeInbox(state.self.agentId, input.now())
+      }
+      if (records.inbox(state.self.agentId).some(item => item.state === 'consumed' && item.includedAt === undefined)) input.changed()
       return records.inbox(state.self.agentId).some(item => item.state === 'consumed' && item.includedAt === undefined
         && records.readMessage(state.self.agentId, item.messageId)?.purpose !== 'receipt')
     },
@@ -115,7 +135,17 @@ export function createCollaborationBoundary(input: {
       const state = binding()
       if (state === undefined || messageIds.length === 0) return
       const consumed = new Set(records.inbox(state.self.agentId).filter(i => i.state === 'consumed').map(i => i.messageId))
-      records.markIncluded(state.self.agentId, messageIds.filter(id => consumed.has(id)), input.now())
+      const included = messageIds.filter(id => consumed.has(id))
+      if (included.length === 0) return
+      // **标记写经帧**（T2.2）；`requested` 是同步签名（`CollaborationBoundary`），经帧走
+      // fire-and-forget——includedAt 是呈现态标记（P2「已并入当前轮」），非消费事实，
+      // 丢失的代价是呈现缺痕而非事实丢失；事实（consume 的 turn）已在账本事务里。
+      if (input.write !== undefined) {
+        void writeViaFrame({ action: 'markIncluded', operationId: `included:${input.session}:${crypto.randomUUID()}`, messageIds: included, at: input.now() })
+          .catch(() => { /* 迟到的标记不补发——下一轮请求真回来后会重算 */ })
+      } else {
+        records.markIncluded(state.self.agentId, included, input.now())
+      }
       input.changed()
     },
     userInput(entryId, shared) {
@@ -123,8 +153,17 @@ export function createCollaborationBoundary(input: {
       const state = binding()
       if (state === undefined) throw new Error('当前会话尚未展开协作')
       const source = { sessionId: input.session, entryId }
-      records.publishConstraint(state.self.agentId, { operationId: `user:${input.session}:${entryId}`,
-        source, body: [{ kind: 'entry', ref: source }], at: input.now() })
+      const request = { action: 'publishConstraint', operationId: `user:${input.session}:${entryId}`,
+        source, body: [{ kind: 'entry', ref: source }], at: input.now() } as import('@magic/contracts').CollaborationRequest
+      if (input.write !== undefined) {
+        // **约束写经帧**（T2.2）——用户来源的事实写，await 兑现（失败上抛，消费方配对失败）。
+        void writeViaFrame(request)
+      } else {
+        records.publishConstraint(state.self.agentId, {
+          operationId: `user:${input.session}:${entryId}`,
+          source, body: [{ kind: 'entry', ref: source }], at: input.now(),
+        })
+      }
       input.changed()
     },
   }
