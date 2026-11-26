@@ -267,6 +267,10 @@ function failure(text: string): ToolOutcome {
 }
 
 // —— 措辞（给模型看的那份——恢复的原委要说清楚，模型才接得上话）——
+//
+// ⚠️ **「结果未知」是定案文案**（T2.3 · P34 恢复落单）：抬头的第一句是审计钉死的那句
+// 「工具结果未知（执行器中断）；可能已执行，核对后再决定」——**不冒充成功**（ok:false
+// 由 `failure` 写死），原因与出路按三段式（N19）跟在其后。
 
 function unansweredText(call: InFlightCall): string {
   const asked = call.requested ? '裁决**未答复**' : '未走到裁决'
@@ -282,9 +286,11 @@ function rejectedText(call: InFlightCall): string {
 
 function unconfirmedText(call: InFlightCall): string {
   return (
-    `（恢复）进程崩溃时该次调用（${call.name}）**在途**：已获批准，结果未落库。` +
-    `——故**未重跑**（重跑等于追加一次副作用）。请先核对现状（读文件、查状态），` +
-    `再决定是否重新发起；本次已按「结果未知」记入记录。`
+    // **第一句是定案文案**（T2.3）：结果未知＝可能已执行，既不冒充成功也不伪造零副作用
+    '工具结果未知（执行器中断）；可能已执行，核对后再决定。\n' +
+    `〔${call.name}〕崩溃前已获批准、结果未落库——未重跑（重跑等于追加一次副作用），本次已按「结果未知」记入记录。\n` +
+    '模型可做：先核对现状（读文件、查状态）再决定是否重新发起，届时照常过闸门\n' +
+    '需要用户：无'
   )
 }
 
