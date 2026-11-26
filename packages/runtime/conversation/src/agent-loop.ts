@@ -49,176 +49,57 @@
  */
 
 import type {
-  BackgroundRunning,
-  EventKind,
-  EventSink,
-  EventStamper,
-  InputRef,
-  InputRefEntry,
   ModelErrorTier,
-  ModelGateway,
   ModelResult,
   RecordId,
-  RecordsService,
-  SessionId,
   StepId,
-  Timestamp,
   ToolCall,
-  ToolRuntime,
   TurnEndReason,
-  TurnId,
   UserInput,
-  UsedSkill,
 } from '@magic/contracts'
 import { pendingViews } from '@magic/contracts'
-import type { Compactor } from './compact.ts'
 import { assembleContext, rawTextOf } from './context.ts'
+import { collaborationPrompt } from './collaboration.ts'
 import { KNOWLEDGE_MATERIAL_TOOLS, knowledgeOutputReferences } from './knowledge-material.ts'
-import type { TextRefEntry } from './context.ts'
-import type { EntryLog, ToolOutcome } from './entries.ts'
+import type { ToolOutcome } from './entries.ts'
 import {
   appendTextEntry,
   appendToolCallEntry,
   appendToolResultEntry,
-  appendUserEntry,
   toolOutcomeOf,
 } from './entries.ts'
 import { withBackgroundRuns } from './prompt/background.ts'
-import type { RefDelivery } from './refs.ts'
-import type { RulesDelivery } from './rules.ts'
 import { needsReviewText, overflowText } from './rules.ts'
-import type { SkillsDelivery } from './skills.ts'
-// ⚠️ **只取类型**（`import type`）：入参那几件的形态住在 `./service.ts`（构造入参的落点），
-// 而本文件是它的一个**视图**——真值那条线是 `service.ts → agent-loop.ts`，这一条不回头。
-import type { SubmitRefusal } from './service.ts'
-import { collaborationPrompt } from './collaboration.ts'
-import type { CollaborationBoundary } from './collaboration.ts'
 import { readPlanOf } from './plan.ts'
+import { describeError, prepareInput } from './input-intake.ts'
+import { createAnnouncer, createMaterialWatch, RESPONSE_EVENTS } from './receipt-accounts.ts'
+import { entryLogOf, type Announcer, type InputOutcome, type LoopRuntime, type MaterialWatch, type TurnOutcome } from './loop-runtime.ts'
+
+// 拆分后的公共面从原入口转出（既有引用方——service.ts / 测试夹具——引用路径不变）：
+export type { Announcer, InputOutcome, LoopRuntime, MaterialWatch, TurnOutcome } from './loop-runtime.ts'
+export { prepareInput } from './input-intake.ts'
+export { entryLogOf } from './loop-runtime.ts'
 
 /**
- * 一次交代的收场——三种**轮次收场**（`TurnEndReason`，会写进 `turn.end`）
- * ＋ 一种**没开轮的**：`rejected` ＝这一条压根没跑（显式选定的技能取不到）。
+ * 收场那一句——**「引用了、却没被读过」要说出来**（U63 · 设计 2026-09-25 补的那半条）。
  *
- * 它**不产 `turn.end`**（那一轮压根没起），故不能塞进 `TurnEndReason` 那个契约词表里
- * ——那是「轮怎么结束的」，而这里说的是「轮没开始」。
+ * 由头：文件 / 目录 / 技能的送达方式改成了「模型按需自读」，于是**「引用了」不等于
+ * 「看过了」**。只配「读了要说」（`skill.used` 那一条）不够：模型没读时那一轮结束
+ * **屏上什么也没有**，用户照样以为它看了。故收束时把没读到的那几份报出来。
+ *
+ * 报的是**这一份材料在交代里怎么写的**（`marker`：`@src/a.ts` / `/review`）——用户据它
+ * 认得出是哪儿处引用，不必再翻译一次。
+ *
+ * **收束才报**（不是每轮）：多轮工作里模型可能在后面才读，逐轮报会把同一件事说好几遍。
+ * 三种收场（收束 / 中止 / 出错）都报：那三种情形下屏上都会静下来，用户都会以为它读过了。
  */
-export type InputOutcome = TurnEndReason | 'rejected'
+function finish(runtime: LoopRuntime, watch: MaterialWatch, outcome: InputOutcome): InputOutcome {
+  const unread = watch.unread()
+  if (unread.length > 0) {
+    runtime.sink.emit(runtime.stamper.stamp('input.unread', { markers: unread }))
+  }
 
-/**
- * 循环的构造入参（**域内形态**）——端口实现（`./service.ts`）按它装配。
- * 每个字段都是一件「不知道自己是谁的」依赖：模型 / 工具 / 记录皆经端口，实现在别处。
- */
-export type LoopRuntime = {
-  readonly knowledge?: import('@magic/contracts').KnowledgeRecords
-  readonly collaboration?: CollaborationBoundary | undefined
-  /** 会话——条目按会话读（信封的 `session` 由铸造器持，两处同源）。 */
-  readonly session: SessionId
-  /** 系统提示词全文——已由提示词部件装配好（本文件不认知段结构）。 */
-  readonly systemPrompt: string
-  /** 当前交代——轮起时设、轮止时清；条目落账据此带 `turn_id`。 */
-  turn?: TurnId
-  readonly gateway: ModelGateway
-  readonly tools: ToolRuntime
-  readonly records: RecordsService
-  /** 当前模型身份（用后留痕到 steps）；缺省不记。 */
-  readonly stepIdentity?: (() => { readonly provider: string; readonly model: string } | undefined) | undefined
-  readonly sink: EventSink
-  readonly stamper: EventStamper
-  /**
-   * 轮号发号器——阶段 1 单调自增（端口实现持计数器）。
-   * **留缝**：阶段 2 恢复改由记录派生（同一会话续跑要接着那串轮号）。
-   */
-  readonly nextTurnId: () => TurnId
-  /** 时钟——条目时间戳（见 `./entries.ts`）。 */
-  readonly now: () => Timestamp
-  readonly blobThreshold: number
-  /**
-   * 压缩器（阶段 3 · U19）——**不接线＝不压缩**（首站无压缩那几轮的行为一字不动；
-   * 用例只想验循环时也不必拖一个压缩器进来）。真装配一律给（见 `./service.ts`）。
-   *
-   * 「近段」保留多少**不从别处另给**——压缩器按当前输入预算推导（`nearTokens` 只给受控场景）。
-   */
-  readonly compact?: Compactor | undefined
-  /**
-   * 当前模型的输入预算——压缩闭环与装配兜底共用这一读数（D74）。
-   * 不给＝不核对预算：压缩只压一次，装配照旧全量（旧行为，供只验循环的用例）。
-   */
-  readonly capacity?: (() => { readonly inputBudget?: number | undefined }) | undefined
-  /**
-   * 项目规约的送达账（U32）——**不接线＝不加载规约**（没有规约的那些工作区行为一字不动；
-   * 用例只想验循环时也不必拖一份规约进来）。真装配一律给（见 `./service.ts`）。
-   *
-   * 它是**有状态**的（作用域 ＋ 最近一次请求送达的那份材料），故按会话实例各造一份——见其注。
-   */
-  readonly rules?: RulesDelivery | undefined
-  /**
-   * 技能送达（U33）——**不接线＝既发现也不加载技能**（没有技能的那些工作区行为一字不动）。
-   * 真装配一律给（见 `./service.ts`）。
-   *
-   * 与 `rules` 不同，它**不存状态**：目录每趟现扫、主文取一次用一次（执行域那一条
-   * 「不设全仓 watcher」在这儿的形态）。故按会话实例造一份只是因为它跟着运行时走。
-   */
-  readonly skills?: SkillsDelivery | undefined
-  /**
-   * **引用送达**（U36）——正文里的 `@文件` / `@目录` / `/技能` 各取各的那一份。
-   *
-   * **不接线＝带引用的一律不跑**（`rejected`）：那种装配压根取不到材料，静默丢掉引用继续
-   * 就是「把用户那句话删掉一半」。它与 `skills` 那一支不重叠——旧形（无位置）走 `skills`，
-   * 新形（带位置）走这里（见 `refs.ts` 的文件头注）。
-   */
-  readonly refs?: RefDelivery | undefined
-  /**
-   * **当前模型吃不吃图**（U37）——三态：`true` 明确支持 · `false` **明确不支持** ·
-   * `undefined` **不知道**（缺省）。
-   *
-   * 由装配给（它握着注册表与模型信息缓存——本域不认识模型）。用途只有一个：
-   * **带图的那一条交代在发出去之前**拦下来（设计 · 文件与图片：「模型明确不支持图像时
-   * 保留输入，提示换模型或移除图片，不能静默丢图发文字」）。
-   *
-   * ⚠️ **`undefined` 照发**：不知道就按不知道办，请求真失败再如实报错——
-   * 把未知当「不支持」拦下来，等于凭空禁掉一批其实能看图的模型。
-   *
-   * 不给这一位（旧装配、用例）＝恒 `undefined`（行为与加它之前一字不动）。
-   */
-  readonly acceptsImages?: (() => boolean | undefined) | undefined
-  /**
-   * **这一条交代此刻发得出去吗**（U60）——发不出去就回一句**给人看的话**
-   * （`undefined` ＝发得出去）。
-   *
-   * 与 `acceptsImages` 同一个姿势、同一条理由：本域不认识供应商，而「此刻有没有可走的
-   * 模型」只有装配答得上来（注册表在它那一层）。
-   *
-   * 用途只有一个：**一条连接都没接**（或接了但没选走哪个）时，在落账之前把整条交代拦下来。
-   * 「不跑」照 `rejected` 那三层办（不落 `user` 条目 · 不进模型请求 · 原稿还回输入区）——
-   * 但比那三层多一层：**那一轮压根不开**，屏上因此不会先闪一下「工作中」再报错。
-   * 「装作在跑」比不报更坏（工单原话）。
-   *
-   * ⚠️ **拦在取材料之前**（本函数第一件）：发都发不出去，去读那几份文件只是白读；
-   * 而且用户此刻要修的是**更靠前的那一件**（先接供应商），不是某处引用。
-   *
-   * 不给这一位（旧装配、用例）＝恒 `undefined`（行为与加它之前一字不动）。
-   */
-  readonly submitRefusal?: (() => SubmitRefusal | undefined) | undefined
-  /**
-   * **这条会话此刻还在跑的后台命令**（U89）——每请求现取一次，接成一个追加块
-   * （见 `./prompt/background.ts`）。
-   *
-   * 与 `rules` / `skills` 同一处接上、同一个姿势（**现取现接**）：它答的是「此刻」，
-   * 而**一条命令在这一轮里跑完了**正是常态——抓一份快照，下一轮就会把已经结束的
-   * 说成还在跑（那比不报更坏：模型据此以为还能等到它的输出）。
-   *
-   * 不给这一位（旧装配、用例）＝这一块压根不接线（行为与加它之前一字不动）。
-   */
-  readonly background?: (() => readonly BackgroundRunning[]) | undefined
-}
-
-/**
- * 一轮的收场。
- * `reason` 进 `turn.end`；`continues` ＝本轮请求了工具且都处置完——**须再开一轮**。
- */
-type TurnOutcome = {
-  readonly reason: TurnEndReason
-  readonly continues: boolean
+  return outcome
 }
 
 /**
@@ -263,268 +144,6 @@ export async function agentLoop(
   }
 }
 
-/** 普通交代与协作补充共用材料读取、图片能力检查、落账与原稿回执。 */
-export async function prepareInput(
-  runtime: LoopRuntime,
-  input: UserInput | undefined,
-  accepted?: (entry: RecordId) => void|Promise<void>,
-  signal?: AbortSignal,
-): Promise<{ refs: readonly InputRefEntry[]; skills: readonly UsedSkill[]; entry?: RecordId; latestInput?: string } | undefined> {
-  signal?.throwIfAborted()
-  const stored = input?.ref === undefined ? undefined : runtime.records.inputs.get(input.ref)
-  if (input?.ref !== undefined && stored?.state !== 'pending') return undefined
-  if (stored !== undefined) input = stored.input
-
-
-  // **此刻发得出去吗**（U60）——拦在**头一件**上（见 `LoopRuntime.submitRefusal`：
-  // 发不出去就不该先开一轮、也不该白读那几份材料）。
-  const blocked = runtime.submitRefusal?.()
-  if (blocked !== undefined) {
-    refuse(runtime, input, blocked.reason, blocked.keepDraft)
-    return undefined
-  }
-
-  // **按引用取材料**（U36）——正文里的每一处引用各取各的那一份，取不到就停在这一条上
-  // （见函数头注）。旧形（`skills`，无位置）走另一条老路：材料统一前置、照旧落旧键。
-  const refs = input?.refs ?? []
-  const selected = input?.skills ?? []
-  const delivery = await loadRefs(runtime, refs, signal)
-  if (!delivery.ok) {
-    // 材料取不到＝这一份输入**没进会话**：配对一次 false（说得出是哪一份、为什么）
-    refuse(runtime, input, delivery.reason)
-    return undefined
-  }
-
-  // **图片与当前模型对不对得上**（U37）——拦在**落账之前**（见 `LoopRuntime.acceptsImages`）。
-  // 位置很要紧：这一条要落进会话的话，后面每一轮都会带着一张当前模型看不见的图发出去
-  // ——那是「每次都坏一遍」，比当场回绝严重得多。
-  const wrongModel = imageRefusal(runtime, delivery.refs)
-  if (wrongModel !== undefined) {
-    refuse(runtime, input, wrongModel)
-    return undefined
-  }
-
-  const legacy =
-    selected.length === 0
-      ? { ok: true as const, used: [] }
-      : runtime.skills === undefined
-        ? // **没接技能来源**（这次装配压根没装）不是「当作没有技能照跑」——
-          // 那正是「丢掉技能后继续这条显式调用」，故与取不到同一条出口
-          { ok: false as const, reason: '这次装配没有接技能来源——选定的技能取不了，所以这一条没跑' }
-        : (await runtime.skills.load(selected, signal))
-
-  if (!legacy.ok) {
-    refuse(runtime, input, legacy.reason)
-    return undefined
-  }
-
-  signal?.throwIfAborted()
-  let acceptedEntry: RecordId | undefined
-  try {
-    // 用户输入落账——**轮外**（信封 `turn` 为 `null`：输入先于轮）
-    //
-    // ⚠️ **内核自己投的那一条走的是同一条路**（U70：后台命令跑完了那一句）——它也是
-    // 「一条要进上下文的话」，只是载荷记着说话人（`notice`）。它**不进** `refs` / `skills`
-    // 那两格（那两格记的是材料），故只多带一个标记位。
-    if (input !== undefined) {
-      const refusal = runtime.collaboration?.admit()
-      if (refusal !== undefined) { refuse(runtime, input, refusal); return undefined }
-      // 输入先落记录时就把所属轮定下来；事件仍按「输入先于轮」铸（`message.user` 的 turn 为 null）。
-      runtime.turn ??= runtime.nextTurnId()
-      const entryId = await appendUserEntry(entryLogOf(runtime), input.text, {
-        ...(input.ref === undefined ? {} : {ref:input.ref, revision:stored!.revision}),
-        admit: () => runtime.collaboration?.admit(),
-        refs: delivery.refs,
-        skills: legacy.used,
-        ...(input.notice === true ? { notice: true as const } : {}),
-        ...(input.background === undefined ? {} : { background: input.background }),
-      })
-      if (entryId === undefined) {
-        const latest = input.ref === undefined ? undefined : runtime.records.inputs.get(input.ref)
-        return latest?.state === 'pending' && latest.revision !== stored?.revision
-          ? prepareInput(runtime, latest.input, accepted, signal) : undefined
-      }
-      acceptedEntry = entryId
-      runtime.sink.emit(runtime.stamper.stamp('message.user', { entry: entryId }))
-      if(input.ref!==undefined)runtime.sink.emit(runtime.stamper.stamp('input.pending',{inputs:pendingViews(runtime.records.inputs.list())}))
-      try { await accepted?.(entryId) }
-      catch (error) {
-        refuse(runtime, input, `输入已保存，但共同补充未能发布（${messageOf(error)}）；未继续执行，原稿保留`)
-        reportError(runtime, error)
-        return undefined
-      }
-    }
-  } catch (error) {
-    // 落账失败＝同样**没进会话**——配对一次 false（不给的话，给了 ref 的那一份草稿
-    // 就永远等不到终态）
-    refuse(runtime, input, `这一条没能记下来（${messageOf(error)}）——请重新发送`)
-    reportError(runtime, error)
-    return undefined
-  }
-
-  // **收下了**（U33）——完整输入（正文 ＋ 技能正文）已经落进会话，**落账那一刻就成立**。
-  //
-  // ⚠️ 它与 `skill.used` **不是同一件事**（2026-09-21 规划裁）：这一条说的是「会话收下了」，
-  // 那一条说的是「送进了模型」。故此后模型那边再怎么失败（SDK 参数错 / 网络断 / 被停止），
-  // **照模型失败报**（`model.error` · `turn.end{reason:'error'}`），**不撤销这一条**、
-  // 也不暗示用户重发——已经进了会话的话，重发就是把同一件事说两遍。
-
-
-  // **回执的兑现点**（收下 ＋ **真读到的**技能）——**按「这一次交代」记一份账，跨轮不重来**
-  // （见 `createAnnouncer`：首轮报过一次就不再报，工具轮再多也只有那一次）。
-  //
-  // ⚠️ **只有旧形（无位置的 `skills`）预支在这里**（U63 改）：那些材料**随请求展开**
-  // （照旧统一摆在正文之前），故「送进了模型」当场成立。**正文里的技能引用（U36）不预支**——
-  // 它的送达方式改成了「模型按需自读」：引用了**不等于**看过了，只有模型真用 `skill` 工具
-  // 取回来、那一份进了下一趟请求，才谈得上「本次使用技能」（与「没读也要有痕迹」那一半
-  // 同源，见 `createMaterialWatch`）。
-  return { refs: delivery.refs, skills: legacy.used, ...(acceptedEntry === undefined ? {} : { entry: acceptedEntry }),
-    ...(input === undefined || input.notice ? {} : { latestInput: input.text }) }
-}
-
-/**
- * 收场那一句——**「引用了、却没被读过」要说出来**（U63 · 设计 2026-09-25 补的那半条）。
- *
- * 由头：文件 / 目录 / 技能的送达方式改成了「模型按需自读」，于是**「引用了」不等于
- * 「看过了」**。只配「读了要说」（`skill.used` 那一条）不够：模型没读时那一轮结束
- * **屏上什么也没有**，用户照样以为它看了。故收束时把没读到的那几份报出来。
- *
- * 报的是**这一份材料在交代里怎么写的**（`marker`：`@src/a.ts` / `/review`）——用户据它
- * 认得出是哪儿处引用，不必再翻译一次。
- *
- * **收束才报**（不是每轮）：多轮工作里模型可能在后面才读，逐轮报会把同一件事说好几遍。
- * 三种收场（收束 / 中止 / 出错）都报：那三种情形下屏上都会静下来，用户都会以为它读过了。
- */
-function finish(runtime: LoopRuntime, watch: MaterialWatch, outcome: InputOutcome): InputOutcome {
-  const unread = watch.unread()
-  if (unread.length > 0) {
-    runtime.sink.emit(runtime.stamper.stamp('input.unread', { markers: unread }))
-  }
-
-  return outcome
-}
-
-/**
- * **一次交代里「引用了、但没被读过」的那几份**（U63）。
- *
- * ## 认「读过」的判据是结构化的，不是比字符串
- *
- * 两处证据，各按各自的身份：
- * - **技能**——工具结果上那一位 `skill.name`（`ToolResult.skill`，U33 起就有的那条通道）；
- * - **文件 / 目录**——工具结果上的**落点**（`ToolResult.read`：已归位的真路径 ＋ 读多宽）。
- *
- * ⚠️ **为什么不让对话域拿模型的原话去比**：模型给的是相对写法（`src/login.ts`），
- * 材料记的是真路径（`/ws/src/login.ts`）——中间那一步归位只有沙箱那一层做得对。
- * 靠字符串比对的话，改个写法就认不出（错向「说它没读」——一句当场为假的话）。
- *
- * ## 只看那几份「自读」的
- *
- * 图片、以及工作区外那份只读附件**照旧引用即进**（它们的条目里带着正文）——
- * 那几份随请求展开，没有「读没读」这回事，不进这份账。
- *
- * ## 一份材料被同一句话引用两次
- *
- * 按**身份**记（技能是名字、文件是目录是那一条真路径），故同一份读一次就算读过
- * （设计：「重复引用也不能因按身份去重而丢掉出现位置」说的是**位置**，账是另一回事）；
- * 报出来时按 `marker` 去重，免得同一串字在那一行里出现两遍。
- */
-type MaterialWatch = {
-  /** 一次工具调用回来了——按结果记「哪几份材料这一趟被读到了」。 */
-  see(outcome: ToolOutcome): void
-  /** 收束时问一次：还有哪几份**没被读过**（按交代里的次序，同一处只算一次）。 */
-  unread(): readonly string[]
-}
-
-function createMaterialWatch(refs: readonly InputRefEntry[]): MaterialWatch {
-  // 自读那一份＝没有条目正文的那几支（见契约 `InputRefEntry`：正文在＝引用即进）
-  const watched = refs.filter(
-    (ref): ref is TextRefEntry => ref.kind !== 'image' && ref.text === undefined,
-  )
-  const done = new Set<string>()
-
-  return {
-    see(outcome): void {
-      if (!outcome.ok) return
-
-      // 技能——身份由工具交回（名字即完整地址，同名在发现那一层已只剩一条）
-      if (outcome.skill !== undefined) done.add(skillKey(outcome.skill.name))
-
-      const at = outcome.read
-      if (at === undefined) return
-
-      for (const ref of watched) {
-        if (ref.kind === 'skill') continue
-        if (touched(ref.source, at)) done.add(placeKey(ref.source))
-      }
-    },
-
-    unread(): readonly string[] {
-      const markers: string[] = []
-      for (const ref of watched) {
-        if (done.has(identityKeyOf(ref))) continue
-        if (!markers.includes(ref.marker)) markers.push(ref.marker)
-      }
-
-      return markers
-    },
-  }
-}
-
-/** 一份材料的身份键——技能按名字，文件 / 目录按那条真路径（两处都用整串比，不拼前缀误伤）。 */
-function identityKeyOf(ref: TextRefEntry): string {
-  return ref.kind === 'skill' ? skillKey(ref.name) : placeKey(ref.source)
-}
-
-function skillKey(name: string): string {
-  return `skill\0${name}`
-}
-
-function placeKey(source: string): string {
-  return `place\0${source}`
-}
-
-/**
- * 这一趟读的落在这一份材料的范围里吗——**两向都算**（判据见 `createMaterialWatch`）。
- *
- * - **落在它里面**（`at.path` 起于 `source` 之下）：读了一个目录里的文件 / 列了一个子目录
- *   ——那一份材料确实被用上了；
- * - **在它外面那一处以内搜过内容**（`covers: 'subtree'`，`grep` 那种）：范围内的都算碰过。
- *
- * ⚠️ **`exact` 那一档不向外扩**：`ls` 一个父目录只看见名字、没看见内容（`glob` 同理），
- * 把那说成「读过」会让用户以为材料进了模型眼前，而它没有。
- */
-function touched(source: string, at: { readonly path: string; readonly covers: 'exact' | 'subtree' }): boolean {
-  return under(at.path, source) || (at.covers === 'subtree' && under(source, at.path))
-}
-
-/** `child` 落在 `parent` 里（含同一处）——按**段边界**判，不认字符串前缀相邻（同工作区那一把尺子）。 */
-function under(child: string, parent: string): boolean {
-  if (child === parent) return true
-  return child.startsWith(parent.endsWith('/') ? parent : `${parent}/`)
-}
-
-/**
- * **「这一次请求真回来了」的证据事件**（U33 · 回执的兑现判据）——只认这三种。
- *
- * 判据是**产出方**：这三种**只能来自供应商的流式响应**——
- * - `model.delta` —— 供应商给的增量（正文 / 思考 / 工具调用）；
- * - `model.usage` —— 收束那一段报的回用量；
- * - `model.call.end` —— 收束（供应商流的 `finish` 那一段到了才吐）。
- *
- * ⚠️ **反过来那三种一律不算**（它们**本地**就产得出来，请求可能压根没发出去）：
- * - `model.call.start` —— 迭代供应商流**之前**就吐了（`normalize.ts`）；
- * - `model.retry` —— 本地退避，一次失败尝试里的信号；
- * - `model.error` —— 本地失败（SDK 参数校验 / 未派发就中止）与远端失败**同形**，
- *   分不出是哪一种，故不能当送达凭据。
- *
- * **空成功、纯工具响应照样闭合**：供应商流收束时一定给 `finish` 那一段，
- * 故「正文一个字都没有」「只有工具调用」这两种也都会走到 `model.call.end`。
- */
-const RESPONSE_EVENTS: ReadonlySet<EventKind> = new Set<EventKind>([
-  'model.delta',
-  'model.usage',
-  'model.call.end',
-])
 
 /**
  * 系统提示词的三处追加——规约 → 技能目录 → 后台命令（次序的由头见 `prompt/skills.ts`
@@ -558,169 +177,6 @@ function withPlan(runtime: LoopRuntime, base: string): string {
   const steps = plan.steps.length === 0 ? '步骤：无\n' : `步骤：\n${plan.steps.map(step => `- [${step.status}] ${step.text}`).join('\n')}\n`
   const notes = plan.notes.trim() === '' ? '' : `备注：${plan.notes}\n`
   return `${base}\n\n【当前计划】\n${goal}${steps}${notes}`.trimEnd()
-}
-
-/**
- * **一次交代的技能回执账**（U33）——只记 `skill.used`，**每个身份只报一次**：
- *
- * | 报什么 | 什么时候 |
- * | --- | --- |
- * | 显式选定的 | 这一次请求**真回来**之后（一次） |
- * | 模型自主取到的 | 带着那份材料的请求**真回来**之后（每个身份一次） |
- *
- * ⚠️ **`input.settled` 不在这儿**（2026-09-21 规划裁）：那条报的是「会话收下了完整输入」，
- * 落账那一刻就成立，与「送没送进模型」是两件事。两者早先绑在同一个时点上，
- * 后果是本地失败（请求压根没发）时两条都不发——`input.settled` 因此违背了
- * 「给了 `ref` 必有终态」那条契约。
- *
- * ## 为什么每个身份只报一次（首轮在这儿栽过）
- *
- * 首轮把「只报一次」写成了 `once(owed)`，而那个包装**造在每一轮的循环里**——
- * 于是每开一轮就多一个「尚未兑现」的新包装，**一条普通的多轮工作会报好几次**
- * 「本次使用技能」。兑现状态因此必须挂在**这一次交代**上：记账的 scope 是
- * `agentLoop` 的一次调用，不是一轮。
- *
- * ## 为什么都在「请求真回来」之后报
- *
- * 「已使用」是一句**当时为真**的话——材料得真的在**这一次发出去的请求**里。两件证据缺一不可：
- * **消息里得有它**（`assembleContext` 那一趟装进去的）＋ **这一趟真回来了**
- * （`RESPONSE_EVENTS`，见 `runTurn`）。装好了不等于发出去；发出去了没有，只有另一端说了算。
- *
- * 自主取到的那些走同一条路：工具结果这一轮才落账，**下一轮**请求才把它装进去，
- * 故它们的兑现点是**下一趟请求真回来**那一刻。
- *
- * ## 自主那条不靠正文推断身份
- *
- * 身份从**工具结果的结构化那一位**来（`ToolResult.skill`，由读技能的那件工具填），
- * 不是从回填正文的抬头里抠出来的——那是拿一句给人看的文案当跨域协议，改个措辞就断。
- * 取**引用**那一趟不带这一位，故「后续引用不重复报整项技能」是结构上就成立的。
- */
-/** 一次交代的技能回执账——见 `createAnnouncer`。 */
-type Announcer = {
-  /** 工具取到一份技能主文——记着，等它进了下一趟请求、那趟真回来了再报。 */
-  deliver(skill: UsedSkill): void
-  /** 一趟请求真回来了——把该报的报掉（报过的身份不再报）。 */
-  flush(): void
-}
-
-function createAnnouncer(runtime: LoopRuntime, selected: readonly UsedSkill[]): Announcer {
-  /** 已报过的身份——**同一份材料不报第二遍**（同一次交代里取两次也只报一次）。 */
-  const announced = new Set<string>()
-  /** 刚取到、还没进过任何请求的那些——攒到下一趟请求真回来再报。 */
-  let pending: UsedSkill[] = []
-  /** 显式选定那一批是否已经兑现。 */
-  let opened = false
-
-  return {
-    deliver(skill: UsedSkill): void {
-      pending.push(skill)
-    },
-
-    flush(): void {
-      const fresh: UsedSkill[] = []
-      if (!opened) {
-        opened = true
-        fresh.push(...selected)
-      }
-
-      fresh.push(...pending)
-      pending = []
-
-      const tell = fresh
-        .filter((one) => !announced.has(identityOf(one)))
-        .map((one) => {
-          announced.add(identityOf(one))
-          return one
-        })
-
-      if (tell.length > 0) {
-        runtime.sink.emit(runtime.stamper.stamp('skill.used', { skills: tell }))
-      }
-    },
-  }
-}
-
-/**
- * 取齐这一条交代里的引用（U36）——**没接引用送达＝没有引用可取**。
- *
- * 三态收在一处：给了引用但这次装配没接送达（`rejected`，与「取不到」同一条出口——
- * 那正是「丢掉材料继续跑」）· 取不到（`rejected`）· 取齐了。
- */
-async function loadRefs(
-  runtime: LoopRuntime,
-  refs: readonly InputRef[],
-  signal?: AbortSignal,
-): Promise<{ readonly ok: true; readonly refs: readonly InputRefEntry[] } | { readonly ok: false; readonly reason: string }> {
-  if (refs.length === 0) return { ok: true, refs: [] }
-  if (runtime.refs === undefined) {
-    return { ok: false, reason: '这次装配没有接材料来源——交代里的引用取不了，所以这一条没跑' }
-  }
-
-  return (await runtime.refs.load(refs, signal))
-}
-
-/**
- * **带图的那一条，当前模型吃不吃得下**（U37）——`undefined` ＝放行。
- *
- * 只在**明确不支持**时回一句拒绝的缘由（设计：那种情形要「保留输入，提示换模型或移除图片」）。
- * 三种情形各有各的话，用户看完就知道下一步动哪儿：
- * - 「不知道」⇒ 放行（见 `LoopRuntime.acceptsImages`——未知不是「不支持」）；
- * - 「支持」⇒ 放行；
- * - 「不支持」⇒ 拒绝，并**指出两条出路**（换模型 / 把图去掉）。
- *
- * 本域不持有实际型号；拒绝原因通过统一能力读数给出，设置入口可查看实际选择。
- * 此刻是谁），缘由本身照样说清了是哪一处出的问题。
- */
-function imageRefusal(
-  runtime: LoopRuntime,
-  refs: readonly InputRefEntry[],
-): string | undefined {
-  const images = refs.filter((ref) => ref.kind === 'image')
-  if (images.length === 0) return undefined
-  if (runtime.acceptsImages?.() !== false) return undefined
-
-  const which = images.map((ref) => ref.name).join(' · ')
-
-  return (
-    `这一条带${images.length === 1 ? '了一张图片' : `了 ${images.length} 张图片`}（${which}），` +
-    `而当前模型明确不支持图片输入——换一个支持看图的模型（用 /model 看此刻是谁），` +
-    `或把这几处图片引用去掉再发（这一条没跑，原稿还在）。`
-  )
-}
-
-/**
- * 一份输入**没进会话**——配对一次 `ok:false`（给了 `ref` 才发；失败不静默）。
- *
- * `keepDraft`（U60）：**这一份草稿要不要还回输入行**。缺省还（U33 起的老规矩：没送出
- * 就不丢稿——用户要改的多半就是稿子里那一处引用）。给 `false` 只有一种情形：
- * **下一步要敲的是一条命令**（见 `SubmitRefusal.keepDraft`：还回去反而挡路）。
- * 稿子不丢，它在 `↑` 历史里。
- */
-function refuse(
-  runtime: LoopRuntime,
-  input: UserInput | undefined,
-  reason: string,
-  keepDraft?: boolean,
-): void {
-  if (input === undefined) return
-  if(input.ref!==undefined)runtime.records.inputs.fail(input.ref,reason)
-  runtime.sink.emit(
-    runtime.stamper.stamp('input.settled', {
-      ...(input.ref === undefined ? {} : { ref: input.ref }),
-      ok: false,
-      reason,
-      ...(keepDraft === undefined ? {} : { keepDraft }),
-    }),
-  )
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-/** 技能的身份（报重了没有按它判）：名字 ＋ 来源路径，两件缺一都不是同一份。 */
-function identityOf(skill: UsedSkill): string {
-  return [skill.name, skill.source].join('\u0000')
 }
 
 // ══ 一轮 ══════════════════════════════════════════════════════════════
@@ -1150,24 +606,4 @@ function close(
   return { reason, continues }
 }
 
-/** 兜底（轮外）——内核自身异常：发 `error` 事件并交回结束方式。 */
-function reportError(runtime: LoopRuntime, error: unknown): TurnEndReason {
-  runtime.sink.emit(
-    runtime.stamper.stamp('error', { message: `对话域异常：${describeError(error)}` }),
-  )
-  return 'error'
-}
 
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-/** 落账依赖束——由运行时装配（时钟与阈值只此一处传给条目侧）。 */
-function entryLogOf(runtime: LoopRuntime): EntryLog {
-  return {
-    records: runtime.records,
-    now: runtime.now,
-    blobThreshold: runtime.blobThreshold,
-    ...(runtime.turn === undefined ? {} : { turn: runtime.turn }),
-  }
-}

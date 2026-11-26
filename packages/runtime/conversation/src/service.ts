@@ -47,9 +47,10 @@ import type {
   TurnId,
   UserInput,
 } from '@magic/contracts'
-import type { LoopRuntime } from './agent-loop.ts'
+import type { LoopRuntime } from './loop-runtime.ts'
 import type { CollaborationBoundary } from './collaboration.ts'
-import { agentLoop, prepareInput } from './agent-loop.ts'
+import { agentLoop } from './agent-loop.ts'
+import { prepareInput } from './input-intake.ts'
 import { createCompactor } from './compact.ts'
 import { DEFAULT_CONTEXT_POLICY } from './policy.ts'
 import type { ContextPolicy } from './policy.ts'
