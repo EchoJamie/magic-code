@@ -30,14 +30,18 @@ export type ManagerClient = {
   readonly base: string
   readonly identity: ServiceIdentity
   readonly mcp: readonly McpProbeRow[]
+  /** 证据目录路径列表（§3.1：仅路径不含正文）——welcome 帧带到，设置页/取证直接读。 */
+  readonly evidencePaths: readonly string[]
   gen(): number | null
   runs(): readonly RunRow[]
-  onRuns(listener: (rows: readonly RunRow[]) => void): void
+  onRuns(listener: (rows: readonly RunRow[], revision: number) => void): void
   onResumed(listener: (gen: number, snapshot: RunSnapshot) => void): void
   onTarget(listener: (session: string | null) => void): void
   onDetached(listener: (why: string) => void): void
   onEvent(listener: (event: KernelEvent, gen: number | null) => void): void
   stop(session: SessionId, scope: StopScope): void
+  /** 强制确认已停（N11）：unconfirmed 后的退出命令——停止追踪，不保证执行器已停。 */
+  confirmStop(session: SessionId): void
   onStopped(listener: (report: StopReport) => void): void
   readonly unread: readonly RunNotice[]
   onNotice(listener: (notice: RunNotice) => void): void
@@ -95,13 +99,14 @@ export async function connectManager(socketPath: string, options: ConnectOptions
   let targetRevision = 0
   let runRows: readonly RunRow[] = []
   let runRevision = 0
+  let evidencePaths: readonly string[] = []
   let closeError: Error | undefined
   let pendingEvents: { event: KernelEvent; gen: number | null }[] = []
   let pendingNotices: RunNotice[] | undefined = []
   let eventsReady = false
   const eventListeners: ((event: KernelEvent, gen: number | null) => void)[] = []
   const targetListeners: ((session: string | null) => void)[] = []
-  const runListeners: ((rows: readonly RunRow[]) => void)[] = []
+  const runListeners: ((rows: readonly RunRow[], revision: number) => void)[] = []
   const resumedListeners: ((gen: number, snapshot: RunSnapshot) => void)[] = []
   const noticeListeners: ((notice: RunNotice) => void)[] = []
   const stoppedListeners: ((report: StopReport) => void)[] = []
@@ -119,11 +124,15 @@ export async function connectManager(socketPath: string, options: ConnectOptions
   // hello 前接收；welcome 前后到来的 session.state/history 都保留到 TUI 订阅。
   link.onMessage((message) => {
     switch (message.t) {
-      case 'welcome': runRows = message.runs; runRevision += 1; return
+      case 'welcome':
+        runRows = message.runs
+        runRevision = message.revision
+        evidencePaths = message.evidencePaths ?? []
+        return
       case 'runs':
         runRows = message.rows
-        runRevision += 1
-        for (const listener of [...runListeners]) listener(runRows)
+        runRevision = message.revision
+        for (const listener of [...runListeners]) listener(runRows, message.revision)
         return
       case 'target':
         gen = message.gen
@@ -200,12 +209,13 @@ export async function connectManager(socketPath: string, options: ConnectOptions
   return {
     conn: welcome.conn, base: welcome.base, identity: welcome.identity,
     mcp: welcome.mcp, unread: welcome.notices,
+    evidencePaths,
     gen: () => gen,
     runs: () => runRows,
     onRuns(listener) {
       runListeners.push(listener)
       const revision = runRevision
-      queueMicrotask(() => { if (revision === runRevision) listener(runRows) })
+      queueMicrotask(() => { if (revision === runRevision) listener(runRows, runRevision) })
     },
     onResumed(listener) {
       resumedListeners.push(listener)
@@ -263,6 +273,7 @@ export async function connectManager(socketPath: string, options: ConnectOptions
     onClose: (listener) => { link.onClose((error) => listener(error ?? closeError)) },
     send: (cmd) => { link.send({ t: 'cmd', gen, cmd, ...(establishesWork(cmd) ? { environment } : {}) }) },
     stop: (session, scope) => { link.send({ t: 'stop', session, scope }) },
+    confirmStop: session => { link.send({ t: 'stop.confirm', session }) },
     markRead(ids) { if (ids.length > 0) link.send({ t: 'read', ids }) },
     close() {
       link.send({ t: 'bye', why: '窗口收摊' })
