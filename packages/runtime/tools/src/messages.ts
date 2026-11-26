@@ -86,9 +86,18 @@ export const OUTPUT_CANCELED_RUNNING = '已取消——命令被中止'
  * ⚠️ **与取消那一支互斥**：这一句以「已超时」起头，取消那句以「已取消」起头，两句不会同框
  * （超时的判定在取消之前，见 `composeOutcome`）。两支各说全自己那一件：那是**谁叫停的**，
  * 这一句是**哪条上界到点了**。
+ *
+ * ## 三段式收尾（N19 · §7.2 审计表）
+ *
+ * 超时的失败回执补上「下一步归属」两段：**模型可做**（核对副作用——它跑过了，副作用可能
+ * 已发生）与**需要用户**（无——重跑与否模型按副作用自己定，不用等用户）。分段跟在原因句
+ * 之后、命令输出之前：模型先读到「为什么」紧跟着就是「该做什么」，中间不隔着一大段输出。
+ * 首行仍是原因句本身（屏上失败那行取首行；测试按首行断言）。
  */
 export const execTimedOutOutput = (boundMs: number): string =>
-  `已超时——命令跑过了、被掐断（${boundMs}ms 到点）`
+  `已超时——命令跑过了、被掐断（${boundMs}ms 到点）\n` +
+  '模型可做：核对这条命令的副作用（可能已执行了一部分）\n' +
+  '需要用户：无'
 
 /**
  * **超时之后转成了后台**——命令没被收掉，它还在跑。
@@ -100,8 +109,8 @@ export const execMovedToBackground = (id: string, outputPath: string, boundMs: n
   `命令超过 ${boundMs}ms 还没结束，已转后台继续跑：编号 ${id}，输出写到 ${outputPath}。` +
   '跑完会有一条消息带这个路径回来，不用轮着读它等结束。'
 
-/** 参数解析不出（`ToolCall.invalid`）——模型侧没给成形的参数，不再往下走。 */
-export const OUTPUT_INVALID_ARGS = '参数解析不出——未执行'
+/** 参数解析不出（`ToolCall.invalid`）——模型侧没给成形的参数，不再往下走。补「模型可做」（§7.2）。 */
+export const OUTPUT_INVALID_ARGS = '参数解析不出——未执行\n模型可做：对照工具的参数说明重新给成形参数'
 
 /**
  * `exec` 的命令字段取不到（键名锚定单一键 `command`——写错的键名不该被猜中）。
@@ -122,10 +131,12 @@ export const execNoCommandOutput = (keys: readonly string[]): string =>
  * 这次装配**没有接 sudo 认证通道**——不执行。
  *
  * 不静默退回普通执行：sudo 在无 stdin 的条件下只会当场 EOF，模型会把它读成「命令失败」，
- * 而真正的原因是这一条路根本没接。
+ * 而真正的原因是这一条路根本没接。三段式补「需要用户」（§7.2）：接不接通道归用户，
+ * 模型改不了——明说，别让它原地重试。
  */
 export const OUTPUT_SUDO_NO_CHANNEL =
-  '这条 sudo 命令没能取得认证通道——本次装配没有接入 sudo 密码组件；未执行'
+  '这条 sudo 命令没能取得认证通道——本次装配没有接入 sudo 密码组件；未执行\n' +
+  '需要用户：接入 sudo 密码组件后由用户发起'
 
 /** 用户在密码组件里取消——命令不启动。 */
 export const OUTPUT_SUDO_CANCELED = '已取消 sudo 认证——命令未执行'
@@ -151,8 +162,10 @@ export const OUTPUT_BACKGROUND_UNSUPPORTED =
  *
  * 分开说的由头同 `ExecResult` 那条口径：前者**什么都没在跑**，后者**有东西在跑**——
  * 模型／用户此后的处置完全不同（一个该改命令，一个该去看那个文件）。
+ * 三段式补「模型可做」（§7.2）：起不来多半是命令本身或目录权限，核对归模型。
  */
-export const backgroundStartFailed = (reason: string): string => `没能交出去：${reason}`
+export const backgroundStartFailed = (reason: string): string =>
+  `没能交出去：${reason}\n模型可做：检查命令与目录权限后重试`
 
 /**
  * **交出去了**——回执四件：认得出它的 id · 输出文件路径 · 怎么看进展 · 什么时候会有下一声。
@@ -261,11 +274,20 @@ export const outputBytesTruncated = (limit: number): string =>
 
 // —— `edit` 的四条「不改」——
 
-/** 待替换文本不在文件里——失配即报，**不猜**（猜＝改错地方还说自己改了）。 */
-export const OUTPUT_EDIT_NOT_FOUND = '未找到待替换文本——文件未改'
+/**
+ * 待替换文本不在文件里——失配即报，**不猜**（猜＝改错地方还说自己改了）。
+ * 三段式补「模型可做」（§7.2）：先 read 再改是这一支的标准出路。
+ */
+export const OUTPUT_EDIT_NOT_FOUND = '未找到待替换文本——文件未改\n模型可做：先 read 确认原文，再照原文给 old'
 
-/** 出现多处——「唯一」是 `edit` 的全部语义，定位不了就不动（要改多处＝先给足上下文再改）。 */
-export const OUTPUT_EDIT_AMBIGUOUS = '待替换文本出现多处——无法唯一定位，文件未改'
+/**
+ * 出现多处——「唯一」是 `edit` 的全部语义，定位不了就不动（要改多处＝先给足上下文再改）。
+ * 三段式补「模型可做」（§7.2）：给足上下文是这一支的出路。出现次数并进原因段
+ * （建议段保持在报文最末，后缀不得插进分段中间）。
+ */
+export const editAmbiguousOutput = (count: number): string =>
+  `待替换文本出现多处——无法唯一定位，文件未改（出现 ${count} 处）\n` +
+  '模型可做：给足上下文（含前后文）让 old 唯一，或逐处分次改'
 
 /**
  * 文件超长（读到的只是前一段）——**拒绝编辑并指出出口**。
@@ -301,7 +323,9 @@ export const editDoneOutput = (path: string): string => `已替换 1 处（${pat
 // `grep` 那一支由 D64 接管：改用下面 `grepFailedOutput`（不再重复名分，并补上调用形状），
 // 故 `glob` 仍是这一行唯一的用户；留着它是「只改 grep」这条边界的落点。
 
-export const searchFailedOutput = (reason: string): string => `搜索失败：${reason}`
+/** glob 沙箱失败——沙箱原句只带名分（§7.2 确认：`namedFailure` 不含建议），建议动作在此补。 */
+export const searchFailedOutput = (reason: string): string =>
+  `搜索失败：${reason}\n模型可做：核对 path 是已存在的目录、pattern 的 glob 语法（* 不跨目录，** 递归）`
 
 /**
  * `grep` 起步失败（D64）——**一次给全「错在哪 ＋ 正确的调用形状」**。
@@ -377,8 +401,45 @@ export const externalPartNote = (
   `[${type} 部件${mimeType === undefined ? '' : `（${mimeType}）`}` +
   `${bytes === undefined ? '' : `：${bytes} 字节`}——本版不解析这类内容，未保留]`
 
-/** 工具名不在注册表内——不抛，照实回填（炸掉循环不是工具域该干的事）。 */
-export const unknownToolOutput = (name: string): string => `未注册的工具：${name}`
+/** 工具名不在注册表内——不抛，照实回填（炸掉循环不是工具域该干的事）。补「模型可做」（§7.2）。 */
+export const unknownToolOutput = (name: string): string =>
+  `未注册的工具：${name}\n模型可做：核对工具名（看系统提示词的工具清单）后重发`
 
-/** 执行体自己抛了——同样以失败回填，报文带上原委。 */
-export const crashedOutput = (message: string): string => `工具执行异常：${message}`
+/** 执行体自己抛了——同样以失败回填，报文带上原委。补「模型可做」（§7.2）；证据去向归用户（路径模型拿不到），报障时一并给。 */
+export const crashedOutput = (message: string): string =>
+  `工具执行异常：${message}\n模型可做：换一种做法或修正后重试\n需要用户：无（异常已自动留证在执行器日志，报障时一并给）`
+
+/**
+ * 协作请求失败（`agent_*` 五件）——reason 是协作层给的原委，本域不替它改口径；
+ * 统一在末尾补「模型可做」（§7.2 审计表 agent_* 行：reason 带原因，补建议动作统一）。
+ */
+export const agentFailedOutput = (reason: string): string =>
+  `${reason}\n模型可做：核对成员与委派状态（agent_list）、修正参数后重试`
+
+/**
+ * 知识四件（`knowledge_search` / `knowledge_read` / `knowledge_source`）的失败回填
+ * （§7.2 审计表 knowledge×4 行）。access 层的失败 reason 多数已带动作指引
+ * （「纠正前须先精读…」「请重新读取」——`conversation/src/knowledge.ts`），原样带出；
+ * 缺建议的三支在此补「模型可做」。`knowledge_update` 的失败输出是 JSON 报文
+ * （reason 字段已带指引），不在其后追加纯文本分段——追加会毁掉 JSON 可解析性。
+ */
+export const knowledgeSearchFailedOutput = (reason: string): string =>
+  `${reason}\n模型可做：改写查找词（中文别称/英文）或按 topic 分页发现后重试`
+
+export const knowledgeReadMissOutput = (reason: string): string =>
+  `${reason}\n模型可做：用 knowledge_search 查到真实 id 后重试`
+
+export const knowledgeSourceFailedOutput = (reason: string): string =>
+  `${reason}\n模型可做：按 knowledge_read 返回的 sources 给来源定位（session/entry/part）`
+
+/** `source_read` 失败（§7.2）：error.message 带原因，补「模型可做」。 */
+export const sourceReadFailedOutput = (reason: string): string =>
+  `${reason}\n模型可做：核对引用来源是否可达`
+
+/** `skill` 读失败（§7.2）：端口 reason 带原因，补「模型可做」。 */
+export const skillReadFailedOutput = (reason: string): string =>
+  `${reason}\n模型可做：核对技能名与主文路径`
+
+/** `history_read` 失败（§7.2）：报文带原因，补「模型可做」。 */
+export const historyReadFailedOutput = (reason: string): string =>
+  `历史读取失败：${reason}\n模型可做：核对定位参数（before 往前翻页 / entry+offset 看单条）`

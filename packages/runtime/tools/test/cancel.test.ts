@@ -98,6 +98,11 @@ describe('取消', () => {
     // 不是「已取消」（同一次里不会两句都出现，见 `composeOutcome` 那一支的注）。
     const outcome = await deps.runtime.invoke(execCall('x'), { signal: controller.signal })
 
-    expect(outcome.output).toBe('已超时——命令跑过了、被掐断（200ms 到点）\n[超时，已按进程组收掉 · /work/proj]')
+    expect(outcome.output).toBe(
+      '已超时——命令跑过了、被掐断（200ms 到点）\n' +
+      '模型可做：核对这条命令的副作用（可能已执行了一部分）\n' +
+      '需要用户：无\n' +
+      '[超时，已按进程组收掉 · /work/proj]',
+    )
   })
 })

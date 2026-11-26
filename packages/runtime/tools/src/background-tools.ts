@@ -11,7 +11,7 @@ export function defineBackgroundTools(): readonly ToolDefinition[] {
         return { id: args.id }
       },
       async run(args, ctx) {
-        if (!ctx.background) return { ok: false, output: '本会话未接入后台命令控制' }
+        if (!ctx.background) return { ok: false, output: '本会话未接入后台命令控制\n需要用户：确认装配接了后台能力' }
         const result = await ctx.background.stop(args.id)
         return { ok: result.ok, output: result.ok ? JSON.stringify(result) : result.reason,
           ...(result.ok && result.finish ? { background: result.finish } : {}) }
@@ -26,7 +26,7 @@ export function defineBackgroundTools(): readonly ToolDefinition[] {
         return { ids: args.ids as string[] }
       },
       run(args, ctx) {
-        if (!ctx.background?.wait) return { ok: false, output: '本会话未接入后台等待' }
+        if (!ctx.background?.wait) return { ok: false, output: '本会话未接入后台等待\n需要用户：确认装配接了后台能力' }
         const result = ctx.background.wait(args.ids)
         return { ok: result.ok, output: JSON.stringify(result), background: result,
           ...(result.ok && result.state === 'waiting' ? { halt: true as const } : {}) }

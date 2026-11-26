@@ -59,8 +59,12 @@ describe('超时与取消同一口径', () => {
 
     const outcome = await deps.runtime.invoke(execCall('x'), {})
 
+    // 三段式（N19）：超时句之后紧跟「模型可做 / 需要用户」两段，输出正文在其后
     expect(outcome.output).toBe(
-      '已超时——命令跑过了、被掐断（2000ms 到点）\n第一行\n第二行\n\n[stderr]\n一个警告\n[超时，已按进程组收掉 · /work/proj]',
+      '已超时——命令跑过了、被掐断（2000ms 到点）\n' +
+      '模型可做：核对这条命令的副作用（可能已执行了一部分）\n' +
+      '需要用户：无\n' +
+      '第一行\n第二行\n\n[stderr]\n一个警告\n[超时，已按进程组收掉 · /work/proj]',
     )
   })
 
@@ -69,7 +73,12 @@ describe('超时与取消同一口径', () => {
 
     const outcome = await deps.runtime.invoke(execCall('x'), {})
 
-    expect(outcome.output).toBe('已超时——命令跑过了、被掐断（2000ms 到点）\n[超时，已按进程组收掉 · /work/proj]')
+    expect(outcome.output).toBe(
+      '已超时——命令跑过了、被掐断（2000ms 到点）\n' +
+      '模型可做：核对这条命令的副作用（可能已执行了一部分）\n' +
+      '需要用户：无\n' +
+      '[超时，已按进程组收掉 · /work/proj]',
+    )
   })
 
   /**
@@ -107,7 +116,8 @@ describe('超时与取消同一口径', () => {
     const canceledHead = canceledOutcome.output.split('\n')[0] ?? ''
 
     // 各说全：超时那句带着**真报了的上界**，取消那句带着**叫停这件事**
-    expect(timedHead).toBe(execTimedOutOutput(2000))
+    // （三段式后报文是三行，抬头取首行）
+    expect(timedHead).toBe(execTimedOutOutput(2000).split('\n')[0] ?? '')
     expect(canceledHead).toBe(OUTPUT_CANCELED_RUNNING)
 
     // 互斥：两句不互含——同一次收尾只会落进其中一句，不会两句都出现
@@ -131,7 +141,7 @@ describe('超时与取消同一口径', () => {
     const outcome = await deps.runtime.invoke(execCall('x'), { signal: controller.signal })
 
     expect(outcome.output).not.toContain('已取消')
-    expect(outcome.output.split('\n')[0]).toBe(execTimedOutOutput(2000))
+    expect(outcome.output.split('\n')[0]).toBe(execTimedOutOutput(2000).split('\n')[0] ?? '')
   })
 
   test('抬头里的数取自**结果里真报了的**那条上界，不是本域自己记的那份', async () => {
@@ -152,7 +162,12 @@ describe('超时与取消同一口径', () => {
 
     const outcome = await deps.runtime.invoke(execCallWith({ command: 'x', timeoutMs: 2000 }), {})
 
-    expect(outcome.output).toBe('已超时——命令跑过了、被掐断（300ms 到点）\n[超时，已按进程组收掉 · /work/proj]')
+    expect(outcome.output).toBe(
+      '已超时——命令跑过了、被掐断（300ms 到点）\n' +
+      '模型可做：核对这条命令的副作用（可能已执行了一部分）\n' +
+      '需要用户：无\n' +
+      '[超时，已按进程组收掉 · /work/proj]',
+    )
   })
 
   test('不带 `[exit N]`——退出码是收命的产物（137），抬头已经把事实说全了', async () => {

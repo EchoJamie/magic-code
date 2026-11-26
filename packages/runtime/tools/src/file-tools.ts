@@ -23,10 +23,10 @@ import type { ReadResult } from '@magic/contracts'
 import { isText } from './args.ts'
 import { byteLength } from './blobs.ts'
 import {
+  editAmbiguousOutput,
   editDoneOutput,
   editTooLargeOutput,
   OUTPUT_CONTENT_REQUIRED,
-  OUTPUT_EDIT_AMBIGUOUS,
   OUTPUT_EDIT_NOT_FOUND,
   OUTPUT_EDIT_SAME,
   OUTPUT_FILE_EMPTY,
@@ -282,7 +282,7 @@ export function defineEditTool(): ToolDefinition {
 
         const count = countOccurrences(current.content, old)
         if (count === 0) return refused(OUTPUT_EDIT_NOT_FOUND)
-        if (count > 1) return refused(`${OUTPUT_EDIT_AMBIGUOUS}（出现 ${count} 处）`)
+        if (count > 1) return refused(editAmbiguousOutput(count))
 
         const index = current.content.indexOf(old)
         if (ctx.signal?.aborted) return refused('已取消——文件未改')

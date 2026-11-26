@@ -326,7 +326,7 @@ describe('edit —— 唯一定位 · 失配即报', () => {
     )
 
     expect(result.ok).toBe(false)
-    expect(result.output).toBe('未找到待替换文本——文件未改')
+    expect(result.output).toBe('未找到待替换文本——文件未改\n模型可做：先 read 确认原文，再照原文给 old')
     expect(sandbox.writes).toEqual([])
   })
 
@@ -341,7 +341,10 @@ describe('edit —— 唯一定位 · 失配即报', () => {
     )
 
     expect(result.ok).toBe(false)
-    expect(result.output).toBe('待替换文本出现多处——无法唯一定位，文件未改（出现 3 处）')
+    expect(result.output).toBe(
+      '待替换文本出现多处——无法唯一定位，文件未改（出现 3 处）\n' +
+      '模型可做：给足上下文（含前后文）让 old 唯一，或逐处分次改',
+    )
     expect(sandbox.writes).toEqual([])
   })
 

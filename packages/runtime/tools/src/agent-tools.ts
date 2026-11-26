@@ -1,5 +1,6 @@
 import type { CollaborationClient, CollaborationRequest, MessagePart } from '@magic/contracts'
 import { defineTool, type ToolDefinition } from './registry.ts'
+import { agentFailedOutput } from './messages.ts'
 
 export const AGENT_TOOL_NAMES = ['agent_list', 'agent_spawn', 'agent_message', 'agent_control', 'consult_arcane'] as const
 const text = { type: 'string', minLength: 1 } as const
@@ -65,8 +66,8 @@ export function defineAgentTools(client: CollaborationClient): readonly ToolDefi
           const reply = await client.request({ ...request, ...(context.entry === undefined ? {} : { generatedFrom: context.entry }) })
           return reply.ok ? { ok: true, output: (request.action === 'consult' ? '咨询受理回执（不表示顾问已完成）：\n' : '') + JSON.stringify(reply.value),
             ...(reply.knowledge === undefined ? {} : { knowledge: reply.knowledge }),
-          } : { ok: false, output: reply.reason }
-        } catch (error) { return { ok: false, output: error instanceof Error ? error.message : String(error) } }
+          } : { ok: false, output: agentFailedOutput(reply.reason) }
+        } catch (error) { return { ok: false, output: agentFailedOutput(error instanceof Error ? error.message : String(error)) } }
       },
     })
   }

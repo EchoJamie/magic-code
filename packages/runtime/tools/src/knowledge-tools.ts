@@ -1,6 +1,7 @@
 import type { KnowledgeAccess, KnowledgeCorrection, KnowledgeQuery } from '@magic/contracts'
 import { defineTool, type ToolDefinition } from './registry.ts'
 import { reasonOf, refused } from './toolkit.ts'
+import { knowledgeReadMissOutput, knowledgeSearchFailedOutput, knowledgeSourceFailedOutput } from './messages.ts'
 
 export const KNOWLEDGE_TOOL_NAMES = ['knowledge_search', 'knowledge_read', 'knowledge_source', 'knowledge_update'] as const
 const sourceProperties = {
@@ -15,13 +16,13 @@ export function defineKnowledgeTools(access: KnowledgeAccess, writable: boolean)
     spec: { name: 'knowledge_search', summary: '查找当前范围的知识；可改写中文别称/英文查找词，不给查询则按主题分页发现。候选须核对成立条件后采用。', danger: { level: 'light' },
       parameters: { type: 'object', properties: { query: { type: 'string' }, topic: { type: 'string' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100 } } } },
     prepare(args) { return args as KnowledgeQuery & Record<string, unknown> },
-    run(query) { try { const page = access.search(query); return { ok: true, output: JSON.stringify({ ...page, knowledge: page.items.map(({ id, revision }) => ({ id, revision })) }) } } catch (error) { return refused(reasonOf(error)) } },
+    run(query) { try { const page = access.search(query); return { ok: true, output: JSON.stringify({ ...page, knowledge: page.items.map(({ id, revision }) => ({ id, revision })) }) } } catch (error) { return refused(knowledgeSearchFailedOutput(reasonOf(error))) } },
   })
   const read = defineTool({
     spec: { name: 'knowledge_read', summary: '按真实 id 精读最新知识、修订、条件及来源。纠正前必须先读；待判断或失效内容不能直接采用。', danger: { level: 'light' },
       parameters: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } } },
     prepare(args) { return { id: requiredText(args.id, 'id') } },
-    run({ id }) { const item = access.read(id); return item === undefined ? refused('知识不存在或不在当前范围') : { ok: true, output: JSON.stringify({ ...item, knowledge: [{ id: item.id, revision: item.revision }] }) } },
+    run({ id }) { const item = access.read(id); return item === undefined ? refused(knowledgeReadMissOutput('知识不存在或不在当前范围')) : { ok: true, output: JSON.stringify({ ...item, knowledge: [{ id: item.id, revision: item.revision }] }) } },
   })
   const source = defineTool({
     spec: { name: 'knowledge_source', summary: '读取所选知识的一条具体证据，可按返回 next 继续分页；不会开放来源会话的其他历史。', danger: { level: 'light' },
@@ -36,7 +37,7 @@ export function defineKnowledgeTools(access: KnowledgeAccess, writable: boolean)
       return { id, source: { session, entry: args.entry as number, ...(args.part === undefined ? {} : { part: args.part as number }),
         ...(args.offset === undefined ? {} : { offset: args.offset as number }), ...(args.limit === undefined ? {} : { limit: args.limit as number }) } }
     },
-    async run({ id, source }) { try { return { ok: true, output: JSON.stringify(await access.source(id, source)) } } catch (error) { return refused(reasonOf(error)) } },
+    async run({ id, source }) { try { return { ok: true, output: JSON.stringify(await access.source(id, source)) } } catch (error) { return refused(knowledgeSourceFailedOutput(reasonOf(error))) } },
   })
   if (!writable) return [search, read, source]
   const update = defineTool({

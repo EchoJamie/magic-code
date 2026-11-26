@@ -50,6 +50,7 @@ import { isText } from './args.ts'
 import { defineTool } from './registry.ts'
 import type { ToolDefinition, ToolRunResult } from './registry.ts'
 import { refused } from './toolkit.ts'
+import { skillReadFailedOutput } from './messages.ts'
 
 /**
  * 参数模式——**键名锚定在本文件**（`name` / `relative`）。
@@ -121,7 +122,7 @@ export function defineSkillTool(skills: Skills): ToolDefinition {
           ? (await skills.readMain(target.name, target.path, ctx.signal))
           : (await skills.readReference(target.name, target.path, relative, ctx.signal))
 
-      if (!read.ok) return refused(read.reason)
+      if (!read.ok) return refused(skillReadFailedOutput(read.reason))
 
       return {
         ok: true,

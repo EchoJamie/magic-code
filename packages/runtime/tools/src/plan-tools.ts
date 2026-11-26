@@ -12,6 +12,7 @@ import type {
 import { defineTool } from './registry.ts'
 import type { ToolDefinition, ToolRunResult } from './registry.ts'
 import { refused, reasonOf } from './toolkit.ts'
+import { historyReadFailedOutput } from './messages.ts'
 
 /**
  * 两个读工具名字——**归属明确**（装配按它追加放行规则、权限域按它认这三格）。
@@ -239,7 +240,7 @@ function historyTool(reader: PlanReader): ToolDefinition {
         const page = await reader.readHistory(query)
         return { ok: true, output: historyReceipt(page), knowledge: page.entries.flatMap(entry => entry.knowledge ?? []) }
       } catch (error) {
-        return refused(`历史读取失败：${reasonOf(error)}`)
+        return refused(historyReadFailedOutput(reasonOf(error)))
       }
     },
   })

@@ -126,7 +126,11 @@ describe('skill 工具', () => {
     const outcome = await run(port, { name: 'pdf' })
 
     expect(outcome.ok).toBe(false)
-    expect(outcome.output).toBe('技能「pdf」那一处现在不是一个目录了（/sk/pdf）——来源没了就是没了')
+    // 端口的原委原样带出（不替它编第二种说法）；三段式（N19）只在其后补「模型可做」
+    expect(outcome.output).toBe(
+      '技能「pdf」那一处现在不是一个目录了（/sk/pdf）——来源没了就是没了\n' +
+      '模型可做：核对技能名与主文路径',
+    )
   })
 
   test('参数不成形：name 缺 / 空，relative 给了个非串——**未执行**', async () => {
