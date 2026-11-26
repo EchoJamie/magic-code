@@ -1,5 +1,6 @@
 import type { RunRow, RunState, SessionId, SessionSummary } from '@magic/contracts'
 import type { PickerRow } from '../../view.ts'
+import { resourceWaitLine, resourceWaitOf, waitLineOf } from '../../resource-wait.ts'
 import { clockLabel, elapsedLabel } from '../settings/time.ts'
 // ══ 选择器（`/resume` · `/model`）════════════════════════════════════
 
@@ -208,6 +209,17 @@ export function runDetail(
   if (row.background !== undefined) said.push(`还有 ${row.background} 条后台命令在跑`)
   if (row.action !== undefined && !active) said.push(row.action)
   said.push(`已持续 ${elapsedLabel(now - row.since)}`)
+  // **失联/降级**（unknown）：给「最后已知」的那一拍——自称「最后已知」（最多丢一个上报
+  // 周期，不写「当时」；P32/Q4③）。
+  if (row.state === 'unknown' && row.lastKnownAt !== undefined) said.push(`最后已知 ${clockLabel(row.lastKnownAt)}`)
+  // **等待成本来自字段**（P29）：文案即呈现；`none`/缺席不给等待暗示。
+  const wait = waitLineOf(row)
+  if (wait !== undefined) said.push(wait)
+  // **资源等待按映射表给文案与动作**（P30）：前端不自判；占用方会话原样带出。
+  if (row.quotaClass !== undefined) {
+    const resource = resourceWaitLine(resourceWaitOf(row.quotaClass, { occupantSessions: row.occupantSessions }))
+    if (resource !== undefined) said.push(resource)
+  }
   if (row.progress !== undefined) {
     // 有「此刻在做的事」时不再复述进展（那多半就是同一件事的开头）——
     // 详情这一行不是越长越好，**每一截都要说得上它比别处多说了什么**

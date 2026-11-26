@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { resourceWaitLine, resourceWaitOf } from '../src/resource-wait.ts'
+import { resourceWaitLine, resourceWaitOf, waitLineOf } from '../src/resource-wait.ts'
 
 /**
  * T3.5 契约测试（先行的那一半）——《边界方案》§3.3 动作映射表逐行 + 未知 quotaClass 兜底。
@@ -55,5 +55,22 @@ describe('quotaClass → 用户文案与动作（边界方案 §3.3）', () => {
     expect(resourceWaitLine(resourceWaitOf('executor', { preemptible: true, occupantSessions: ['s1'] })))
       .toBe('等执行资源 （占用：s1） 可做：等／抢占')
     expect(resourceWaitLine(undefined)).toBeUndefined()
+  })
+})
+
+describe('waitLineOf——等待成本来自字段（P29）', () => {
+  test('blocking：请稍候等结局；advisory：只读可以不等', () => {
+    expect(waitLineOf({ waitClass: 'blocking' })).toBe('请稍候，等它结局')
+    expect(waitLineOf({ waitClass: 'advisory' })).toBe('只读，可以不等')
+    // blocking 即「入口在等」——awaitedByEntry 由 engine 配套下发，文案已含其意。
+    expect(waitLineOf({ waitClass: 'blocking', awaitedByEntry: true })).toBe('请稍候，等它结局')
+  })
+
+  test('none 与字段缺席：不给等待暗示（缺席即呈现，不写反向句）', () => {
+    expect(waitLineOf({ waitClass: 'none' })).toBeUndefined()
+    expect(waitLineOf({})).toBeUndefined()
+    expect(waitLineOf(undefined)).toBeUndefined()
+    // 未知值（枚举扩展未跟上）：不编。
+    expect(waitLineOf({ waitClass: 'gate' as never })).toBeUndefined()
   })
 })

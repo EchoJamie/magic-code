@@ -348,3 +348,48 @@ describe('接回的那一份「此刻」', () => {
     expect(frame.rowOf('这一段是接回来的一半')).toBeGreaterThan(frame.rowOf('我先说的那句'))
   })
 })
+
+describe('投影字段上详情（T3.1 · 字段缺席＝与从前一字不差）', () => {
+  const now = 1_000 + 192_000
+
+  test('waitClass=blocking：请稍候等结局——文案来自字段，不重算（P29）', () => {
+    const said = runDetail(run('s-1', 'running', { since: 1_000, waitClass: 'blocking' }), now, { inActiveSection: true })
+    expect(said).toContain('请稍候，等它结局')
+  })
+
+  test('waitClass=advisory：只读，可以不等', () => {
+    const said = runDetail(run('s-1', 'running', { since: 1_000, waitClass: 'advisory' }), now, { inActiveSection: true })
+    expect(said).toContain('只读，可以不等')
+    expect(said).not.toContain('请稍候')
+  })
+
+  test('waitClass=none 与缺席：不给等待暗示', () => {
+    const none = runDetail(run('s-1', 'running', { since: 1_000, waitClass: 'none' }), now, { inActiveSection: true })
+    expect(none).not.toContain('请稍候')
+    expect(none).not.toContain('可以不等')
+    // 缺席＝零变化（老投影没有这些字段，输出与从前一字不差）
+    expect(none).toBe(runDetail(run('s-1', 'running', { since: 1_000 }), now, { inActiveSection: true }))
+  })
+
+  test('quotaClass：按映射表给文案与动作，占用方会话原样带出（P30）', () => {
+    const said = runDetail(run('s-1', 'waiting', {
+      since: 1_000,
+      quotaClass: 'executor',
+      occupantSessions: ['s-9'],
+    }), now, { inActiveSection: true })
+    expect(said).toContain('等执行资源')
+    expect(said).toContain('（占用：s-9）')
+    expect(said).toContain('可做：等')
+
+    const full = runDetail(run('s-1', 'waiting', { since: 1_000, quotaClass: 'input-capacity' }), now, { inActiveSection: true })
+    expect(full).toContain('待办已满 可做：一键重发')
+    expect(full).not.toContain('换模型') // 并发/容量类不给「换模型」——给错动作与不给同罪
+  })
+
+  test('unknown + lastKnownAt：自称「最后已知」，绝不冒充已停/空闲（P7/P32）', () => {
+    const said = runDetail(run('s-1', 'unknown', { since: 1_000, lastKnownAt: 900_000 }), now, { inActiveSection: true })
+    expect(said).toContain('最后已知')
+    expect(said).not.toContain('已停止')
+    expect(said).not.toContain('空闲')
+  })
+})
