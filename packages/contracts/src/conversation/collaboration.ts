@@ -52,8 +52,7 @@ export type AgentMessage = {
   readonly userSource?: EntryReference
   readonly at: Timestamp
   readonly withdrawn: boolean
-}
-/** 条目只含引用，content 为 {text:''}，正文须经 readMessage 读取。source 仍是发送方 SessionId。 */
+}/** 条目只含引用，content 为 {text:''}，正文须经 readMessage 读取。source 仍是发送方 SessionId。 */
 export type AgentMessagePayload = { readonly messageId: MessageId; readonly collaborationId: CollaborationId; readonly senderId: AgentId; readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[] }
 export type InboxItem = {
   /** 数据库持久入队序号；不可用 messageId 代替。 */
@@ -81,6 +80,8 @@ export type Delegation = {
   readonly acceptedAt?: Timestamp
   readonly deliveredAt?: Timestamp
   readonly receivedAt?: Timestamp
+  /** 认收途径（N9 收敛规则）——`auto`＝入口结束时 engine 代收（呈现「已完成（自动认收）」）；缺省＝手动。 */
+  readonly receivedVia?: 'manual' | 'auto'
   readonly reason?: string
   readonly at: Timestamp
 }
@@ -179,7 +180,10 @@ export interface CollaborationRecords {
   listDelegations(collaborationId: CollaborationId): readonly Delegation[]
   respondToDelegation(actor: AgentId, input: OperationInput & { readonly delegationId: DelegationId; readonly response: 'accept' | 'reject' | 'clarify'; readonly body?: readonly MessagePart[]; readonly reason?: string }): { readonly delegation: Delegation; readonly accepted: boolean; readonly reason?: string }
   deliver(actor: AgentId, input: OperationInput & { readonly delegationId: DelegationId; readonly body: readonly MessagePart[]; readonly reason?: string }): AgentMessage
-  receiveDelivery(actor: AgentId, delegationId: DelegationId, at: Timestamp): Delegation
+  /** 主会话认收交付（N9：手动/入口结束自动——via 标「自动认收」）。 */
+  receiveDelivery(actor: AgentId, delegationId: DelegationId, at: Timestamp, via?: 'manual' | 'auto'): Delegation
+  /** 放弃交付（N9：不认收、记未完成——received + reason='放弃认收'，不再等待）。 */
+  abandonDelivery(actor: AgentId, delegationId: DelegationId, at: Timestamp): Delegation
   send(actor: AgentId, input: SendMessageInput): AgentMessage
   readMessage(actor: AgentId, messageId: MessageId): AgentMessage | undefined
   /** 本成员有权读取的发出、收件、共同约束及关联讨论；不扩大到全协作日志。 */

@@ -360,11 +360,20 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       saveDelegation({ ...d, state: d.state === 'cancelled' ? 'cancelled' : 'delivered', deliveryMessageId: m.messageId, deliveredAt: input.at, ...(input.reason === undefined ? {} : { reason: input.reason, reasonFrom: input.generatedFrom }) })
       remember(input.operationId, actor, { kind: 'delivery', messageId: m.messageId }); return m
     }) },
-    receiveDelivery(actor, id, at) { return tx(() => {
+    receiveDelivery(actor, id, at, via = 'manual') { return tx(() => {
       const d = delegation(id)
       if (d.delegatorId !== actor || d.deliveryMessageId === undefined) throw new Error('delivery not available to delegator')
       if (d.state === 'received') return d
-      const next: Delegation = { ...d, state: d.state === 'cancelled' ? 'cancelled' : 'received', receivedAt: d.receivedAt ?? at }; saveDelegation(next); return next
+      const next: Delegation = { ...d, state: d.state === 'cancelled' ? 'cancelled' : 'received', receivedAt: d.receivedAt ?? at, receivedVia: via }; saveDelegation(next); return next
+    }) },
+    abandonDelivery(actor, id, at) { return tx(() => {
+      // 放弃交付（N9）：主会话明确不认收——received + reason='放弃认收'，结局「未完成」，不再等待。
+      const d = delegation(id)
+      if (d.delegatorId !== actor || d.deliveryMessageId === undefined) throw new Error('delivery not available to delegator')
+      if (d.state === 'received') return d
+      if (d.state !== 'delivered') throw new Error('delivery not awaiting receipt')
+      const next: Delegation = { ...d, state: 'received', receivedAt: d.receivedAt ?? at, reason: '放弃认收（未完成）' }
+      saveDelegation(next); return next
     }) },
     send(actor, input) { return tx(() => {
       const old = prior(input.operationId, actor, 'message')

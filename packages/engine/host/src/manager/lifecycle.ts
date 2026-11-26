@@ -128,8 +128,7 @@ export function installLifecycle(ctx: ManagerContext): void {
       onSettled(run, note) {
         if (note === undefined && run.ended !== undefined && !run.reclaimPending && run.reclaimNote === undefined &&
           run.session !== null && run.executionId !== undefined && !ctx.storeClosed && !settledRuns.has(run)) {
-          void collaboration.executorExited(run.session, run.executionId, run.ended.why,
-            run.ended.kind === 'crashed' && lastRuns.get(run.session) === run && ctx.liveOf(run.session) === undefined).catch(error => options.log?.(`中断回报尚未核实：${String(error)}`))
+          void collaboration.executorExited(run.session, run.executionId, run.ended.why)
           settledRuns.add(run)
         }
       },

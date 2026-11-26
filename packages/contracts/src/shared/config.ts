@@ -286,6 +286,12 @@ export type MagicConfig = {
    * **实验性功能**（D75）——见 `ExperimentalConfig`。**键缺省＝全关**（不配也能用）。
    */
   readonly experimental?: ExperimentalConfig
+  /**
+   * **交付待确认超时**（N9 · 边界方案时限总表）——委派 delivered 未 received 到这个
+   * 时限后呈现「已交付，未认收（超时）」，不再算等待中阻塞态；仍可手动认收/放弃。
+   * **缺省 24h**；毫秒。超时是呈现态推导（按 deliveredAt 计算），不在账上落终局。
+   */
+  readonly ackTimeoutMs?: number
 }
 
 /**
@@ -383,3 +389,6 @@ export function expandHome(raw: string, home: string): string {
 
 /** TUI 一轮执行耗时的显示口径。 */
 export type TurnDurationMode = 'elapsed' | 'active'
+
+/** 交付待确认超时的缺省值（N9）——24h，可经 `MagicConfig.ackTimeoutMs` 配置。 */
+export const ACK_TIMEOUT_MS_DEFAULT = 24 * 60 * 60 * 1000

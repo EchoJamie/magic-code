@@ -220,7 +220,7 @@ const EMPTY_COLLABORATION: CollaborationRecords = {
   registerAgent: unscripted, updateAgent: unscripted, setReachability: unscripted,
   openCollaboration: unscripted, updateDefaultModel: unscripted, spawn: unscripted,
   delegate: unscripted, respondToDelegation: unscripted, deliver: unscripted,
-  receiveDelivery: unscripted, send: unscripted, consumeInbox: unscripted,
+  receiveDelivery: unscripted, abandonDelivery: unscripted, send: unscripted, consumeInbox: unscripted,
   markIncluded: unscripted, editMessage: unscripted, withdrawMessage: unscripted,
   publishConstraint: unscripted, beginExecution: unscripted, finishExecution: unscripted,
   stop: unscripted, resume: unscripted, beginClosing: unscripted, closeCollaboration: unscripted,

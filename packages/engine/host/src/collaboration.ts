@@ -47,6 +47,16 @@ export function createManagedCollaboration(host: CollaborationHost) {
   })
 
   const completing = new Set<string>()
+  /** 入口结束自动认收（N9）：coordinator 名下 delivered 未 received 的委派代收，标「自动认收」。 */
+  function autoReceiveDeliveries(collaborationId: import('@magic/contracts').CollaborationId): void {
+    const work = records.getCollaboration(collaborationId)
+    if (work === undefined) return
+    for (const d of records.listDelegations(collaborationId)) {
+      if (d.delegatorId === work.coordinatorId && d.state === 'delivered' && d.deliveryMessageId !== undefined) {
+        try { records.receiveDelivery(work.coordinatorId, d.delegationId, host.now(), 'auto') } catch { /* 已终局的跳过 */ }
+      }
+    }
+  }
   async function completeConsultation(session: string, reason?: string, turn?: number): Promise<void> {
     const agent = records.agentForSession(session)
     if (agent?.purpose !== 'consultation' || agent.collaborationId === undefined || completing.has(session)) return
@@ -202,6 +212,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
           && (run.holds || (run.background ?? 0) > 0 || run.backgroundUnknown || run.backgroundWaiting))
         if (leftover) return false
         const outcome = records.closeCollaboration(work.collaborationId, host.now())
+        autoReceiveDeliveries(work.collaborationId)
         changed()
         return outcome.closed
       } finally { finishing.delete(work.collaborationId) }
@@ -238,6 +249,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
           await cancelResult(records.stop(command.delegation === undefined
             ? { kind: 'collaboration', collaborationId: collaboration.collaborationId }
             : { kind: 'delegation', delegationId: command.delegation }, '用户停止', host.now()))
+          if (command.delegation === undefined) autoReceiveDeliveries(collaboration.collaborationId)
           break
         }
         case 'collaboration.resume':
@@ -278,19 +290,25 @@ export function createManagedCollaboration(host: CollaborationHost) {
         await completeConsultation(agent.sessionId, terminal?.data.reason === 'settled' && !terminal.data.continues ? undefined : '宿主中断，咨询未完成；不会自动重发', terminal?.turn ?? undefined)
       }
     },
-    async executorExited(session: string, runId: string, reason: string, abnormal = false) {
+    async executorExited(session: string, runId: string, reason: string) {
       const agent = records.agentForSession(session)
       if (agent?.collaborationId === undefined) return
-      if (abnormal) {
-        // 委派已全部结束（取消/完成）时，退出即释放；仍有已接受委派才挂起待核实。
-        const accepted = records.listDelegations(agent.collaborationId).some(d => d.assigneeId === agent.agentId && d.state === 'accepted')
-        records.setReachability(agent.agentId, accepted ? 'suspended' : 'historical')
+      // **业务终态判据**（§5 Q6/N2）：不按进程退出方式——看账上是否有未交付的委派、
+      // 未 finished 的 execution。有 ⇒ 挂起待核实（「未完成/丢失」的事实源）；无 ⇒ 历史化。
+      // ⚠️ 只适用于**协作成员**：coordinator 是入口自己，退出是正常收束（新一代接管），
+      // reachability 保持 active，不影响后续准入。
+      const isCoordinator = agent.agentId === records.getCollaboration(agent.collaborationId)?.coordinatorId
+      if (!isCoordinator) {
+        const unfinishedWork =
+          records.listDelegations(agent.collaborationId).some(d => d.assigneeId === agent.agentId && ['queued', 'clarification', 'accepted', 'delivered'].includes(d.state)) ||
+          records.listExecutions(agent.collaborationId).some(e => e.agentId === agent.agentId && e.state !== 'finished')
+        records.setReachability(agent.agentId, unfinishedWork ? 'suspended' : 'historical')
       }
       for (const execution of records.listExecutions(agent.collaborationId)) {
         if (execution.agentId === agent.agentId && execution.runId === runId && execution.state !== 'finished') records.finishExecution(execution.operationId, reason)
       }
       changed()
-      if (abnormal && agent.purpose === 'consultation') await completeConsultation(session, reason)
+      if (!isCoordinator && agent.purpose === 'consultation') await completeConsultation(session, reason)
     },
   }
 }
