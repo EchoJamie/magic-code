@@ -3,17 +3,30 @@ import type { NewEntry } from './entries.ts'
 import type { RecordId, TurnId } from '../shared/ids.ts'
 import { INPUT_PREVIEW_TEXT_BYTES } from '../shared/control-budget.ts'
 export type InputPurpose = 'current' | 'next'
+
+/**
+ * 输入七态（边界方案 §五）——每迁移唯一写者：
+ * - `pending`（受理，engine）→ `executing`（engine 的 `dequeue`，准入通过后出队）
+ *   → `consumed`（executor 的 `consume`，与落条目同一事务，同时写 `turn`）→ `included`（engine）；
+ * - `rejected`（engine：受理即拒不经 pending，或已受理后 closing/archived 的 `rejectPending`）；
+ * - `failed`（engine：执行前/执行中断；`failedFrom` 记失败前状态）；
+ * - `withdrawn`（engine：**只从 pending** 撤回，无 executing→withdrawn 迁移）。
+ */
+export type InputState = 'pending' | 'rejected' | 'executing' | 'consumed' | 'included' | 'failed' | 'withdrawn'
+
 export type StoredInput = {
   readonly ref: string
   readonly input: UserInput
   readonly purpose: InputPurpose
   readonly at: number
   readonly revision: number
-  readonly state: 'pending' | 'consumed' | 'included' | 'withdrawn' | 'failed'
+  readonly state: InputState
   readonly entry?: RecordId
-  /** 这份输入被哪次交代消费（`turns.id`）。未消费时缺席。 */
+  /** 这份输入被哪次交代消费（`turns.id`）。**消费前缺席**——只在 `consume` 事务里写（不得预写）。 */
   readonly turn?: TurnId
   readonly reason?: string
+  /** 失败前状态（`failed` 行才有）：`retry` 按 `failedFrom` 区分文案。 */
+  readonly failedFrom?: 'pending' | 'executing'
 }
 /**
  * 待处理输入在控制面里的**线上视图**——正文只留预览，附总字节数与截断标记。
@@ -66,19 +79,43 @@ export function pendingViews(
   })
 }
 
-/** 记录域保存提交事实；运行只持本次明确启动的身份，不自动消费遗留输入。 */
+/**
+ * 记录域保存提交事实；运行只持本次明确启动的身份，不自动消费遗留输入。
+ *
+ * 状态机纪律（边界方案 §五）：每个迁移一个写者；`turn` 只在 `consume` 事务里写
+ * （消费前写 `turn` 的路径都是违规）；`withdrawn` 只从 `pending`。
+ */
 export interface InputRecords {
+  /** 受理落 `pending`（事务性发件箱：受理即落账，帧只是加速信号）。 */
   accept(input: UserInput & { ref: string }, at: number): StoredInput
+  /** 受理即拒（容量/closing/archived）：**不经 pending** 直接落 `rejected` 行，原稿留在账上。 */
+  reject(input: UserInput & { ref: string }, reason: string, at: number): StoredInput
   get(ref: string): StoredInput | undefined
   list(): readonly StoredInput[]
   edit(ref: string, revision: number, input: UserInput): boolean
+  /** pending → withdrawn（**只从 pending**；N18：无 executing→withdrawn 迁移）。 */
   withdraw(ref: string, revision: number): boolean
+  /** pending → rejected（已受理后拒：closing/archived），带 `(session,ref)` 回执由调用方发。 */
+  rejectPending(ref: string, reason: string): boolean
+  /** pending → executing（engine；准入 `beginExecution` 在 dequeue 之前）。 */
+  dequeue(ref: string, revision: number): boolean
+  /** executing → consumed（executor；与落条目同一事务，写 `turn`）。 */
   consume(ref: string, revision: number, entry: NewEntry): RecordId | undefined
   hold(ref: string, reason: string | undefined): void
+  /** pending/executing → failed；`failedFrom` 记失败前状态（G3/M4）。 */
   fail(ref: string, reason: string): void
+  /** failed/rejected → pending（用户重试/重发）；清 `failedFrom` 与 `reason`。 */
+  retry(ref: string, revision: number): boolean
   included(entries: readonly RecordId[]): readonly StoredInput[]
 }
 export type InputManage = { readonly member?: import('../shared/ids.ts').AgentId } & (
   | { readonly type: 'input.manage'; readonly action: 'list' }
   | { readonly type: 'input.manage'; readonly action: 'edit'; readonly ref: string; readonly revision: number; readonly input: UserInput }
-  | { readonly type: 'input.manage'; readonly action: 'withdraw' | 'continue'; readonly ref: string; readonly revision: number })
+  | { readonly type: 'input.manage'; readonly action: 'withdraw'; readonly ref: string; readonly revision: number }
+  /**
+   * **立即消费**（pending 下触发 consume/drain，非 retry——N14：准入失败的动作是再送一次，
+   * 不是把失败当重试）。`retry` 只从 failed/rejected 起。
+   */
+  | { readonly type: 'input.manage'; readonly action: 'retry' | 'consume'; readonly ref: string; readonly revision: number }
+  /** 旧名，语义并入 `consume`（pending 下立即消费）；不再承担 failed 起的重试（那是 `retry`）。 */
+  | { readonly type: 'input.manage'; readonly action: 'continue'; readonly ref: string; readonly revision: number })

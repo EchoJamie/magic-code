@@ -21,6 +21,7 @@
 
 import type { RecordId, SessionId } from '../shared/ids.ts'
 import type { TurnEndReason } from './events.ts'
+import type { BlockedState, NoticeReasonCode, QuotaClass, WaitClass } from './state.ts'
 
 /**
  * **那六行状态**——设计那张表左栏的词，一个不多一个不少。
@@ -80,6 +81,18 @@ export type RunRow = {
    * （设计：「不能重复启动同会话」）。外壳据它把「接回」与「重开」分开说。
    */
   readonly holds: boolean
+  /** 等待类别——engine 计算（P29：等待成本由 engine 算，前端不自判）。 */
+  readonly waitClass?: WaitClass
+  /** 主会话的入口轮正等着这一格（engine 计算，随投影带出）。 */
+  readonly awaitedByEntry?: boolean
+  /** 资源等待类别（定死枚举＋§3.3 动作映射；未知值前端显示通用「资源不足」）。 */
+  readonly quotaClass?: QuotaClass
+  /** `executor` 类等待的占用方会话列表（engine 持有执行者登记，投影时带出）。 */
+  readonly occupantSessions?: readonly SessionId[]
+  /** 最后已知时刻（毫秒）——失联/降级 unknown 时给；呈现「最后已知」按它算。 */
+  readonly lastKnownAt?: number
+  /** 阻塞态（账本三字段投影：kind/by/since；重启后计时保留，P33）。 */
+  readonly blocked?: BlockedState
 }
 
 /**
@@ -107,6 +120,8 @@ export type RunNotice = {
   readonly at: number
   /** 原请求、错误或回复的实际文本；显示端按可用空间布局。 */
   readonly detail?: string
+  /** 通知缘由码（engine 落账时写；显示端按它映射文案，不自己归因）。 */
+  readonly reasonCode?: NoticeReasonCode
   /** 原事项的持久化来源；用于核对实际呈现的内容。 */
   readonly source?: { readonly session: string; readonly event?: number; readonly entry?: number }
   /** 尚未经具体事项确认已读；连接或查询本身不代表查看。 */

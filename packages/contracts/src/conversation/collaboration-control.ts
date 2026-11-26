@@ -1,4 +1,4 @@
-import type { AgentId, DelegationId, MessageId, SessionId } from '../shared/ids.ts'
+import type { AgentId, DelegationId, MessageId, OperationId, SessionId, Timestamp } from '../shared/ids.ts'
 import type { AgentIdentity, AgentMessage, Collaboration, Delegation, MessagePart } from './collaboration.ts'
 import type { ModelSwitchRequest, UserInput } from './control.ts'
 import type { Entry } from './entries.ts'
@@ -11,6 +11,12 @@ export type CollaborationRequest = CollaborationOperation & {
   /** 执行宿主注入的本次调用记录；不在模型参数 schema 中。 */
   readonly generatedFrom?: import('./collaboration.ts').EntryReference
 }
+/**
+ * 协作命令目录——前半是模型/用户可见的操作；`registry` 段是**执行宿主边界的账本写**
+ * （边界方案 §四#5「回执配对表补齐」）：执行者经 `collaboration.request` 帧请求写账本，
+ * **身份（actor）由宿主按连接绑定**，不在载荷里自报；每条带 `operationId`，回执经
+ * `collaboration.reply` 按它配对（`CollaborationReply`）。
+ */
 type CollaborationOperation =
   | { readonly action: 'list' }
   | { readonly action: 'consult'; readonly operationId: string; readonly question: string; readonly body?: readonly MessagePart[]; readonly reasoning?: ReasoningSetting }
@@ -23,6 +29,19 @@ type CollaborationOperation =
   | { readonly action: 'read'; readonly message: MessageId; readonly discussion?: boolean }
   | { readonly action: 'stop'; readonly delegation?: DelegationId; readonly reason: string }
   | { readonly action: 'close' }
+// —— 执行宿主边界的账本写（actor 由宿主绑定；operationId 配对回执）——
+  /** 消费本成员收件箱：pending → consumed（engine 是账本唯一写者，执行者请求写）。 */
+  | { readonly action: 'consumeInbox'; readonly operationId: OperationId; readonly at: Timestamp; readonly limit?: number }
+  /** 消费后的条目已带入当前轮：落「已并入」持久痕迹（对应 InboxItem.includedAt）。 */
+  | { readonly action: 'markIncluded'; readonly operationId: OperationId; readonly messageIds: readonly MessageId[]; readonly at: Timestamp }
+  /** 准入登记（**在 dequeue 之前**）：一次执行的准入事实；回执给 `ExecutionAdmission`。 */
+  | { readonly action: 'beginExecution'; readonly operationId: OperationId; readonly at: Timestamp; readonly delegationId?: DelegationId; readonly runId: string; readonly kind: import('./collaboration.ts').ExecutionAdmission['kind']; readonly mode?: 'work' | 'coordination' }
+  /** 结束一次执行；`execution` ＝ 要结束的那次准入的 operationId（与帧幂等键分开）。 */
+  | { readonly action: 'finishExecution'; readonly operationId: OperationId; readonly execution: OperationId; readonly reason?: string }
+  /** 宿主确认的真实 user 条目发布为共同约束（代理转述不能创建用户来源）。 */
+  | { readonly action: 'publishConstraint'; readonly operationId: OperationId; readonly at: Timestamp; readonly source: import('./collaboration.ts').EntryReference; readonly body: readonly MessagePart[]; readonly affectedAgents?: readonly AgentId[]; readonly replaces?: MessageId }
+  /** 执行者登记身份（连回后第一件事；身份归属由宿主核对，不在载荷自报）。 */
+  | { readonly action: 'registerIdentity'; readonly operationId: OperationId; readonly at: Timestamp; readonly session: SessionId }
 
 export type CollaborationReply = { readonly ok: true; readonly value: unknown; readonly knowledge?: readonly import('./knowledge.ts').KnowledgeReference[] } | { readonly ok: false; readonly reason: string }
 export type CollaborationClient = { request(input: CollaborationRequest): Promise<CollaborationReply> }

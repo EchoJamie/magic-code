@@ -4,6 +4,7 @@ import type { AgentModelConfig } from '../conversation/collaboration.ts'
 import type { CollaborationReply, CollaborationRequest } from '../conversation/collaboration-control.ts'
 import type { UserInput } from '../conversation/control.ts'
 import type { NativeRequest, NativeResponse, ServiceIdentity } from '../conversation/native.ts'
+import type { RecordId } from '../shared/ids.ts'
 import type {
   Command,
   KernelEvent,
@@ -259,6 +260,15 @@ export type ExecutorToManager =
    * 故变动时由子进程自报，管理者照登记收（崩溃后的收回依据就是这份）。
    */
   | { readonly t: 'ledger.owned'; readonly owned: readonly import('../shared/process.ts').OwnedProcess[] }
+  /**
+   * **心跳**（边界方案 §四#2/§五）——executor 每 5s 发一次；engine 维护
+   * `lastSeen`（判活租约）。判据是「心跳缺失 3 周期」不是「无事件」，长思考不触发。
+   *
+   * 水位与已落定条数随心跳同帧带出（§3.1：上报兜底 5s 与心跳同周期，可合并帧）——
+   * `watermark` ＝ 最后一条事件 id；`settled` ＝ appendEvent 持久事件计数。
+   * 两个都可缺省：纯判活心跳不带（缺省＝没有这一件，不拿 0 冒充）。
+   */
+  | { readonly t: 'heartbeat'; readonly watermark?: RecordId; readonly settled?: number }
 
 /** 管理者 → 执行者。 */
 export type ManagerToExecutor =

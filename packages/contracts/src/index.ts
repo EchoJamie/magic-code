@@ -41,6 +41,7 @@ export * from './conversation/collaboration.ts'
 export type * from './conversation/collaboration-control.ts'
 
 export * from './conversation/input.ts'
+export * from './conversation/state.ts'
 
 export * from "./shared/settings.ts"
 
