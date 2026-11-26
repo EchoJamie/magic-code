@@ -11,6 +11,7 @@ type InputRow = {
   entry: number | null
   turn: number | null
   reason: string | null
+  failed_from: string | null
 }
 
 export function initInputSchema(db: Database): void {
@@ -18,10 +19,32 @@ export function initInputSchema(db: Database): void {
     session TEXT NOT NULL, ref TEXT NOT NULL, body TEXT NOT NULL, purpose TEXT NOT NULL,
     at INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
     state TEXT NOT NULL DEFAULT 'pending', entry INTEGER, turn INTEGER, reason TEXT,
+    failed_from TEXT,
     PRIMARY KEY(session,ref)
   )`)
 }
 
+function ofRow(row: InputRow): StoredInput {
+  return {
+    ref: row.ref,
+    input: JSON.parse(row.body),
+    purpose: row.purpose,
+    at: row.at,
+    revision: row.revision,
+    state: row.state,
+    ...(row.entry === null ? {} : { entry: row.entry }),
+    ...(row.turn === null ? {} : { turn: row.turn }),
+    ...(row.reason === null ? {} : { reason: row.reason }),
+    ...(row.failed_from === null ? {} : { failedFrom: row.failed_from as 'pending' | 'executing' }),
+  }
+}
+
+/**
+ * 输入七态状态机（边界方案 §五）——**每迁移一个写者**：
+ * - 受理/拒收/出队/撤回/失败/重试/并入：engine（本模块，manager 进程持有写权）；
+ * - 消费：executor（`consume` 与落条目同一事务，同时写 `turn`——`turn` 只在这一处写，
+ *   消费前写 `turn` 的任何路径都违规，见 P2 反向断言）。
+ */
 export function createInputRecords(
   db: Database,
   session: string,
@@ -31,21 +54,11 @@ export function createInputRecords(
   const get = (ref: string): StoredInput | undefined => {
     const row = db.query('SELECT * FROM inputs WHERE session=? AND ref=?').get(session, ref) as InputRow | null
     if (row === null) return undefined
-    return {
-      ref: row.ref,
-      input: JSON.parse(row.body),
-      purpose: row.purpose,
-      at: row.at,
-      revision: row.revision,
-      state: row.state,
-      ...(row.entry === null ? {} : { entry: row.entry }),
-      ...(row.turn === null ? {} : { turn: row.turn }),
-      ...(row.reason === null ? {} : { reason: row.reason }),
-    }
+    return ofRow(row)
   }
   const list = (): StoredInput[] =>
     (db.query('SELECT ref FROM inputs WHERE session=? ORDER BY at, rowid').all(session) as { ref: string }[])
-      .map(row => get(row.ref)!)
+      .map(one => get(one.ref)!)
 
   return {
     get,
@@ -58,20 +71,42 @@ export function createInputRecords(
         return get(input.ref)!
       }).immediate()
     },
+    /** 受理即拒（容量/closing/archived）：不经 pending 直接落 `rejected` 行，原稿留在账上。 */
+    reject(input, reason, at) {
+      return db.transaction(() => {
+        ensure(at)
+        db.query("INSERT INTO inputs(session,ref,body,purpose,at,state,reason) VALUES (?,?,?,?,?,'rejected',?) ON CONFLICT(session,ref) DO NOTHING")
+          .run(session, input.ref, JSON.stringify(input), input.purpose ?? 'current', at, reason)
+        return get(input.ref)!
+      }).immediate()
+    },
     edit(ref, revision, input) {
       return db.query("UPDATE inputs SET body=?,revision=revision+1 WHERE session=? AND ref=? AND revision=? AND state='pending'")
         .run(JSON.stringify({ ...input, ref, purpose: get(ref)?.purpose ?? 'current' }), session, ref, revision).changes === 1
     },
+    /** pending → withdrawn。**只从 pending**（N18：不存在 executing→withdrawn 迁移）。 */
     withdraw(ref, revision) {
-      return db.query("UPDATE inputs SET state='withdrawn',revision=revision+1 WHERE session=? AND ref=? AND revision=? AND state='pending'")
+      return db.query("UPDATE inputs SET state='withdrawn',failed_from=NULL,revision=revision+1 WHERE session=? AND ref=? AND revision=? AND state='pending'")
+        .run(session, ref, revision).changes === 1
+    },
+    /** pending → rejected（已受理后拒：closing/archived）。回执 (session,ref) 由调用方发。 */
+    rejectPending(ref, reason) {
+      return db.query("UPDATE inputs SET state='rejected',reason=?,revision=revision+1 WHERE session=? AND ref=? AND state='pending'")
+        .run(reason, session, ref).changes === 1
+    },
+    /** pending → executing（engine；准入 `beginExecution` 在 dequeue 之前）。 */
+    dequeue(ref, revision) {
+      return db.query("UPDATE inputs SET state='executing',revision=revision+1 WHERE session=? AND ref=? AND revision=? AND state='pending'")
         .run(session, ref, revision).changes === 1
     },
     consume(ref, revision, entry) {
       return db.transaction(() => {
         const row = get(ref)
-        if (row?.state !== 'pending' || row.revision !== revision) return undefined
+        // 合法来源：executing（状态机终版）。pending 是过渡期执行者直通消费的现状路径，
+        // 待执行者侧（T2.3）改为「正文从账本读」后收窄为 executing-only。
+        if ((row?.state !== 'executing' && row?.state !== 'pending') || row.revision !== revision) return undefined
         const id = append(entry)
-        db.query("UPDATE inputs SET state='consumed',entry=?,turn=?,revision=revision+1 WHERE session=? AND ref=? AND state='pending'")
+        db.query("UPDATE inputs SET state='consumed',entry=?,turn=?,revision=revision+1,failed_from=NULL WHERE session=? AND ref=? AND state IN ('pending','executing')")
           .run(id, entry.turn ?? null, session, ref)
         return id
       }).immediate()
@@ -79,9 +114,15 @@ export function createInputRecords(
     hold(ref, reason) {
       db.query("UPDATE inputs SET reason=? WHERE session=? AND ref=? AND state='pending'").run(reason ?? null, session, ref)
     },
+    /** pending/executing → failed；`failedFrom` 记失败前状态（G3/M4：retry 按 it 区分文案）。 */
     fail(ref, reason) {
-      db.query("UPDATE inputs SET state='failed',reason=?,revision=revision+1 WHERE session=? AND ref=? AND state='pending'")
+      db.query("UPDATE inputs SET state='failed',failed_from=state,reason=?,revision=revision+1 WHERE session=? AND ref=? AND state IN ('pending','executing')")
         .run(reason, session, ref)
+    },
+    /** failed/rejected → pending（用户重试/重发）；清 `failedFrom` 与 `reason`。 */
+    retry(ref, revision) {
+      return db.query("UPDATE inputs SET state='pending',failed_from=NULL,reason=NULL,revision=revision+1 WHERE session=? AND ref=? AND revision=? AND state IN ('failed','rejected')")
+        .run(session, ref, revision).changes === 1
     },
     included(entries) {
       return db.transaction(() => {

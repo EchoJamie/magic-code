@@ -5,7 +5,7 @@
  * 什么时候起止」；`run_journal` 是恢复用的追加流水。唯一写者是数据服务（本模块）。
  */
 import type { Database } from 'bun:sqlite'
-import type { RunId, SessionId, StepId, Timestamp, TurnId } from '@magic/contracts'
+import type { BlockedState, RunId, SessionId, StepId, Timestamp, TurnId } from '@magic/contracts'
 import { RUNS_TABLE, RUN_JOURNAL_TABLE } from './schema.ts'
 
 export type RunState = 'starting' | 'running' | 'waiting' | 'stopping' | 'stopped' | 'idle' | 'failed'
@@ -30,6 +30,8 @@ export type RunRecord = {
   readonly kind?: string
   readonly lastTurn?: string
   readonly owned?: unknown
+  /** 阻塞态（账本三字段的形状：kind/by/since；engine 写，重启后计时保留——P33）。 */
+  readonly blocked?: BlockedState
 }
 
 export type RunJournalEntry = {
@@ -47,6 +49,17 @@ export type RunRecords = {
   replaceAll(records: readonly RunRecord[]): void
   /** 收束一次执行（幂等；已结束的不再改）。 */
   finish(id: RunId, input: { state: RunState; at: Timestamp; stopReason?: string; exitCode?: number }): void
+  /**
+   * 阻塞态定向更新（进入写、退出清 `undefined`）——不经全量 upsert，避免把并发更新
+   * 的其它列覆盖回旧值（§3.1：blocked 三字段落账本，重启后计时保留）。
+   *
+   * 两层关系：协作账本（ledgers/ledger_deliveries）是**等认收等事实的持久源**——
+   * delivered 未 received、pending 未消费的权威事实在那；`runs.blocked` 是**投影面向
+   * 的当前阻塞**——engine 从账本事实推出「此刻在等什么」，写进这一槽给 TUI/App 读
+   * （单槽，并存按 state.ts 的优先级取最高者）。账本是源，这一槽是面；面由源推出，
+   * 不反向。
+   */
+  setBlocked(id: RunId, blocked: BlockedState | undefined, at?: Timestamp): void
   get(id: RunId): RunRecord | undefined
   list(session?: SessionId): readonly RunRecord[]
   /** 追加一条恢复流水（`seq` 按 run 递增）。 */
@@ -74,6 +87,9 @@ type RunRow = {
   kind: string | null
   last_turn: string | null
   owned: string | null
+  blocked_kind: string | null
+  blocked_by: string | null
+  blocked_since: number | null
 }
 
 function ofRow(row: RunRow): RunRecord {
@@ -97,20 +113,22 @@ function ofRow(row: RunRow): RunRecord {
     ...(row.kind === null ? {} : { kind: row.kind }),
     ...(row.last_turn === null ? {} : { lastTurn: row.last_turn }),
     ...(row.owned === null ? {} : { owned: JSON.parse(row.owned) as unknown }),
+    ...(row.blocked_kind === null ? {} : { blocked: { kind: row.blocked_kind, ...(row.blocked_by === null ? {} : { by: row.blocked_by }), since: row.blocked_since ?? 0 } as BlockedState }),
   }
 }
 
 export function createRunRecords(db: Database): RunRecords {
   const upsert = db.query<never, Record<string, string | number | null>>(
     `INSERT INTO ${RUNS_TABLE}
-       (id, pid, proc_started_at, socket, session, turn_id, step_id, state, started_at, updated_at, ended_at, stop_reason, exit_code, background, generation, workspace, kind, last_turn, owned)
-     VALUES ($id, $pid, $procStartedAt, $socket, $session, $turn, $step, $state, $startedAt, $updatedAt, $endedAt, $stopReason, $exitCode, $background, $generation, $workspace, $kind, $lastTurn, $owned)
+       (id, pid, proc_started_at, socket, session, turn_id, step_id, state, started_at, updated_at, ended_at, stop_reason, exit_code, background, generation, workspace, kind, last_turn, owned, blocked_kind, blocked_by, blocked_since)
+     VALUES ($id, $pid, $procStartedAt, $socket, $session, $turn, $step, $state, $startedAt, $updatedAt, $endedAt, $stopReason, $exitCode, $background, $generation, $workspace, $kind, $lastTurn, $owned, $blockedKind, $blockedBy, $blockedSince)
      ON CONFLICT(id) DO UPDATE SET
        pid=excluded.pid, proc_started_at=excluded.proc_started_at, socket=excluded.socket, session=excluded.session, turn_id=excluded.turn_id,
        step_id=excluded.step_id, state=excluded.state, updated_at=excluded.updated_at,
        ended_at=excluded.ended_at, stop_reason=excluded.stop_reason, exit_code=excluded.exit_code,
        background=excluded.background, generation=excluded.generation,
-       workspace=excluded.workspace, kind=excluded.kind, last_turn=excluded.last_turn, owned=excluded.owned`,
+       workspace=excluded.workspace, kind=excluded.kind, last_turn=excluded.last_turn, owned=excluded.owned,
+       blocked_kind=excluded.blocked_kind, blocked_by=excluded.blocked_by, blocked_since=excluded.blocked_since`,
   )
   const clear = db.query('DELETE FROM ' + RUNS_TABLE)
   const finish = db.query<never, [string, number, number, string | null, number | null, string]>(
@@ -126,6 +144,9 @@ export function createRunRecords(db: Database): RunRecords {
   )
   const selectJournal = db.query<{ run: string; seq: number; at: number; kind: string; data: string | null }, [string]>(
     `SELECT run, seq, at, kind, data FROM ${RUN_JOURNAL_TABLE} WHERE run=? ORDER BY seq`,
+  )
+  const updateBlocked = db.query<never, [string | null, string | null, number | null, number, string]>(
+    `UPDATE ${RUNS_TABLE} SET blocked_kind=?, blocked_by=?, blocked_since=?, updated_at=? WHERE id=?`,
   )
 
   const upsertRecord = (record: RunRecord): void => {
@@ -149,6 +170,9 @@ export function createRunRecords(db: Database): RunRecords {
         $kind: record.kind ?? null,
         $lastTurn: record.lastTurn ?? null,
         $owned: record.owned === undefined ? null : JSON.stringify(record.owned),
+        $blockedKind: record.blocked?.kind ?? null,
+        $blockedBy: record.blocked?.by ?? null,
+        $blockedSince: record.blocked?.since ?? null,
       })
   }
 
@@ -159,6 +183,9 @@ export function createRunRecords(db: Database): RunRecords {
     upsert(record) { upsertRecord(record) },
     finish(id, input) {
       finish.run(input.state, input.at, input.at, input.stopReason ?? null, input.exitCode ?? null, id)
+    },
+    setBlocked(id, blocked, at = Date.now()) {
+      updateBlocked.run(blocked?.kind ?? null, blocked?.by ?? null, blocked?.since ?? null, at, id)
     },
     get(id) {
       const row = selectOne.get(id)

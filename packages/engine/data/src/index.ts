@@ -25,7 +25,7 @@
  */
 
 export { blocksClose } from './collaboration.ts'
-export { createRecordsStore, readSessionSummary, DATABASE_FILE } from './store.ts'
+export { createRecordsStore, prepareRecordsDir, readSessionSummary, DATABASE_FILE } from './store.ts'
 export type { RecordsStore, RecordsStoreOptions } from './store.ts'
 export type { AttentionStore } from './attention.ts'
 export { createRunRecords } from './runs.ts'

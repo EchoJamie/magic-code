@@ -1,23 +1,26 @@
 /**
- * 记录库 schema v2——一次建齐，只认新库。
+ * 记录库 schema——一次建齐；**additive 变更原地迁移，不删不重建**（A3）。
  *
- * 0.2.0 不迁移旧库：启动前由 `bootstrap.ts` 备份并移走 `records.db`；本文件遇到
- * 已有表但没有 `schema_version = 3` 的库直接拒绝，不 ALTER、不补列、不双读。
+ * 版本 4（2026-11-27，边界方案 T0.2）：`inputs` 加 `failed_from`（失败前状态，
+ * G3/M4）；`runs` 加阻塞三列 `blocked_kind`/`blocked_by`/`blocked_since`（P33，
+ * 重启后计时保留）。v3 → v4 全部是可空新增列，由 `initSchema` 原地 ALTER 补齐、
+ * 用户数据原样保留；「备份移走」只留给无法安全补齐的库（v2/半建/坏库）。
+ * 不识别的版本拒绝，不猜、不双读。
  *
  * 列口径以《0.2.0 迁移执行计划》§2 为准：
  * - `turns`：id、session、seq、status、started_at、ended_at、run、generation；
  * - `steps`：id、turn、seq、status、started_at、ended_at、provider、model；
  * - `entries`：正文与引用，`turn_id`；
  * - `events`：turn_id、step_id、generation；
- * - `inputs`：待提交输入，`turn`；
+ * - `inputs`：待提交输入，`turn`、`failed_from`；
  * - `attention_items`：未读/通知；
- * - `records_meta`：schema_version = 3、next_id；
- * - `runs` / `run_journal`：执行状态与恢复索引；
+ * - `records_meta`：schema_version = 4、next_id；
+ * - `runs` / `run_journal`：执行状态（含阻塞三列）与恢复索引；
  * - 协作 ledger：ledgers / ledger_members / ledger_entries / ledger_refs。
  */
 import type { Database } from 'bun:sqlite'
 
-export const SCHEMA_VERSION = '3'
+export const SCHEMA_VERSION = '4'
 
 export const SESSIONS_TABLE = 'sessions'
 export const TURNS_TABLE = 'turns'
@@ -153,7 +156,11 @@ CREATE TABLE IF NOT EXISTS ${RUNS_TABLE} (
   workspace   TEXT,
   kind        TEXT,
   last_turn   TEXT,
-  owned       TEXT
+  owned       TEXT,
+  -- 阻塞态三字段（P33）：engine 写，进入阻塞态写、退出清；重启后「等了多久」由 since 算。
+  blocked_kind   TEXT,
+  blocked_by     TEXT,
+  blocked_since  INTEGER
 );
 CREATE INDEX IF NOT EXISTS runs_by_session ON ${RUNS_TABLE} (session, started_at DESC);
 
@@ -238,6 +245,30 @@ CREATE TABLE IF NOT EXISTS ledger_refs (
 CREATE INDEX IF NOT EXISTS ledger_refs_by_ledger_entry ON ledger_refs (ledger_entry);
 `
 
+/**
+ * v3→v4 原地迁移——全部是**可空新增列**（A3：记录库不删不重建；无法安全补齐才报错）。
+ * 表缺席（半建库）交给后续建表；表在而列缺才 ALTER。幂等：列已存在即跳过。
+ */
+const V3_TO_V4_COLUMNS: readonly { readonly table: string; readonly column: string; readonly ddl: string }[] = [
+  { table: 'inputs', column: 'failed_from', ddl: 'ALTER TABLE inputs ADD COLUMN failed_from TEXT' },
+  { table: RUNS_TABLE, column: 'blocked_kind', ddl: `ALTER TABLE ${RUNS_TABLE} ADD COLUMN blocked_kind TEXT` },
+  { table: RUNS_TABLE, column: 'blocked_by', ddl: `ALTER TABLE ${RUNS_TABLE} ADD COLUMN blocked_by TEXT` },
+  { table: RUNS_TABLE, column: 'blocked_since', ddl: `ALTER TABLE ${RUNS_TABLE} ADD COLUMN blocked_since INTEGER` },
+]
+
+function migrateV3toV4(db: Database): void {
+  const tables = new Set(
+    db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().map(row => row.name),
+  )
+  for (const { table, column, ddl } of V3_TO_V4_COLUMNS) {
+    if (!tables.has(table)) continue
+    const columns = new Set(db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map(row => row.name))
+    if (columns.has(column)) continue
+    db.exec(ddl)
+  }
+  db.query(`UPDATE ${META_TABLE} SET value = ? WHERE key = ?`).run(SCHEMA_VERSION, SCHEMA_VERSION_KEY)
+}
+
 export function initSchema(db: Database, databasePath: string): void {
   db.transaction(() => {
     const tables = db.query<{ name: string }, []>(
@@ -253,15 +284,20 @@ export function initSchema(db: Database, databasePath: string): void {
     const meta = tables.some(table => table.name === META_TABLE)
       ? db.query<{ value: string }, [string]>(`SELECT value FROM ${META_TABLE} WHERE key = ?`).get(SCHEMA_VERSION_KEY)
       : null
-    if (meta?.value !== SCHEMA_VERSION) {
-      throw new Error(`记录库结构不符：需要 schema ${SCHEMA_VERSION} 的新库；不自动重建：${databasePath}`)
+    if (meta?.value === '3') {
+      // v3 → v4：additive 变更原地迁移（A3：用户数据原样保留，不备份不移走）。
+      migrateV3toV4(db)
+    } else if (meta?.value !== SCHEMA_VERSION) {
+      throw new Error(`记录库结构不符：需要 schema ${SCHEMA_VERSION}（v3 可原地迁移，请先经 engine 启动引导）；不自动重建：${databasePath}`)
     }
-    // 已确认是新库：补齐本 schema 内新增的表（仍不 ALTER 旧列）。
+    // 已确认结构（v4 或刚迁移完）：补齐本 schema 内新增的表（仍不 ALTER 已有列）。
     db.exec(DDL)
     assertColumns(db, SESSIONS_TABLE, ['id', 'at', 'title', 'workspace', 'archived'], databasePath)
     assertColumns(db, ENTRIES_TABLE, ['id', 'session', 'turn_id', 'kind', 'content_kind', 'content_text', 'content_blob', 'payload', 'at', 'source'], databasePath)
     assertColumns(db, EVENTS_TABLE, ['id', 'session', 'turn_id', 'step_id', 'generation', 'at', 'kind', 'data'], databasePath)
     assertColumns(db, ATTENTION_TABLE, ['id', 'session', 'kind', 'fact', 'at', 'detail', 'source', 'unread', 'delivered'], databasePath)
+    assertColumns(db, 'inputs', ['session', 'ref', 'body', 'purpose', 'at', 'revision', 'state', 'entry', 'turn', 'reason', 'failed_from'], databasePath)
+    assertColumns(db, RUNS_TABLE, ['id', 'pid', 'proc_started_at', 'socket', 'session', 'turn_id', 'step_id', 'state', 'started_at', 'updated_at', 'ended_at', 'stop_reason', 'exit_code', 'background', 'generation', 'workspace', 'kind', 'last_turn', 'owned', 'blocked_kind', 'blocked_by', 'blocked_since'], databasePath)
   }).immediate()
 }
 

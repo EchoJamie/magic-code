@@ -208,7 +208,7 @@ describe('判据 4 · schema（结构 · 重开续写）', () => {
     } finally { removeDataDir(dir) }
   })
 
-  test('新库可重开续写，schema_version 保持 3', async () => {
+  test('新库可重开续写，schema_version 保持 4', async () => {
     const dir = tempDataDir()
     try {
       const first = createRecordsStore({ dataDir: dir, workspace: ROOTS })
@@ -226,7 +226,7 @@ describe('判据 4 · schema（结构 · 重开续写）', () => {
 
       const snapshot = new Database(databasePathOf(dir), { readonly: true })
       try {
-        expect(snapshot.query("SELECT value FROM records_meta WHERE key='schema_version'").get()).toEqual({ value: '3' })
+        expect(snapshot.query("SELECT value FROM records_meta WHERE key='schema_version'").get()).toEqual({ value: '4' })
       } finally { snapshot.close() }
       const again = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       try {
@@ -236,7 +236,7 @@ describe('判据 4 · schema（结构 · 重开续写）', () => {
       } finally { again.close() }
     } finally { removeDataDir(dir) }
   })
-  test('新库包含 schema v3 的记录、执行与账本表，并写入 schema_version=3', () => {
+  test('新库包含 schema v4 的记录、执行与账本表，并写入 schema_version=4', () => {
     const dir = tempDataDir()
     try {
       const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
@@ -262,7 +262,7 @@ describe('判据 4 · schema（结构 · 重开续写）', () => {
           'records_meta', 'run_journal', 'runs', 'sessions', 'steps', 'turns',
         ])
         expect(db.query<{ value: string }, []>("SELECT value FROM records_meta WHERE key='schema_version'").get()).toEqual({
-          value: '3',
+          value: '4',
         })
         expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()).toEqual({
           user_version: 0,

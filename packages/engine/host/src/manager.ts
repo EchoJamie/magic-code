@@ -1,7 +1,7 @@
 import { NATIVE_PROTOCOL, SOFTWARE_VERSION, diagnosticsOf } from '@magic/contracts'
 import type { McpCatalogRow, ServiceIdentity } from '@magic/contracts'
 import { loadConfig, watchConfig } from '@magic/state'
-import { createRecordsStore } from '@magic/data'
+import { createRecordsStore, prepareRecordsDir } from '@magic/data'
 import { ARCHIVED_NOTE, reconcile, refresh, runRowOf } from '@magic/host'
 import type { McpProbeRow, RunRecord, StoredRun, WorkEnvironment } from '@magic/host'
 import type { Socket } from 'bun'
@@ -110,7 +110,9 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   let savedRuns: readonly StoredRun[]
   let initialConfig: ReturnType<typeof loadConfig>
   try {
-    // 先让数据服务引导旧库（备份移走并建 v2），再读运行登记与配置。
+    // 先让数据服务引导旧库（备份移走并建新库），再读运行登记与配置。
+    // 引导只 engine 启动做一次；执行者与其它连接一律零锁直连（createRecordsStore）。
+    prepareRecordsDir(options.magic.base)
     store = createRecordsStore({ dataDir: options.magic.base, workspace: [], busyTimeoutMs: 5_000 })
     savedRuns = readRuns(paths)
     initialConfig = loadConfig({ magic: options.magic })

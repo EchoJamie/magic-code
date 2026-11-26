@@ -35,7 +35,7 @@ import { createCollaborationRecords } from './collaboration.ts'
  */
 
 import { Database } from 'bun:sqlite'
-import { mkdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type {
   BlobStore,
@@ -303,24 +303,51 @@ export type RecordsStore = {
   readonly paths: { readonly database: string; readonly blobs: string }
 }
 
+/**
+ * 引导旧库——**engine 启动一次**的事（边界方案 §八修法③：构造与引导分离）。
+ *
+ * - **v3 库**：additive 变更（全可空新列）→ 独占锁内经 `initSchema` **原地迁移**，
+ *   用户数据原样保留（A3：记录库不删不重建；无法安全补齐才报错）。
+ * - **v4 / 无库**：零锁直通——引导是一次性动作，锁却曾被每个执行者启动抢一遍，
+ *   两个会话并发首跑时后到者直接撞死在「记录库已被进程占用」（多终端共享 Engine
+ *   的并发场景实锤，2026-11-26）。
+ * - **其余（v2/半建/坏库）**：无法安全补齐——备份移走后由 `createRecordsStore`
+ *   重建（A3 允许的唯一重建路径）。
+ *
+ * ⚠️ 只有 engine 启动路径调它（`manager.ts`）；执行者与其它连接一律
+ * `createRecordsStore`（零锁连接，见下）——它们不该备份任何人的数据。
+ * `initSchema` 对 v3 的原地迁移本身幂等，谁先连接谁补齐（engine 先启动是常规序）。
+ */
+export function prepareRecordsDir(dataDir: string): void {
+  const dir = assertPlainDataDir(dataDir)
+  mkdirSync(dir, { recursive: true })
+  const databasePath = join(dir, DATABASE_FILE)
+  if (!existsSync(databasePath)) return
+  const version = schemaVersionOf(databasePath)
+  if (version === SCHEMA_VERSION) return
+  const releaseLock = acquireDataLock(dir)
+  try {
+    if (version === '3') {
+      const db = new Database(databasePath)
+      try { initSchema(db, databasePath) } finally { db.close() }
+      return
+    }
+    prepareDataDir(dir)
+  } finally {
+    releaseLock()
+  }
+}
+
+/**
+ * 连接既有库——零锁幂等：不引导、不取独占锁，重复连接同一库安全
+ * （SQLite WAL 允许多进程；engine 与执行者分层单写者，同库各写各的格）。
+ * 结构不符（旧库/半建库）由 `initSchema` 拒绝——连接方不猜结构。
+ *
+ * 引导（备份旧库）归 `prepareRecordsDir`，由 engine 启动调一次。
+ */
 export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   const dataDir = assertPlainDataDir(options.dataDir)
   mkdirSync(dataDir, { recursive: true })
-
-  // 引导锁只包**真的要备份/重建的旧库**：版本已达标（v3）或全新目录都是零锁直通——
-  // 引导是一次性动作，锁却曾被每个执行者启动抢一遍，两个会话并发首跑时后到者
-  // 直接撞死在「记录库已被进程占用」（多终端共享 Engine 的并发场景实锤）。
-  const version = schemaVersionOf(join(dataDir, DATABASE_FILE))
-  if (version !== SCHEMA_VERSION) {
-    // 引导旧库时独占（避免两个进程同时备份/移走），开库后立即释放：
-    // 正常运行时引擎与多个执行者可以同开一个库（SQLite WAL 允许多进程）。
-    const releaseLock = acquireDataLock(dataDir)
-    try {
-      prepareDataDir(dataDir)
-    } finally {
-      releaseLock()
-    }
-  }
 
   const blobsDir = join(dataDir, BLOBS_DIR)
 

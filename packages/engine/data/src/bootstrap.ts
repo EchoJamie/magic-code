@@ -24,6 +24,7 @@ import {
 } from 'node:fs'
 import { hostname } from 'node:os'
 import { basename, dirname, join } from 'node:path'
+import { SCHEMA_VERSION } from './schema.ts'
 
 const DATABASE = 'records.db'
 const BLOBS = 'blobs'
@@ -50,6 +51,9 @@ export function schemaVersionOf(path: string): string | undefined {
   }
 }
 
+/** 当前记录库 schema 版本——`prepareDataDir` 据它认「已是新库」。 */
+export { SCHEMA_VERSION } from './schema.ts'
+
 function stampOf(now: number): string {
   return new Date(now).toISOString().replace(/[:.]/g, '-')
 }
@@ -58,7 +62,7 @@ function stampOf(now: number): string {
 export function prepareDataDir(dataDir: string, now = Date.now()): void {
   const databasePath = join(dataDir, DATABASE)
   if (!existsSync(databasePath)) return
-  if (schemaVersionOf(databasePath) === '3') return
+  if (schemaVersionOf(databasePath) === SCHEMA_VERSION) return
 
   const backup = backupDirOf(dataDir, now)
   mkdirSync(backup, { recursive: true })
