@@ -109,6 +109,8 @@ export type ManagerToClient =
        * ——「空白启动页只有客户端」那条因此不受影响。
        */
       readonly mcp: readonly McpProbeRow[]
+      /** **这一摊的投影修订**（单调递增可跳号）——runs 推送与之同源，TUI 按它判新旧。 */
+      readonly revision: number
       /**
        * **这条窗口服务不了**（`magic resume` 打错一个字母是唯一一条）。
        *
@@ -137,7 +139,7 @@ export type ManagerToClient =
    * 让窗口轮询等于把「多久问一次」变成用户等待的下界；而事实是管理者手上现成的。
    * 合并推送（见 `manager.ts` 的 `pushRuns`）：状态变即刻推，输出那类变化按小窗合并。
    */
-  | { readonly t: 'runs'; readonly rows: readonly RunRow[] }
+  | { readonly t: 'runs'; readonly revision: number; readonly rows: readonly RunRow[] }
   /**
    * **接回的那一份快照**（U49）——同一代次的「此刻」＋ 事件水位。
    *

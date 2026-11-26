@@ -183,6 +183,7 @@ export function installCommands(ctx: ManagerContext): void {
             conn: conn.id,
             base: options.magic.base,
             mcp: ctx.probed,
+            revision: ctx.currentRevision(),
             // 开屏那张摘要据它说「这一摊有几项在跑」——**接上就读得到**，不必先问一次
             runs: ctx.runsView(),
             // 汇总只读；具体事项另行确认已读。条数与正文都要有上限——

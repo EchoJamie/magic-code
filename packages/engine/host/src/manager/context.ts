@@ -210,6 +210,7 @@ export type ManagerContext = {
   rows(): readonly RunRow[]
   /** 线上视图：有界、字段裁短；内部判定仍用完整的 `rows()`。 */
   runsView(): readonly RunRow[]
+  currentRevision(): number
   pushRuns(immediate?: boolean): void
   saveRuns(immediate?: boolean): void
   publishPreferences(except?: ClientConn): void

@@ -229,6 +229,9 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
 
   const collaboration = createManagedCollaboration({
     store, magic: options.magic, now, environment: session => ctx.environmentFor(session)?.env ?? {}, accepting: () => !ctx.stopped,
+    notify: (session, fact) => {
+      for (const conn of clients.values()) if (conn.selectedSession === session) conn.link.send({ t: 'notice', notice: { id: `collab-escape:${crypto.randomUUID()}`, session, kind: 'needs-you', at: now(), unread: true, detail: fact } })
+    },
     start: agent => ctx.startMember(agent),
     wake: session => { if (sessions.isArchived(session)) return; const live = ctx.liveOf(session); if (live !== undefined) send(live, { t: 'collaboration.wake' }) },
     cancel: ids => ctx.cancelMembers(ids),

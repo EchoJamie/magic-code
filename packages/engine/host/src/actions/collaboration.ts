@@ -14,6 +14,12 @@ export type CollaborationActionsDeps = {
   readonly wake: (agentId: AgentId) => void
   readonly cancel: (stopped: StopResult) => Promise<void>
   readonly changed: () => void
+  /**
+   * **逃逸口写面**（P27）——需要主会话回来的事实（问题待答/交付待认收）写进
+   * attention 读面；`clear` ＝ 该事实已了结（认收/放弃/消费）后撤下提醒。
+   */
+  readonly escapeAttention?: (sessionId: string, item: { id: string; kind: 'needs-you'; fact: string; detail?: string }) => void
+  readonly clearAttention?: (sessionId: string, ids: readonly string[]) => void
 }
 
 /** 用例编排；持久裁决留在 records，运行归宿主，不复制 AgentLoop。 */
@@ -158,6 +164,13 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
             }) }]
             const message = records.deliver(actorId, { operationId: request.operationId, at,
               ...generated, delegationId: request.delegation, body })
+            // **逃逸口**（P27）：交付给主会话＝「别的会话需要你回来」——写进 attention 读面。
+            const delivered = records.getDelegation(request.delegation)
+            if (deps.escapeAttention !== undefined && delivered !== undefined) {
+              const delegator = records.getAgent(delivered.delegatorId)
+              const originSession = delegator?.sessionId ?? collaboration.originSessionId
+              deps.escapeAttention(originSession, { id: `collab-deliver:${request.delegation}`, kind: 'needs-you', fact: `${actor.name} 已交付，待主会话认收`, detail: request.conclusion })
+            }
             // **已取消的委派（停止后迟到的交付）只保存、不唤醒**——同分支准入注释的那条线：
             // 「停止后仍允许保存原委派结果……**不借迟到结果恢复执行**」。唤醒会让入口新一代
             // 带着交付材料发起模型调用，工作就在用户未明确继续时复活了。收件留在账本里，

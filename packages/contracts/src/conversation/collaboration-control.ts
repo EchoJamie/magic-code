@@ -2,7 +2,7 @@ import type { AgentId, DelegationId, MessageId, OperationId, SessionId, Timestam
 import type { AgentIdentity, AgentMessage, Collaboration, Delegation, MessagePart } from './collaboration.ts'
 import type { ModelSwitchRequest, UserInput } from './control.ts'
 import type { Entry } from './entries.ts'
-import type { RunRow } from './runs.ts'
+import type { RunRow, RunState } from './runs.ts'
 import type { ModelUsage } from '../ports.ts'
 import type { ReasoningSetting } from '../shared/model.ts'
 
@@ -59,6 +59,8 @@ export type CollaborationMemberView = {
   readonly usage?: CollaborationUsage
   readonly agent: AgentIdentity
   readonly runtime?: RunRow
+  /** **归并后的成员格**（与 App 投影同一语义）——TUI 呈现状态读它，不再自己从 runtime 直取。 */
+  readonly merged?: { readonly state: RunState; readonly action?: string; readonly reason?: string }
   readonly delegation?: Delegation
   readonly pendingDecisions: number
 }
@@ -74,6 +76,8 @@ export type CollaborationView = {
   readonly entries?: readonly Entry[]
   readonly messages?: readonly AgentMessage[]
   readonly note?: string
+  /** 本份视图对应的命令配对键（认收/放弃等带 requestId 的命令完成后回执）。 */
+  readonly requestId?: string
 }
 
 export type CollaborationCommand =
@@ -82,3 +86,13 @@ export type CollaborationCommand =
   | { readonly type: 'collaboration.stop'; readonly delegation?: DelegationId }
   | { readonly type: 'collaboration.resume' }
   | { readonly type: 'collaboration.configure'; readonly member?: AgentId; readonly model: ModelSwitchRequest }
+  /**
+   * **认收交付**（N9 出口之一）：主会话收下成员交付——receivedAt 落账，结局「已完成」。
+   * 回执按 `requestId` 走 collaboration.view（载荷带同 requestId）。
+   */
+  | { readonly type: 'collaboration.receive'; readonly requestId: string; readonly delegation: DelegationId }
+  /**
+   * **放弃交付**（N9 出口之一）：主会话明确不认收——received + reason='放弃认收'，
+   * 结局「未完成」，不再等待。回执同上。
+   */
+  | { readonly type: 'collaboration.abandon'; readonly requestId: string; readonly delegation: DelegationId }

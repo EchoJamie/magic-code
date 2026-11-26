@@ -2,6 +2,7 @@ import type {
   AgentIdentity, AgentModelConfig, CollaborationCommand, CollaborationReply, CollaborationRequest,
   CollaborationView, CollaborationUsage, MagicHome, ModelUsage, RunRow, StopResult, UserInput,
 } from '@magic/contracts'
+import { mergeMemberState } from './collaboration-native.ts'
 import { createCollaborationActions } from '@magic/host'
 import { blocksClose, type RecordsStore } from '@magic/data'
 import { managedModelChoices, resolveManagedModel } from '@magic/host'
@@ -20,6 +21,8 @@ export type CollaborationHost = {
   readonly runs: () => readonly RunRow[]
   readonly decisions: (session: string) => number
   readonly changed: () => void
+  /** 逃逸口的推送（P27）——attention 落账之外同时走一次通知通道；缺省＝只落账不推送。 */
+  readonly notify?: (session: string, fact: string) => void
 }
 
 /** 由 App 管理者持有的协作运行适配；定时器只服务持久截止点，不轮询模型。 */
@@ -30,6 +33,11 @@ export function createManagedCollaboration(host: CollaborationHost) {
   const finishing = new Set<string>()
   const actions = createCollaborationActions({
     records, now: host.now,
+    escapeAttention: (sessionId, item) => {
+      host.store.attention.put({ id: item.id, session: sessionId, kind: item.kind, fact: item.fact, at: host.now(), unread: true, delivered: false, ...(item.detail === undefined ? {} : { detail: item.detail }) })
+      host.notify?.(sessionId, item.fact)
+    },
+    clearAttention: (_sessionId, ids) => { if (ids.length > 0) host.store.attention.markRead(ids) },
     modelChoices: session => managedModelChoices(host.magic, host.environment(session)),
     origin: async actor => {
       for await (const entry of host.store.readEntries(actor.sessionId)) if (entry.kind === 'user') return { sessionId: actor.sessionId, entryId: entry.id }
@@ -56,6 +64,10 @@ export function createManagedCollaboration(host: CollaborationHost) {
         try { records.receiveDelivery(work.coordinatorId, d.delegationId, host.now(), 'auto') } catch { /* 已终局的跳过 */ }
       }
     }
+  }
+  /** 交付了结（认收/放弃/自动认收）后撤下逃逸口提醒（P27 读面与账本对齐）。 */
+  function markDeliverAttention(delegationId: import('@magic/contracts').DelegationId): void {
+    host.store.attention.markRead([`collab-deliver:${delegationId}`])
   }
   async function completeConsultation(session: string, reason?: string, turn?: number): Promise<void> {
     const agent = records.agentForSession(session)
@@ -143,7 +155,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
       })) wake(member.agentId)
     }
   }
-  async function view(session: string, member?: string, note?: string): Promise<CollaborationView> {
+  async function view(session: string, member?: string, note?: string, requestId?: string): Promise<CollaborationView> {
     const collaboration = records.collaborationForSession(session)
     if (collaboration === undefined) return { originSession: session, members: [], delegations: [], constraints: [], ...(note === undefined ? {} : { note }) }
     const id = collaboration.collaborationId
@@ -172,14 +184,22 @@ export function createManagedCollaboration(host: CollaborationHost) {
     const messages = owner === undefined ? [] : records.listMessages(owner.agentId)
     return {
       originSession: collaboration.originSessionId, collaboration, usage: sumUsage(usage),
-      members: members.map((agent, index) => ({ agent, usage: usage[index]!,
-        ...(host.runs().find(run => run.session === agent.sessionId) === undefined ? {} : { runtime: host.runs().find(run => run.session === agent.sessionId)! }),
-        ...(memberDelegation(agent.agentId) === undefined ? {} : { delegation: memberDelegation(agent.agentId)! }),
-        pendingDecisions: host.decisions(agent.sessionId),
-      })), delegations,
+      // **总览归并委托**（T1.4）：成员格状态走同一归并语义（mergeMemberState 与 App 投影共用），
+      // TUI 不再自己从 runtime 直取降级——同一协作在两边不会出现两种叙述（P12/P25）。
+      members: members.map((agent, index) => {
+        const row = host.runs().find(run => run.session === agent.sessionId)
+        const execution = records.listExecutions(id).find(one => one.agentId === agent.agentId && one.state !== 'finished')
+        return { agent, usage: usage[index]!,
+          ...(row === undefined ? {} : { runtime: row }),
+          merged: mergeMemberState(agent, row, execution),
+          ...(memberDelegation(agent.agentId) === undefined ? {} : { delegation: memberDelegation(agent.agentId)! }),
+          pendingDecisions: host.decisions(agent.sessionId),
+        }
+      }), delegations,
       constraints: records.listConstraints(id).filter(c => c.active).map(c => ({ messageId: c.messageId, states: records.constraintStatus(c.messageId) })),
       ...(messages.length === 0 ? {} : { messages }),
       ...(note === undefined ? {} : { note }),
+      ...(requestId === undefined ? {} : { requestId }),
     }
   }
   return {
@@ -225,11 +245,12 @@ export function createManagedCollaboration(host: CollaborationHost) {
       return actions.request(agent.agentId, request)
     },
     async command(session: string, command: CollaborationCommand): Promise<CollaborationView> {
+      let awaitRequestId: string | undefined
       const collaboration = records.collaborationForSession(session)
       if (command.type === 'collaboration.read') return view(session, command.member)
       if (collaboration === undefined) throw new Error('当前会话尚未展开协作')
-      if (host.store.isSessionArchived(session)) throw new Error('会话已归档，请先明确恢复')
-      if (closing || !host.accepting()) throw new Error('宿主正在退出')
+      if (host.store.isSessionArchived(session) && command.type !== 'collaboration.receive' && command.type !== 'collaboration.abandon') throw new Error('会话已归档，请先明确恢复')
+      if ((closing || !host.accepting()) && command.type !== 'collaboration.receive' && command.type !== 'collaboration.abandon') throw new Error('宿主正在退出')
       switch (command.type) {
         case 'collaboration.input': {
           const target = command.member === undefined ? records.getAgent(collaboration.coordinatorId)
@@ -256,6 +277,18 @@ export function createManagedCollaboration(host: CollaborationHost) {
           // **resume 只切界面**（2026-11-24 裁定）：不恢复运行、不动协作状态——继续一件
           // 已停止的工作靠明确输入（新一代接管原工作）。这一支只回协作视图，界面照实显示。
           break
+        case 'collaboration.receive':
+        case 'collaboration.abandon': {
+          // N9 出口（T3.3）：认收 → receivedAt 落账（结局「已完成」）；放弃 → received + reason='放弃认收'（结局「未完成」）。
+          // coordinator 才是收/放的主体；closing/stopped 下仍可用（收敛动作）。
+          const d = records.getDelegation(command.delegation)
+          if (d?.collaborationId !== collaboration.collaborationId || d.delegatorId !== collaboration.coordinatorId) throw new Error('委派不属于当前工作')
+          if (command.type === 'collaboration.receive') records.receiveDelivery(collaboration.coordinatorId, command.delegation, host.now(), 'manual')
+          else records.abandonDelivery(collaboration.coordinatorId, command.delegation, host.now())
+          markDeliverAttention(command.delegation)
+          awaitRequestId = command.requestId
+          break
+        }
         case 'collaboration.configure': {
           const actor = command.member === undefined ? undefined : records.listMembers(collaboration.collaborationId).find(a => a.agentId === command.member)
           if (command.member !== undefined && actor === undefined) throw new Error('成员不属于当前工作')
@@ -268,7 +301,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
       }
       changed()
       // 从子会话发来的命令要回给这条子会话（它的正文消息只属于它自己）。
-      return view(session)
+      return view(session, undefined, undefined, awaitRequestId)
     },
     /** 宿主停止受理时同步关闭持久准入，随后由管理者核销实际执行者。 */
     shutdown(reason: string) {

@@ -64,6 +64,9 @@ export function installProjection(ctx: ManagerContext): void {
     }
   }
 
+  let projectionRevision = 0
+  function nextRevision(): number { return ++projectionRevision }
+
   function pushRuns(immediate = false): void {
     if (ctx.pushTimer !== undefined) {
       if (!immediate) return
@@ -84,7 +87,8 @@ export function installProjection(ctx: ManagerContext): void {
     ctx.native.changed()
     for (const conn of clients.values()) ctx.publishBackground(conn)
     const payload = runsView()
-    for (const conn of clients.values()) conn.link.send({ t: 'runs', rows: payload })
+    const revision = nextRevision()
+    for (const conn of clients.values()) conn.link.send({ t: 'runs', revision, rows: payload })
   }
 
   function saveRuns(immediate = false): void {
@@ -190,6 +194,7 @@ export function installProjection(ctx: ManagerContext): void {
 
   ctx.rows = rows
   ctx.runsView = runsView
+  ctx.currentRevision = () => projectionRevision
   ctx.pushRuns = pushRuns
   ctx.saveRuns = saveRuns
   ctx.publishPreferences = publishPreferences
