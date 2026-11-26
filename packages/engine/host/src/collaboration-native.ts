@@ -102,9 +102,9 @@ export function mergeMemberState(
   }
 }
 
-/** 交付待确认的呈现（N9 收敛）：超时（deliveredAt+ackTimeout 过去）后不再是「等待中」。 */
-export function deliveryAwaitText(deliveredAt: Timestamp, now: number, ackTimeoutMs?: number): string {
-  const timedOut = ackTimeoutMs !== undefined && now - deliveredAt > ackTimeoutMs
+/** 交付待确认的呈现（N9 收敛）：now 与 ackTimeoutMs **成对传**才判超时（缺任一不判——防缺省陷阱），仍给「待认收」。 */
+export function deliveryAwaitText(deliveredAt: Timestamp, now: number | undefined, ackTimeoutMs?: number): string {
+  const timedOut = ackTimeoutMs !== undefined && now !== undefined && now - deliveredAt > ackTimeoutMs
   return timedOut ? '已交付，未认收（超时）' : '已交付，待主会话认收'
 }
 
@@ -128,7 +128,7 @@ function mergeGroup(group: CollaborationNativeGroup, bySession: ReadonlyMap<Sess
   // 超 ackTimeout 后字样转「已交付，未认收（超时）」，不再算等待中。
   const awaitingReceipt = pending.find(one => one.state === 'delivered' && one.deliveryMessageId !== undefined && one.receivedAt === undefined)
   const awaitReason = awaitingReceipt === undefined ? undefined
-    : deliveryAwaitText(awaitingReceipt.deliveredAt ?? awaitingReceipt.at, options?.now ?? Number.MAX_SAFE_INTEGER, options?.ackTimeoutMs)
+    : deliveryAwaitText(awaitingReceipt.deliveredAt ?? awaitingReceipt.at, options?.now, options?.ackTimeoutMs)
   const open = collaboration.state === 'open' || collaboration.state === 'closing'
   const current = ['unknown', 'stopping', 'running'].flatMap(state => rows.filter(row => row.state === state))[0]
   const unconfirmed = active.find(execution => {

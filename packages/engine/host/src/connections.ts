@@ -13,6 +13,13 @@ export type ClientConn = Readonly<{
   target: Executor | undefined
   /** 执行者停止后仍保留用户正在查看的会话。 */
   selectedSession: string | null
+  /**
+   * **只读观察**（T1.6 · N5）：这条会话的执行器已被另一窗口占为写者——本连接明示
+   * 「已在别处运行」，写类命令一律拒（不能静默变成旁观者，更不能双写）。
+   */
+  readonlyObserver?: true
+  /** 连接自报的来源（hello 的 source）——占用方明示用（「占用方：终端 X / App」）。 */
+  source?: string
 }>
 
 /** 等快照期间最多攒多少条事件——超过丢最旧（快照回来会按水位重建）。 */
@@ -39,6 +46,12 @@ export function createClientConnections(changed: () => void, log?: (line: string
   }
 
   function releaseTarget(conn: ConnectionState): void {
+    // 写者离开时释放执行器写位（后来者 bind 接管为写者）。
+    if (conn.target !== undefined && conn.target.writerConn === conn.id) conn.target.writerConn = undefined
+    if (conn.target !== undefined) for (const other of clients.values()) {
+      if (other.target === conn.target && other.readonlyObserver === true) other.readonlyObserver = undefined
+    }
+    conn.readonlyObserver = undefined
     conn.target = undefined
     conn.awaiting = null
     conn.buffered = []
@@ -47,6 +60,7 @@ export function createClientConnections(changed: () => void, log?: (line: string
   function dropClient(id: number): void {
     const conn = clients.get(id)
     if (conn === undefined) return
+    releaseTarget(conn)
     clients.delete(id)
     conn.awaiting = null
     conn.buffered = []
@@ -58,6 +72,19 @@ export function createClientConnections(changed: () => void, log?: (line: string
 
   function bind(client: ClientConn, executor: Executor): void {
     const conn = client as ConnectionState
+    // **第二读者只读**（T1.6 · N5）：执行器的写位已被另一窗口占着——本连接绑定为只读
+    // 观察，明示占用方；不静默变成旁观者，更不能双写。写位随写者断开释放（后来者接管）。
+    if (executor.writerConn !== undefined && executor.writerConn !== client.id) {
+      conn.readonlyObserver = true
+      const occupant = clients.get(executor.writerConn)
+      conn.link.send({
+        t: 'line',
+        text: `这条会话已在别处运行（占用方：${occupant?.source ?? `窗口 #${executor.writerConn}`}）——此处为只读浏览，发不出操作；要接管请先停掉那一处的运行`,
+      })
+    } else if (executor.writerConn === undefined) {
+      executor.writerConn = client.id
+      conn.readonlyObserver = undefined
+    }
     conn.target = executor
     conn.selectedSession = executor.run.session
     changed()
@@ -132,7 +159,7 @@ export function createClientConnections(changed: () => void, log?: (line: string
 
   return {
     clients: clients as ReadonlyMap<number, ClientConn>,
-    create(input: Pick<ClientConn, 'link' | 'cwd' | 'switch' | 'selectedSession'>): ClientConn {
+    create(input: Pick<ClientConn, 'link' | 'cwd' | 'switch' | 'selectedSession' | 'source'>): ClientConn {
       const conn: ConnectionState = {
         ...input, id: nextConn++, environment: {}, collaborationMember: undefined,
         target: undefined, awaiting: null, buffered: [], readRevision: 0, readingSession: null,

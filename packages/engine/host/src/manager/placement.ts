@@ -60,6 +60,15 @@ export function installPlacement(ctx: ManagerContext): void {
    *  第二个必须**当场**看得见第一个，否则会各起一个。 */
   function spawn(input: SpawnInput): Executor | undefined {
     if (input.session !== null && isArchived(input.session)) return undefined
+    // **单活结构保证**（T1.6 · N5）：同会话已有未核销执行器 → 拒绝第二个
+    // （普通会话补齐；协作成员另由 beginExecution 准入拦一层）。
+    if (input.session !== null) {
+      const duplicate = [...executors].find(one => one.run.session === input.session && one.run.ended === undefined)
+      if (duplicate !== undefined) {
+        diagnosticLog.write('warn', 'spawn.duplicate', { ...identity, session: input.session, run: String(duplicate.gen) })
+        return undefined
+      }
+    }
     const root = input.session === null ? undefined : workRoot(input.session)
     let network: import('@magic/host').WorkEnvironment
     try { network = (root === undefined ? undefined : environments.get(root)) ?? createWorkEnvironment(input.environment ?? {}) }

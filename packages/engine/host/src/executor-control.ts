@@ -14,7 +14,8 @@ export type Executor = {
   readonly run: RunRecord
   readonly spawned: ExecutorSpawned
   exited: boolean
-  /** 启动时建立的进程内协议端点。 */
+  /** 当前**写连接**（T1.6 · N5）：第一个绑定它的窗口；写者断开释放，后来者接管写位。 */
+  writerConn?: number
   readonly link: Link<ExecutorToManager>
   /** 诊断留痕（T1.5：manager DiagnosticLog 的定向计数通道；发送失败/超时类在此分计）。 */
   readonly diagnostic: (level: 'debug' | 'warn' | 'error', event: string, data?: Record<string, unknown>) => void

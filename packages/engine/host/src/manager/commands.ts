@@ -171,6 +171,7 @@ export function installCommands(ctx: ManagerContext): void {
             selectedSession: missing ? null : message.session ?? null,
             cwd: message.cwd,
             switch: message.switch,
+            source: message.source,
           })
           client = conn
 
@@ -377,7 +378,25 @@ export function installCommands(ctx: ManagerContext): void {
     finally { connections.finishHistory(conn, revision) }
   }
 
+  const READONLY_COMMANDS = new Set([
+    'session.list', 'session.open', 'session.references', 'history.read', 'plan.read',
+    'model.list', 'model.refresh', 'models.search', 'provider.list', 'skills.list',
+    'paths.list', 'paths.identify', 'mcp.list', 'knowledge.query', 'knowledge.read',
+    'memory.read', 'memory.source', 'collaboration.read', 'compact.query',
+  ])
+
   async function onCommand(conn: ClientConn, gen: number | null, command: Command): Promise<void> {
+    // **第二读者只读**（T1.6 · N5）：这条会话的执行器被另一窗口占为写者——本连接
+    // 明示占用方且写类命令一律拒（读面照常；不能静默变成「以为在操作实则被忽略」）。
+    if (conn.readonlyObserver === true && !READONLY_COMMANDS.has(command.type)
+      && !(command.type === 'input.manage' && command.action === 'list')) {
+      const occupant = clients.get(conn.target?.writerConn ?? -1)
+      conn.link.send({
+        t: 'line',
+        text: `这条会话已在别处运行（占用方：${occupant?.source ?? '另一窗口'}）——此处为只读浏览，这条操作没有发出；要接管请先停掉那一处的运行`,
+      })
+      return
+    }
     const session = conn.selectedSession
     const execution = command.type === 'input.submit' || command.type === 'collaboration.input' || command.type === 'collaboration.resume' || (command.type === 'input.manage' && command.action !== 'list')
     if (session !== null && execution && isArchived(session)) {
