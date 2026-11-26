@@ -56,10 +56,9 @@ import {
   stepRightOver,
   wire,
 } from './components/inline.ts'
-import { usageLabel } from './components/lines.ts'
 import type { SessionTitleTab } from './session-title-tab.ts'
+
 import type { Dock, PageTurn, Picker, PickerRow, ShellView, UserImage } from './view.ts'
-import { durationText, roundDuration } from './boards/conversation/round.ts'
 import {
   COMMANDS,
   HINT_BOOTING,
@@ -111,6 +110,8 @@ import { pathHint, pathRows, resolveSkill, sessionReferenceRows, skillHint, skil
 import { mcpHint, mcpRows, mcpToolRows } from './boards/capabilities/mcp.ts'
 import { configReasoningOf, reasoningText } from './boards/capabilities/models.ts'
 import { runSummary } from './boards/records/sessions.ts'
+import { HELP_LINES, HELP_TITLE, shellQuote, spokenOf, submittable } from './shell-commands.ts'
+import { STATUS_TITLE, STATUSLINE_TITLE, statusLines } from './shell-status.ts'
 
 export type { ShellKey } from './input.ts'
 import type { ShellKey } from './input.ts'
@@ -155,93 +156,6 @@ export type Shell = {
   dispose(): void
 }
 
-/** `/help` 沿用记录区输出；命令用法与候选共用登记表。 */
-const HELP_TITLE = '使用帮助'
-const HELP_COMMAND_WIDTH = Math.max(...COMMANDS.map(command => command.name.length))
-const HELP_LINES: readonly string[] = [
-  '输入任务描述开始工作；/ 查找命令，@ 引用文件或会话。',
-  '命令：',
-  ...COMMANDS.map(command => `  ${command.name.padEnd(HELP_COMMAND_WIDTH + 2)}${command.summary}`),
-  '参数用法：',
-  '  /rename <名称> · /skills [关键词] · /compact [本次重点]',
-  '  /model connect              接入模型连接',
-  '  /model manage               管理连接与档位',
-  '  /model refresh [连接]       刷新模型列表',
-  '  /mcp [服务器]               查看服务器详情',
-  '  /mcp reconnect <服务器>     重连服务器',
-  '快捷键：',
-  '  Enter                发送',
-  '  Shift+Enter          换行',
-  '  Tab                  补全',
-  '  ↑ / ↓                选择候选',
-  '  Esc                  临时层返回；主输入运行中停止，保留草稿',
-  '  Ctrl+R / /connect    重连当前会话并刷新',
-  '  Ctrl+P / Ctrl+N      召回上一条 / 下一条输入',
-  '  Ctrl+O               查看记录',
-  '  Ctrl+T               展开或收起计划',
-  '  Alt+Enter            选择本条输入用途',
-  'Ctrl+C：工作中时选择停止、转后台或退出。',
-  '空闲时 1 秒内连按两次 Ctrl+C 退出界面，App 继续运行。',
-]
-
-/**
- * `/status` 的正文——**本地就能答**（模型 / 用量 / 会话都在外壳手上，不必问内核）。
- *
- * 设计（2026-11-22 用户定稿）：**无标签列**——内容的形状自明（8 位十六进制＋标题＝会话、
- * 绝对路径＝工作区、档位开头＝模型组合、`输入 x/y`＝用量）；**不抄状态行**——面板给的是
- * 行上放不下的那一层（全路径、连接、思考档、回合时长）；**没消息不占行**——出错才有 ▲ 行，
- * 「未见异常」那种话不存在；**0 是事实**——新会话的用量就是 `0/…`。
- */
-function statusLines(view: ShellView, launchRoots?: readonly string[]): readonly string[] {
-  const { status, sessionId, catalog, modelCurrent } = view
-  const active = catalog.find(one => one.id === sessionId)
-
-  // 身份：**完整 id 独占一行**（用户 2026-11-22 裁定——要能整段复制），标题另起一行；
-  // 还没有会话就如实说「新会话」。
-  const identity = sessionId === null
-    ? ['新会话']
-    : [sessionId, ...(active?.title === undefined ? [] : [active.title])]
-
-  // 工作区：会话**锚定的那组根**（[0]＝默认根；多根＝联合作用域，全列）；
-  // 还没有会话 ⇒ 启动目录那组。旧账缺席（列加上之前落账的）＝不编，整行不出现。
-  const roots = active?.workspace ?? (sessionId === null ? launchRoots : undefined)
-  const workspace = roots === undefined || roots.length === 0 ? undefined : roots.join(' ＋ ')
-
-  // 模型组合：档位 · 连接 / 型号 · 思考档（思考显示的就是值：`high` / `默认` / `off` / `≤8k`）。
-  // 没钉思考设置 ＝ 跟默认走 ⇒ 解析供应商声明的默认档；钉了就用钉的那一档。
-  const setting = configReasoningOf(modelCurrent) ?? { mode: 'default' as const }
-  const support = modelCurrent === null
-    ? undefined
-    : view.models.find(one => one.provider === modelCurrent.provider)?.effectiveReasoning?.[modelCurrent.model]
-  const head = [status.model ?? undefined, modelCurrent === null ? undefined : `${modelCurrent.provider} / ${modelCurrent.model}`]
-  const model = head.some(one => one !== undefined)
-    ? [...head, reasoningText(setting, support)].filter(one => one !== undefined).join(' · ')
-    : undefined
-
-  // 计量：用量与状态行 ④ **同一个口径**（`usageLabel`，两处各报各的迟早分叉）；
-  // 时长＝最近一轮（跑着实时，闲着是刚跑完那轮；新会话没有轮次就不提）。
-  const usage = usageLabel(status.usage, status.window)
-  const round = view.round === null ? null : roundDuration(view.round, view.turnDuration, Date.now())
-  const metering = [
-    usage === null ? undefined : `输入 ${usage}`,
-    round === null ? undefined : `本轮 ${durationText(round)}`,
-  ].filter(one => one !== undefined).join(' · ')
-
-  return [
-    ...identity,
-    workspace,
-    model,
-    metering,
-    // 「连得上不」只说实话：最近一次模型调用**出错**就点名（那是外壳看得见的事实）；
-    // 未见异常**不占行**（没消息不占行）。
-    ...(status.state === 'error' ? ['▲ 上一次模型调用没成'] : []),
-  ].filter((one): one is string => one !== undefined && one !== '')
-}
-
-const STATUS_TITLE = '此刻'
-
-const STATUSLINE_TITLE = '状态行放哪几格'
-
 /**
  * 模型之外的「等内核回话再开选择器」意图；模型入口由 model-settings 自持。
  *
@@ -280,11 +194,6 @@ type Layer = {
 }
 
 /** 建壳的入参（都可省——省了＝按「拿不到」办）。 */
-
-function shellQuote(text: string): string {
-  return `'${text.replaceAll("'", "'\\''")}'`
-}
-
 export type ShellOptions = {
   readonly settingsOnly?: boolean
   readonly copyText?: ((text: string) => Promise<void>) | undefined
@@ -436,37 +345,6 @@ const STREAM_WINDOW_MS = 16
  * 晚一帧就是「按了没反应」。
  */
 const STREAMING: ReadonlySet<EventKind> = new Set<EventKind>(['model.delta', 'tool.output.delta'])
-
-/**
- * 一句交代里**用户说的话**——去掉已有的引用区间，再去掉句首那个还没绑上的技能名。
- *
- * 与 `bodyOf` 分开的理由：句首那个斜杠词**此刻还不是引用**（用户正按回车让它变成引用），
- * 故它自己那一截要从「有没有别的话」这笔账里去掉——不去掉的话，`/pdf` 单独一条会被
- * 当成「说了点什么」而直接发出去（一次一个字都没有的交代）。
- */
-function spokenOf(draft: string, refs: readonly DraftRef[], word: string): string {
-  const spoken = bodyOf(draft, refs)
-
-  return spoken.startsWith(word) ? spoken.slice(word.length) : spoken
-}
-
-function submittable(draft: string, refs: readonly DraftRef[]): boolean {
-  if (bodyOf(draft, refs).trim() !== '') return true
-
-  return refs.some((ref) => ref.kind !== 'skill')
-}
-
-function bodyOf(draft: string, refs: readonly DraftRef[]): string {
-  let out = ''
-  let cursor = 0
-
-  for (const ref of [...refs].sort((left, right) => left.start - right.start)) {
-    out += draft.slice(cursor, Math.max(cursor, Math.min(ref.start, draft.length)))
-    cursor = Math.max(cursor, Math.min(ref.end, draft.length))
-  }
-
-  return out + draft.slice(cursor)
-}
 
 /** 当前正文与目录预览共用保存历史的条目投影。本地输入已由引擎并入条目流（2026-11-24）。 */
 function historyEntries(data: Extract<KernelEvent, { kind: 'session.history' }>['data']): Entry[] {
