@@ -1,6 +1,6 @@
 import type { RunRow, RunState, SessionId, SessionSummary } from '@magic/contracts'
 import type { PickerRow } from '../../view.ts'
-import { resourceWaitLine, resourceWaitOf, waitLineOf } from '../../resource-wait.ts'
+import { blockedLinesOf, resourceWaitLine, resourceWaitOf, waitLineOf } from '../../resource-wait.ts'
 import { clockLabel, elapsedLabel } from '../settings/time.ts'
 // ══ 选择器（`/resume` · `/model`）════════════════════════════════════
 
@@ -220,6 +220,8 @@ export function runDetail(
     const resource = resourceWaitLine(resourceWaitOf(row.quotaClass, { occupantSessions: row.occupantSessions }))
     if (resource !== undefined) said.push(resource)
   }
+  // **阻塞态**（P33）：谁在等谁/等了多久/退出动作/收敛规则——来自账本字段（§3.6 逐行）。
+  for (const line of blockedLinesOf(row.blocked, now)) said.push(line)
   if (row.progress !== undefined) {
     // 有「此刻在做的事」时不再复述进展（那多半就是同一件事的开头）——
     // 详情这一行不是越长越好，**每一截都要说得上它比别处多说了什么**

@@ -392,4 +392,10 @@ describe('投影字段上详情（T3.1 · 字段缺席＝与从前一字不差�
     expect(said).not.toContain('已停止')
     expect(said).not.toContain('空闲')
   })
+
+  test('blocked：阻塞态行跟着字段走（P33）', () => {
+    const said = runDetail(run('s-1', 'waiting', { since: 1_000, blocked: { kind: 'awaiting-approval', by: 'entry-1', since: 190_000 } }), now, { inActiveSection: true })
+    expect(said).toContain('等批准（entry-1）')
+    expect(said).toContain('批准／拒绝')
+  })
 })

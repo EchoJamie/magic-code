@@ -15,7 +15,8 @@
  * 不在这里发明迁移。
  */
 
-import type { QuotaClass, WaitClass } from '@magic/contracts'
+import type { BlockedState, QuotaClass, WaitClass } from '@magic/contracts'
+import { elapsedLabel } from './boards/settings/time.ts'
 
 /** 动作的稳定 token——渲染层按它接真实命令（T3.1 接线），不按中文文案判。 */
 export type ResourceActionKind = 'wait' | 'preempt' | 'switch-model' | 'await-quota' | 'resubmit'
@@ -91,5 +92,34 @@ export function waitLineOf(wait: { readonly waitClass?: WaitClass; readonly awai
     case 'advisory': return '只读，可以不等'
     case 'none': return undefined
     default: return undefined // 字段缺席或未知值（枚举扩展未跟上）：没有这笔账，不编
+  }
+}
+
+/**
+ * **阻塞态呈现**（P33 · 《架构师职责裁定草案》§3.6 阻塞态表）——谁在等谁、等了多久、
+ * 退出动作、收敛规则，**全部来自 `blocked` 字段**（engine 落账本，重启计时保留）。
+ * 返回若干段（详情行按 `·` 拼）；未知类别只报「阻塞中」与时长，**不编退出动作**（P31：
+ * 文案里的动作名必须有真迁移）。
+ *
+ * `awaiting-resource` 返回空——它由 `quotaClass` 那条资源动作行呈现（§3.6 的资源两行
+ * 与 §3.3 映射表同源，不重复出两遍）。
+ */
+export function blockedLinesOf(blocked: BlockedState | undefined, now: number): readonly string[] {
+  if (blocked === undefined) return []
+  const waited = `已等 ${elapsedLabel(now - blocked.since)}`
+  const who = blocked.by === undefined ? '' : `（${blocked.by}）`
+  switch (blocked.kind) {
+    case 'awaiting-approval':
+      return [`等批准${who}`, `可做：批准／拒绝 · ${waited}`]
+    case 'awaiting-resource':
+      return [] // 资源等待由 quotaClass 动作行呈现（同一张表，不重复）
+    case 'awaiting-receipt':
+      return ['已交付，待主会话认收', `可做：认收／放弃（放弃记未完成） · 入口结束自动认收 · ${waited}`]
+    case 'awaiting-settlement':
+      return [`停止待核实：等它核销（执行器可能仍在收尾） · ${waited}`]
+    case 'awaiting-reattach':
+      return [`执行器失联，等心跳 · 15 秒内转「未确认完成」 · ${waited}`]
+    default:
+      return [`阻塞中 · ${waited}`] // 未知类别：如实说阻塞与时长，不编动作
   }
 }

@@ -1284,8 +1284,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     const item = view.catalog.find(one => one.id === session)
     const archived = item?.archived ?? (session === view.sessionId && view.archived)
     const keep = push ? undefined : picked(view)?.value
+    // **失联那一条的动作表行**（§3.5 unknown）：停止／接回——按键都真有迁移（等待＝关掉这屏）。
+    const lost = view.runs.find(one => one.session === session)?.state === 'unknown'
     const rows = [collaborationRow('history', '查看记录'), ...(archived ? [] : [collaborationRow('rename', '改名')]),
       ...(archived ? [collaborationRow('restore', '恢复', '恢复后需另行接回或发送')] : connected && item?.canArchive === true ? [collaborationRow('archive', '归档')] : []),
+      ...(!archived && lost ? [
+        collaborationRow('stop', '停止这条会话', '失联中也可能仍在跑——停止先请求、按实际回话'),
+        collaborationRow('reopen', '接回（切过去查看）', '以它此刻的实况为准'),
+      ] : []),
       ...(session === view.sessionId && archived ? [collaborationRow('draft', '查看／复制原草稿')] : [])]
     if (push) enterLayer()
     commit(openPicker(view, { source: 'session-actions', title: `${nameOfSession(session)}${archived ? ' · 已归档' : ''}`,
@@ -2924,6 +2930,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         } else if (row.value === 'draft') {
           openRecords(`draft:${sessionTarget}`, '原草稿 · 只读，可用终端选择复制', [{ kind: 'user', key: `draft:${sessionTarget}`, text: view.draft, echoed: true, images: userImages(view.refs) }])
         } else if (row.value === 'sessions') { popLayer(); models.cancelOpen(); waiting = 'session'; send({ type: 'session.list', archived: false }) }
+        else if (row.value === 'stop') {
+          // **失联条目的「停止」**（§3.5）——受理即回话（停止三态由 `stopped` 那条线如实说）。
+          if (options.stop === undefined) { commit(noteResult(view, '这个窗口没有连着运行管理——停不了')); return NONE }
+          options.stop(sessionTarget, 'run')
+          popLayer()
+          return NONE
+        }
+        else if (row.value === 'reopen') { openSession(sessionTarget, nameOfSession(sessionTarget)); return NONE }
         return NONE
       }
       if (view.dock.picker.source === 'input-purpose') {
@@ -2937,7 +2951,19 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         const input=view.pendingInputs.find(one=>one.ref===row.value)
         if(input===undefined)return NONE
         enterLayer()
-        commit(openPicker(view,{source:'input-detail',title: input.purpose==='current'?'当前补充':'下一件', selected:0,detail:[`状态：${input.reason??inputStateText(input.state)}`,input.input.text],rows:[collaborationRow('back','返回'),...(input.state==='pending'?[collaborationRow(`edit:${input.ref}`,'编辑未消费输入'),collaborationRow(`withdraw:${input.ref}`,'撤回未消费输入'),collaborationRow(`continue:${input.ref}`,'明确继续这条输入')]:[])],hint:'↑↓ 选择 · Enter 执行 · Esc 返回'}))
+        // **动作表逐行**（《架构师职责裁定草案》§3.5）：pending 编辑/撤回/立即继续；failed 按
+        // failedFrom 分「重试」（副作用未发生）与「重新执行」（可能重复副作用）；rejected 给
+        // 「重发」（原稿逐字保留）——后两态都走 `input.manage retry`（N14：retry 只从 failed/rejected 起）。
+        const actionRows = input.state === 'pending'
+          ? [collaborationRow(`edit:${input.ref}`,'编辑未消费输入'),collaborationRow(`withdraw:${input.ref}`,'撤回未消费输入'),collaborationRow(`continue:${input.ref}`,'明确继续这条输入')]
+          : input.state === 'failed'
+            ? [input.failedFrom === 'executing'
+              ? collaborationRow(`retry:${input.ref}`,'重新执行','可能重复之前的副作用')
+              : collaborationRow(`retry:${input.ref}`,'重试','副作用未发生，安全')]
+            : input.state === 'rejected'
+              ? [collaborationRow(`retry:${input.ref}`,'重发','原稿逐字保留，无需复制粘贴')]
+              : []
+        commit(openPicker(view,{source:'input-detail',title: input.purpose==='current'?'当前补充':'下一件', selected:0,detail:[`状态：${input.reason??inputStateText(input.state)}`,input.input.text],rows:[collaborationRow('back','返回'),...actionRows],hint:'↑↓ 选择 · Enter 执行 · Esc 返回'}))
         return NONE
       }
       if(view.dock.picker.source==='input-detail'){
@@ -2949,7 +2975,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
           // 复用正文编辑，不另造输入字段；提交仍以旧身份及版本参与消费竞争。
           editingPending={ref:input.ref,revision:input.revision,back:layerNow(),purpose:input.purpose}
           commit({...closePicker(view),draft:input.input.text,caret:input.input.text.length,refs:(input.input.refs??[]).map(({at,...ref})=>({...ref,start:at,end:at+ref.marker.length}))})
-        }else if(action==='withdraw'||action==='continue'){manageInput({type:'input.manage',action,ref:input.ref,revision:input.revision});popLayer()}
+        }else if(action==='withdraw'||action==='continue'||action==='retry'){manageInput({type:'input.manage',action,ref:input.ref,revision:input.revision});popLayer()}
         return NONE
       }
 

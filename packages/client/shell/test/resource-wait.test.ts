@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { resourceWaitLine, resourceWaitOf, waitLineOf } from '../src/resource-wait.ts'
+import { blockedLinesOf, resourceWaitLine, resourceWaitOf, waitLineOf } from '../src/resource-wait.ts'
 
 /**
  * T3.5 契约测试（先行的那一半）——《边界方案》§3.3 动作映射表逐行 + 未知 quotaClass 兜底。
@@ -72,5 +72,47 @@ describe('waitLineOf——等待成本来自字段（P29）', () => {
     expect(waitLineOf(undefined)).toBeUndefined()
     // 未知值（枚举扩展未跟上）：不编。
     expect(waitLineOf({ waitClass: 'gate' as never })).toBeUndefined()
+  })
+})
+
+describe('blockedLinesOf——阻塞态表逐行（P33 · 裁定草案 §3.6）', () => {
+  const now = 10_000
+
+  test('等批准：谁在等谁 + 批准／拒绝 + 等了多久', () => {
+    expect(blockedLinesOf({ kind: 'awaiting-approval', by: 'entry-1', since: 4_000 }, now))
+      .toEqual(['等批准（entry-1）', '可做：批准／拒绝 · 已等 6 秒'])
+  })
+
+  test('等资源：不出阻塞行——它由 quotaClass 资源动作行呈现（同一张表不重复）', () => {
+    expect(blockedLinesOf({ kind: 'awaiting-resource', since: 4_000 }, now)).toEqual([])
+  })
+
+  test('等认收：认收／放弃 + 收敛规则（入口自动认收）', () => {
+    const lines = blockedLinesOf({ kind: 'awaiting-receipt', since: 4_000 }, now)
+    expect(lines[0]).toBe('已交付，待主会话认收')
+    expect(lines[1]).toContain('认收／放弃')
+    expect(lines[1]).toContain('入口结束自动认收')
+  })
+
+  test('等核销：如实说「执行器可能仍在收尾」——不冒充已停（P7）', () => {
+    const lines = blockedLinesOf({ kind: 'awaiting-settlement', since: 4_000 }, now)
+    expect(lines.join(' ')).toContain('等它核销')
+    expect(lines.join(' ')).toContain('可能仍在收尾')
+  })
+
+  test('等接回：等心跳 + 收敛规则（15 秒内转未确认完成）', () => {
+    const lines = blockedLinesOf({ kind: 'awaiting-reattach', since: 4_000 }, now)
+    expect(lines.join(' ')).toContain('等心跳')
+    expect(lines.join(' ')).toContain('未确认完成')
+  })
+
+  test('未知类别：只报阻塞与时长，不编动作（P31：动作名必须有真迁移）', () => {
+    const lines = blockedLinesOf({ kind: 'awaiting-something-new' as never, since: 4_000 }, now)
+    expect(lines).toEqual(['阻塞中 · 已等 6 秒'])
+    expect(lines.join(' ')).not.toContain('可做')
+  })
+
+  test('缺席：一个字都不占', () => {
+    expect(blockedLinesOf(undefined, now)).toEqual([])
   })
 })
