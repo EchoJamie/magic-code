@@ -74,6 +74,7 @@ import {
   closePicker,
   closePrompt,
   createView,
+  escapeHintOf,
   hasPlan,
   hasRunningTool,
   matchCommands,
@@ -793,6 +794,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   /** 没在补全、没在裁决 / 选择器时的右位提示——按状态给。 */
   const idleHintOf = (from: ShellView): string => {
     if (from.draft.length > 0 || from.refs.length > 0) return from.status.state === 'working' ? 'Esc 停止 · ctrl+c 清空草稿' : '/ 命令 · ctrl+c 清空草稿'
+    // **别处需要你**（P27 逃逸口）压过空闲/工作提示——用户手上没活的时候，那一条最要紧。
+    const escape = escapeHintOf(from)
+    if (escape !== undefined) return escape
     if (from.status.state === 'working') return HINT_WORKING
     if (from.status.state === 'retrying') return from.status.hint
 
@@ -1093,7 +1097,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         const saved=workContexts.get(event.data.active||null)??(before===null&&(lastSubmit!==null||turn===null)?workContexts.get(null):undefined)
         if(saved!==undefined)for(const [member,context] of saved.members)inputContexts.set(member,context)
         history=saved?.current.history??[];historyAt=saved?.current.historyAt??-1;browsing=saved?.current.browsing??null;lastSubmit=saved?.current.lastSubmit??null
-        commit({...view,background:undefined,collaboration:sameCollaboration ? prior.collaboration : undefined,messages:undefined,inputMember:saved?.member,inputPurpose:saved?.purpose??'current',draft:saved?.current.draft??'',refs:saved?.current.refs??[],caret:saved?.current.caret??0})
+        commit({...view,background:undefined,collaboration:sameCollaboration ? prior.collaboration : undefined,messages:undefined,inputMember:saved?.member,inputPurpose:saved?.purpose??'current',draft:saved?.current.draft??'',refs:saved?.current.refs??[],caret:saved?.current.caret??0,escapes:(view.escapes??[]).filter(one => one.session !== event.data.active)})
         if (event.data.active !== '') readHistory(event.data.active)
       }
       if (waiting === 'session') {
@@ -1377,8 +1381,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   // 仅保留当前工作的提醒来源；真实内容呈现后确认，不追加同义摘要。
   options.notices?.((notice) => {
     if (disposed || !notice.unread) return
-    if (notice.session !== view.sessionId && notice.session !== view.collaboration?.originSession
-      && view.collaboration?.members.some(one => one.agent.sessionId === notice.session) !== true) return
+    const forHere = notice.session === view.sessionId || notice.session === view.collaboration?.originSession
+      || view.collaboration?.members.some(one => one.agent.sessionId === notice.session) === true
+    if (!forHere) {
+      // **P27 逃逸口**：别的会话需要你——不丢弃、不打扰（不进记录区），状态行右位留一行
+      // （见 `escapeHintOf`，出口走既有的 /resume）。去重按 id，至多留 3 条。
+      commit({ ...view, escapes: [...(view.escapes ?? []).filter(one => one.id !== notice.id), notice].slice(-3) })
+      return
+    }
     const next = { ...view, notice }
     // 历史记录不重建错误事件；接回或执行者退出时保留唯一的失败说明。
     if (notice.kind === 'failed' && presentedNoticeOf(next) === undefined) {

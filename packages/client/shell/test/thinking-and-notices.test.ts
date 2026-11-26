@@ -5,6 +5,7 @@ import type { RunNotice } from '@magic/contracts'
 import { event } from './events.ts'
 import { createStage, showScreen } from './screen.ts'
 import { createShell } from '../src/shell.ts'
+import { escapeHintOf } from '../src/view.ts'
 import { createSpyTransport } from './fakes.ts'
 
 /** 起一个壳，并投一条会话状态（与 `log-presentation.test.ts` 同一份底子）。 */
@@ -196,5 +197,56 @@ describe('思考自成一块', () => {
       '',
       '│ 再看一眼。',
     ])
+  })
+})
+
+// ══ ④ P27 逃逸口：**别的会话需要你**——范围收窄不等于看不见 ═══════════════════════
+
+describe('P27 逃逸口（别的会话需要你）', () => {
+  test('他处通知进 escapes，不进记录区；空闲右位给一行出口（/resume）', () => {
+    const spy = createSpyTransport()
+    let notify: (n: RunNotice) => void = () => {}
+    const shell = createShell(spy.transport, { magicBase: '/test/.magic', notices: listener => { notify = listener } })
+    spy.emit(event('session.state', { active: 's1', sessions: [] }))
+
+    notify({ ...notice('needs-you'), session: 's-other', id: 'ny:1' })
+    // 不打扰：记录区一条不加（前后对比），只留一行逃逸。
+    const settledBefore = shell.getView().settled.length
+    expect(shell.getView().escapes?.length).toBe(1)
+    expect(shell.getView().settled.length).toBe(settledBefore)
+
+    // 空闲那一下（打一个字再退掉），右位出现出口。
+    shell.key({ kind: 'char', char: 'a' })
+    expect(shell.getView().status.hint).not.toContain('/resume')
+    shell.key({ kind: 'backspace' })
+    expect(shell.getView().status.hint).toContain('s-other 在等你')
+    expect(shell.getView().status.hint).toContain('/resume 查看')
+  })
+
+  test('同会话通知不进 escapes（原路径不变）；多条报数不刷屏', () => {
+    const spy = createSpyTransport()
+    let notify: (n: RunNotice) => void = () => {}
+    const shell = createShell(spy.transport, { magicBase: '/test/.magic', notices: listener => { notify = listener } })
+    spy.emit(event('session.state', { active: 's1', sessions: [] }))
+    notify(notice('done'))
+    expect(shell.getView().escapes?.length ?? 0).toBe(0)
+
+    notify({ ...notice('needs-you'), session: 's-2', id: 'ny:2' })
+    notify({ ...notice('failed'), session: 's-3', id: 'fl:3' })
+    expect(shell.getView().escapes?.length).toBe(2)
+    // 多条：报数，不列流水（P27 一行最小噪声）。
+    expect(escapeHintOf({ escapes: shell.getView().escapes })).toContain('（还有 1 条）')
+  })
+
+  test('切到那条会话，它的逃逸就清掉（人到了，提示该退）', () => {
+    const spy = createSpyTransport()
+    let notify: (n: RunNotice) => void = () => {}
+    const shell = createShell(spy.transport, { magicBase: '/test/.magic', notices: listener => { notify = listener } })
+    spy.emit(event('session.state', { active: 's1', sessions: [] }))
+    notify({ ...notice('needs-you'), session: 's-2', id: 'ny:2' })
+    expect(shell.getView().escapes?.length).toBe(1)
+
+    spy.emit(event('session.state', { active: 's-2', sessions: [] }))
+    expect(shell.getView().escapes?.length).toBe(0)
   })
 })

@@ -553,6 +553,23 @@ export function unreadSummaryOf(notices: readonly RunNotice[]): string | undefin
   return `你不在的时候：${said.join(' · ')} —— /resume 看是哪几条`
 }
 
+/**
+ * **P27 逃逸口的右位提示**——别的会话需要你，范围收窄不能等于看不见。
+ * 一行、固定位置（状态行右位）、指向**既有的一步出口**（`/resume`）；多条时报数不刷屏。
+ * 空 ＝ 没有这回事，一个字都不占。
+ */
+export function escapeHintOf(view: Pick<ShellView, 'escapes'>): string | undefined {
+  const escapes = view.escapes
+  if (escapes === undefined || escapes.length === 0) return undefined
+
+  const latest = escapes[escapes.length - 1]
+  if (latest === undefined) return undefined
+  const kindCopy = latest.kind === 'needs-you' ? '在等你' : latest.kind === 'failed' ? '出错了' : '跑完了'
+  const more = escapes.length > 1 ? `（还有 ${escapes.length - 1} 条）` : ''
+
+  return `${latest.session.slice(0, 8)} ${kindCopy}${more} · /resume 查看`
+}
+
 export const HINT_PROMPT = 'Enter 确定 · ←/→ 编辑 · Esc 取消'
 
 export const HINT_EXIT_ARMED = '再按一次 ctrl+c 退出'
@@ -618,6 +635,12 @@ export type SudoPrompt = {
 export type ShellView = {
   /** Engine 当前提醒的来源；只用于确认对应内容已呈现。 */
   readonly notice?: RunNotice | undefined
+  /**
+   * **别处需要你**（P27 逃逸口）——其他会话的未读行动通知（去重按 notice.id，至多留 3 条）。
+   * 呈现在状态行右位（见 `escapeHintOf`）；T1.4 统一投影落地后由 attention 读面供源，
+   * 呈现半边不变。
+   */
+  readonly escapes?: readonly RunNotice[]
   /** sudo 密码组件（U129）——开着时占住输入区。 */
   readonly sudo?: SudoPrompt | null
   readonly round: RoundTiming | null
