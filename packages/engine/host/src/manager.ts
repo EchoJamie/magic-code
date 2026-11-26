@@ -1,4 +1,4 @@
-import { NATIVE_PROTOCOL, SOFTWARE_VERSION, diagnosticsOf } from '@magic/contracts'
+import { NATIVE_PROTOCOL, PENDING_INPUT_LIMIT, SOFTWARE_VERSION, diagnosticsOf } from '@magic/contracts'
 import type { McpCatalogRow, ServiceIdentity } from '@magic/contracts'
 import { loadConfig, watchConfig } from '@magic/state'
 import { createRecordsStore, prepareRecordsDir } from '@magic/data'
@@ -6,6 +6,7 @@ import { ARCHIVED_NOTE, reconcile, refresh, runRowOf } from '@magic/host'
 import type { McpProbeRow, RunRecord, StoredRun, WorkEnvironment } from '@magic/host'
 import type { Socket } from 'bun'
 import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { ensureRunDir, normalizeDataDir, tightenSocket } from './paths.ts'
 import { DiagnosticLog } from './diagnostic-log.ts'
 import { createClientConnections, type ClientConn } from './connections.ts'
@@ -232,12 +233,16 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       // **受理前移**（边界方案 §四#1/§五）：拒收与受理都是 engine 落账——帧只是加速信号。
       const durable = { ...input, ref: input.ref ?? crypto.randomUUID() }
       const work = store.collaboration.collaborationForSession(session)
-      if (sessions.isArchived(session) || work?.state === 'closing' || work?.state === 'closed') {
-        // closing/archived 拒收：**不经 pending 直接落 rejected 行**（原稿留账可 retry），
-        // 回执 (session,ref) 由调用方的 catch 发出。
-        records.inputs.reject(durable, ARCHIVED_NOTE, now())
-        throw new Error(ARCHIVED_NOTE)
+      const rejectWith = (reason: string, kind: 'capacity' | 'closing' | 'archived'): never => {
+        records.inputs.reject(durable, reason, now(), kind)
+        const error = new Error(reason) as Error & { rejectedKind?: 'capacity' | 'closing' | 'archived' }
+        error.rejectedKind = kind
+        throw error
       }
+      if (sessions.isArchived(session)) rejectWith(ARCHIVED_NOTE, 'archived')
+      if (work?.state === 'closing' || work?.state === 'closed') rejectWith('工作收尾中，未受理新输入', 'closing')
+      // 容量：每会话 pending 上限（PENDING_INPUT_LIMIT）——到限当场拒，原稿留输入位。
+      if (records.inputs.list().filter(one => one.state === 'pending').length >= PENDING_INPUT_LIMIT) rejectWith('待办已满', 'capacity')
       // 受理即落账（事务性发件箱：受理事实持久存在；同 ref 幂等，执行者侧 enqueue 再
       // accept 不冲突）。落账后送达失败不再是受理失败——成员没起/失联时等它起来消费，
       // 对账器兜底（界面只说「已受理，重启后自动继续」，N25）。
@@ -297,6 +302,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
 
   const native = createNativeServer({
     configuration: () => ctx.configuration,
+    evidencePaths: () => [join(options.magic.base, 'logs')],
     identity, store, accepting: () => !ctx.stopped, runtime,
     async engineStop(request, idleOnly) {
       // 核责任与关闭准入之间没有 await，新提交不能穿过实例切换。

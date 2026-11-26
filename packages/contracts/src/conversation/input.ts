@@ -27,6 +27,8 @@ export type StoredInput = {
   readonly reason?: string
   /** 失败前状态（`failed` 行才有）：`retry` 按 `failedFrom` 区分文案。 */
   readonly failedFrom?: 'pending' | 'executing'
+  /** 拒收类别（`rejected` 行才有）——UI 据它选动作（capacity→一键重发；free text 选不对动作与不给同罪）。 */
+  readonly rejectedKind?: 'capacity' | 'closing' | 'archived'
 }
 /**
  * 待处理输入在控制面里的**线上视图**——正文只留预览，附总字节数与截断标记。
@@ -88,15 +90,15 @@ export function pendingViews(
 export interface InputRecords {
   /** 受理落 `pending`（事务性发件箱：受理即落账，帧只是加速信号）。 */
   accept(input: UserInput & { ref: string }, at: number): StoredInput
-  /** 受理即拒（容量/closing/archived）：**不经 pending** 直接落 `rejected` 行，原稿留在账上。 */
-  reject(input: UserInput & { ref: string }, reason: string, at: number): StoredInput
+  /** 受理即拒（容量/closing/archived）：**不经 pending** 直接落 `rejected` 行，原稿留在账上，`rejectedKind` 记类别。 */
+  reject(input: UserInput & { ref: string }, reason: string, at: number, kind: 'capacity' | 'closing' | 'archived'): StoredInput
   get(ref: string): StoredInput | undefined
   list(): readonly StoredInput[]
   edit(ref: string, revision: number, input: UserInput): boolean
   /** pending → withdrawn（**只从 pending**；N18：无 executing→withdrawn 迁移）。 */
   withdraw(ref: string, revision: number): boolean
   /** pending → rejected（已受理后拒：closing/archived），带 `(session,ref)` 回执由调用方发。 */
-  rejectPending(ref: string, reason: string): boolean
+  rejectPending(ref: string, reason: string, kind: 'closing' | 'archived'): boolean
   /** pending → executing（engine；准入 `beginExecution` 在 dequeue 之前）。 */
   dequeue(ref: string, revision: number): boolean
   /** executing → consumed（executor；与落条目同一事务，写 `turn`）。 */

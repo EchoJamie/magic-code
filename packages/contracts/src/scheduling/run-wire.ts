@@ -273,7 +273,7 @@ export type ExecutorToManager =
    * 受理**时**就已可见的 archived/closing 拒收不经这条（engine 直接落 rejected）；
    * 这条兜住受理之后才发生的状态变化。
    */
-  | { readonly t: 'input.rejected'; readonly session: SessionId; readonly ref: string; readonly reason: string }
+  | { readonly t: 'input.rejected'; readonly session: SessionId; readonly ref: string; readonly reason: string; readonly kind: 'closing' | 'archived' }
 
 /** 管理者 → 执行者。 */
 export type ManagerToExecutor =

@@ -251,6 +251,7 @@ CREATE INDEX IF NOT EXISTS ledger_refs_by_ledger_entry ON ledger_refs (ledger_en
  */
 const V3_TO_V4_COLUMNS: readonly { readonly table: string; readonly column: string; readonly ddl: string }[] = [
   { table: 'inputs', column: 'failed_from', ddl: 'ALTER TABLE inputs ADD COLUMN failed_from TEXT' },
+  { table: 'inputs', column: 'rejected_kind', ddl: 'ALTER TABLE inputs ADD COLUMN rejected_kind TEXT' },
   { table: RUNS_TABLE, column: 'blocked_kind', ddl: `ALTER TABLE ${RUNS_TABLE} ADD COLUMN blocked_kind TEXT` },
   { table: RUNS_TABLE, column: 'blocked_by', ddl: `ALTER TABLE ${RUNS_TABLE} ADD COLUMN blocked_by TEXT` },
   { table: RUNS_TABLE, column: 'blocked_since', ddl: `ALTER TABLE ${RUNS_TABLE} ADD COLUMN blocked_since INTEGER` },
@@ -296,7 +297,7 @@ export function initSchema(db: Database, databasePath: string): void {
     assertColumns(db, ENTRIES_TABLE, ['id', 'session', 'turn_id', 'kind', 'content_kind', 'content_text', 'content_blob', 'payload', 'at', 'source'], databasePath)
     assertColumns(db, EVENTS_TABLE, ['id', 'session', 'turn_id', 'step_id', 'generation', 'at', 'kind', 'data'], databasePath)
     assertColumns(db, ATTENTION_TABLE, ['id', 'session', 'kind', 'fact', 'at', 'detail', 'source', 'unread', 'delivered'], databasePath)
-    assertColumns(db, 'inputs', ['session', 'ref', 'body', 'purpose', 'at', 'revision', 'state', 'entry', 'turn', 'reason', 'failed_from'], databasePath)
+    assertColumns(db, 'inputs', ['session', 'ref', 'body', 'purpose', 'at', 'revision', 'state', 'entry', 'turn', 'reason', 'failed_from', 'rejected_kind'], databasePath)
     assertColumns(db, RUNS_TABLE, ['id', 'pid', 'proc_started_at', 'socket', 'session', 'turn_id', 'step_id', 'state', 'started_at', 'updated_at', 'ended_at', 'stop_reason', 'exit_code', 'background', 'generation', 'workspace', 'kind', 'last_turn', 'owned', 'blocked_kind', 'blocked_by', 'blocked_since'], databasePath)
   }).immediate()
 }

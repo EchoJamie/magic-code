@@ -192,6 +192,15 @@ export type RecordsStore = {
   readonly ledger: import('./ledger.ts').LedgerRecords
   /** 执行状态与恢复索引——不是会话事实（见 `runs.ts` 头注）。 */
   readonly runs: import('./runs.ts').RunRecords
+  /**
+   * **建会话行**（T1.1b · 受理前移）——首条输入由引擎受理时，会话行由引擎先建
+   * （D5 不冲突：记录仍因首条真实交代才存在）。`workspace` 留 NULL（归属未记录），
+   * 待执行者 `assembled` 报出实际根后由 `anchorSessionWorkspace` **一次性锚定**。
+   * 已存在（同 id）无事（幂等）。
+   */
+    createSession(session: SessionId, at: number): void
+  /** 工作区锚定——只填 NULL（一次性；锚定随建立定死的语义保持），已锚定的调用无事。 */
+  anchorSessionWorkspace(session: SessionId, workspace: readonly string[]): void
   serviceFor(session: SessionId): RecordsService
   /**
    * **按会话读条目**——**不经会话实例**（第 19 轮补）。
@@ -367,6 +376,14 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   const attention = createAttentionStore(db)
   const runs = createRunRecords(db)
   const ledger = createLedgerRecords(db)
+
+  // —— T1.1b：引擎受理首条输入时的建行/锚定口（workspace 留 NULL，由执行者 assembled 一次性锚定）——
+  const createSessionRow = db.query<never, [string, number]>(
+    `INSERT INTO ${SESSIONS_TABLE} (id, at) VALUES (?, ?) ON CONFLICT(id) DO NOTHING`,
+  )
+  const anchorWorkspace = db.query<never, [string, string]>(
+    `UPDATE ${SESSIONS_TABLE} SET ${SESSION_WORKSPACE_COLUMN} = ? WHERE id = ? AND ${SESSION_WORKSPACE_COLUMN} IS NULL`,
+  )
 
   return view(options.workspace, true)
 
@@ -804,6 +821,9 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     setSessionTitle,
     appendEvent: (event) => appendEvent(event.session, event),
     recoveryScan: runRecoveryScan,
+
+    createSession: (session, at) => { createSessionRow.run(session, at) },
+    anchorSessionWorkspace: (session, workspace) => { anchorWorkspace.run(JSON.stringify(workspace), session) },
 
     forWorkspace: workspace => view(workspace),
     close(): void {

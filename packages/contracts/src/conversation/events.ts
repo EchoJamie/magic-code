@@ -720,6 +720,11 @@ export type EventDataOf = {
      */
     readonly reason?: string
     /**
+     * **拒收类别**（`ok:false` 且缘由是拒收时给）——UI 据它选动作：`capacity`→一键重发、
+     * `closing`→先恢复工作、`archived`→先恢复会话。free text 选不对动作与不给同罪。
+     */
+    readonly rejectedKind?: 'capacity' | 'closing' | 'archived'
+    /**
      * **这一份草稿还回输入行吗**（U60）——缺省还（U33 起的老规矩：没送出就不丢稿）。
      *
      * `false` 只有一个由头：**下一步要敲的是一条命令**（还没接供应商时得先去

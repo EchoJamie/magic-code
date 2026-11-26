@@ -12,6 +12,7 @@ import {
   CONTROL_DIRECTORY_LIMIT,
   CONTROL_FRAME_BUDGET_BYTES,
   CONTROL_PREVIEW_TEXT_BYTES,
+  PENDING_INPUT_LIMIT,
   isTurnTimingEvent,
   pendingViews,
 } from '@magic/contracts'
@@ -73,19 +74,31 @@ export function installCommands(ctx: ManagerContext): void {
   const { workRoot, isArchived, manageSession } = sessions
 
   /**
-   * **受理前移**（T1.1 · 事务性发件箱）：deliver 前把输入落账（`inputs.accept` 落 pending）
+   * **受理前移**（T1.1/T1.1b · 事务性发件箱）：deliver 前把输入落账（`inputs.accept` 落 pending）
    * ——受理事实持久存在，帧丢失/执行器死亡不影响最终消费（对账兜底）。返回带 `ref` 的
    * 命令：执行者侧 `enqueue` 对同 ref 幂等（DO NOTHING），账上行与消费动作单一对齐。
-   * 会话未建立（新窗口首条输入）时账仍由执行者建会话后落——受理账随会话键存在。
+   *
+   * - **容量**：每会话 pending 上限 `PENDING_INPUT_LIMIT`——到限当场拒（落 `rejected` 行
+   *   `rejectedKind='capacity'` + 回执），原稿留输入位（动作＝一键重发）。
+   * - **会话未建立**（新窗口首条）：会话 id 生成移到引擎——建会话行（workspace 留 NULL，
+   *   执行者 assembled 后一次性锚定）→ 受理 → spawn 带显式 session（D5 不冲突：记录仍因
+   *   首条真实交代才存在）。
+   * 返回 `undefined` ＝ 已拒（回执已发），调用方直接返回。
    */
-  function acceptBeforeDelivery(
-    session: string | null,
-    command: Extract<Command, { readonly type: 'input.submit' }>,
-  ): Command {
-    if (session === null) return command
+  function acceptInput(conn: ClientConn, command: Extract<Command, { readonly type: 'input.submit' }>): { readonly command: Command; readonly session: string } | undefined {
+    const existing = conn.selectedSession
+    const session = existing ?? crypto.randomUUID()
+    const records = store.serviceFor(session)
+    if (existing !== null && records.inputs.list().filter(one => one.state === 'pending').length >= PENDING_INPUT_LIMIT) {
+      const ref = command.ref ?? crypto.randomUUID()
+      records.inputs.reject({ ...command, ref }, '待办已满', now(), 'capacity')
+      conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'input.settled', data: { ok: false, ref, reason: '待办已满', rejectedKind: 'capacity' } } })
+      return undefined
+    }
+    if (existing === null) store.createSession(session, now())
     const ref = command.ref ?? crypto.randomUUID()
-    store.serviceFor(session).inputs.accept({ ...command, ref }, now())
-    return { ...command, ref }
+    records.inputs.accept({ ...command, ref }, now())
+    return { command: { ...command, ref }, session }
   }
 
   function accept(socket: Socket<unknown>): void {
@@ -372,8 +385,8 @@ export function installCommands(ctx: ManagerContext): void {
         if (command.type === 'input.submit') {
           // **拒收落账**（T1.1）：不经 pending 直接落 rejected 行，原稿留账可 retry；回执 (session,ref)。
           const ref = command.ref ?? crypto.randomUUID()
-          store.serviceFor(session).inputs.reject({ ...command, ref }, ARCHIVED_NOTE, now())
-          conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'input.settled', data: { ok: false, ref, reason: ARCHIVED_NOTE } } })
+          store.serviceFor(session).inputs.reject({ ...command, ref }, ARCHIVED_NOTE, now(), 'archived')
+          conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'input.settled', data: { ok: false, ref, reason: ARCHIVED_NOTE, rejectedKind: 'archived' } } })
         } else {
           conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'input.settled', data: { ok: false, ref: input.ref, reason: ARCHIVED_NOTE } } })
         }
@@ -719,7 +732,9 @@ export function installCommands(ctx: ManagerContext): void {
         return
       }
       connections.bind(conn, spawned)
-      ctx.deliver(spawned, command.type === 'input.submit' ? acceptBeforeDelivery(session, command) : command)
+      const accepted = command.type === 'input.submit' ? acceptInput(conn, command) : { command, session }
+      if (accepted === undefined) return
+      ctx.deliver(spawned, accepted.command)
       // ⚠️ **这一条不能省**（main 的 `retarget` 新起一代那一支末尾也有它）：为这条会话新起的
       // 那一代是**带着会话号装配**的，`switchTo` 判「已经在的那条 ＝ 无事」——`session.open`
       // 过去一声不响，窗口就此停在旧那一页上。`session.list` 一定会报一次状态，窗口据此重画。
@@ -727,13 +742,35 @@ export function installCommands(ctx: ManagerContext): void {
       return
     }
 
-    const target = conn.target ?? ctx.spawnFresh(conn, command.type === 'input.submit' ? command.model : undefined)
+    if (command.type === 'input.submit') {
+      // T1.1b：会话 id 生成移到引擎——建会话行 → 受理落账 → spawn 带显式 session
+      //（spawnFresh 的 session-null 形态对输入退役；执行者 session=null 分支休眠不删）。
+      const accepted = acceptInput(conn, command)
+      if (accepted === undefined) return
+      const choice = accepted.command.type === 'input.submit' ? accepted.command.model : undefined
+      const picked = choice ?? conn.switch
+      const spawned = ctx.spawn({
+        session: accepted.session, explicit: false,
+        environment: conn.environment, cwd: conn.cwd,
+        ...(picked === undefined ? {} : { switch: picked }),
+      })
+      if (spawned === undefined) {
+        // 受理已落账（发件箱）——起不了执行者不是受理失败：输入留账上，等它起来消费。
+        conn.link.send({ t: 'line', text: '起不了执行者——这条交代已受理，会在执行者可用后自动继续' })
+        return
+      }
+      connections.bind(conn, spawned)
+      ctx.deliver(spawned, accepted.command)
+      ctx.deliver(spawned, { type: 'session.list' })
+      return
+    }
+    const target = conn.target ?? ctx.spawnFresh(conn)
     if (target === undefined) {
       conn.link.send({ t: 'line', text: '起不了执行者——这条命令没能送到' })
       return
     }
 
-    ctx.deliver(target, command.type === 'input.submit' ? acceptBeforeDelivery(target.run.session ?? conn.selectedSession, command) : command)
+    ctx.deliver(target, command)
   }
 
   async function collaborationCommand(conn: ClientConn, command: CollaborationCommand): Promise<void> {
@@ -769,7 +806,7 @@ export function installCommands(ctx: ManagerContext): void {
         if (inputKey !== undefined) collaborationInputs.delete(inputKey)
         conn.link.send({
           t: 'ev', gen: conn.target?.gen ?? null, event: {
-            kind: 'input.settled', data: { ok: false, ...(command.input.ref === undefined ? {} : { ref: command.input.ref }), reason: String(error) },
+            kind: 'input.settled', data: { ok: false, ...(command.input.ref === undefined ? {} : { ref: command.input.ref }), reason: String(error), ...(typeof (error as { rejectedKind?: unknown }).rejectedKind === 'string' ? { rejectedKind: (error as { rejectedKind: 'capacity' | 'closing' | 'archived' }).rejectedKind } : {}) },
             session, id: store.serviceFor(session).nextId(), at: now(), turn: null,
           }
         })

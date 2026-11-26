@@ -41,3 +41,10 @@ export const HISTORY_ENTRY_PREVIEW_BYTES = 16 * 1024
 
 /** 待处理输入在目录/列表里每条正文的预览字节数。 */
 export const INPUT_PREVIEW_TEXT_BYTES = 8 * 1024
+
+/**
+ * 每会话待办（pending）受理上限——**容量拒收的定值**（总负责人 2026-11-27 裁定：
+ * 常量可配置；UI 只说「待办已满」，不出现数字）。到达上限的受理当场拒
+ * （rejectedKind='capacity'，原稿留输入位，动作＝一键重发）。
+ */
+export const PENDING_INPUT_LIMIT = 64

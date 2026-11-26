@@ -55,6 +55,8 @@ export type NativeProjection = {
   readonly accepting: boolean
   readonly works: readonly NativeWork[]
   readonly configuration?: { readonly stamp: string | null; readonly error?: string }
+  /** 证据目录（§3.1：仅路径不含正文）——设置页「复制路径/Finder 打开」的取材；缺省＝没有这一摊。 */
+  readonly evidencePaths?: readonly string[]
 }
 
 export type NativeSession = SessionSummary & { readonly background?: number; readonly state: RunState; readonly canArchive: boolean; readonly terminalOpen: boolean; readonly reason?: string }

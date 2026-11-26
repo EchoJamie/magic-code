@@ -12,6 +12,7 @@ type InputRow = {
   turn: number | null
   reason: string | null
   failed_from: string | null
+  rejected_kind: string | null
 }
 
 export function initInputSchema(db: Database): void {
@@ -19,7 +20,7 @@ export function initInputSchema(db: Database): void {
     session TEXT NOT NULL, ref TEXT NOT NULL, body TEXT NOT NULL, purpose TEXT NOT NULL,
     at INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
     state TEXT NOT NULL DEFAULT 'pending', entry INTEGER, turn INTEGER, reason TEXT,
-    failed_from TEXT,
+    failed_from TEXT, rejected_kind TEXT,
     PRIMARY KEY(session,ref)
   )`)
 }
@@ -36,6 +37,7 @@ function ofRow(row: InputRow): StoredInput {
     ...(row.turn === null ? {} : { turn: row.turn }),
     ...(row.reason === null ? {} : { reason: row.reason }),
     ...(row.failed_from === null ? {} : { failedFrom: row.failed_from as 'pending' | 'executing' }),
+    ...(row.rejected_kind === null ? {} : { rejectedKind: row.rejected_kind as 'capacity' | 'closing' | 'archived' }),
   }
 }
 
@@ -72,11 +74,11 @@ export function createInputRecords(
       }).immediate()
     },
     /** 受理即拒（容量/closing/archived）：不经 pending 直接落 `rejected` 行，原稿留在账上。 */
-    reject(input, reason, at) {
+    reject(input, reason, at, kind) {
       return db.transaction(() => {
         ensure(at)
-        db.query("INSERT INTO inputs(session,ref,body,purpose,at,state,reason) VALUES (?,?,?,?,?,'rejected',?) ON CONFLICT(session,ref) DO NOTHING")
-          .run(session, input.ref, JSON.stringify(input), input.purpose ?? 'current', at, reason)
+        db.query("INSERT INTO inputs(session,ref,body,purpose,at,state,reason,rejected_kind) VALUES (?,?,?,?,?,'rejected',?,?) ON CONFLICT(session,ref) DO NOTHING")
+          .run(session, input.ref, JSON.stringify(input), input.purpose ?? 'current', at, reason, kind)
         return get(input.ref)!
       }).immediate()
     },
@@ -90,9 +92,9 @@ export function createInputRecords(
         .run(session, ref, revision).changes === 1
     },
     /** pending → rejected（已受理后拒：closing/archived）。回执 (session,ref) 由调用方发。 */
-    rejectPending(ref, reason) {
-      return db.query("UPDATE inputs SET state='rejected',reason=?,revision=revision+1 WHERE session=? AND ref=? AND state='pending'")
-        .run(reason, session, ref).changes === 1
+    rejectPending(ref, reason, kind) {
+      return db.query("UPDATE inputs SET state='rejected',reason=?,rejected_kind=?,revision=revision+1 WHERE session=? AND ref=? AND state='pending'")
+        .run(reason, kind, session, ref).changes === 1
     },
     /** pending → executing（engine；准入 `beginExecution` 在 dequeue 之前）。 */
     dequeue(ref, revision) {

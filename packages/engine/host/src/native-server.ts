@@ -17,6 +17,8 @@ export type NativeServerOptions = {
   readonly sessions: (query: { archived?: boolean; workspace?: readonly string[]; search?: string }) => Promise<readonly NativeSession[]>
   readonly manage: (item: SessionManagement) => SessionManagementResult
   readonly configuration?: () => NativeProjection['configuration']
+  /** 证据目录路径列表（§3.1：仅路径不含正文）——设置页「复制路径/Finder 打开」的取材。 */
+  readonly evidencePaths?: () => readonly string[]
   readonly engineStop?: (request: string, idleOnly: boolean) => Promise<void>
   readonly stop: (session: string, gen: number, report: (phase: StopPhase, note?: string) => void) => void
   readonly runtime?: { read(): Promise<Pick<Extract<NativeResponse, { t: 'native.runtime.result' }>, 'mcp' | 'canChangeData'>>; reconnect(session: string, gen: number, name: string): Promise<string> }
@@ -45,6 +47,7 @@ export function createNativeServer(options: NativeServerOptions) {
       accepting: options.accepting(),
       works: await options.works(),
       ...(options.configuration ? { configuration: options.configuration() } : {}),
+      ...(options.evidencePaths ? { evidencePaths: options.evidencePaths() } : {}),
     }))
     snapshots = next.catch(() => {})
     return next

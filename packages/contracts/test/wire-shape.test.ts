@@ -34,8 +34,9 @@ test('协作账本写操作：dequeue 已入契约（pending→executing 唯一�
   expect(request.refs).toEqual(['r-1', 'r-2'])
 })
 
-test('input.rejected 帧：执行者拒收显式回执带 (session,ref,reason)', () => {
-  const rejected: ExecutorToManager = { t: 'input.rejected', session: 's-1', ref: 'r-1', reason: '会话已归档' }
+test('input.rejected 帧：执行者拒收显式回执带 (session,ref,kind)', () => {
+  const rejected: ExecutorToManager = { t: 'input.rejected', session: 's-1', ref: 'r-1', reason: '会话已归档', kind: 'archived' }
   expect(rejected.t).toBe('input.rejected')
   expect(rejected.ref).toBe('r-1')
+  expect(rejected.kind).toBe('archived')
 })

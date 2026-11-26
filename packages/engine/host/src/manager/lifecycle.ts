@@ -178,7 +178,7 @@ export function installLifecycle(ctx: ManagerContext): void {
         // 执行者 closing/archived 分支的显式回执——engine 把已受理的 pending 行转
         // rejected（§五「已受理后拒」）。只认执行者自己绑定会话的输入，不跨会话拒。
         if (message.session !== executor.run.session) return
-        store.serviceFor(message.session).inputs.rejectPending(message.ref, message.reason)
+        store.serviceFor(message.session).inputs.rejectPending(message.ref, message.reason, message.kind)
         ctx.pushRuns()
         return
       }
@@ -196,7 +196,11 @@ export function installLifecycle(ctx: ManagerContext): void {
         ctx.pushRuns()
         return
       case 'assembled':
-        if (message.session !== null && store.hasSession(message.session)) executor.run.session = message.session
+        if (message.session !== null && store.hasSession(message.session)) {
+          executor.run.session = message.session
+          // T1.1b：引擎受理首条输入建的会话行 workspace 留 NULL——执行者报出实际根后一次性锚定。
+          if (message.workspace.length > 0) store.anchorSessionWorkspace(message.session, message.workspace)
+        }
         executor.run.workspace = message.workspace
         executor.run.everConnected = true
         executor.run.connected = true

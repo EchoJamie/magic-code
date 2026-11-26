@@ -15,9 +15,10 @@ describe('输入七态状态机', () => {
     const store = createRecordsStore({ dataDir: dir, workspace: ['/w'] })
     try {
       const inputs = store.serviceFor('s').inputs
-      const row = inputs.reject({ text: '原文', ref: 'r1' }, '待办已满', 5)
+      const row = inputs.reject({ text: '原文', ref: 'r1' }, '待办已满', 5, 'capacity')
       expect(row.state).toBe('rejected')
       expect(row.reason).toBe('待办已满')
+      expect(row.rejectedKind).toBe('capacity')
       expect(row.input.text).toBe('原文')
       expect(inputs.get('r1')?.state).toBe('rejected')
       // 已拒的 ref 不被后续受理覆盖（DO NOTHING）。
@@ -34,10 +35,10 @@ describe('输入七态状态机', () => {
     try {
       const inputs = store.serviceFor('s').inputs
       inputs.accept({ text: '受理了', ref: 'r2' }, 1)
-      expect(inputs.rejectPending('r2', '会话已归档')).toBe(true)
-      expect(inputs.get('r2')).toMatchObject({ state: 'rejected', reason: '会话已归档' })
+      expect(inputs.rejectPending('r2', '会话已归档', 'archived')).toBe(true)
+      expect(inputs.get('r2')).toMatchObject({ state: 'rejected', reason: '会话已归档', rejectedKind: 'archived' })
       // 已拒的再转一次：false（迁移唯一写者、状态不符即拒绝）。
-      expect(inputs.rejectPending('r2', 'again')).toBe(false)
+      expect(inputs.rejectPending('r2', 'again', 'archived')).toBe(false)
       // rejected → pending 走 retry（用户重发）。
       expect(inputs.retry('r2', 1)).toBe(true)
       expect(inputs.get('r2')).toMatchObject({ state: 'pending', revision: 2 })
@@ -87,7 +88,7 @@ describe('输入七态状态机', () => {
       // 立即消费（pending 下）不走 retry：revision 已 +1，旧 revision 拒绝。
       expect(inputs.retry('r6', 2)).toBe(false)
       // rejected 同样可 retry。
-      inputs.reject({ text: 'two', ref: 'r7' }, '容量', 3)
+      inputs.reject({ text: 'two', ref: 'r7' }, '容量', 3, 'capacity')
       expect(inputs.retry('r7', 0)).toBe(true)
       expect(inputs.get('r7')?.reason).toBeUndefined()
     } finally { store.close(); removeDataDir(dir) }
