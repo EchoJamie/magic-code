@@ -60,10 +60,15 @@ export function installPlacement(ctx: ManagerContext): void {
    *  第二个必须**当场**看得见第一个，否则会各起一个。 */
   function spawn(input: SpawnInput): Executor | undefined {
     if (input.session !== null && isArchived(input.session)) return undefined
-    // **单活结构保证**（T1.6 · N5）：同会话已有未核销执行器 → 拒绝第二个
+    // **单活结构保证**（T1.6 · N5）：同会话已有**活**执行器 → 拒绝第二个
     // （普通会话补齐；协作成员另由 beginExecution 准入拦一层）。
+    // ⚠️ 只拦活进程（exited=false 且未 ended）：「已自动收缩退场、核销未完成」的旧代
+    // **让位**——新 spawn 接管会话（consumeLedgerInputs 按会话捞账本 pending，天然接管
+    // 旧代遗留待办；旧代核销照常异步完成）。把「已退出未核销」也拦下 = P1 破
+    // （这条已受理的输入永远无人消费——对账器只扫活执行者集合）。
     if (input.session !== null) {
-      const duplicate = [...executors].find(one => one.run.session === input.session && one.run.ended === undefined)
+      const duplicate = [...executors].find(one => one.run.session === input.session
+        && one.run.ended === undefined && !one.exited)
       if (duplicate !== undefined) {
         diagnosticLog.write('warn', 'spawn.duplicate', { ...identity, session: input.session, run: String(duplicate.gen) })
         return undefined
