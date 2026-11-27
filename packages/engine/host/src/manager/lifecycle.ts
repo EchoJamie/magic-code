@@ -254,7 +254,13 @@ export function installLifecycle(ctx: ManagerContext): void {
 
   /** 一条内核事件——**广播给盯着这一代的窗口**，顺带把登记里那几格更新到与内核一致。 */
   function onEvent(executor: Executor, event: KernelEvent): void {
-    diagnosticLog.write(event.kind === 'error' ? 'error' : 'trace', `kernel.${event.kind}`, { ...identity, run: String(executor.gen), ...(event.session ? { session: event.session } : {}) })
+    // kernel.error 补 tier+消息首句（T4 诊断缺口：错误归因在日志里整条为空，查无可查）——
+    // 错误文本是代码生成的（classify/describe 脱敏后），属于 diagnostic-log 的「代码内短句」许可。
+    const isError = event.kind === 'error'
+    diagnosticLog.write(isError ? 'error' : 'trace', `kernel.${event.kind}`, {
+      ...identity, run: String(executor.gen), ...(event.session ? { session: event.session } : {}),
+      ...(isError ? { reason: (event.data as { message?: string }).message?.slice(0, 120) ?? '未知错误' } : {}),
+    })
     // 已核销的执行者的**迟到事件只留诊断**：行上的在途格（busy/turnActive）属于活者，
     // 不因迟到帧翻回「在跑」——投递异步化后，close 前入队的帧会在核销后一拍才到。
     if (executor.run.ended !== undefined) return
