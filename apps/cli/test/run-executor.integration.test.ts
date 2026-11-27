@@ -200,7 +200,10 @@ describe('会话身份与启动失败回归', () => {
       await waitFor('失败原因与退出回执', () => detached && lines.some(line => line.includes('装配没成：')))
       expect(lines.find(line => line.includes('装配没成：'))).not.toBe('装配没成：')
       expect(manager.executors()).toHaveLength(0)
-      expect(await records.listSessions()).toHaveLength(0)
+      // T1.1b 受理先行：装配失败不是受理失败——会话行与待办留账，对账器兜底续跑。
+      const retained = await records.listSessions()
+      expect(retained).toHaveLength(1)
+      expect((await records.serviceFor(retained[0]!.id).inputs.list()).some(one => one.state === 'pending' && one.input.text === '不能丢掉的输入')).toBe(true)
       expect(g.fixture.requests()).toHaveLength(0)
     } finally {
       client.close(); manager.stop('测试结束'); await manager.waitUntilExit()

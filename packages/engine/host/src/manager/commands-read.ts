@@ -60,7 +60,8 @@ export function welcomeNotices<T extends { readonly detail?: string }>(notices: 
 }
 
 /** 纯读命令集——只读观察连接（T1.6）放行这些，其余一律拒。 */
-export const READONLY_COMMANDS = new Set([  'session.list', 'session.open', 'session.references', 'history.read', 'plan.read',
+export const READONLY_COMMANDS = new Set([
+  'session.list', 'session.open', 'session.new', 'session.references', 'history.read', 'plan.read',
   'model.list', 'model.refresh', 'models.search', 'provider.list', 'skills.list',
   'paths.list', 'paths.identify', 'mcp.list', 'knowledge.query', 'knowledge.read',
   'memory.read', 'memory.source', 'collaboration.read', 'compact.query',
@@ -232,6 +233,19 @@ export function installReadCommands(ctx: ManagerContext): {
         return { workspace, item }
       })().catch(error => ({ workspace: [], error: String(error) }))
       if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: command.session ?? '', kind: 'knowledge.state', data: { requestId: command.requestId, ...(command.session === undefined ? {} : { session: command.session }), ...data } } })
+      return true
+    }
+    if (command.type === 'knowledge.forget' || command.type === 'knowledge.forget-result') {
+      const data = await (async () => {
+        const workspace = await memoryWorkspace(store, command.session, command.session === undefined ? workspaceOf(loadConfig({ magic: options.magic }), conn.cwd).roots() : [])
+        const knowledge = store.forWorkspace(workspace).knowledge
+        const current = knowledge.read(command.id)
+        if (current !== undefined && (current.scope.kind !== command.scope.kind || (current.scope.kind === 'project'
+          && command.scope.kind === 'project' && JSON.stringify(current.scope.workspace) !== JSON.stringify(command.scope.workspace)))) throw new Error('知识范围与所见对象不一致，未执行遗忘')
+        const request = { requestId: command.requestId, id: command.id, expectedRevision: command.expectedRevision }
+        return { result: command.type === 'knowledge.forget' ? knowledge.forget(request) : knowledge.forgetResult(request) }
+      })().catch(error => ({ error: String(error) }))
+      if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: command.session ?? '', kind: 'knowledge.forgotten', data: { requestId: command.requestId, ...(command.session === undefined ? {} : { session: command.session }), ...data } } })
       return true
     }
     if (command.type === 'history.read') {

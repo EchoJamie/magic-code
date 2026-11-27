@@ -486,7 +486,8 @@ describe('`/clear` 是这个窗口的', () => {
       expect(b.manager.executors().map((row) => row.gen)).toContain(shared)
       two.send({ type: 'input.submit', text: '新对话的首次输入' })
       await waitFor('明确输入才另起一代', () => b.requests.length === 2 && two.gen() === b.requests[1]?.request.gen)
-      expect(b.requests[1]?.request.session).toBeNull()
+      expect(b.requests[1]?.request.session).not.toBeNull()
+      expect(typeof b.requests[1]?.request.session).toBe('string')
       expect(one.gen()).toBe(shared)
 
       one.close()
