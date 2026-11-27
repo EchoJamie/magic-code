@@ -62,10 +62,26 @@ export function createExecutorControl(onStartupTimeout: (executor: Executor) => 
   const compactions = new Map<string, { executor: Executor; started: () => void; resolve: (state: import('@magic/contracts').CompactState) => void; reject: (error: Error) => void }>()
   /** ready 闸门前送达会被丢弃的压缩请求——按代排队，ready 时刻补发。 */
   const pendingCompacts = new Map<number, { request: { requestId: string; focus?: string }; signal: AbortSignal; started: () => void }[]>()
+  /** ready 闸门前送达会被丢弃的换模请求——按代排队，ready 时刻补发（P1 修复：此前既不排队
+   * 也无超时，配置悬到 retire 才落定；常规路径 startMember 先等 ready，缺口只在竞态窗口）。 */
+  const pendingConfigures = new Map<number, { requestId: string; model: AgentModelConfig }[]>()
   const configurationWaiters = new Map<string, { executor: Executor; resolve: () => void; reject: (error: Error) => void }>()
   const readyWaiters = new Map<number, { resolve: () => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>()
   const executorSettings = new WeakMap<Executor, readonly McpCatalogRow[]>()
   const settingsReplies = new Map<string, { executor: Executor; resolve: (note: string) => void; reject: (error: Error) => void }>()
+
+  /** 执行者退出/收代：ready 前排队的请求**就地落定**，队列条目清掉——不再悬挂、不再累积。 */
+  function dropQueuedPreReady(executor: Executor, note: string): void {
+    const queuedCompacts = pendingCompacts.get(executor.gen)
+    if (queuedCompacts !== undefined) {
+      pendingCompacts.delete(executor.gen)
+      for (const item of queuedCompacts) {
+        const pending = compactions.get(item.request.requestId)
+        if (pending?.executor === executor) { compactions.delete(item.request.requestId); pending.reject(new Error(`${note}，本次压缩中断`)) }
+      }
+    }
+    pendingConfigures.delete(executor.gen)
+  }
   function settingsToExecutor(executor: Executor, server?: string, inspect = false, diagnostics?: Diagnostics): Promise<string> {
     return new Promise((resolve, reject) => {
       const request = crypto.randomUUID()
@@ -112,7 +128,20 @@ export function createExecutorControl(onStartupTimeout: (executor: Executor) => 
     compact(executor: Executor, request: { requestId: string; focus?: string }, signal: AbortSignal, started: () => void): Promise<import('@magic/contracts').CompactState> {
       signal.throwIfAborted()
       return new Promise((resolve, reject) => {
-        const abort = () => sendToExecutor(executor, { t: 'compact.cancel', requestId: request.requestId })
+        const abort = () => {
+          // **还没送出就撤销**（ready 前排队的那一档）：帧没有在途的收口——就地落定，
+          // 不再等一个不会来的 compact.result。
+          const queue = pendingCompacts.get(executor.gen)
+          const at = queue?.findIndex(item => item.request.requestId === request.requestId) ?? -1
+          if (queue !== undefined && at >= 0) {
+            queue.splice(at, 1)
+            if (queue.length === 0) pendingCompacts.delete(executor.gen)
+            const pending = compactions.get(request.requestId)
+            if (pending?.executor === executor) pending.resolve({ requestId: request.requestId, state: 'cancelled', reason: '执行者就绪前撤销' })
+            return
+          }
+          sendToExecutor(executor, { t: 'compact.cancel', requestId: request.requestId })
+        }
         compactions.set(request.requestId, { executor, started, resolve: state => { signal.removeEventListener('abort', abort); resolve(state) }, reject: error => { signal.removeEventListener('abort', abort); reject(error) } })
         signal.addEventListener('abort', abort, { once: true })
         if (!executor.run.ready) {
@@ -139,6 +168,13 @@ export function createExecutorControl(onStartupTimeout: (executor: Executor) => 
       return new Promise((resolve, reject) => {
         const requestId = crypto.randomUUID()
         configurationWaiters.set(requestId, { executor, resolve, reject })
+        if (!executor.run.ready) {
+          // ready 闸门会丢这一帧——排队，ready 时刻补发；退出/收代在 dropQueuedPreReady 落定。
+          const queue = pendingConfigures.get(executor.gen) ?? []
+          queue.push({ requestId, model })
+          pendingConfigures.set(executor.gen, queue)
+          return
+        }
         sendToExecutor(executor, { t: 'collaboration.configure', requestId, model })
       })
     },
@@ -156,7 +192,7 @@ export function createExecutorControl(onStartupTimeout: (executor: Executor) => 
         readyWaiters.delete(executor.gen)
         waiting.resolve()
       }
-      // ready 闸门（sendToExecutor 丢弃非 snapshot 帧）的补发口：排队中的压缩此刻放行。
+      // ready 闸门（sendToExecutor 丢弃非 snapshot 帧）的补发口：排队中的压缩与换模此刻放行。
       const queued = pendingCompacts.get(executor.gen)
       if (queued !== undefined) {
         pendingCompacts.delete(executor.gen)
@@ -164,6 +200,11 @@ export function createExecutorControl(onStartupTimeout: (executor: Executor) => 
           if (item.signal.aborted) continue
           sendToExecutor(executor, { t: 'compact', request: item.request })
         }
+      }
+      const queuedConfigures = pendingConfigures.get(executor.gen)
+      if (queuedConfigures !== undefined) {
+        pendingConfigures.delete(executor.gen)
+        for (const item of queuedConfigures) sendToExecutor(executor, { t: 'collaboration.configure', requestId: item.requestId, model: item.model })
       }
     },
     synced(executor: Executor, message: Extract<ExecutorToManager, { t: 'settings.synced' }>): void {
@@ -180,12 +221,14 @@ export function createExecutorControl(onStartupTimeout: (executor: Executor) => 
         settingsReplies.delete(request)
         pending.reject(new Error('执行者已退出，设置受理未确认；请重新读取'))
       }
+      dropQueuedPreReady(executor, '执行实例已结束')
     },
     retire(executor: Executor, reason: string): void {
       for (const [id, pending] of configurationWaiters) if (pending.executor === executor) {
         configurationWaiters.delete(id)
         pending.reject(new Error('成员配置结果未确认，原持久配置保留'))
       }
+      dropQueuedPreReady(executor, reason)
 
       const ready = readyWaiters.get(executor.gen)
       if (ready !== undefined) {
