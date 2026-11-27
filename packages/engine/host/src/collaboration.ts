@@ -116,13 +116,28 @@ export function createManagedCollaboration(host: CollaborationHost) {
   function wake(agentId: string): void {
     const agent = records.getAgent(agentId)
     if (agent === undefined || !admission(agent) || waking.has(agentId)) return
-    // **总闸：工作已整体停止，协作唤醒到此为止**——收件留在账本，等用户明确继续
-    // （新一代接管或恢复）后再消费。不设这一闸，「停止后借迟到的协作消息恢复执行」
-    // 会在每一个 wake 调用点各漏一遍（2026-11-25 实锤：迟到的交付唤醒入口发起了
-    // 模型调用）。协调者的准入例外只保证**用户会话**仍可达，不豁免协作唤醒。
-    // closing 一并挡（收尾中的工作同样不该被协作消息拉回模型）。
+    // **收尾中/已收尾的工作，协作唤醒到此为止**——收件留在账本，等用户直接交代
+    // （新一代接管）后再消费。不设这一闸，「停止后借迟到的协作消息恢复执行」会在
+    // 每一个 wake 调用点各漏一遍（2026-11-25 实锤：迟到的交付唤醒入口发起了模型调用）。
     const work = agent.collaborationId === undefined ? undefined : records.getCollaboration(agent.collaborationId)
     if (work !== undefined && work.state !== 'open') return
+    const selfRow = host.runs().find(run => run.session === agent.sessionId)
+    if (selfRow !== undefined && ['idle', 'running', 'waiting'].includes(selfRow.state)) {
+      host.wake(agent.sessionId) // 活执行器：信号照发，进不进内循环由它自己的圈尾闸决定
+      return
+    }
+    // **目标执行器不在（已停/已退出/失联）——起一代是资源供应，判据是运行事实**：
+    // 这项工作的运行记录存在且**全部不在跑**（已停止/正在停）⇒ 工作已被整体掐断，
+    // 迟到消息只是账本事实，起不来任何东西（边界方案 M3：裁决以事实判，不设状态位；
+    // 用户直接输入走 collaboration.input 的显式启动，不经此路）。运行事实缺席
+    // （宿主未接线 runs）时保守放行——拦错正事的代价高于放行空转的代价。
+    if (work !== undefined) {
+      const memberSessions = new Set(records.listMembers(work.collaborationId).map(a => a.sessionId))
+      memberSessions.add(work.originSessionId)
+      const workRows = host.runs().filter(run => memberSessions.has(run.session))
+      const workDead = workRows.length > 0 && !workRows.some(run => ['idle', 'running', 'waiting'].includes(run.state))
+      if (workDead) { host.changed(); return }
+    }
     const pending = (async () => {
       try { await host.start(agent); if (admission(agent)) host.wake(agent.sessionId) }
       catch { host.changed() }

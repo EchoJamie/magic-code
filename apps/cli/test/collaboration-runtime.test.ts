@@ -66,8 +66,35 @@ for (const response of ['clarify', 'reject'] as const) test(`入口正文让出�
   } finally { managed.shutdown('测试清理'); f.close() }
 })
 
-test('普通accept回执不唤起空闲入口，不产生模型请求', async () => {
+test('整体停止后（运行全灭）迟到消息不起一代——唤醒裁决以运行事实判（边界方案 M3）', async () => {
   const f = fixture()
+  f.spawn('late-child')
+  const recipient = f.spawn('late-peer')
+  let starts = 0
+  const managed = createManagedCollaboration({ environment: () => ({}), store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
+    accepting: () => true,
+    start: async () => { starts++; return undefined as never },
+    wake: () => undefined, cancel: async () => undefined,
+    input: () => undefined, configure: async () => undefined,
+    // 运行事实：工作内所有会话的运行都已停止——整体停止后的现场
+    runs: () => [
+      { session: 'origin', state: 'stopped', since: 1, startedAt: 1, workspace: [], holds: false },
+      { session: 'late-child', state: 'stopped', since: 1, startedAt: 1, workspace: [], holds: false },
+      { session: 'late-peer', state: 'stopped', since: 1, startedAt: 1, workspace: [], holds: false },
+    ], decisions: () => 0, changed: () => undefined,
+  })
+  try {
+    f.records.stop({ kind: 'collaboration', collaborationId: f.collaboration.collaborationId }, '用户停止', 10)
+    // 迟到消息：垂死成员的 send 到达——收件人在账上仍 active（停止不写状态），
+    // 消息照常送达账本，但唤醒的「起一代」被运行事实拦下。
+    const result = await managed.request('late-child', { action: 'send', operationId: 'late-frame',
+      recipients: [recipient.agent.agentId], purpose: 'inform', body: [{ kind: 'text', text: '迟到的交代' }] })
+    expect(result.ok).toBe(true)
+    expect(starts).toBe(0)
+  } finally { managed.shutdown('测试清理'); f.close() }
+})
+
+test('普通accept回执不唤起空闲入口，不产生模型请求', async () => {  const f = fixture()
   const child = f.spawn('child')
   let rootWakes = 0
   const managed = createManagedCollaboration({ environment: () => ({}), store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,

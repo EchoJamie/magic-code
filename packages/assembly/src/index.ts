@@ -555,18 +555,30 @@ export function assemble(options: AssembleOptions): Assembly {
         } catch { /* 准入帧失败＝未准入：行留 pending，用户可「立即再试」 */ }
       }
 
+      // **「下一件」的收束自查**（边界方案 M2 · 外循环的推进决策归执行者）：purpose=next
+      // 的行要等这项工作的委派/待答收束后才可出队——判据读同一账本（出队前的现场），
+      // 引擎 dequeue 只剩账面事务（出队没成的行留账，对账器再敲门，本执行者再自查）。
+      const work = recordsStore.collaboration.collaborationForSession(active.session)
+      const nextHeld = work !== undefined
+        && recordsStore.collaboration.listDelegations(work.collaborationId).some(d =>
+          !['received', 'rejected', 'cancelled'].includes(d.state)
+          || (d.deliveryMessageId !== undefined && d.receivedAt === undefined))
+      const eligibleRefs = nextHeld
+        ? refs.filter(ref => pending.find(row => row.ref === ref)?.purpose !== 'next')
+        : refs
+
       // **dequeue 请求**——无协作 client 的单机形态退化为本地 dequeue（engine 与执行者
-      // 同体，写权语义不跨进程）；有 client 走帧（engine 唯一写者）。
+      // 同体，写权语义不跨进程）；有 client 走帧（engine 唯一写者，纯事务）。
       let dequeued: ReadonlySet<string>
       if (options.collaboration === undefined) {
         const sessionRecords = active.records
-        dequeued = new Set(refs.filter(ref => {
+        dequeued = new Set(eligibleRefs.filter(ref => {
           const revision = sessionRecords.inputs.get(ref)?.revision
           return revision !== undefined && sessionRecords.inputs.dequeue(ref, revision)
         }))
       } else {
         const reply = await options.collaboration(active.session, {
-          action: 'dequeue', operationId: `dequeue:${executionId}:${crypto.randomUUID()}`, refs, at: now(),
+          action: 'dequeue', operationId: `dequeue:${executionId}:${crypto.randomUUID()}`, refs: eligibleRefs, at: now(),
         }).catch(() => undefined)
         const value = reply?.ok === true ? reply.value as { dequeued?: readonly string[] } : undefined
         dequeued = new Set(value?.dequeued ?? [])
