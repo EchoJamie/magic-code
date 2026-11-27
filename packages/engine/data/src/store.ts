@@ -827,7 +827,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     latestSession,
     decisionHistory,
     hasSession,
-    hasEntries: (session: SessionId): boolean => { assertSessionId(session); return selectAnyEntry.get(session) !== undefined },
+    hasEntries: (session: SessionId): boolean => { assertSessionId(session); return selectAnyEntry.get(session) !== null },
     isSessionArchived,
     setSessionArchived: (session, archived) => setSessionArchived.immediate(session, archived),
     setSessionTitle,

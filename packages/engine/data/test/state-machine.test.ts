@@ -191,6 +191,27 @@ describe('构造与引导分离', () => {
     } finally { removeDataDir(dir) }
   })
 
+  test('hasEntries：空会话 false、有条目/压缩过的会话 true；不存在的会话 false（bun:sqlite 无行返回 null）', () => {
+    const dir = tempDataDir()
+    const store = createRecordsStore({ dataDir: dir, workspace: ['/w'] })
+    try {
+      // 受理先行的空会话（T1.1b）：账行在、entries 空 ⇒ false（走宽松档）。
+      const inputs = store.serviceFor('s-empty').inputs
+      inputs.accept({ text: '受理先行', ref: 'r1' }, 1)
+      expect(store.hasEntries('s-empty')).toBe(false)
+      // **不存在的会话**也必须 false（bun:sqlite 无行返回 null 而非 undefined——直调实锤过）。
+      expect(store.hasEntries('no-such-session')).toBe(false)
+      // 有历史 ⇒ true；压缩过的会话（只有 continuation）同样 true（严格档位口径）。
+      const service = store.serviceFor('s-hist')
+      const id = service.appendEntry({ kind: 'user', content: { text: '有历史' }, at: 2 })
+      expect(store.hasEntries('s-hist')).toBe(true)
+      // continuation 的收尾形态按形态闸门要求带真实消息与调用身份。
+      service.appendEntry({ kind: 'continuation', content: { text: '压缩产物' }, at: 3, payload: { preparation: 'compact', message: { role: 'user', content: '继续' } } })
+      expect(store.hasEntries('s-hist')).toBe(true)
+      void id
+    } finally { store.close(); removeDataDir(dir) }
+  })
+
   test('prepareRecordsDir 对 v3 原地迁移（幂等、不移走原库、不产生备份目录）', () => {
     const dir = tempDataDir()
     const backupRoot = join(dirname(dir), `${basename(dir)}-backup`)
