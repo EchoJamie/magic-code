@@ -60,6 +60,8 @@ export function sendToExecutor(executor: Executor, message: ManagerToExecutor): 
 /** 执行者协议的待确认请求；回执必须来自原对象，不能跨代完成。 */
 export function createExecutorControl(onStartupTimeout: (executor: Executor) => void) {
   const compactions = new Map<string, { executor: Executor; started: () => void; resolve: (state: import('@magic/contracts').CompactState) => void; reject: (error: Error) => void }>()
+  /** ready 闸门前送达会被丢弃的压缩请求——按代排队，ready 时刻补发。 */
+  const pendingCompacts = new Map<number, { request: { requestId: string; focus?: string }; signal: AbortSignal; started: () => void }[]>()
   const configurationWaiters = new Map<string, { executor: Executor; resolve: () => void; reject: (error: Error) => void }>()
   const readyWaiters = new Map<number, { resolve: () => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>()
   const executorSettings = new WeakMap<Executor, readonly McpCatalogRow[]>()
@@ -113,6 +115,13 @@ export function createExecutorControl(onStartupTimeout: (executor: Executor) => 
         const abort = () => sendToExecutor(executor, { t: 'compact.cancel', requestId: request.requestId })
         compactions.set(request.requestId, { executor, started, resolve: state => { signal.removeEventListener('abort', abort); resolve(state) }, reject: error => { signal.removeEventListener('abort', abort); reject(error) } })
         signal.addEventListener('abort', abort, { once: true })
+        if (!executor.run.ready) {
+          // ready 闸门会丢这一帧——排队，ready 时刻补发（撤销走同一 abort）。
+          const queue = pendingCompacts.get(executor.gen) ?? []
+          queue.push({ request, signal, started })
+          pendingCompacts.set(executor.gen, queue)
+          return
+        }
         sendToExecutor(executor, { t: 'compact', request })
       })
     },
@@ -146,6 +155,15 @@ export function createExecutorControl(onStartupTimeout: (executor: Executor) => 
         clearTimeout(waiting.timer)
         readyWaiters.delete(executor.gen)
         waiting.resolve()
+      }
+      // ready 闸门（sendToExecutor 丢弃非 snapshot 帧）的补发口：排队中的压缩此刻放行。
+      const queued = pendingCompacts.get(executor.gen)
+      if (queued !== undefined) {
+        pendingCompacts.delete(executor.gen)
+        for (const item of queued) {
+          if (item.signal.aborted) continue
+          sendToExecutor(executor, { t: 'compact', request: item.request })
+        }
       }
     },
     synced(executor: Executor, message: Extract<ExecutorToManager, { t: 'settings.synced' }>): void {

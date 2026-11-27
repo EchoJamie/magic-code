@@ -51,8 +51,10 @@ test('真实宿主退出再开：target 接回原工作，只读不执行；明�
     const origin = f.session()!
     const work = f.collaboration()!
     const member = f.member()!
-    // 实际 HTTP 与持久 wait 已建立；不靠等 target 超时掩盖首次认领缺失。
-    expect(targets).toEqual([{ session: null, gen: expect.any(Number) }, { session: origin, gen: targets[0]!.gen }])
+    // 实际 HTTP 与持久 wait 已建立；不靠等 target 超时掩盖首次受理。
+    // T1.1b：引擎受理建会话后显式携带 spawn——首跳 target 即真实会话、一代到位，
+    // null 认领跳对输入退役。
+    expect(targets).toEqual([{ session: origin, gen: expect.any(Number) }])
     f.manager.stop('用户退出宿主')
     await f.manager.waitUntilExit()
     await f.wait('旧客户端收到宿主关闭', () => client.closed)
@@ -81,7 +83,7 @@ test('真实宿主退出再开：target 接回原工作，只读不执行；明�
     expect(f.requests()).toHaveLength(2)
     expect(f.requests('member-model')).toHaveLength(2)
     expect(f.store.collaboration.getCollaboration(work.collaborationId)?.state).toBe('stopped')
-    expect(f.store.collaboration.getAgent(member.agentId)?.reachability).toBe('suspended')
+    expect(f.store.collaboration.getAgent(member.agentId)?.reachability).toBe('historical')
 
     // **resume 只切界面**（2026-11-24 裁定）：不发请求、不复活成员、协作仍停止——
     // 继续一件已停止的工作靠直接打字（新一代接管原工作），不需要任何「继续」入口。
@@ -90,7 +92,7 @@ test('真实宿主退出再开：target 接回原工作，只读不执行；明�
     expect(f.requests()).toHaveLength(2)
     expect(f.requests('member-model')).toHaveLength(2)
     expect(f.store.collaboration.getCollaboration(work.collaborationId)?.state).toBe('stopped')
-    expect(f.store.collaboration.getAgent(member.agentId)?.reachability).toBe('suspended')
+    expect(f.store.collaboration.getAgent(member.agentId)?.reachability).toBe('historical')
 
     const input = 'REOPEN_EXPLICIT_INPUT：继续原工作核对，不另开会话。'
     client.send({ type: 'input.submit', text: input, ref: 'reopen-input' })

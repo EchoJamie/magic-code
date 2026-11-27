@@ -187,8 +187,9 @@ export function installLifecycle(ctx: ManagerContext): void {
         ctx.pushRuns()
         return
       case 'ready': {
-        control.ready(executor)
         executor.run.ready = true
+        // ready 位先落（sendToExecutor 的闸门按它放行）——control.ready 的补发队列才能真发出去。
+        control.ready(executor)
         // 起来那一刻「正在起执行者」这件事就完了（那一格由 `actionOf` 之外的一处写，
         // 故在这儿清）——`busy` 不动：它说的是**内核**手上有活没有，与本跳无关
         executor.run.action = undefined
