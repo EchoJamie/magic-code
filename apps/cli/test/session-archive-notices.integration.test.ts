@@ -17,7 +17,7 @@ async function until(predicate: () => boolean) {
   expect(predicate()).toBe(true)
 }
 
-async function fixture() {
+async function fixture(deps: { pendingRefs?: () => readonly string[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'u123-engine-'))
   const magic = resolveMagicHome({}, root)
   const paths = runPathsOf(magic, tmpdir())
@@ -32,6 +32,23 @@ async function fixture() {
       agentLink.onMessage(message => {
         commands.push(message)
         if (message.t === 'snapshot') agentLink.send({ t: 'snapshot', seq: message.seq, snapshot: { watermark: 0, turnOpen: false, tools: [] } })
+        if (message.t === 'collaboration.wake') {
+          // 与真实执行者同构：wake 后从共享账本读 pending（正文以账本为准），请求 dequeue。
+          const session = request.session
+          const refs = deps.pendingRefs?.() ?? store.serviceFor(session).inputs.list()
+            .filter(row => row.state === 'pending').map(row => row.ref)
+          agentLink.send({ t: 'collaboration.request', requestId: `u123-consume-${commands.length}`, request: { action: 'dequeue', operationId: `op:dequeue-${commands.length}`, refs, at: Date.now() } })
+        }
+        if (message.t === 'collaboration.reply' && message.reply.ok) {
+          const dequeued = (message.reply as { readonly value?: { readonly dequeued?: readonly string[] } }).value?.dequeued ?? []
+          for (const ref of dequeued) {
+            const records = store.serviceFor(request.session)
+            const row = records.inputs.get(ref)
+            if (row !== undefined) records.inputs.consume(ref, row.revision, { kind: 'user', content: { text: row.input.text }, at: Date.now() })
+          }
+          const consumed = (message.reply as { readonly value?: readonly { readonly messageId: string }[] }).value ?? []
+          if (consumed.length > 0) agentLink.send({ t: 'collaboration.request', requestId: `u123-include-${message.requestId}`, request: { action: 'markIncluded', operationId: `op:include-${message.requestId}`, messageIds: consumed.map(item => item.messageId), at: Date.now() } })
+        }
         if (message.t === 'bye') for (const end of endings) end(message.why)
       })
       launches.push({ request, link: agentLink })
@@ -122,10 +139,10 @@ test('归档先受理：广播只读、拒输入与普通接回、只读重连�
 })
 
 test('输入先受理：启动与投递消费间隙都拒归档，结束后才归档；批量独立核定和旧实例拒写', async () => {
-  const f = await fixture()
+  const events: KernelEvent[] = []
+  const f = await fixture({ pendingRefs: () => ['accepted-first'] })
   try {
     const client = await f.connect()
-    const events: KernelEvent[] = []
     client.onEvent(event => events.push(event))
     client.send({ type: 'input.submit', text: '先受理', ref: 'accepted-first' })
     client.send({ type: 'session.archive', session: 'a' })
@@ -134,8 +151,9 @@ test('输入先受理：启动与投递消费间隙都拒归档，结束后才�
     expect(f.launches).toHaveLength(1)
     expect(f.store.isSessionArchived('a')).toBe(false)
     f.ready()
+    await until(() => f.store.serviceFor('a').inputs.list().every(row => row.state === 'consumed' || row.state === 'included'))
     // ready 帧与补发命令都走异步投递（与跨进程同语义）：等两拍到齐再断言。
-    await until(() => f.commands.some(message => message.t === 'cmd' && message.cmd.type === 'input.submit'))
+    await until(() => f.commands.some(message => message.t === 'collaboration.wake'))
     // 执行者已收到命令但尚未发 turn.start；不能借此间隙归档。
     expect((await f.manage([{ session: 'a', action: 'archive' }, { session: 'b', action: 'archive' }])).results.map(result => result.ok)).toEqual([false, true])
     expect((await f.manage([{ session: 'b', action: 'restore' }], 'old-instance')).results[0]?.ok).toBe(false)
@@ -143,6 +161,8 @@ test('输入先受理：启动与投递消费间隙都拒归档，结束后才�
     f.event('a', 'turn.start', {})
     f.event('a', 'turn.end', { reason: 'aborted' })
     f.event('a', 'agent.state', { state: 'waiting' })
+    const agentA = f.store.collaboration.agentForSession('a')?.agentId ?? 'a'
+    void agentA
     expect((await f.manage([{ session: 'a', action: 'archive' }])).results[0]?.ok).toBe(true)
     expect(f.store.isSessionArchived('a')).toBe(true)
   } finally { await f.close() }
@@ -184,6 +204,7 @@ test('两类通知保留长原文、换行及组合字符，不在显示前生�
     client.send({ type: 'input.submit', text: '开始' })
     await until(() => f.launches.length === 1)
     f.ready()
+    await until(() => f.store.serviceFor('a').inputs.list().every(row => row.state === 'consumed' || row.state === 'included'))
     const text = `第一行\n  ${'保留原文 👩🏽‍💻 e\u0301 '.repeat(100)}\n最后一行：关键说明`
     f.event('a', 'turn.start', {})
     const entry = f.store.serviceFor('a').appendEntry({ kind: 'assistant', content: { text }, at: Date.now() })
@@ -210,6 +231,7 @@ test('当前通知取真实回复、替换旧来源；新轮清掉旧呈现，�
     client.send({ type: 'input.submit', text: '开始', ref: 'input' })
     await until(() => f.launches.length === 1)
     f.ready()
+    await until(() => f.store.serviceFor('a').inputs.list().every(row => row.state === 'consumed' || row.state === 'included'))
     f.event('a', 'turn.start', {})
     const entry = f.store.serviceFor('a').appendEntry({ kind: 'assistant', content: { text: '这里是本轮真实答复。' }, at: Date.now() })
     f.event('a', 'message.assistant', { entry })
@@ -297,6 +319,7 @@ test('普通目录当前关注优先，归档目录按内容时间；开放协�
     client.send({ type: 'input.submit', text: '开始协作' })
     await until(() => f.launches.length === 1)
     f.ready()
+    await until(() => f.store.serviceFor('a').inputs.list().every(row => row.state === 'consumed' || row.state === 'included'))
     const records = f.store.collaboration
     const model = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'cantrip' as const, provider: 'test', model: 'test' }
     const origin = { sessionId: 'a', entryId: f.store.serviceFor('a').appendEntry({ kind: 'user', content: { text: '独立协调' }, at: Date.now() }) }
