@@ -123,6 +123,10 @@ export function createNativeServer(options: NativeServerOptions) {
           engineStops.set(message.request, { signature, result })
           link.send({ t: 'native.engine.result', request: message.request, phase: 'accepted' })
           void result.then(response => link.send(response))
+          // **落定即摘除**（P1 修复）：去重只服务在途窗口（同 id 重放回执）；
+          // 落定后重发的同名请求走新流程——engineStop 幂等（beginStop 有 in-flight 闸），
+          // 不摘除则 Map 按停止请求数无界增长。
+          void result.finally(() => { engineStops.delete(message.request) })
           break
         }
         case 'native.runtime.read': case 'native.runtime.reconnect': {
@@ -241,9 +245,10 @@ export function createNativeServer(options: NativeServerOptions) {
             if (closed) return
             const valid = new Set(works.filter(work => !work.archived && !work.terminalOpen && work.currentNotice?.unread).map(work => work.currentNotice!.id))
             options.store.attention.markDelivered(idsOf(message.ids).filter(id => valid.has(id)))
+            // 只在**送达落账之后**推投影（P1 修复：此前在等待读数前就同步推了一次旧状态）；
+            // 读数失败也要推一次——否则「已读」事实丢失且无人知情。
             changed()
-          })
-          changed()
+          }).catch(() => { if (!closed) changed() })
           break
         case 'native.inspect':
           if (typeof message.session !== 'string' || typeof message.request !== 'string') break
@@ -276,6 +281,9 @@ export function createNativeServer(options: NativeServerOptions) {
           options.stop(message.session, message.gen, (phase, note) => {
             stop.response = { t: 'native.stopped', request: message.request, session: message.session, phase, ...(note === undefined ? {} : { note }) }
             for (const observer of stop.links) observer.send(stop.response)
+            // **终局即摘除**（P1 修复）：去重与回执重放只服务在途窗口；终局后重发的同名
+            // 请求走新流程——停止幂等（重复停止照收），不摘除则 Map 无界增长。
+            if (phase !== 'accepted') stops.delete(message.request)
           })
           break
         }
