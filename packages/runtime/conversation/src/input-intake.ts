@@ -87,6 +87,7 @@ export async function prepareInput(
       const refusal = runtime.collaboration?.admit()
       if (refusal !== undefined) { refuse(runtime, input, refusal); return undefined }
       // 输入先落记录时就把所属轮定下来；事件仍按「输入先于轮」铸（`message.user` 的 turn 为 null）。
+      const allocatedTurn = runtime.turn === undefined
       runtime.turn ??= runtime.nextTurnId()
       const entryId = await appendUserEntry(entryLogOf(runtime), input.text, {
         ...(input.ref === undefined ? {} : {ref:input.ref, revision:stored!.revision}),
@@ -104,8 +105,13 @@ export async function prepareInput(
       acceptedEntry = entryId
       runtime.sink.emit(runtime.stamper.stamp('message.user', { entry: entryId }))
       if(input.ref!==undefined)runtime.sink.emit(runtime.stamper.stamp('input.pending',{inputs:pendingViews(runtime.records.inputs.list())}))
+      // **共同约束的发布要真等**（P0 修复）：`userInput` 经帧的写现在返回 Promise——
+      // 失败在这里上抛，走 refuse（回执 ok:false）与 error 事件。输入此刻已被消费
+      // （`inputs.fail` 对 consumed 是空操作），条目照旧保留（如实保留已落账原文）；
+      // 但要把刚占的轮号还回去——脏 `runtime.turn` 会让下一个交代挂在一条从没跑过的轮上。
       try { await accepted?.(entryId) }
       catch (error) {
+        if (allocatedTurn) runtime.turn = undefined
         refuse(runtime, input, `输入已保存，但共同补充未能发布（${messageOf(error)}）；未继续执行，原稿保留`)
         reportError(runtime, error)
         return undefined

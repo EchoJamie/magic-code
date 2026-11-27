@@ -10,8 +10,9 @@ export type CollaborationBoundary = {
   admit(call?: ToolCall): string | undefined
   /** 只在真正发出模型请求时记录带入，不能将消费冒称已带入。 */
   requested(messageIds?: readonly number[]): void
-  /** 经原输入材料链路落下的真实用户补充。 */
-  userInput?(entry: RecordId, shared: boolean): void
+  /** 经原输入材料链路落下的真实用户补充。**失败上抛**（Promise 拒绝）——
+   * 消费方据以拒收这一条，不把「没发布出去」当成已收下。 */
+  userInput?(entry: RecordId, shared: boolean): void | Promise<void>
 }
 
 export const COLLABORATION_HINT = '小事直接做；确有可独立分出的部分，可以说一声要分头做。'

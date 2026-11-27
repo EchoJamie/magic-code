@@ -148,7 +148,7 @@ export function createCollaborationBoundary(input: {
       }
       input.changed()
     },
-    userInput(entryId, shared) {
+    async userInput(entryId, shared) {
       if (!shared) return
       const state = binding()
       if (state === undefined) throw new Error('当前会话尚未展开协作')
@@ -157,7 +157,9 @@ export function createCollaborationBoundary(input: {
         source, body: [{ kind: 'entry', ref: source }], at: input.now() } as import('@magic/contracts').CollaborationRequest
       if (input.write !== undefined) {
         // **约束写经帧**（T2.2）——用户来源的事实写，await 兑现（失败上抛，消费方配对失败）。
-        void writeViaFrame(request)
+        // ⚠️ **不能 void**（P0 修复）：丢掉 Promise 会让发布失败变成未处理的异步拒绝，
+        // 消费方的 try/catch 永远接不到，输入却被当成已收下。
+        await writeViaFrame(request)
       } else {
         records.publishConstraint(state.self.agentId, {
           operationId: `user:${input.session}:${entryId}`,
