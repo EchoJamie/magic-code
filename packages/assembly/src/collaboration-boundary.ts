@@ -179,7 +179,6 @@ export function createCollaborationBoundary(input: {
       if (request.action === 'list') {
         const list = value as { self: AgentIdentity; members: readonly AgentIdentity[]; collaboration?: Collaboration; delegations?: readonly Delegation[] }
         value = { ...list, self: await projectAgent(list.self, provided), members: await Promise.all(list.members.map(agent => projectAgent(agent, provided))),
-          ...(list.collaboration === undefined ? {} : { collaboration: { ...list.collaboration, reason: await description(list.collaboration.reason, list.collaboration.reasonFrom, provided) } }),
           ...(list.delegations === undefined ? {} : { delegations: await Promise.all(list.delegations.map(d => projectDelegation(d, provided))) }) }
       } else if (request.action === 'spawn') {
         const spawned = value as { agent: AgentIdentity; delegation: Delegation }

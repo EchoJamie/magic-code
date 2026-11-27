@@ -25,6 +25,7 @@ import type {
   RecordId,
 } from '@magic/contracts'
 import { createRecordsStore, readSessionSummary } from '../src/index.ts'
+import { SCHEMA_VERSION } from '../src/schema.ts'
 import {
   databasePathOf,
   hasTildeDir,
@@ -208,7 +209,7 @@ describe('判据 4 · schema（结构 · 重开续写）', () => {
     } finally { removeDataDir(dir) }
   })
 
-  test('新库可重开续写，schema_version 保持 4', async () => {
+  test('新库可重开续写，schema_version 保持 5', async () => {
     const dir = tempDataDir()
     try {
       const first = createRecordsStore({ dataDir: dir, workspace: ROOTS })
@@ -226,7 +227,7 @@ describe('判据 4 · schema（结构 · 重开续写）', () => {
 
       const snapshot = new Database(databasePathOf(dir), { readonly: true })
       try {
-        expect(snapshot.query("SELECT value FROM records_meta WHERE key='schema_version'").get()).toEqual({ value: '4' })
+        expect(snapshot.query("SELECT value FROM records_meta WHERE key='schema_version'").get()).toEqual({ value: SCHEMA_VERSION })
       } finally { snapshot.close() }
       const again = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       try {
@@ -236,7 +237,7 @@ describe('判据 4 · schema（结构 · 重开续写）', () => {
       } finally { again.close() }
     } finally { removeDataDir(dir) }
   })
-  test('新库包含 schema v4 的记录、执行与账本表，并写入 schema_version=4', () => {
+  test('新库包含 schema v5 的记录、执行与账本表，并写入 schema_version=5', () => {
     const dir = tempDataDir()
     try {
       const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
@@ -262,7 +263,7 @@ describe('判据 4 · schema（结构 · 重开续写）', () => {
           'records_meta', 'run_journal', 'runs', 'sessions', 'steps', 'turns',
         ])
         expect(db.query<{ value: string }, []>("SELECT value FROM records_meta WHERE key='schema_version'").get()).toEqual({
-          value: '4',
+          value: SCHEMA_VERSION,
         })
         expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()).toEqual({
           user_version: 0,

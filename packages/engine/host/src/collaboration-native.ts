@@ -83,17 +83,16 @@ export type MemberRowShape = {
 /**
  * **成员格的归并语义**（唯一实现，两处共用）——TUI 的 collaboration.view 与 App 的
  * native 投影对同一成员格必须给出同一句话（P12/P25）。执行在飞（active execution）
- * 而行已 idle/stopped，或 reachability suspended，或行缺席 ⇒ unknown（降级）。
+ * 而行已 idle/stopped，或行缺席 ⇒ unknown（降级）。
  */
 export function mergeMemberState(
-  member: AgentIdentity,
   row: MemberRowShape | undefined,
   execution: ExecutionAdmission | undefined,
 ): { state: import('@magic/contracts').RunState; action?: string; reason?: string } {
-  const unknown = row === undefined || member.reachability === 'suspended'
+  const unknown = row === undefined
     || (execution !== undefined && ['idle', 'stopped'].includes(row.state))
   if (unknown) {
-    return { state: 'unknown', reason: execution?.reason ?? (member.reachability === 'suspended' ? '成员连接待核实' : '成员状态待核实') }
+    return { state: 'unknown', reason: execution?.reason ?? '成员状态待核实' }
   }
   return {
     state: row.state,
@@ -129,7 +128,6 @@ function mergeGroup(group: CollaborationNativeGroup, bySession: ReadonlyMap<Sess
   const awaitingReceipt = pending.find(one => one.state === 'delivered' && one.deliveryMessageId !== undefined && one.receivedAt === undefined)
   const awaitReason = awaitingReceipt === undefined ? undefined
     : deliveryAwaitText(awaitingReceipt.deliveredAt ?? awaitingReceipt.at, options?.now, options?.ackTimeoutMs)
-  const open = collaboration.state === 'open' || collaboration.state === 'closing'
   const current = ['unknown', 'stopping', 'running'].flatMap(state => rows.filter(row => row.state === state))[0]
   const unconfirmed = active.find(execution => {
     const member = members.find(member => member.agentId === execution.agentId)
@@ -138,27 +136,21 @@ function mergeGroup(group: CollaborationNativeGroup, bySession: ReadonlyMap<Sess
   })
   const cancelling = active.find(execution => execution.state === 'cancel-requested')
   let status: Pick<NativeWork, 'state' | 'since' | 'affected' | 'action' | 'reason'>
-  if (open && coordinator?.reachability === 'suspended') {
-    status = { state: 'unknown', affected: true, since: rootWork?.since ?? collaboration.at, reason: '协调承接待核实',
-      ...(current?.action === undefined ? {} : { action: memberDetail(current.session, current.action) }) }
-  } else if (current?.state === 'unknown') {
+  if (current?.state === 'unknown') {
     status = { state: 'unknown', affected: true, since: current.since,
       reason: memberDetail(current.session, current.reason ?? '执行状态待核实') }
   } else if (unconfirmed !== undefined) {
     status = { state: 'unknown', affected: true, since: unconfirmed.cancelledAt ?? unconfirmed.at,
       reason: agentDetail(unconfirmed.agentId, unconfirmed.reason ?? '执行收尾待核实') }
-  } else if (current?.state === 'stopping' || cancelling !== undefined || (collaboration.state === 'stopped' && current !== undefined)) {
+  } else if (current?.state === 'stopping' || cancelling !== undefined) {
     status = { state: 'stopping', affected: true, since: cancelling?.cancelledAt ?? current?.since ?? collaboration.at,
-      reason: collaboration.reason ?? cancelling?.reason ?? current?.reason ?? '等待成员退出' }
+      reason: cancelling?.reason ?? current?.reason ?? '等待成员退出' }
   } else if (current !== undefined) {
     status = { state: current.state, affected: true, since: current.since,
       ...(current.action === undefined ? {} : { action: memberDetail(current.session, current.action) }),
       ...(current.reason === undefined ? {} : { reason: memberDetail(current.session, current.reason) }) }
   } else if (collaboration.state === 'closed') {
     status = { state: 'idle', affected: false, since: rootWork?.since ?? collaboration.at, reason: '已收尾' }
-  } else if (collaboration.state === 'stopped') {
-    status = { state: 'stopped', affected: false, since: rootWork?.since ?? collaboration.at,
-      ...(collaboration.reason === undefined ? {} : { reason: collaboration.reason }) }
   } else {
     status = { state: pending.length > 0 || collaboration.state === 'closing' ? 'idle' : rootWork?.state ?? 'idle',
       affected: pending.length > 0 || collaboration.state === 'closing',
@@ -176,7 +168,7 @@ function mergeGroup(group: CollaborationNativeGroup, bySession: ReadonlyMap<Sess
     members: members.map(member => {
       const row = bySession.get(member.sessionId)
       const execution = active.find(one => one.agentId === member.agentId)
-      const merged = mergeMemberState(member, row, execution)
+      const merged = mergeMemberState(row, execution)
       return {
         session: member.sessionId, name: member.name,
         ...merged,

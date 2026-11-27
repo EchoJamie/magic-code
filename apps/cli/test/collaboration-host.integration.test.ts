@@ -60,7 +60,9 @@ test('真实宿主退出再开：target 接回原工作，只读不执行；明�
     await f.wait('旧客户端收到宿主关闭', () => client.closed)
     expect(f.manager.executors()).toEqual([])
     expect(f.agentExits).toHaveLength(2)
-    expect(f.store.collaboration.getCollaboration(work.collaborationId)?.state).toBe('stopped')
+    // 停止不写状态：协作保持 open、成员保持 active——被掐断的是运行与未收委派。
+    expect(f.store.collaboration.getCollaboration(work.collaborationId)?.state).toBe('open')
+    expect(f.store.collaboration.getAgent(member.agentId)?.reachability).toBe('active')
     expect(f.store.collaboration.listExecutions(work.collaborationId).every(call => call.state === 'finished')).toBe(true)
 
     const launch = createAgentLauncher()
@@ -77,22 +79,22 @@ test('真实宿主退出再开：target 接回原工作，只读不执行；明�
     client.send({ type: 'history.read', session: origin })
     client.send({ type: 'collaboration.read' })
     lateMember.release()
-    await f.wait('只读历史与协作停点经新连接返回', () => events.some(event => event.kind === 'session.history' && event.session === origin && event.data.done)
-      && events.some(event => event.kind === 'collaboration.view' && event.data.originSession === origin && event.data.collaboration?.state === 'stopped'))
+    await f.wait('只读历史与协作记录经新连接返回', () => events.some(event => event.kind === 'session.history' && event.session === origin && event.data.done)
+      && events.some(event => event.kind === 'collaboration.view' && event.data.originSession === origin && event.data.collaboration?.state === 'open'))
     expect(reopened.executors()).toEqual([])
     expect(f.requests()).toHaveLength(2)
     expect(f.requests('member-model')).toHaveLength(2)
-    expect(f.store.collaboration.getCollaboration(work.collaborationId)?.state).toBe('stopped')
-    expect(f.store.collaboration.getAgent(member.agentId)?.reachability).toBe('historical')
+    expect(f.store.collaboration.getCollaboration(work.collaborationId)?.state).toBe('open')
+    expect(f.store.collaboration.getAgent(member.agentId)?.reachability).toBe('active')
 
-    // **resume 只切界面**（2026-11-24 裁定）：不发请求、不复活成员、协作仍停止——
-    // 继续一件已停止的工作靠直接打字（新一代接管原工作），不需要任何「继续」入口。
+    // **resume 只切界面**（2026-11-24 裁定）：不发请求、不复活成员、协作状态原样——
+    // 继续一件已停的工作靠直接打字（新一代接管原工作），不需要任何「继续」入口。
     client.send({ type: 'collaboration.resume' })
     expect(reopened.executors()).toEqual([])
     expect(f.requests()).toHaveLength(2)
     expect(f.requests('member-model')).toHaveLength(2)
-    expect(f.store.collaboration.getCollaboration(work.collaborationId)?.state).toBe('stopped')
-    expect(f.store.collaboration.getAgent(member.agentId)?.reachability).toBe('historical')
+    expect(f.store.collaboration.getCollaboration(work.collaborationId)?.state).toBe('open')
+    expect(f.store.collaboration.getAgent(member.agentId)?.reachability).toBe('active')
 
     const input = 'REOPEN_EXPLICIT_INPUT：继续原工作核对，不另开会话。'
     client.send({ type: 'input.submit', text: input, ref: 'reopen-input' })

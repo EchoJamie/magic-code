@@ -41,7 +41,6 @@ export function memberState(member: CollaborationMemberView): string {
     if (merged === 'stopping') return '正在停止，收尾待确认'
     if (merged === 'waiting') return `需要你：${member.merged?.action ?? '等你定夺'}`
   }
-  if (member.merged === undefined && member.agent.reachability === 'suspended') return '执行中断，待处理'
   if (member.delegation?.state === 'clarification') return `需要澄清：${member.delegation.reason ?? member.delegation.scope}`
   if (member.merged === undefined && member.runtime?.backgroundWaiting) return '等待后台结果'
   if (member.merged === undefined && member.runtime?.state === 'running') return member.runtime.action ?? '执行中'
@@ -80,7 +79,6 @@ function memberMark(member: CollaborationMemberView): string {
     if (merged === 'unknown') return MARKS.unknown
     if (merged === 'stopped') return MARKS.warn
   }
-  if (member.merged === undefined && member.agent.reachability === 'suspended') return MARKS.error
   if (member.delegation?.state === 'clarification') return MARKS.ring
   if (member.merged === undefined && member.runtime?.backgroundWaiting) return MARKS.dot
   if (member.merged === undefined && member.runtime?.state === 'running') return MARKS.dot
@@ -113,7 +111,6 @@ function memberTone(member: CollaborationMemberView): 'run' | 'wait' | 'danger' 
     if (merged === 'waiting') return 'wait'
     if (merged === 'unknown' || merged === 'stopped') return 'danger'
   }
-  if (member.merged === undefined && member.agent.reachability === 'suspended') return 'danger'
   if (member.delegation?.state === 'clarification') return 'wait'
   if (member.merged === undefined && member.runtime?.backgroundWaiting) return 'run'
   if (member.merged === undefined && member.runtime?.state === 'running') return 'run'
@@ -136,7 +133,7 @@ export function collaborationSummary(snapshot: CollaborationView | undefined): s
   const needs = members.filter((one) => one.pendingDecisions > 0 || one.delegation?.state === 'clarification')
   const waiting = members.filter((one) => one.runtime?.backgroundWaiting).length
   const stopping = members.some((one) => one.runtime?.state === 'stopping')
-  const blocked = members.filter((one) => (one.agent.reachability === 'suspended' && one.delegation?.state !== 'cancelled') || one.runtime?.state === 'unknown' || one.runtime?.lastTurn === 'error' || one.delegation?.state === 'rejected')
+  const blocked = members.filter((one) => one.runtime?.state === 'unknown' || one.runtime?.lastTurn === 'error' || one.delegation?.state === 'rejected')
   const coordinator = members.find((one) => one.agent.agentId === snapshot.collaboration?.coordinatorId)
   const interrupted = coordinator === undefined || coordinator.agent.reachability !== 'active' || coordinator.runtime?.state === 'stopped' || coordinator.runtime?.state === 'unknown' || coordinator.runtime?.lastTurn === 'error'
   const facts = [
@@ -146,7 +143,7 @@ export function collaborationSummary(snapshot: CollaborationView | undefined): s
     running ? `${running} 位执行中` : '',
     waiting ? `${waiting} 位等待结果` : '',
     stopping ? '停止收尾中' : '',
-    state === 'stopped' ? '已请求停止，查看停点' : state === 'closing' ? '正在核对收尾' : '',
+    state === 'closing' ? '正在核对收尾' : '',
   ].filter(Boolean)
   return clean(`${label} · ${facts.join(' · ') || '暂无执行，结果待整合'}`)
 }
@@ -249,7 +246,6 @@ function memberContent(member: CollaborationMemberView): string {
     return member.delegation?.scope ?? ''
   }
   if (member.pendingDecisions > 0) return member.runtime?.action ?? `${member.pendingDecisions} 项`
-  if (member.agent.reachability === 'suspended') return ''
   if (member.delegation?.state === 'clarification') return member.delegation.reason ?? member.delegation.scope
   if (member.runtime?.backgroundWaiting) return `后台 ${member.runtime.background ?? 0} 个`
   if (member.runtime?.state === 'running') return member.runtime.action ?? member.delegation?.scope ?? ''

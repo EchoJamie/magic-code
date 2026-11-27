@@ -202,7 +202,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
         const execution = records.listExecutions(id).find(one => one.agentId === agent.agentId && one.state !== 'finished')
         return { agent, usage: usage[index]!,
           ...(row === undefined ? {} : { runtime: row }),
-          merged: mergeMemberState(agent, row, execution),
+          merged: mergeMemberState(row, execution),
           ...(memberDelegation(agent.agentId) === undefined ? {} : { delegation: memberDelegation(agent.agentId)! }),
           pendingDecisions: host.decisions(agent.sessionId),
         }
@@ -323,7 +323,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
     },
     async recover() {
       // 新宿主先留下旧执行停点，再开放宿主本身；旧协作仍为 stopped。
-      const interruption = '宿主中断，等待用户明确继续'
+      const interruption = '宿主中断'
       records.stop({ kind: 'host' }, interruption, host.now())
       const unfinished: AgentIdentity[] = []
       for (const id of await collaborations()) for (const agent of records.listMembers(id)) {
@@ -339,16 +339,14 @@ export function createManagedCollaboration(host: CollaborationHost) {
     async executorExited(session: string, runId: string, reason: string) {
       const agent = records.agentForSession(session)
       if (agent?.collaborationId === undefined) return
-      // **业务终态判据**（§5 Q6/N2）：不按进程退出方式——看账上是否有未交付的委派、
-      // 未 finished 的 execution。有 ⇒ 挂起待核实（「未完成/丢失」的事实源）；无 ⇒ 历史化。
-      // ⚠️ 只适用于**协作成员**：coordinator 是入口自己，退出是正常收束（新一代接管），
-      // reachability 保持 active，不影响后续准入。
+      // **进程退出看账不看退出方式**（§5 Q6/N2）：账上有未交付的委派或未 finished 的
+      // execution ⇒ 有未完工作；无 ⇒ 正常收束。⚠️ 只适用于**协作成员**：coordinator 是
+      // 入口自己，退出是正常收束（新一代接管），不写任何状态、不影响后续准入。
       const collaboration = records.getCollaboration(agent.collaborationId)
       const isCoordinator = agent.agentId === collaboration?.coordinatorId
-      // **不设挂起态**（直属上司裁定 2026-11-27）：成员失败分两类——工具调用失败在成员
-      // 自己的循环内解决（模型知情并处置，现有设计）；成员自身状态问题（进程死亡/卡死）
-      // 是机制的锅，修机制而不是保存中间态。会话结束 ⇒ 直接反馈主会话（下方 attention），
-      // 成员结局记为终局（未完成/完成），不设「待核实/suspended」中间态阻塞推进。
+      // **停止运行不写成员状态**（直属上司裁定 2026-11-27）：进程死亡只是运行事实——
+      // 成员身份保持 active 可接管（新一轮 spawn/consume 账本 pending 自然接管旧代遗留
+      // 待办）；「未完成」由账面委派/执行状态承载，入口经下方 attention 知情。
       let unfinishedWork = false
       if (!isCoordinator) {
         // 「已交付待确认」是协调者侧的认收状态（N9 ackTimeout 兜底），不是成员未完成——
@@ -356,7 +354,6 @@ export function createManagedCollaboration(host: CollaborationHost) {
         unfinishedWork =
           records.listDelegations(agent.collaborationId).some(d => d.assigneeId === agent.agentId && ['queued', 'clarification', 'accepted'].includes(d.state)) ||
           records.listExecutions(agent.collaborationId).some(e => e.agentId === agent.agentId && e.state !== 'finished')
-        records.setReachability(agent.agentId, 'historical')
       }
       for (const execution of records.listExecutions(agent.collaborationId)) {
         if (execution.agentId === agent.agentId && execution.runId === runId && execution.state !== 'finished') records.finishExecution(execution.operationId, reason)

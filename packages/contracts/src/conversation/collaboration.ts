@@ -4,7 +4,8 @@ import type { ModelChoice, ReasoningSetting } from '../shared/model.ts'
 
 export type AgentModelConfig = import('../shared/model.ts').ModelSource & { readonly choice: ModelChoice; readonly provider: string; readonly model: string; readonly reasoning?: ReasoningSetting }
 export type EntryReference = { readonly sessionId: SessionId; readonly entryId: RecordId }
-export type AgentReachability = 'active' | 'suspended' | 'historical'
+/** 成员两态：active（在册可接活）与 historical（归档终局的历史记录）。停止运行不写成员状态；historical 只发生在归档。 */
+export type AgentReachability = 'active' | 'historical'
 export type AgentIdentity = {
   readonly agentId: AgentId
   readonly sessionId: SessionId
@@ -21,14 +22,13 @@ export type AgentIdentity = {
   readonly at: Timestamp
 }
 export type Collaboration = {
-  readonly reasonFrom?: EntryReference
   readonly collaborationId: CollaborationId
   readonly originSessionId: SessionId
   readonly origin: EntryReference
   readonly coordinatorId: AgentId
   readonly defaultModel: AgentModelConfig
-  readonly state: 'open' | 'closing' | 'stopped' | 'closed'
-  readonly reason?: string
+/** 协作只有进行中的两态与归档终局：停止只是掐断运行的动作，不设「已停止」停靠态。 */
+  readonly state: 'open' | 'closing' | 'closed'
   readonly at: Timestamp
 }
 export type MessagePart =
@@ -205,8 +205,8 @@ export interface CollaborationRecords {
   finishExecution(operationId: OperationId, reason?: string): void
   listExecutions(collaborationId: CollaborationId): readonly ExecutionAdmission[]
   stop(scope: CollaborationScope, reason: string, at: Timestamp, generatedFrom?: EntryReference): StopResult
-  /** 显式用户继续；只开放指定范围，不清除旧执行的取消事实，不自动接受排队委派。 */
-  resume(scope: CollaborationScope, at: Timestamp): void
+  /** 清除宿主停机运行闸（引擎恢复时调用）；工作不因停止改写状态，无「按范围继续」语义。 */
+  resume(scope: { readonly kind: 'host' }, at: Timestamp): void
   beginClosing(collaborationId: CollaborationId, at: Timestamp): void
   closeCollaboration(collaborationId: CollaborationId, at: Timestamp): { readonly closed: boolean; readonly blockers: readonly string[] }
   operation(operationId: OperationId): OperationResult | undefined

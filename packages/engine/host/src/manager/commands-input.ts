@@ -67,15 +67,12 @@ export function installInputCommands(ctx: ManagerContext): {
       if (command.action === 'retry') {
         if (row === undefined || row.revision !== command.revision) note = '输入已消费或已改变，未重试'
         else if (row.state !== 'failed' && row.state !== 'rejected') note = '只有失败或被拒的输入才能重试——待办里的直接点「立即消费」'
-        else if (work?.state === 'stopped') note = '这份工作已停止，请先明确继续工作'
         else if (!inputs.retry(command.ref, row.revision)) note = '输入已消费或已改变，未重试'
         else note = row.state === 'failed'
           ? (row.failedFrom === 'executing' ? '已重试——它可能已执行过一部分，重新送达' : '已重试，重新送达')
           : '已重新受理，重新送达'
       } else if (row?.state !== 'pending' || row.revision !== command.revision) {
         note = '输入已消费或已改变，未继续'
-      } else if (work?.state === 'stopped') {
-        note = '这份工作已停止，请先明确继续工作'
       }
       // 送达（retry 成功与 consume/continue 同路）：有活执行器直送，否则起一代。
       if (note === undefined) {

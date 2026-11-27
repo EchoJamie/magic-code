@@ -29,7 +29,7 @@ for (const completed of [false, true]) test(`宿主恢复 ${completed ? '已落�
     await host.recover()
     const delivery = r.getDelegation(spawned.delegation.delegationId)!
     expect(delivery.deliveryMessageId).toBeDefined()
-    expect(r.getCollaboration(work.collaborationId)?.state).toBe('stopped')
+    expect(r.getCollaboration(work.collaborationId)?.state).toBe('open')
     expect(starts).toBe(0); expect(wakes).toBe(0)
     const msg = r.readMessage(root.agentId, delivery.deliveryMessageId!)!
     expect(msg.body.some(part => part.kind === 'entry')).toBe(completed)

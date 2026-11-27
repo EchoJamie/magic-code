@@ -192,7 +192,7 @@ for (const whole of [false, true]) {
       const second = await f.openWindow() // 再走一次真实重连投影，不能由未到达响应制造假过。
       expect(second.shell.getView().collaboration?.members.find(one => one.agent.purpose === 'consultation')?.delegation?.state).toBe('cancelled')
       expect(f.requests()).toHaveLength(before)
-      expect(f.collaboration()?.state).toBe(whole ? 'stopped' : 'open')
+      expect(f.collaboration()?.state).toBe('open')
       expect(f.store.collaboration.listExecutions(f.collaboration()!.collaborationId).filter(one => one.agentId === f.member()!.agentId).every(one => one.state === 'finished')).toBe(true)
     } finally { pending.release(); await f.close() }
   }, 15000)

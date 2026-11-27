@@ -50,12 +50,16 @@ async function ready(f: StopRuntime): Promise<readonly OwnedProcess[]> {
 }
 
 async function stopped(f: StopRuntime) {
-  await f.wait('整体停止准入墓碑已持久生效', () => f.collaboration()?.state === 'stopped')
+  // 停止的持久事实是「委派全部作废」——协作与成员状态不被改写（停止只掐运行）。
+  await f.wait('整体停止已持久生效（委派作废）', () => f.delegations().length > 0 && f.delegations().every(one => one.state === 'cancelled'))
   const work = f.collaboration()!
+  expect(work.state).toBe('open')
   const order = f.mark('stop-persisted', { collaboration: work, delegations: f.delegations() })
   for (const agent of f.members()) {
     const delegation = f.delegations().find(one => one.assigneeId === agent.agentId)
-    expect(f.store.collaboration.checkAdmission(agent.agentId, delegation?.delegationId, 'work').allowed).toBe(false)
+    // 停止后成员准入关闭（委派作废）；协调者无委派——继续＝新一代正常准入，不再有状态墙。
+    if (delegation === undefined) continue
+    expect(f.store.collaboration.checkAdmission(agent.agentId, delegation.delegationId, 'work').allowed).toBe(false)
   }
   expect(f.delegations().every(one => one.state === 'cancelled')).toBe(true)
   return { order, calls: f.calls.length, workExecutions: f.store.collaboration.listExecutions(work.collaborationId).filter(one => one.mode === 'work').map(one => one.operationId) }
@@ -90,7 +94,7 @@ async function reclaimed(f: StopRuntime, owned: readonly OwnedProcess[], atStop:
     expect(persisted.kind).toBeDefined()
     expect(persisted.why).toBeDefined()
   }
-  expect(work.state).toBe('stopped')
+  expect(work.state).toBe('open')
   expect(f.delegations().every(one => one.state === 'cancelled' && one.receivedAt === undefined)).toBe(true)
   expect(f.store.collaboration.listExecutions(work.collaborationId).every(one => one.state === 'finished')).toBe(true)
   expect(f.store.collaboration.listExecutions(work.collaborationId).filter(one => one.mode === 'work').map(one => one.operationId)).toEqual(atStop.workExecutions)
@@ -100,7 +104,7 @@ async function reclaimed(f: StopRuntime, owned: readonly OwnedProcess[], atStop:
   for (const member of queries) {
     const start = f.events.length
     f.client.send({ type: 'collaboration.read', ...(member === undefined ? {} : { member }) })
-    await f.wait('停止后的协作视图', () => f.events.slice(start).some(one => one.kind === 'collaboration.view' && one.data.collaboration?.state === 'stopped'))
+    await f.wait('停止后的协作视图', () => f.events.slice(start).some(one => one.kind === 'collaboration.view' && one.data.collaboration?.state === 'open'))
     const event = f.events.slice(start).find(one => one.kind === 'collaboration.view')
     if (event?.kind !== 'collaboration.view') throw new Error('没有协作视图')
     // 当前会话自身（这里是入口）不会被当成要查看的成员；协作视图也不携带 entries。
@@ -128,7 +132,8 @@ async function reclaimed(f: StopRuntime, owned: readonly OwnedProcess[], atStop:
   expect(f.calls).toHaveLength(atStop.calls)
   expect({ calls: f.calls.length, launches: f.launches.length }).toEqual(before)
   expect(f.manager.executors()).toEqual([])
-  expect(f.commands.filter(one => one.type === 'collaboration.stop')).toEqual([{ type: 'collaboration.stop' }])
+  // 停止走 Ctrl+C → client.stop 通道（scope 'run'，engine 对入口会话升级为整件）；shell 不再有协作停止命令。
+  expect(f.stops).toEqual([{ session: work.originSessionId, scope: 'run' }])
   expect(f.errors).toEqual([])
   f.mark('stop-verified-before-cleanup', { ownedGone: owned.map(one => ({ ...one, leaderAlive: alive(one.pgid), groupAlive: alive(-one.pgid) })), snapshot: await f.snapshot() })
 }
@@ -141,7 +146,7 @@ test('整体停止与成员后代派生竞争：按持久准入结果回收全�
   })
   try {
     const owned = await ready(f)
-    response.release(); f.pick('stop-work')
+    response.release(); f.pick('stop')
     const stop = await stopped(f)
     const descendant = f.members().find(one => one.model.model === 'descendant-model')
     if (descendant !== undefined) {
@@ -200,8 +205,8 @@ test('后代已登记、真实启动并持有后台进程后整体 stop：入口
       expect(alive(-one.pgid)).toBe(true)
     }
     const beforeStop = f.mark('descendant-started-before-stop', { descendant, delegation: childDelegation(), launch: { ...launched }, owned })
-    expect(f.commands.filter(one => one.type === 'collaboration.stop')).toEqual([])
-    f.pick('stop-work')
+    expect(f.stops).toEqual([])
+    f.pick('stop')
     const stop = await stopped(f)
     expect(beforeStop).toBeLessThan(stop.order)
     descendantResponse.release()
@@ -221,7 +226,7 @@ test('整体 stop 已持久生效后返回旧 HTTP deliver 响应：不继续执
   try {
     const owned = await ready(f)
     expect(f.packets.some(one => one.message.t === 'collaboration.request' && one.message.request.action === 'deliver')).toBe(false)
-    f.pick('stop-work')
+    f.pick('stop')
     const stop = await stopped(f)
     response.release()
     await f.wait('本地 HTTP 旧响应已释放', () => f.journal.some(one => one.kind === 'http-response-released' && JSON.stringify(one.data).includes('old-http-delivery')))
@@ -258,7 +263,7 @@ test('executor 已发出的交付 RPC 在 stop 后经原通道处理：保存原
     expect(source).toMatchObject({ kind: 'tool-call', payload: { name: 'agent_message' } })
     expect(generatedFrom).toEqual({ sessionId: memberOf(f).sessionId, entryId: source!.id })
     expect(source?.payload && 'args' in source.payload ? source.payload.args : undefined).toEqual(request)
-    f.pick('stop-work')
+    f.pick('stop')
     const stop = await stopped(f)
     expect(packet.order).toBeLessThan(stop.order)
     expect(delegationOf(f).deliveryMessageId).toBeUndefined()

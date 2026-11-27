@@ -40,9 +40,15 @@ export function createSessionManagement(input: {
     if (group !== undefined) {
       if (group.executions.some(e => e.state !== 'finished')) return false
       if (group.collaboration.state === 'open' || group.collaboration.state === 'closing') {
-        if (group.collaboration.state === 'closing' || group.members.some(m => m.reachability === 'suspended')) return false
+        if (group.collaboration.state === 'closing') return false
         if (group.delegations.some(d => !['received', 'rejected', 'cancelled'].includes(d.state) || (d.deliveryMessageId !== undefined && d.receivedAt === undefined))) return false
-        if (group.members.some(member => store.collaboration.inbox(member.agentId).some(
+        // 未读信件只挡「还有活委派的成员」（他们可能回来消费）；委派已作废的成员不会再
+        // 有读者——停止后死工作的未读信件不挡归档（终局资格由账面待办判，不看读指针）。
+        const deadWork = (agentId: string): boolean => {
+          const own = group.delegations.filter(d => d.assigneeId === agentId)
+          return own.length > 0 && own.every(d => d.state === 'cancelled' || d.state === 'rejected')
+        }
+        if (group.members.some(member => !deadWork(member.agentId) && store.collaboration.inbox(member.agentId).some(
           item => item.state === 'pending' && store.collaboration.readMessage(member.agentId, item.messageId)?.purpose !== 'receipt',
         ))) return false
       }

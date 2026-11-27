@@ -76,28 +76,29 @@ test('未展开不显示摘要；入口显示共同补充将送达的成员数�
   expect(currentMember(app.view())?.agent.name).toBe('实现')
 })
 
-test('协调执行者退出后只有 suspended 身份事实，摘要仍明确中断且保留其他成员运行', () => {
+test('协调执行者退出后不写成员状态——身份照常，摘要仍明确其他成员运行', () => {
+  // 停止/退出不写任何成员状态：协调者行没有 runtime 也只是「当前空闲」，不产生待处理残留。
   const snapshot: CollaborationView = { ...collaborationFixture, members: collaborationFixture.members.map(one => one.agent.agentId === 'coordinator'
-    ? { ...one, agent: { ...one.agent, reachability: 'suspended' }, runtime: undefined } : one) }
-  expect(collaborationSummary(snapshot)).toContain('受阻：协调（执行中断，待处理）')
-  expect(collaborationSummary(snapshot)).toContain('协调承接待核实')
+    ? { ...one, runtime: undefined } : one) }
+  const coordinator = snapshot.members.find(one => one.agent.agentId === 'coordinator')!
+  expect(coordinator.agent.reachability).toBe('active')
+  expect(memberState(coordinator)).toBe('当前空闲')
   expect(collaborationSummary(snapshot)).toContain('1 位执行中')
-  const app = collaborationStage()
-  app.spy.emit(event('collaboration.view', snapshot))
-  expect(app.screen()).toContain('执行中断')
 })
 
-test('成员无 runtime 但 suspended 时不能显示当前空闲或仅已接下', () => {
+test('停止后成员记录原样保留：作废委派照实呈现，不出现待处理状态', () => {
   const snapshot: CollaborationView = { ...collaborationFixture, members: collaborationFixture.members.map(one => ({
-    ...one, agent: { ...one.agent, reachability: 'suspended' }, runtime: undefined,
-  })) }
-  for (const member of snapshot.members) expect(memberState(member)).toBe('执行中断，待处理')
-  // 列表行：记号占状态位（▲ 出错），label 只放名字——状态词不上行。
+    ...one, runtime: undefined, delegation: one.delegation === undefined ? undefined : { ...one.delegation, state: 'cancelled', reason: '用户停止' },
+  })), delegations: [] }
+  // 协调者没有委派，就是普通空闲行；成员的作废委派照实说。
+  expect(memberState(snapshot.members.find(one => one.agent.agentId === 'coordinator') ?? snapshot.members[0]!)).toBe('当前空闲')
+  const worker = snapshot.members.find(one => one.agent.agentId === 'worker')!
+  expect(memberState(worker)).toBe('已撤回：用户停止')
+  // 列表行：作废委派的成员行记号 ×（没跑成）＋名字 · 原因；协调者无委派，○（手上没活）。
   for (const row of memberRows(snapshot)) {
-    expect(row.mark).toBe('▲')
-    expect(row.label).toBe(row.value === 'coordinator' ? '协调' : '实现')
+    expect(row.mark).toBe(row.value === 'coordinator' ? '○' : '×')
+    expect(row.label).toBe(row.value === 'coordinator' ? '协调' : '实现 · 用户停止')
   }
-  expect(collaborationSummary(snapshot)).not.toContain('暂无执行，结果待整合')
 })
 
 test('closed 摘要不再把历史拒绝显示为当前受阻，成员原拒绝记录仍可见', () => {
@@ -197,8 +198,8 @@ test('协作列表只保留工作级动作：不再有成员记录／讨论入�
   const dock = app.view().dock
   if (dock.kind !== 'picker') throw new Error('没有协作列表')
   const values = dock.picker.rows.map(row => row.value)
-  expect(values).toEqual(expect.arrayContaining(['worker', 'whole', 'constraints', 'default-model', 'stop-work']))
-  for (const gone of ['records', 'discussions', 'input', 'member-model', 'stop-member']) {
+  expect(values).toEqual(expect.arrayContaining(['worker', 'whole', 'constraints', 'default-model']))
+  for (const gone of ['records', 'discussions', 'input', 'member-model', 'stop-member', 'stop-work']) {
     expect(values).not.toContain(gone)
   }
   expect(dock.picker.reader).toBeUndefined()
@@ -207,7 +208,7 @@ test('协作列表只保留工作级动作：不再有成员记录／讨论入�
   expect(app.view().dock.kind).toBe('input')
 })
 
-test('从子会话仍能执行整件工作动作：共同补充、带入情况、停止整件', () => {
+test('从子会话仍能执行整件工作动作：共同补充、带入情况；整件停止只走 Ctrl+C', () => {
   const app = collaborationStage()
   app.enter()
   app.key('tab')
@@ -223,11 +224,10 @@ test('从子会话仍能执行整件工作动作：共同补充、带入情况�
   expect(dock.picker.reader?.rows.some(row => row.kind === 'output' && row.lines.some(line => line.includes('已带入后续请求')))).toBe(true)
   app.key('escape')
 
-  // 工作级停止仍可发现并可用；子会话里按标准停止键才是局部停止。
+  // 协作面板不再放停止按钮——整件停止的唯一入口是 Ctrl+C 菜单（停止当前工作）。
   const list = app.view().dock
   if (list.kind !== 'picker' || list.picker.source !== 'collaboration') throw new Error('没有回到协作列表')
-  app.pick('stop-work')
-  expect(app.spy.commands.at(-1)).toEqual({ type: 'collaboration.stop' })
+  expect(list.picker.rows.some(row => row.value === 'stop-work')).toBe(false)
 })
 
 test('继续派生仍是平铺展示：行不缩进、不带派生语（嵌套关系在详情里说）', () => {
@@ -501,12 +501,12 @@ test('面板式：按 Tab 切到后台那一屏，页签同构、只换点亮的
   // 两屏页签**同一副样子**：只有 `active` 换了位置
   expect(after.picker.tabs?.map((tab) => tab.label)).toEqual(before.picker.tabs?.map((tab) => tab.label))
 
-  // 不可逆的工作级动作带语义色；成员在跑的那一行标 `run`（状态位走呼吸）
+  // 成员在跑的那一行标 `run`（状态位走呼吸）；工作级动作不再有不可逆按钮（整件停止只走 Ctrl+C）
   stage.key('tab')
   const list = stage.view().dock
   if (list.kind !== 'picker') throw new Error('协作那一屏没打开')
   const rows = new Map(list.picker.rows.map((row) => [row.value, row] as const))
-  expect(rows.get('stop-work')?.tone).toBe('danger')
+  expect(rows.has('stop-work')).toBe(false)
   expect(rows.get('worker')?.tone).toBe('run')
 })
 

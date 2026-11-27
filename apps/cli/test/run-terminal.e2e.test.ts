@@ -943,7 +943,7 @@ describe('停止、后台命令与接着交代（真窗口）', () => {
       await window.key('ctrl+c', { until: { text: '当前任务' }, timeoutMs: 15_000 })
       const menu = await window.capture({ label: '只剩后台命令时的三选' })
       expect(menu.lines.some((line) => line.includes('当前任务仍在运行'))).toBe(true)
-      expect(menu.lines.some((line) => line.includes('停止任务'))).toBe(true)
+      expect(menu.lines.some((line) => line.includes('停止当前工作'))).toBe(true)
       expect(menu.lines.some((line) => line.includes('再按一次 ctrl+c 退出'))).toBe(false)
       // 状态行**左位照旧报「工作中」**（运行事实说这条会话还有活在跑——它没在跑模型、
       // 也没在跑工具，可那条后台命令还站着）；右位此刻归那一屏自己（键位提示）

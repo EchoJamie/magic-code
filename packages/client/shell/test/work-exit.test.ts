@@ -82,10 +82,10 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     const frame = await stage.screen(WIDE)
 
     expect(frame.has('当前任务仍在运行')).toBe(true)
-    // 顺序即设计那张表：停止任务 → 转到后台 → 停止并退出
+    // 顺序即设计那张表：停止当前工作 → 转到后台 → 停止并退出
     const dock = stage.shell.getView().dock
     expect(dock.kind === 'picker' ? dock.picker.rows.map(row => row.label) : []).toEqual([
-      '停止任务',
+      '停止当前工作',
       '转到后台',
       '停止并退出',
     ])
@@ -102,16 +102,16 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     const frame = await stage.screen(WIDE)
 
     expect(frame.has('当前任务仍在运行')).toBe(false) // 屏收了
-    expect(frame.has('停止任务')).toBe(false)
+    expect(frame.has('停止当前工作')).toBe(false)
     expect(stage.stops()).toEqual([]) // 一个动作都没执行
     expect(stage.commands()).toEqual([])
     expect(stage.shell.getView().leaving).toBe(false)
   })
 
-  test('「停止任务」⇒ **走 那条停止通路**（这条会话 · **整体**那一档），界面留下', () => {
+  test('「停止当前工作」⇒ **走 那条停止通路**（这条会话 · **整体**那一档），界面留下', () => {
     const stage = withSession(working())
     stage.press(ARM)
-    stage.press(ENTER) // 默认第一项就是「停止任务」
+    stage.press(ENTER) // 默认第一项就是「停止当前工作」
 
     // ⚠️ **整体那一档**（`run`）——2026-09-26 规划裁决：两项停止**工作范围相同**，
     // 都必须收回这条会话的在途模型、工具**与后台命令**。局部那一档（`turn`）只送一句
@@ -252,7 +252,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
         stage.press(ARM)
         const after = stage.shell.getView().dock
         expect(after.kind === 'picker' ? after.picker.selected : -1).toBe(0)
-        expect(after.kind === 'picker' ? after.picker.rows[0]?.label : '').toBe('停止任务')
+        expect(after.kind === 'picker' ? after.picker.rows[0]?.label : '').toBe('停止当前工作')
       })
     }
 
@@ -423,7 +423,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     expect(stage.stops()).toEqual([]) // 一条停止都不发
     expect(stage.commands()).toEqual([])
     expect(stage.shell.getView().leaving).toBe(false)
-    expect((await stage.screen(WIDE)).has('停止任务')).toBe(false) // 菜单也收了
+    expect((await stage.screen(WIDE)).has('停止当前工作')).toBe(false) // 菜单也收了
   })
 
 })
@@ -625,7 +625,7 @@ describe('连接断了 ⇒ 留在界面如实说', () => {
 
     expect(stage.press(ARM).exit).toBe(false)
     expect(stage.shell.getView().exitArmed).toBe(true)
-    expect((await stage.screen(WIDE)).has('停止任务')).toBe(false)
+    expect((await stage.screen(WIDE)).has('停止当前工作')).toBe(false)
   })
 
   test('正等着走的那一趟（`/exit`）**不放行**，如实说「停止尚未确认」', async () => {

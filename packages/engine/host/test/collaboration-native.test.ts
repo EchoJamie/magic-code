@@ -49,15 +49,13 @@ test('N9 缺省陷阱：不传 options（或只传其一）不判超时——等
 })
 
 test('mergeMemberState：执行在飞而行已停 ⇒ unknown（降级语义唯一实现）', () => {
-  const member = { agentId: 'm1', sessionId: 'member-1', name: '成员', role: 'member', model: MODEL, workspace: [], reachability: 'active' as const, at: 1 }
   const execution = { operationId: 'e1', agentId: 'm1', runId: 'r1', kind: 'model' as const, state: 'running' as const, at: 2 }
-  const merged = mergeMemberStateOf(member, { state: 'stopped', since: 1 }, execution)
+  const merged = mergeMemberStateOf({ state: 'stopped', since: 1 }, execution)
   expect(merged.state).toBe('unknown')
   expect(merged.reason).toBe('成员状态待核实')
 })
 
 function mergeMemberStateOf(
-  member: import('@magic/contracts').AgentIdentity,
   row: import('../src/collaboration-native.ts').MemberRowShape,
   execution: import('@magic/contracts').ExecutionAdmission,
 ) {
@@ -66,5 +64,5 @@ function mergeMemberStateOf(
   void snapshot
   // mergeMemberState 是导出的纯函数——这里直接引用确保签名与降级语义。
   const { mergeMemberState: fn } = require('../src/collaboration-native.ts') as typeof import('../src/collaboration-native.ts')
-  return fn(member, row, execution)
+  return fn(row, execution)
 }

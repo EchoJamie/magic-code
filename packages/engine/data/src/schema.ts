@@ -1,6 +1,10 @@
 /**
  * 记录库 schema——一次建齐；**additive 变更原地迁移，不删不重建**（A3）。
  *
+ * 版本 5（2026-11-27，停止语义重整）：停止运行不再写任何状态——成员不再有挂起值、
+ * 协作不再有 `stopped` 态（进行中 → 归档终局两段式）。旧库残留的 `suspended` 成员值
+ * 归一为 `active`、`stopped` 协作归一为 `open`（用户数据原样保留，A3）。
+ *
  * 版本 4（2026-11-27，边界方案 T0.2）：`inputs` 加 `failed_from`（失败前状态，
  * G3/M4）；`runs` 加阻塞三列 `blocked_kind`/`blocked_by`/`blocked_since`（P33，
  * 重启后计时保留）。v3 → v4 全部是可空新增列，由 `initSchema` 原地 ALTER 补齐、
@@ -14,13 +18,13 @@
  * - `events`：turn_id、step_id、generation；
  * - `inputs`：待提交输入，`turn`、`failed_from`；
  * - `attention_items`：未读/通知；
- * - `records_meta`：schema_version = 4、next_id；
+ * - `records_meta`：schema_version = 5、next_id；
  * - `runs` / `run_journal`：执行状态（含阻塞三列）与恢复索引；
  * - 协作 ledger：ledgers / ledger_members / ledger_entries / ledger_refs。
  */
 import type { Database } from 'bun:sqlite'
 
-export const SCHEMA_VERSION = '4'
+export const SCHEMA_VERSION = '5'
 
 export const SESSIONS_TABLE = 'sessions'
 export const TURNS_TABLE = 'turns'
@@ -267,6 +271,18 @@ function migrateV3toV4(db: Database): void {
     if (columns.has(column)) continue
     db.exec(ddl)
   }
+  db.query(`UPDATE ${META_TABLE} SET value = ? WHERE key = ?`).run('4', SCHEMA_VERSION_KEY)
+}
+
+/** v4 → v5：归一旧库残留——挂起值（已退役）还原为未写状态的原样；stopped 协作同理（停止原因由作废委派承载）。 */
+function migrateV4toV5(db: Database): void {
+  const tables = new Set(
+    db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().map(row => row.name),
+  )
+  if (tables.has('ledger_members')) {
+    db.query("UPDATE ledger_members SET data = json_set(data, '$.reachability', 'active') WHERE json_extract(data, '$.reachability') = 'suspended'").run()
+    db.query("UPDATE ledgers SET data = json_set(json_remove(data, '$.reason', '$.reasonFrom'), '$.state', 'open') WHERE json_extract(data, '$.state') = 'stopped'").run()
+  }
   db.query(`UPDATE ${META_TABLE} SET value = ? WHERE key = ?`).run(SCHEMA_VERSION, SCHEMA_VERSION_KEY)
 }
 
@@ -286,8 +302,12 @@ export function initSchema(db: Database, databasePath: string): void {
       ? db.query<{ value: string }, [string]>(`SELECT value FROM ${META_TABLE} WHERE key = ?`).get(SCHEMA_VERSION_KEY)
       : null
     if (meta?.value === '3') {
-      // v3 → v4：additive 变更原地迁移（A3：用户数据原样保留，不备份不移走）。
+      // v3 → v4 → v5：additive 变更原地迁移（A3：用户数据原样保留，不备份不移走）。
       migrateV3toV4(db)
+      migrateV4toV5(db)
+    } else if (meta?.value === '4') {
+      // v4 → v5：挂起残留值归一（reachability suspended → historical）。
+      migrateV4toV5(db)
     } else if (meta?.value !== SCHEMA_VERSION) {
       throw new Error(`记录库结构不符：需要 schema ${SCHEMA_VERSION}（v3 可原地迁移，请先经 engine 启动引导）；不自动重建：${databasePath}`)
     }

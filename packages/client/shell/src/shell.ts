@@ -1984,8 +1984,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     /**
      * **工作级那几条**——独立成一组（`工作级`），与成员行之间只隔一组头，不画线。
      *
-     * `停止整件工作` 走 `danger`（不可逆：铺不开回收）；`明确继续整件工作` 走 `wait`
-     * （先核对停点）。两处都是「按下去有后果」的，颜色替用户先看一眼。
+     * 停止整件工作的唯一入口是 Ctrl+C 菜单（停止任务＝掐断全部运行）——协作面板不再
+     * 放一个冗余按钮。
      */
     const workRow = (value: string, label: string, meta = '', tone?: 'run' | 'wait' | 'danger' | 'idle') =>
       ({ ...collaborationRow(value, label, meta, tone), group: '工作级' })
@@ -1994,8 +1994,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       ...(snapshot?.collaboration ? [workRow('whole', '回到主会话', '恢复入口草稿；输入只发给入口自己'),
         workRow('broadcast', '向所有成员补充', '共同要求送达相关成员'),
         workRow('constraints', '共同补充的带入情况'),
-        workRow('default-model', '后续派生的默认模型', '按需配置'),
-        workRow('stop-work', '停止整件工作', '覆盖全部成员及继续委派', 'danger')] : []),
+        workRow('default-model', '后续派生的默认模型', '按需配置')] : []),
     ]
     // 从子会话打开时主会话在列表里并预选（Enter 返回）；在主会话时它不出现。
     const preselected = selected ?? (member === undefined ? undefined : snapshot?.collaboration?.coordinatorId)
@@ -2073,10 +2072,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       return
     }
     if (row.value === 'default-model') configureCollaboration()
-    else if (row.value === 'stop-work') {
-      commit(closePicker(view))
-      send({ type: 'collaboration.stop' })
-    } else if (row.value === 'constraints') {
+    else if (row.value === 'constraints') {
       openRecords('constraints', '共同补充 · 带入不代表已遵守', snapshot.constraints.map((constraint, index) => ({
         kind: 'output', key: String(constraint.messageId), lines: [`共同补充 ${index + 1}`, ...constraint.states.map((state) =>
           `${snapshot.members.find((one) => one.agent.agentId === state.agentId)?.agent.name ?? '成员'}：${state.state === 'included' ? '已带入后续请求' : '已接收 / 待带入'}`)],
@@ -2290,6 +2286,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     return state !== undefined && ACTIVE_RUN_STATES.has(state)
   }
 
+  /** **这项工作**还有没有在跑的运行（入口＋全部成员）——「停止当前工作」入口的判据：
+   *  入口轮次已收束而成员仍在跑时，Ctrl+C 仍要给三选——用户要停的是整件工作的所有运行。 */
+  const workInFlight = (): boolean => {
+    if (inFlight()) return true
+    const memberSessions = new Set(view.collaboration?.members.map(one => one.agent.sessionId) ?? [])
+    return view.runs.some(one => memberSessions.has(one.session) && ACTIVE_RUN_STATES.has(one.state))
+  }
+
   /** 那道门的钟（`undefined` ＝ 没挂着）。挂上时起、撤下时清——**两处收口见下**。 */
   let exitArmTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -2332,7 +2336,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       return NONE
     }
 
-    if (inFlight()) {
+    if (workInFlight()) {
       disarmExit()
       openTaskMenu()
       return NONE
@@ -2350,15 +2354,15 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
   const TASK_ROWS: readonly PickerRow[] = [
     {
-      label: '停止任务',
-      meta: '停止当前任务，留在 Magic',
+      label: '停止当前工作',
+      meta: '掐断所有运行（主会话与协作者）；留在 Magic',
       current: false,
       value: 'stop',
 
       oneLine: true,
     },
     { label: '转到后台', meta: '退出界面，任务继续运行', current: false, value: 'background', oneLine: true },
-    { label: '停止并退出', meta: '停止当前任务并退出 Magic', current: false, value: 'stop-exit', oneLine: true },
+    { label: '停止并退出', meta: '停止当前工作并退出 Magic', current: false, value: 'stop-exit', oneLine: true },
   ]
 
   /** 子会话里的标准停止键止于这份委派及其派生闭包；入口会话仍是整件工作。 */
@@ -2411,7 +2415,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const stillBound = (bound: typeof taskMenu): boolean => {
     if (bound === null) return true // 手搭的视图 / 不是从菜单进来的——没绑过，不拦
 
-    if (!inFlight()) return false
+    if (!workInFlight()) return false
     if (bound.session !== null && view.sessionId !== bound.session) return false
     if (bound.taskEntry !== null && view.taskEntry !== bound.taskEntry) return false
 

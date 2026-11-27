@@ -96,14 +96,15 @@ describe('协作 Native 整项工作投影', () => {
     expect(mergeCollaborationNative(rows.map(row => ({ ...row, state: 'idle' as const })), f.snapshot())[0]?.state).toBe('idle')
   })
 
-  test('协调者 suspended 时整体待核实，其他成员继续执行的动作仍可见', () => {
+  test('成员身份状态不参与归并：历史化（归档终局）身份的成员运行事实照常呈现', () => {
     const child = f.spawn('child')
-    f.records.setReachability(f.coordinator.agentId, 'suspended')
+    // 停止/退出不写任何成员状态；historical 只发生在归档——投影不依赖身份状态降级。
+    f.records.setReachability(f.coordinator.agentId, 'historical')
     const row = mergeCollaborationNative([work('origin'), work(child.agent.sessionId, {
       state: 'running', action: '独立测试', affected: true,
     })], f.snapshot())[0]!
-    expect(row).toMatchObject({ state: 'unknown', reason: '协调承接待核实', action: '实现成员：独立测试', affected: true })
-    expect(f.records.getAgent(f.coordinator.agentId)?.reachability).toBe('suspended')
+    expect(row).toMatchObject({ state: 'running', action: '实现成员：独立测试', affected: true })
+    expect(f.records.getAgent(f.coordinator.agentId)?.reachability).toBe('historical')
   })
 
   test('queued、accepted 与 delivered 未收下仍在整项范围；全员空闲不冒充 closed', () => {
@@ -156,8 +157,9 @@ describe('协作 Native 整项工作投影', () => {
       .toMatchObject({ state: 'unknown', affected: true, reason: '实现成员：连接失效' })
     expect(mergeCollaborationNative([work('origin')], snapshot)[0]?.state).toBe('unknown')
     f.records.finishExecution('execution', '资源退出')
+    // 收尾完成后：运行事实是「已停」（运行层状态），工作记录无状态残留——取消原因由作废委派承载。
     expect(mergeCollaborationNative([work('origin', { state: 'stopped' }), work('child', { state: 'stopped' })], f.snapshot())[0])
-      .toMatchObject({ state: 'stopped', affected: false, reason: '用户停止' })
+      .toMatchObject({ state: 'stopped', affected: false })
   })
 
   test('只有成员目录行时补出根工作，根 gen 留空，不借成员停止版本或标题', () => {
@@ -229,7 +231,8 @@ describe('协作 Native 整项工作投影', () => {
     expect(snapshot.groups[0]?.collaboration.state).toBe('open')
     expect(snapshot.groups[0]?.members).toHaveLength(2)
     expect(f.snapshot().groups[0]?.members).toHaveLength(3)
-    expect(f.snapshot().groups[0]?.collaboration.state).toBe('stopped')
+    // 停止只掐运行与未收委派：协作保持 open，无「已停止」状态残留。
+    expect(f.snapshot().groups[0]?.collaboration.state).toBe('open')
   })
 })
 

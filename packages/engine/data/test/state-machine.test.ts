@@ -181,8 +181,8 @@ describe('构造与引导分离', () => {
       seedOldDatabase(dir, '3')
       const store = createRecordsStore({ dataDir: dir, workspace: ['/w'] })
       try {
-        // A3：不删不重建——老数据原样可读，版本已到 4。
-        expect(versionOf(dir)).toBe('4')
+        // A3：不删不重建——老数据原样可读，版本已到 5。
+        expect(versionOf(dir)).toBe('5')
         expect(store.serviceFor('s-old').inputs.get('r-old')?.input).toMatchObject({ text: '用户原稿' })
         // 新列可用：老行上写新字段。
         store.runs.setBlocked('run-old', { kind: 'awaiting-receipt', since: 9 }, 10)
@@ -218,14 +218,44 @@ describe('构造与引导分离', () => {
     try {
       seedOldDatabase(dir, '3')
       prepareRecordsDir(dir)
-      prepareRecordsDir(dir) // 已是 v4：幂等零动作
+      prepareRecordsDir(dir) // 已是 v5：幂等零动作
       expect(existsSync(join(dir, 'records.db'))).toBe(true) // 原库还在——没被备份移走
       expect(existsSync(backupRoot)).toBe(false) // 没有备份目录
-      expect(versionOf(dir)).toBe('4')
+      expect(versionOf(dir)).toBe('5')
     } finally {
       removeDataDir(dir)
       rmSync(backupRoot, { recursive: true, force: true })
     }
+  })
+
+  test('v4 库原地迁移归一旧语义残留：suspended 成员还原 active，stopped 协作还原 open', () => {
+    const dir = tempDataDir()
+    try {
+      const store = createRecordsStore({ dataDir: dir, workspace: ['/w'] })
+      const model = { protocol: 'chat-completions' as const, endpoint: 'http://test/v1', choice: 'cantrip' as const, provider: 'test', model: 't' }
+      const originEntry = store.serviceFor('s').appendEntry({ kind: 'user', content: { text: '原工作' }, at: 1 })
+      const origin = { sessionId: 's', entryId: originEntry }
+      const root = store.collaboration.registerAgent({ operationId: 'root', sessionId: 's', name: '入口', role: '', model, at: 1 })
+      const work = store.collaboration.openCollaboration(root.agentId, { operationId: 'open', origin, at: 2 })
+      const member = store.collaboration.spawn(root.agentId, { operationId: 'm', sessionId: 'member', name: '成员', role: '', model, scope: 'x', source: origin, authorization: [origin], body: [{ kind: 'text', text: '干' }], at: 3 })
+      store.close()
+      // 把库改写成旧语义的现场：版本回 4、成员挂起、协作已停止（旧 stop() 的写入形态）。
+      const db = new Database(join(dir, 'records.db'))
+      try {
+        db.query("UPDATE ledger_members SET data = json_set(data, '$.reachability', 'suspended')").run()
+        db.query("UPDATE ledgers SET data = json_set(json_set(data, '$.state', 'stopped'), '$.reason', '用户停止')").run()
+        db.query("UPDATE records_meta SET value='4' WHERE key='schema_version'").run()
+      } finally { db.close() }
+      const reopened = createRecordsStore({ dataDir: dir, workspace: ['/w'] })
+      try {
+        expect(versionOf(dir)).toBe('5')
+        // 归一＝还原为「未写状态的原样」：成员 active、协作 open、无 reason 残留。
+        expect(reopened.collaboration.getAgent(member.agent.agentId)?.reachability).toBe('active')
+        const c = reopened.collaboration.getCollaboration(work.collaborationId)!
+        expect(c.state).toBe('open')
+        expect(c).not.toHaveProperty('reason')
+      } finally { reopened.close() }
+    } finally { removeDataDir(dir) }
   })
 
   test('真正不兼容的库（v2）：prepareRecordsDir 备份移走，createRecordsStore 拒绝不猜', () => {

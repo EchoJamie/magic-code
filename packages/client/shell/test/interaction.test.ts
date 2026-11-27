@@ -208,7 +208,7 @@ describe('Ctrl+C 语义', () => {
 
     await app.waitForFrame((frame) => frame.includes('当前任务仍在运行'))
     const frame = app.frame()
-    expect(frame).toContain('停止任务')
+    expect(frame).toContain('停止当前工作')
     expect(frame).toContain('转到后台')
     expect(frame).toContain('停止并退出')
     // **打开本身不改变执行**：一个命令都不发（旧写法这一下发的是 `turn.interrupt`）

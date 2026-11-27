@@ -100,7 +100,9 @@ for (const state of ['accepted', 'queued', 'stopped'] as const) test(`显式read
       expect(outputs.some(event => JSON.stringify(event.data).includes('立即再试'))).toBe(true)
     } else {
       expect(outputs.some(event => event.data.ok)).toBe(false)
-      expect(app.records.collaboration.getCollaboration(collaboration.collaborationId)?.state).toBe('stopped')
+      // 停止不写状态：协作保持 open；被掐断的是委派与执行（全部作废）。
+      expect(app.records.collaboration.getCollaboration(collaboration.collaborationId)?.state).toBe('open')
+      expect(app.records.collaboration.listDelegations(collaboration.collaborationId).every(one => one.state === 'cancelled')).toBe(true)
     }
     expect(existsSync(join(stage.dataDir, 'notes', 'member', 'MEMORY.md'))).toBe(state !== 'stopped')
     expect(existsSync(join(stage.dataDir, 'notes', 'origin', 'MEMORY.md'))).toBe(false)

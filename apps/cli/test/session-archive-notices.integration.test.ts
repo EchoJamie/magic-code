@@ -281,9 +281,10 @@ test('协作归档按根原子核资格，成员执行未收尾阻塞；恢复�
     client.send({ type: 'collaboration.input', input: { text: '迟到交代', ref: 'late' } })
     await until(() => events.some(event => event.kind === 'input.settled' && event.data.ref === 'late'))
     expect(f.launches).toHaveLength(0)
-    expect(records.getCollaboration(work.collaborationId)?.state).toBe('stopped')
+    // 停止不写状态：协作保持 open；归档（终局）资格由「委派已作废＋执行已收尾」判。
+    expect(records.getCollaboration(work.collaborationId)?.state).toBe('open')
     expect((await f.manage([{ session: 'member', action: 'restore' }])).results[0]?.ok).toBe(true)
-    expect(records.getCollaboration(work.collaborationId)?.state).toBe('stopped')
+    expect(records.getCollaboration(work.collaborationId)?.state).toBe('open')
     expect(f.launches).toHaveLength(0)
   } finally { await f.close() }
 })

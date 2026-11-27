@@ -484,7 +484,7 @@ describe('成员主机装配', () => {
       await idle
       expect(app.background?.running()).toEqual([])
       expect(records.listExecutions(f.collaboration.collaborationId).every(one => one.state === 'finished')).toBe(true)
-      records.resume({ kind: 'collaboration', collaborationId: f.collaboration.collaborationId }, 15)
+      // 归档未成＝未发生：被阻塞的收尾不留状态残留，成员照常接下一份委派。
       expect(records.respondToDelegation(f.agent.agentId, { operationId: 'accept-after-exit', delegationId: next.delegationId, response: 'accept', at: 16 }).accepted).toBe(true)
       records.deliver(f.agent.agentId, { operationId: 'next-report', delegationId: next.delegationId, body: [{ kind: 'text', text: '下一份完成' }], at: 17 })
       records.receiveDelivery(f.coordinator.agentId, next.delegationId, 18)

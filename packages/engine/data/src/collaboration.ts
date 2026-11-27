@@ -463,10 +463,8 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     checkAdmission(id, delegationId, mode = 'work') {
       const a = agent(id); const c = scopeFor(id)
       if (get<{ value: string }>("SELECT value FROM records_meta WHERE key='collaboration_host_stop'")?.value) return { allowed: false, reason: 'host admission closed' }
-      // **协调者对已停止协作的 coordination 准入放行**（2026-11-24 裁定「直接打字即继续」）：
-      // resume 仅切界面、不恢复运行——恢复的入口新一代接管原工作，不属于旧协作的执行
-      // （成员不复活、协作状态不变）。非协调者的成员与 work 准入照旧拦下。
-      if (mode === 'coordination' && a.agentId === c.coordinatorId && a.reachability !== 'historical') return { allowed: true }
+      // 停止不写协作与成员状态——工作保持 open，继续＝正常准入（直接打字即新一代接管，
+      // 2026-11-24 裁定）；唯一残留闸是未收尾的 cancel-requested 执行（下方运行事实）。
       if (!['open', 'closing'].includes(c.state) || a.reachability !== 'active') return { allowed: false, reason: 'collaboration or agent admission closed' }
       if (delegationId !== undefined) {
         const d = delegation(delegationId)
@@ -512,37 +510,12 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
         ? [...ds.map(d => d.assigneeId), ...es.map(e => e.agentId)]
           .filter(id => !acceptedElsewhere.has(id))
         : cs.flatMap(c => members(c.collaborationId).map(a => a.agentId)))
-      for (const c of cs) if (scope.kind !== 'delegation' && c.state !== 'closed') saveCollaboration({ ...c, state: 'stopped', reason, reasonFrom: generatedFrom })
       for (const d of ds) if (!['received', 'rejected', 'cancelled'].includes(d.state)) saveDelegation({ ...d, state: 'cancelled', reason, reasonFrom: generatedFrom })
       es.forEach(saveExecution)
-      // 停止成员即结束：成员级停止且没有其他排队责任时直接置 historical（不再挂起等"明确继续"）；
-      // 仍有排队责任则保持可接；整件停止先挂起等恢复。
-      for (const id of affected) {
-        const a = agent(id)
-        if (a.reachability === 'historical') continue
-        if (scope.kind !== 'delegation') { saveAgent({ ...a, reachability: 'suspended' }); continue }
-        const holds = a.collaborationId !== undefined && delegations(a.collaborationId).some(d => d.assigneeId === id && !['cancelled', 'rejected', 'completed'].includes(d.state))
-        if (!holds) saveAgent({ ...a, reachability: 'historical' })
-      }
       return { agents: [...affected], delegations: [...ids], executions: es }
     }) },
     resume(scope, _at) { tx(() => {
-      if (scope.kind === 'host') { run("DELETE FROM records_meta WHERE key='collaboration_host_stop'"); return }
-      if (scope.kind === 'collaboration') {
-        const c = collaboration(scope.collaborationId)
-        if (c.state === 'closed') throw new Error('closed collaboration cannot resume')
-        if (executions(c.collaborationId).some(e => e.state !== 'finished')) throw new Error('execution effects still unsettled')
-        saveCollaboration({ ...c, state: 'open', reason: undefined, reasonFrom: undefined })
-        saveAgent({ ...agent(c.coordinatorId), reachability: 'active' }); return
-      }
-      const root = delegation(scope.delegationId); requireOpen(collaboration(root.collaborationId))
-      const ds = closure(root.delegationId)
-      if (executions(root.collaborationId).some(e => e.state !== 'finished' && ds.some(d => d.delegationId === e.delegationId))) throw new Error('execution effects still unsettled')
-      for (const d of ds) if (d.state === 'cancelled') {
-        saveDelegation({ ...d, state: d.deliveryMessageId === undefined ? 'queued' : 'delivered', reason: undefined, reasonFrom: undefined })
-        saveAgent({ ...agent(d.assigneeId), reachability: 'active' })
-        enqueueConstraints(agent(d.assigneeId))
-      }
+      if (scope.kind === 'host') run("DELETE FROM records_meta WHERE key='collaboration_host_stop'")
     }) },
     beginClosing(id, _at) { tx(() => {
       const c = collaboration(id)
@@ -551,7 +524,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
     closeCollaboration(id, _at) { return tx(() => {
       const c = collaboration(id)
       if (c.state === 'closed') return { closed: true, blockers: [] }
-      if (c.state === 'open') saveCollaboration({ ...c, state: 'closing' })
+      // 归档未成＝未发生：有阻塞就不动状态（无「收尾中」残留），把阻塞项报给发起方。
       const blockers = delegations(id).filter(blocksClose).map(d => `delegation ${d.delegationId}: ${d.state}`)
       blockers.push(...executions(id).filter(e => e.state !== 'finished').map(e => `execution ${e.operationId}: ${e.state}`))
       if (blockers.length) return { closed: false, blockers }

@@ -138,7 +138,6 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
                 operationId: `${request.operationId}:failed`, at: deps.now(),
                 delegationId: spawned.delegation.delegationId, response: 'reject', reason,
               })
-              records.setReachability(spawned.agent.agentId, 'suspended')
               throw new Error(reason)
             }
             value = consulting ? { consultationId: spawned.delegation.delegationId, advisorAgentId: spawned.agent.agentId, state: 'started' } : spawned

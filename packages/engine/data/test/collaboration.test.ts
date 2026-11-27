@@ -250,7 +250,7 @@ describe('协作记录 · 委派责任与等待', () => {
     } finally { f.close() }
   })
 
-  test('宿主停止跨连接持久；重开仅查询；明确继续按范围开放，不重放旧执行', () => {
+  test('宿主停止跨连接持久；重开仅查询；恢复只清运行闸，继续＝新工作新执行', () => {
     const f = fixture()
     try {
       const a = f.spawn('a'); f.accept(a.delegation.delegationId)
@@ -262,16 +262,14 @@ describe('协作记录 · 委派责任与等待', () => {
         expect(r.checkAdmission(f.coordinator.agentId).allowed).toBe(false)
         expect(() => f.spawn('forbidden')).toThrow('host')
         expect(r.beginExecution(a.agent.agentId, { operationId: 'exec', delegationId: a.delegation.delegationId, runId: 'a', kind: 'model', at: 21 }).state).toBe('cancel-requested')
+        // 宿主恢复只清运行闸——工作与成员从未被停止改写，无需「按范围继续」。
         r.resume({ kind: 'host' }, 22)
-        expect(r.checkAdmission(f.coordinator.agentId).allowed).toBe(false)
-        expect(() => r.resume({ kind: 'collaboration', collaborationId: f.collaboration.collaborationId }, 23)).toThrow('unsettled')
-        r.finishExecution('exec', 'unknown effect retained')
-        r.resume({ kind: 'collaboration', collaborationId: f.collaboration.collaborationId }, 24)
         expect(r.checkAdmission(f.coordinator.agentId).allowed).toBe(true)
+        // 作废委派不再可执行；继续＝派新活（新委派/新 run），旧执行事实保留。
         expect(r.checkAdmission(a.agent.agentId, a.delegation.delegationId).allowed).toBe(false)
-        r.resume({ kind: 'delegation', delegationId: a.delegation.delegationId }, 25)
-        expect(r.getDelegation(a.delegation.delegationId)?.state).toBe('queued')
+        r.finishExecution('exec', 'unknown effect retained')
         expect(r.listExecutions(f.collaboration.collaborationId)[0]?.state).toBe('finished')
+        expect(r.getDelegation(a.delegation.delegationId)?.state).toBe('cancelled')
       } finally { reopened.close() }
     } finally { f.close() }
   })
@@ -365,14 +363,13 @@ test('讨论邀请授权回查但不伪造原收件；发送给自己仅一条�
   } finally { f.close() }
 })
 
-test('显式继续保留运行停止墓碑，旧 run 不可用新操作 id 重启；局部停止涵盖接受判断', () => {
+test('停止后旧 run 不可用新操作 id 重启；继续＝新工作（新 run）正常开跑', () => {
   const f = fixture()
   try {
     const a = f.spawn('a')
     f.records.beginExecution(a.agent.agentId, { operationId: 'bootstrap', runId: 'old-run', kind: 'model', mode: 'coordination', at: 11 })
     expect(f.records.stop({ kind: 'delegation', delegationId: a.delegation.delegationId }, 'stop bootstrap', 12).executions).toHaveLength(1)
     f.records.finishExecution('bootstrap')
-    f.records.resume({ kind: 'delegation', delegationId: a.delegation.delegationId }, 13)
     expect(() => f.records.beginExecution(a.agent.agentId, { operationId: 'stale-command', runId: 'old-run', kind: 'model', mode: 'coordination', at: 14 })).toThrow('cancelled')
     expect(f.records.beginExecution(a.agent.agentId, { operationId: 'new-command', runId: 'new-run', kind: 'model', mode: 'coordination', at: 15 }).state).toBe('running')
   } finally { f.close() }

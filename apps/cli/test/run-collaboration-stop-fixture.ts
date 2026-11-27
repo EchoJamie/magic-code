@@ -108,6 +108,10 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
   const store = createRecordsStore({ dataDir, workspace: [workspace] })
   const client = await connectManager(manager.socketPath, { cwd: workspace, label: name, expectedIdentity: manager.identity, environment: process.env })
   if (client === undefined) throw new Error('停止测试客户端连接失败')
+  // 记录停止通道的调用（整件停止唯一入口＝Ctrl+C 三选 → client.stop）
+  const stops: { session: string; scope: string }[] = []
+  const innerStop = client.stop.bind(client)
+  client.stop = (session, scope) => { stops.push({ session, scope: String(scope) }); return innerStop(session, scope) }
   const terminal = (await terminalOptions({ client, cwd: workspace, magic, loaded: loadConfig({ path: configPath, magic }) }))
   const shell = createShell({ ...terminal.transport, send(command) { commands.push(command); terminal.transport.send(command) } }, terminal)
   terminal.onGone?.(() => shell.hostGone())
@@ -137,11 +141,12 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
     for (let i = 0; i < (at - dock.picker.selected + dock.picker.rows.length) % dock.picker.rows.length; i++) shell.key({ kind: 'down' })
     shell.key({ kind: 'enter' })
   }
-  return { root, workspace, manager, store, client, shell, calls, events, commands, errors, launches, packets, journal, mark, wait, pick, collaboration, members, delegations, storedRuns,
+  return { root, workspace, manager, store, client, shell, calls, events, commands, stops, errors, launches, packets, journal, mark, wait, pick, collaboration, members, delegations, storedRuns,
     gate: () => gated,
     async openStop() {
-      shell.key({ kind: 'tab' })
-      await wait('根 TUI 整体停止菜单', () => { const dock = shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'collaboration' })
+      // 整体停止唯一入口：Ctrl+C 三选（入口会话的「停止当前工作」＝掐断全部运行）。
+      shell.key({ kind: 'ctrl+c' })
+      await wait('Ctrl+C 停止三选', () => { const dock = shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'task' })
     },
     async snapshot() {
       const work = collaboration()

@@ -104,25 +104,24 @@ describe('同一归并结果：TUI 将按它呈现的规格锚点（golden · �
     expect(expectedMerged[0]?.gen).toBe(3)
   })
 
-  test('锚点：协调者失联（suspended）——整件工作降级 unknown、给「承接待核实」，成员行跟着降级', () => {
-    const suspendedSnapshot = {
+  test('锚点：成员行缺席——该成员格降级 unknown、给「状态待核实」，整件工作跟着 unknown（P7）', () => {
+    // 停止/进程退出不写成员状态；行缺席就是运行事实缺失——呈现按 unknown 降级。
+    const missingRowSnapshot = {
       ...snapshot,
-      groups: [{ ...snapshot.groups[0]!, members: [member({ reachability: 'suspended' }), ...snapshot.groups[0]!.members.slice(1)] }],
+      groups: [{ ...snapshot.groups[0]!, members: snapshot.groups[0]!.members.slice(1) }],
     }
-    // 镜像预期：since 取入口行（10）；原因给「协调承接待核实」；协调者成员行 unknown。
     const expected = {
       ...expectedMerged[0]!,
       since: 10,
-      reason: '协调承接待核实',
+      reason: '成员状态待核实',
       members: [
-        { session: 'origin', name: '协调', state: 'unknown', reason: '成员连接待核实' },
         { session: 'member', name: '实现', state: 'unknown', reason: '成员状态待核实' },
       ],
     }
-    expect(suspendedSnapshot.groups[0]!.members[0]?.reachability).toBe('suspended')
     expect(expected.state).toBe('unknown')
-    expect(expected.reason).toBe('协调承接待核实')
+    expect(expected.reason).toBe('成员状态待核实')
     expect(expected.members?.[0]?.state).toBe('unknown')
+    expect(missingRowSnapshot.groups[0]!.members).toHaveLength(1)
   })
 
   test('锚点：无协作事实的散行原样透传——归并不吞非协作工作', () => {

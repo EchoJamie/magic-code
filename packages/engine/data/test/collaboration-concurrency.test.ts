@@ -85,11 +85,12 @@ describe('协作记录 · 共享连接上的并发请求', () => {
         { method: 'stop', args: [{ kind: 'collaboration', collaborationId: f.collaboration.collaborationId }, 'stop', 20] },
       ])
       expect(result[2]?.ok).toBe(true)
-      expect(f.records.getCollaboration(f.collaboration.collaborationId)?.state).toBe('stopped')
-      expect(f.records.listMembers(f.collaboration.collaborationId).every(a => a.reachability === 'suspended')).toBe(true)
+      // **停止不写状态**：协作保持 open、成员保持 active——被掐断的是运行与未收委派。
+      expect(f.records.getCollaboration(f.collaboration.collaborationId)?.state).toBe('open')
+      expect(f.records.listMembers(f.collaboration.collaborationId).every(a => a.reachability === 'active')).toBe(true)
       expect(f.records.listDelegations(f.collaboration.collaborationId).every(d => d.state === 'cancelled')).toBe(true)
       expect(f.records.listExecutions(f.collaboration.collaborationId).every(e => e.state === 'cancel-requested')).toBe(true)
-      expect(() => f.records.beginExecution(a.agent.agentId, { operationId: 'after-stop', delegationId: a.delegation.delegationId, runId: 'a', kind: 'tool', at: 21 })).toThrow('closed')
+      expect(() => f.records.beginExecution(a.agent.agentId, { operationId: 'after-stop', delegationId: a.delegation.delegationId, runId: 'a', kind: 'tool', at: 21 })).toThrow('delegation')
     } finally { f.close() }
   }, 30000)
 

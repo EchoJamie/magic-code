@@ -97,7 +97,7 @@ export async function engineCall(input: EngineCall, expectedSource = softwareSou
   const store = createRecordsStore({ dataDir: found.base, workspace: [] })
   const notes: string[] = []
   try {
-    store.collaboration.stop({ kind: 'host' }, 'Engine 已停止，等待明确继续', Date.now())
+    store.collaboration.stop({ kind: 'host' }, 'Engine 已停止', Date.now())
     const runs = [...readRuns(paths)]
     for (let i = 0; i < runs.length; i++) {
       const run = runs[i]!, result = await reclaim(run.owned ?? [])
