@@ -139,6 +139,8 @@ export function createConnectionControl(host: ConnectionHost): {
     const unconfirmed = new Set([...view.settled, ...view.rows].filter(row => row.kind === 'user' && row.inputState === '提交中').map(row => row.kind === 'user' ? row.inputRef : undefined))
     const submittedRef = host.lastSubmitRef()
     if (submittedRef !== null && unconfirmed.has(submittedRef)) host.settleDraft(submittedRef, true)
+    // 草稿恢复落在当前视图上——回执行标注要基于**恢复之后**的那一份，别把稿子抹回去。
+    view = host.getView()
     const mark = (row: LogRow) => row.kind === 'user' && unconfirmed.has(row.inputRef) ? { ...row, inputState: '未确认接收（连接已断开）' } : row
     clearResume()
     const waiting = host.takeExitWait()

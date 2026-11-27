@@ -393,7 +393,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   /** 合并相邻事件后再确认无责任，避免当前调用链尚未派完就释放进程。 */
   function considerShrink(): void {
     if (closing) return
-    if (busy || assembly.hasPendingInput() || live.turnOpen || (assembly.background?.running().length ?? 0) > 0) {
+    if (busy || assembly.hasPendingInput() || assembly.hasPendingLedgerInput() || live.turnOpen || (assembly.background?.running().length ?? 0) > 0) {
       if (shrinkTimer !== undefined) {
         clearTimeout(shrinkTimer)
         shrinkTimer = undefined
@@ -404,7 +404,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
 
     shrinkTimer = setTimeout(() => {
       shrinkTimer = undefined
-      if (closing || busy || assembly.hasPendingInput() || live.turnOpen || (assembly.background?.running().length ?? 0) > 0) return
+      if (closing || busy || assembly.hasPendingInput() || assembly.hasPendingLedgerInput() || live.turnOpen || (assembly.background?.running().length ?? 0) > 0) return
 
       // **持久化状态后释放**（设计 · 收缩）：收尾那两跳里就有「把没落完的落完」
       // ——故它是释放，不是丢下。

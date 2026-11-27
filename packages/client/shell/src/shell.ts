@@ -2232,8 +2232,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // 名字避开外面那个 `waiting`（等选择器的意图）——两件不相干的事，别撞名
     for (const [target, context] of inputContexts) {
       const held = context.lastSubmit
-      if (target === view.inputMember || held === null || held.ref !== ref) continue
+      if (held === null || held.ref !== ref) continue
       inputContexts.set(target, { ...context, lastSubmit: null, ...(keepDraft ? { draft: held.text, refs: held.refs, caret: held.text.length } : {}) })
+      // **正在看的那一条当场回填**（U60 keepDraft 的当页形态）——只写后台上下文不更新
+      // 当前视图，用户看到的就是空输入行，等于丢了稿。（根上下文的键是 null，当前视图是 undefined。）
+      if ((target ?? undefined) === (view.inputMember ?? undefined) && keepDraft) {
+        commit(withCompletion({ ...view, draft: held.text, caret: held.text.length, refs: held.refs }))
+      }
       return
     }
     const held = lastSubmit

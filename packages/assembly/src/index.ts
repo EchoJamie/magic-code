@@ -130,6 +130,8 @@ export type Assembly = {
   reconnectMcp(server: string): Promise<string>
   /** 当前执行实例仍有明确输入消费意图；遗留持久输入不算自动继续授权。 */
   hasPendingInput(): boolean
+  /** 账本上还有本会话的待办（含被「下一件」收束判据持有的行）——收缩前必看，防提前退场。 */
+  hasPendingLedgerInput(): boolean
   /** 只唤起已装配的同一身份，持久收件在主循环边界消费。 */
   wakeCollaboration(): void
   /** 原样保留输入引用，由会话读取、接收并发布共享约束。 */
@@ -525,6 +527,7 @@ export function assemble(options: AssembleOptions): Assembly {
       return target.service.compact(request, signal, started)
     },
     hasPendingInput: () => [...chains.values()].some(one => one.service.busy()),
+    hasPendingLedgerInput: () => [...chains.values()].some(one => one.records.inputs.list().some(row => row.state === 'pending')),
     wakeCollaboration: () => { if (chain === undefined) { pendingWake = true; return } chain.service.wake() },
     /** 消费信号（T2.1：engine 受理落账后发信号帧，正文以账本为准）——
      * 消费流（裁定 · 信号先于出队）：读账本 pending → 协作成员请求 run 级准入

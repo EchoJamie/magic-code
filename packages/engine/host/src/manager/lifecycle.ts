@@ -130,10 +130,18 @@ export function installLifecycle(ctx: ManagerContext): void {
           // beginExecution（准入）后请求。engine 自己绝不先 dequeue 再发信号。
           // revision 从账面现读（dequeue 只从 pending；与撤回的竞态由 SQL 原子判负）。
           const records = store.serviceFor(session)
+          // **「下一件」的收束判据在出队口**（purpose='next'＝前项工具、委派及待答结束后
+          // 才开始）：委派或执行未收束就不出队，行留待办（对账器按节拍再试），正文不提前进轮。
+          const work = store.collaboration.collaborationForSession(session)
+          const nextHeld = work !== undefined
+            && store.collaboration.listDelegations(work.collaborationId).some(d => !['received', 'rejected', 'cancelled'].includes(d.state)
+              || (d.deliveryMessageId !== undefined && d.receivedAt === undefined))
           const dequeued: string[] = []
           for (const ref of message.request.refs) {
-            const revision = records.inputs.get(ref)?.revision
-            if (revision !== undefined && records.inputs.dequeue(ref, revision)) dequeued.push(ref)
+            const row = records.inputs.get(ref)
+            if (row === undefined) continue
+            if (row.purpose === 'next' && nextHeld) continue
+            if (records.inputs.dequeue(ref, row.revision)) dequeued.push(ref)
           }
           send(executor, { t: 'collaboration.reply', requestId: message.requestId, reply: { ok: true, value: { dequeued } } })
           ctx.pushRuns()
