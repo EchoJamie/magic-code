@@ -3,6 +3,16 @@ import type {
   CollaborationRequest, ModelSwitchRequest, EntryReference, MessagePart, StopResult,
 } from '@magic/contracts'
 
+/** 用例编排；持久裁决留在 records，运行归宿主，不复制 AgentLoop。 */
+
+/**
+ * **宿主边界账本写**（T1.1b · registry 段）——执行宿主的消费必经，不属「调用协作」：
+ * 咨询守卫对这些放行（T4 consultation-runtime 11 败的根因是粒度过宽）。
+ */
+const HOST_BOUNDARY_ACTIONS = new Set<CollaborationRequest['action']>([
+  'registerIdentity', 'beginExecution', 'finishExecution', 'consumeInbox', 'markIncluded', 'publishConstraint',
+])
+
 export type CollaborationActionsDeps = {
   readonly modelChoices?: (session: string) => Promise<unknown>
   readonly records: CollaborationRecords
@@ -30,7 +40,14 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
       try {
         const actor = records.getAgent(actorId)
         if (actor === undefined) throw new Error('执行身份不存在')
-        if (actor.purpose === 'consultation') throw new Error('咨询执行者不能调用协作或再次咨询')
+        // **咨询守卫只拦模型侧协作操作**（T19：拦 consult/spawn/send/delegate/respond/
+        // deliver/configure——「调用协作或再次咨询」）。registry 段的宿主边界账本写
+        // （registerIdentity/beginExecution/finishExecution/consumeInbox/markIncluded/
+        // publishConstraint）是 T1.1b 新消费流的**必经之路**（受理先行→ready→wake→
+        // 捞账本→准入→出队），对咨询会话同样放行——否则咨询链在消费第一步就断。
+        if (actor.purpose === 'consultation' && !HOST_BOUNDARY_ACTIONS.has(request.action)) {
+          throw new Error('咨询执行者不能调用协作或再次咨询')
+        }
         const generated = request.generatedFrom === undefined ? {} : { generatedFrom: request.generatedFrom }
         if ('operationId' in request) request = { ...request, operationId: `${actorId}:${request.operationId}` }
         const at = deps.now()
