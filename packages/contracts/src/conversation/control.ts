@@ -87,6 +87,13 @@ export type InputRef = InputRefPlace &
 export type UserInput = {
   readonly purpose?: InputPurpose
   readonly local?: true
+  /**
+   * **共同补充**（协作边界 · T2.1）——engine 受理 shared 补充时随行落账，消费侧据此
+   * 走「补充发布」语义。**shared 位持久在台账行上**，不依赖唤醒帧传参：对账补发与
+   * ready 补发的 `collaboration.wake` 帧不带 shared，没有这一位就会把同一份补充
+   * 错按普通交代消费（成员看不到约束）。缺省 ＝ 普通交代。
+   */
+  readonly shared?: true
   readonly text: string
   /**
    * 本次交代带上的材料——**有序**（按各自在正文里的位置），可为空。

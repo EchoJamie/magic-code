@@ -466,6 +466,13 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   const compactControllers = new Map<string, AbortController>()
 
   /**
+   * **消费信号的串行链**（P0 修复）——`consumeLedgerInputs` 是异步多步（准入 → 出队 →
+   * 入队消费，一条可跨越整轮），并发跑两个会双读账本、重复出队。wake/input 帧接在同一条
+   * 链上逐个跑，并经 `trackOperation` 记入在途责任（收尾会等它，失败有诊断可查）。
+   */
+  let consumption: Promise<void> = Promise.resolve()
+
+  /**
    * **closing/archived 的拒收回执**（§四#7 · T2.1）——账本里还没消费的 pending 行逐条
    * 发 `input.rejected`：engine 据它 `rejectPending`（只认执行者自己会话），原稿留在账上
    * （rejected 行可 retry——用户恢复会话后重新提交即继续）。普通输入与协作补充的待办
@@ -542,7 +549,13 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
           rejectPendingInputs(archived ? 'archived' : 'closing')
           return
         }
-        void assembly.consumeLedgerInputs(message.t === 'collaboration.input' && message.shared === true)
+        // **不 void 掉**（P0 修复）：串行排队 ＋ 生命周期跟踪——失败落诊断（账本行留 pending，
+        // 对账器会再敲门），收尾路径等它落定，不再留下没人认领的在途消费。
+        const shared = message.t === 'collaboration.input' && message.shared === true
+        consumption = consumption
+          .then(() => assembly.consumeLedgerInputs(shared))
+          .catch(error => { diagnosticLog?.write('warn', 'consume.ledger-inputs.failed', { reason: String(error) }) })
+        trackOperation(consumption)
         return
       }
       case 'cmd':

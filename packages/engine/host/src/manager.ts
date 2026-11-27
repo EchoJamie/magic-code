@@ -238,7 +238,9 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     input: (session, input, shared) => {
       const records = store.serviceFor(session)
       // **受理前移**（边界方案 §四#1/§五）：拒收与受理都是 engine 落账——帧只是加速信号。
-      const durable = { ...input, ref: input.ref ?? crypto.randomUUID() }
+      // shared 位落进行载荷（P0 修复）：执行者侧的判定以账本行为准，
+      // 对账/ready 补发的 wake 帧不带 shared 也不会把补充错当普通交代。
+      const durable = { ...input, ref: input.ref ?? crypto.randomUUID(), ...(shared ? { shared: true as const } : {}) }
       const work = store.collaboration.collaborationForSession(session)
       const rejectWith = (reason: string, kind: 'capacity' | 'closing' | 'archived'): never => {
         records.inputs.reject(durable, reason, now(), kind)

@@ -554,22 +554,36 @@ export function assemble(options: AssembleOptions): Assembly {
       // **run 级准入**（协作成员；普通会话无协作身份，跳过）——beginExecution 一次，
       // 不随每个工具调用重复（T2.2 降频）。准入失败＝这一轮没有开始执行（N14），留账待再试。
       const agent = recordsStore.collaboration.agentForSession(active.session)
-      if (agent !== undefined && options.collaboration !== undefined) {
+      const work = recordsStore.collaboration.collaborationForSession(active.session)
+      const acceptedDelegation = work === undefined || agent === undefined ? undefined
+        : recordsStore.collaboration.listDelegations(work.collaborationId)
+          .find(d => d.assigneeId === agent.agentId && d.state === 'accepted')
+      // work 模式下**不带绑定**的非协调成员会被「active delegation binding required」拒绝
+      // ——委派未到 accepted 的成员进不了这一闸，真正的准入由循环内既有的 admit 承担
+      // （prepareModelContext / gateToolBatch 各自按 coordination / work 带绑定复核）。
+      const canBind = work !== undefined && agent !== undefined
+        && (acceptedDelegation !== undefined || agent.purpose === 'consultation' || agent.agentId === work.coordinatorId)
+      if (work !== undefined && agent !== undefined && options.collaboration !== undefined && canBind) {
         try {
-          await options.collaboration(active.session, {
+          const reply = await options.collaboration(active.session, {
             action: 'beginExecution', operationId: `run:${executionId}:${crypto.randomUUID()}`,
             at: now(), runId: executionId, kind: 'model',
             // 2026-11-24 准入口径：咨询执行者的执行就是协调形态（答询本身），
             // 其余成员带 accepted delegation 走 work；purpose 与跳过判据同源读出。
             mode: agent.purpose === 'consultation' ? 'coordination' : 'work',
+            // 成员必须带委派绑定——否则 work 模式下会被误拒。
+            ...(agent.purpose === 'consultation' || acceptedDelegation === undefined ? {}
+              : { delegationId: acceptedDelegation.delegationId }),
           })
-        } catch { /* 准入帧失败＝未准入：行留 pending，用户可「立即再试」 */ }
+          // **准入回执必须核**（P0 修复）：宿主侧对拒绝返回 `{ ok:false }` 而不抛
+          // ——只 try/catch 会把「未准入」当成「已准入」继续出队消费。
+          if (!reply.ok) return
+        } catch { return /* 准入帧失败＝未准入：行留 pending，用户可「立即再试」 */ }
       }
 
       // **「下一件」的收束自查**（边界方案 M2 · 外循环的推进决策归执行者）：purpose=next
       // 的行要等这项工作的委派/待答收束后才可出队——判据读同一账本（出队前的现场），
       // 引擎 dequeue 只剩账面事务（出队没成的行留账，对账器再敲门，本执行者再自查）。
-      const work = recordsStore.collaboration.collaborationForSession(active.session)
       const nextHeld = work !== undefined
         && recordsStore.collaboration.listDelegations(work.collaborationId).some(d =>
           !['received', 'rejected', 'cancelled'].includes(d.state)
@@ -597,9 +611,11 @@ export function assemble(options: AssembleOptions): Assembly {
 
       for (const row of pending) {
         if (!dequeued.has(row.ref)) continue
-        // **shared 位随信号走**（边界方案 §四#1）：shared 信号消费的行按补充入队——
-        // 除进入本会话自己的轮外，还要经协作边界把同一份条目发布给成员。
-        if (shared) await active.service.supplement(row.input, true)
+        // **shared 位随信号走 ＋ 台账行持久位兜底**（边界方案 §四#1 · P0 修复）：shared
+        // 信号消费的行按补充入队——除进入本会话自己的轮外，还要经协作边界把同一份条目
+        // 发布给成员。信号帧会丢（对账补发 / ready 补发的 wake 不带 shared），故判定
+        // 落在**行上的 shared 位**（engine 受理时写入），帧只作加速信号。
+        if (shared || row.input.shared === true) await active.service.supplement(row.input, true)
         else conversation.submit(row.input)
       }
       active.service.wake()
