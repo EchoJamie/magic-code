@@ -345,15 +345,18 @@ export function createManagedCollaboration(host: CollaborationHost) {
       // reachability 保持 active，不影响后续准入。
       const collaboration = records.getCollaboration(agent.collaborationId)
       const isCoordinator = agent.agentId === collaboration?.coordinatorId
-      let suspended = false
+      // **不设挂起态**（直属上司裁定 2026-11-27）：成员失败分两类——工具调用失败在成员
+      // 自己的循环内解决（模型知情并处置，现有设计）；成员自身状态问题（进程死亡/卡死）
+      // 是机制的锅，修机制而不是保存中间态。会话结束 ⇒ 直接反馈主会话（下方 attention），
+      // 成员结局记为终局（未完成/完成），不设「待核实/suspended」中间态阻塞推进。
+      let unfinishedWork = false
       if (!isCoordinator) {
         // 「已交付待确认」是协调者侧的认收状态（N9 ackTimeout 兜底），不是成员未完成——
         // 顾问交付即完成份内事（completeConsultation 已置 historical），不在此覆写。
-        const unfinishedWork =
+        unfinishedWork =
           records.listDelegations(agent.collaborationId).some(d => d.assigneeId === agent.agentId && ['queued', 'clarification', 'accepted'].includes(d.state)) ||
           records.listExecutions(agent.collaborationId).some(e => e.agentId === agent.agentId && e.state !== 'finished')
-        records.setReachability(agent.agentId, unfinishedWork ? 'suspended' : 'historical')
-        suspended = unfinishedWork
+        records.setReachability(agent.agentId, 'historical')
       }
       for (const execution of records.listExecutions(agent.collaborationId)) {
         if (execution.agentId === agent.agentId && execution.runId === runId && execution.state !== 'finished') records.finishExecution(execution.operationId, reason)
@@ -363,7 +366,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
       // 向发起会话写 attention + notify——对比成员轮次失败的对称推送（lifecycle.ts）。
       // ⚠️ **不自动唤醒入口模型**（成员失败≠工作停止，自动模型调用越 P17 边界）——
       // 入口 agent 在下一轮边界从账上读到成员结局，自行决定重派或接管。
-      if (suspended) {
+      if (unfinishedWork) {
         const originSession = collaboration?.originSessionId ?? session
         const fact = `成员 ${agent.name} 未完成：${reason}`
         host.store.attention.put({
