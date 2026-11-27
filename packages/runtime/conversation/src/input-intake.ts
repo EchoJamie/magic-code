@@ -27,7 +27,9 @@ export async function prepareInput(
 ): Promise<{ refs: readonly InputRefEntry[]; skills: readonly UsedSkill[]; entry?: RecordId; latestInput?: string } | undefined> {
   signal?.throwIfAborted()
   const stored = input?.ref === undefined ? undefined : runtime.records.inputs.get(input.ref)
-  if (input?.ref !== undefined && stored?.state !== 'pending') return undefined
+  // **executing 也进**（T1.1b/T2.1 dequeue 流）：本执行者刚出队的行在此落账消费
+  // （inputs.consume 接 pending/executing 两源，executing→consumed 归执行者）。
+  if (input?.ref !== undefined && stored?.state !== 'pending' && stored?.state !== 'executing') return undefined
   if (stored !== undefined) input = stored.input
 
 

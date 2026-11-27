@@ -436,7 +436,10 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         let input = queued.input
         if (input?.ref !== undefined) {
           const stored = deps.records.inputs.get(input.ref)
-          if (stored?.state !== 'pending') { queued.done?.(); continue }
+          // **executing 也消费**（T1.1b/T2.1 dequeue 流）：那是本执行者刚出队的行，
+          // 消费迁移（executing→consumed，与落条目原子）归执行者——单活执行者前提下
+          // executing 行只属于这一代；其余终态（consumed/withdrawn/failed…）不重放。
+          if (stored?.state !== 'pending' && stored?.state !== 'executing') { queued.done?.(); continue }
           input = stored.input
         }
         if (input === undefined && !(await collaboration?.consume())) continue
