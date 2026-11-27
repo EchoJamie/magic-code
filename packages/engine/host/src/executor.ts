@@ -534,7 +534,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
           rejectPendingInputs(archived ? 'archived' : 'closing')
           return
         }
-        void assembly.consumeLedgerInputs()
+        void assembly.consumeLedgerInputs(message.t === 'collaboration.input' && message.shared === true)
         return
       }
       case 'cmd':

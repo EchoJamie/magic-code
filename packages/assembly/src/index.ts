@@ -134,8 +134,9 @@ export type Assembly = {
   wakeCollaboration(): void
   /** 原样保留输入引用，由会话读取、接收并发布共享约束。 */
   supplementCollaboration(input: UserInput, shared: boolean): Promise<void>
-  /** 消费信号（T2.1）：账本 pending 行准入+出队后入队消费 ＋ 协作收件箱唤起。 */
-  consumeLedgerInputs(): Promise<void>
+  /** 消费信号（T2.1）：账本 pending 行准入+出队后入队消费 ＋ 协作收件箱唤起。
+   * `shared` ＝ 这次信号是共同补充（shared 位随信号走），消费的行按补充发布给成员。 */
+  consumeLedgerInputs(shared?: boolean): Promise<void>
   /**
    * **换模型**——装配侧的**唯一**切换入口：命令面（`model.switch`）与 `--script` 的
    * `{switch}` 都调它，**成败都发一条 `model.switched`（落库）**（缺陷 D16 收拢的产出路径）。
@@ -529,7 +530,7 @@ export function assemble(options: AssembleOptions): Assembly {
      * 消费流（裁定 · 信号先于出队）：读账本 pending → 协作成员请求 run 级准入
      * （beginExecution 经帧）→ 请求 dequeue（engine 唯一写权，现读 revision，撤回竞态
      * SQL 原子判负）→ 回执里的行入队消费。失败/未出队的行留账本（对账兜底，不重复消费）。 */
-    consumeLedgerInputs: async () => {
+    consumeLedgerInputs: async (shared = false) => {
       const active = chain
       if (active === undefined) { pendingWake = true; return }
       const pending = active.records.inputs.list().filter(row => row.state === 'pending' && row.entry === undefined)
@@ -570,7 +571,10 @@ export function assemble(options: AssembleOptions): Assembly {
 
       for (const row of pending) {
         if (!dequeued.has(row.ref)) continue
-        conversation.submit(row.input)
+        // **shared 位随信号走**（边界方案 §四#1）：shared 信号消费的行按补充入队——
+        // 除进入本会话自己的轮外，还要经协作边界把同一份条目发布给成员。
+        if (shared) await active.service.supplement(row.input, true)
+        else conversation.submit(row.input)
       }
       active.service.wake()
     },

@@ -35,6 +35,7 @@ async function fixture(deps: { pendingRefs?: () => readonly string[] } = {}) {
         if (message.t === 'collaboration.wake') {
           // 与真实执行者同构：wake 后从共享账本读 pending（正文以账本为准），请求 dequeue。
           const session = request.session
+          if (session === null) return
           const refs = deps.pendingRefs?.() ?? store.serviceFor(session).inputs.list()
             .filter(row => row.state === 'pending').map(row => row.ref)
           agentLink.send({ t: 'collaboration.request', requestId: `u123-consume-${commands.length}`, request: { action: 'dequeue', operationId: `op:dequeue-${commands.length}`, refs, at: Date.now() } })
@@ -42,6 +43,7 @@ async function fixture(deps: { pendingRefs?: () => readonly string[] } = {}) {
         if (message.t === 'collaboration.reply' && message.reply.ok) {
           const dequeued = (message.reply as { readonly value?: { readonly dequeued?: readonly string[] } }).value?.dequeued ?? []
           for (const ref of dequeued) {
+            if (request.session === null) break
             const records = store.serviceFor(request.session)
             const row = records.inputs.get(ref)
             if (row !== undefined) records.inputs.consume(ref, row.revision, { kind: 'user', content: { text: row.input.text }, at: Date.now() })

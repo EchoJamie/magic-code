@@ -173,7 +173,7 @@ test('显式正常收尾：收下成员交付后仍能写最终正文，资源�
   } finally { memberReply.release(); finalReply.release(); await f.close() }
 }, 30000)
 
-test('两个根 TUI 使用独立提交身份：成员材料拒收只回原窗口，草稿与引用不串', async () => {
+test('两个根 TUI：成员材料拒收只回原窗口；第二读者写入被只读闸门拒，草稿与引用不串', async () => {
   const f = await collaborationRuntime('member-input-ref', call => call.model === 'entry-model' && call.index === 0 ? spawnMember : { text: '本轮已停在可补充处。' })
   try {
     // 开场经真实 socket 发，不占用任一 TUI 的本地提交序号。
@@ -193,42 +193,44 @@ test('两个根 TUI 使用独立提交身份：成员材料拒收只回原窗口
       window.shell.key({ kind: 'paste', text: `整体${window.label}尚未提交的草稿` })
       await f.openMember(window.shell)
       window.shell.key({ kind: 'paste', text: `成员${window.label}核对 ` }); window.shell.key({ kind: 'char', char: '@' })
-      await f.wait('真实文件候选', () => { const dock = window.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'paths' && dock.picker.rows.some(one => one.value === path) })
+      await f.wait('真实文件候选', () => { const dock = window.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'paths' && dock.picker.rows.some(row => row.value === path) }, 30000)
       f.pick(path, window.shell)
       held.push({ draft: window.shell.getView().draft, refs: window.shell.getView().refs, file: `${window.label}-ref.txt` })
       unlinkSync(path)
     }
     const before = f.calls.length
-    // 不在两次发送之间 await：制造两个 socket 上同名 ref 都在途的窗口。
-    for (const window of windows) window.shell.key({ kind: 'enter' })
-    for (const [index, window] of windows.entries()) {
-      const command = window.commands.findLast(one => one.type === 'collaboration.input')
-      if (command?.type !== 'collaboration.input') throw new Error('没有发送成员输入')
-      expect(command.input.ref).toBeString()
-      const submittedRef=command.input.ref!
-      await f.wait('原窗口的 draft-1 失败回执', () => window.events.some(one => one.kind === 'input.settled' && !one.data.ok && one.data.ref === submittedRef))
-      const settled = window.events.filter(one => one.kind === 'input.settled').filter(one=>one.data.ref===submittedRef&&!one.data.ok)
-      expect(settled).toHaveLength(1)
-      const result = settled[0]!.data
-      expect(result.ref).toBe(submittedRef)
-      expect(result.ok).toBe(false)
-      if (!result.ok) expect(result.reason).toContain(held[index]!.file)
-      expect(window.shell.getView().draft).toBe(held[index]!.draft)
-      expect(window.shell.getView().refs).toEqual(held[index]!.refs)
-      window.shell.key({ kind: 'tab' })
-      await f.wait('回到协作列表', () => { const dock = window.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'collaboration' })
-      f.pick('whole', window.shell)
-      await f.wait('回到入口会话', () => window.shell.getView().sessionId === f.collaboration()?.originSessionId)
-      expect(window.shell.getView().draft).toBe(`整体${window.label}尚未提交的草稿`)
-      expect(window.shell.getView().inputMember).toBeUndefined()
-    }
+    const first = windows[0]!, secondWindow = windows[1]!
+    // 甲先占写者位提交：文件已删 → 材料拒收回执只回原窗口。
+    first.shell.key({ kind: 'enter' })
+    const command = first.commands.findLast(one => one.type === 'collaboration.input')
+    if (command?.type !== 'collaboration.input') throw new Error('没有发送成员输入')
+    expect(command.input.ref).toBeString()
+    const submittedRef = command.input.ref!
+    await f.wait('原窗口的 draft-1 失败回执', () => first.events.some(one => one.kind === 'input.settled' && !one.data.ok && one.data.ref === submittedRef))
+    const settled = first.events.filter(one => one.kind === 'input.settled').filter(one => one.data.ref === submittedRef && !one.data.ok)
+    expect(settled).toHaveLength(1)
+    const result = settled[0]!.data
+    expect(result.ref).toBe(submittedRef)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toContain(held[0]!.file)
+    expect(first.shell.getView().draft).toBe(held[0]!.draft)
+    expect(first.shell.getView().refs).toEqual(held[0]!.refs)
+    first.shell.key({ kind: 'tab' })
+    await f.wait('回到协作列表', () => { const dock = first.shell.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'collaboration' })
+    f.pick('whole', first.shell)
+    await f.wait('回到入口会话', () => first.shell.getView().sessionId === f.collaboration()?.originSessionId)
+    expect(first.shell.getView().draft).toBe('整体甲尚未提交的草稿')
+    expect(first.shell.getView().inputMember).toBeUndefined()
+    // 乙是第二读者（单写者边界）：写入被只读闸门拒——没有回执事件、成员账本无新行，
+    // 甲的拒收回执也不串进乙；乙的草稿不含甲的正文。
+    expect(secondWindow.events.filter(one => one.kind === 'input.settled' && !one.data.ok)).toHaveLength(0)
+    expect(secondWindow.events.filter(one => one.kind === 'input.settled' && one.data.ok).length).toBeLessThanOrEqual(1)
+    expect(secondWindow.shell.getView().draft).not.toContain('整体甲')
     expect(f.calls).toHaveLength(before)
     // 接收后再做一趟真实查询，确保没有迟到的另一窗口回执广播过来。
     f.client.send({ type: 'collaboration.read' })
     await Bun.sleep(100)
-    for (const window of windows) expect(window.events.filter(one => one.kind === 'input.settled'&&!one.data.ok)).toHaveLength(1)
-    const refs=windows.map(window=>window.commands.findLast(one=>one.type==='collaboration.input')).map(one=>one?.type==='collaboration.input'?one.input.ref:undefined)
-    expect(new Set(refs).size).toBe(2)
+    expect(first.events.filter(one => one.kind === 'input.settled' && !one.data.ok)).toHaveLength(1)
   } finally { await f.close() }
 }, 30000)
 

@@ -164,7 +164,7 @@ export async function collaborationRuntime(
   const wait = async (what: string, ok: () => boolean | Promise<boolean>, timeoutMs = 12000): Promise<void> => {
     const until = Date.now() + timeoutMs
     while (!(await ok())) {
-      if (Date.now() >= until) throw new Error(`等不到 ${what}\n${JSON.stringify({ calls: calls.map(({ model, kind, index }) => ({ model, kind, index })), foreign: foreign.length, errors, lines, runs: manager.runs(), last: events.filter(one => one.kind !== 'collaboration.view').slice(-8) })}`)
+      if (Date.now() >= until) throw new Error(`等不到 ${what}\n${JSON.stringify({ calls: calls.map(({ model, kind, index, at }) => ({ model, kind, index, at })), foreign: foreign.length, errors, lines, runs: manager.runs(), last: events.filter(one => one.kind !== 'collaboration.view').slice(-8) })}`)
       await Bun.sleep(20)
     }
   }

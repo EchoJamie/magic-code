@@ -61,6 +61,7 @@ test('空白首消息由引擎受理建会话并显式携带；同代不重取�
     // T1.1b：受理先行——引擎生成会话并显式携带给 spawn，session-null 形态对输入退役。
     const first = launches[0]!.request.session
     expect(first).not.toBeNull()
+    if (first === null) throw new Error('unreachable')
     expect((await store.listSessions()).map((session) => session.id)).toEqual([first])
     const gen = launches[0]!.request.gen
     expect(targets).toEqual([{ session: first, gen }])
