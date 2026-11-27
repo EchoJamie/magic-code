@@ -189,6 +189,8 @@ export function installLifecycle(ctx: ManagerContext): void {
         // T1.2：ready 后补发消费信号（queued 缓冲已删）——账本为真源，执行者从账上捞待办。
         executor.lastWakeAt = now()
         send(executor, { t: 'collaboration.wake' })
+        // T4 回归根因：bind 时（ready 前）的快照握手被链路拒发——ready 这一刻链路可用，重发。
+        connections.retrySnapshot(executor)
         ctx.saveRuns()
         ctx.pushRuns()
         return

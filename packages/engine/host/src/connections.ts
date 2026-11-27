@@ -102,9 +102,23 @@ export function createClientConnections(changed: () => void, log?: (line: string
     onBound?.(executor)
   }
 
+  /**
+   * **重发快照请求**（T4 回归根因）——bind 在执行者 ready 前发起的快照握手会被链路
+   * 拒发（`send.write-fail`，此刻子进程链路尚未可用），`awaiting` 因此永卡，执行者的
+   * 事件流全部停在缓冲里，窗口收到的只剩旁路（pushRuns/notice/detached）。
+   * ready 那一拍重发：对所有仍在本执行者上等快照的连接各补一枪（此刻链路必然可用）。
+   */
+  function retrySnapshot(executor: Executor): void {
+    const pending = snapshots.get(executor)
+    if (pending === undefined) return
+    for (const [seq, connId] of pending.asking) {
+      const conn = clients.get(connId)
+      if (conn !== undefined && conn.awaiting === seq) send(executor, { t: 'snapshot', seq })
+    }
+  }
+
   /** 同一代认领真实会话后同步窗口目标；不重新绑定或重置快照水位。 */
-  function syncTarget(executor: Executor): void {
-    const session = executor.run.session
+  function syncTarget(executor: Executor): void {    const session = executor.run.session
     for (const conn of clients.values()) {
       if (conn.target !== executor || conn.selectedSession === session) continue
       conn.selectedSession = session
@@ -169,7 +183,7 @@ export function createClientConnections(changed: () => void, log?: (line: string
     accept(client: ClientConn): void {
       clients.set(client.id, client as ConnectionState)
     },
-    dropClient, bind, syncTarget, onSnapshot, publish, detach, watching,
+    dropClient, bind, syncTarget, retrySnapshot, onSnapshot, publish, detach, watching,
     updateEnvironment(client: ClientConn, environment: Readonly<Record<string, string>>): void {
       const conn = client as ConnectionState
       conn.environment = Object.freeze({ ...environment })

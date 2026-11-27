@@ -35,9 +35,22 @@ export type Executor = {
  * 超时兜底给「未确认」与出路（N22）。
  * 发送失败（通道拒收）按帧类分计（T1.5）：wake 用 `wake.write-fail`，其余 `send.write-fail`。
  */
+/**
+ * 发送。**ready 前一律不发**（T1.2 送达链重构）：待办已落账（受理前移），帧只是
+ * 加速信号——ready 后由 ready 处理与对账器补发消费信号，执行者从账本捞待办。
+ * 连接层未绑定（子进程未连回）同样不发；有回执的请求（settings/compact）由各自
+ * 超时兜底给「未确认」与出路（N22）。
+ *
+ * ⚠️ **snapshot 是例外**（T4 回归根因）：bind 的快照握手等的就是这一帧的回执——
+ * ready 门把它丢了，连接的 `awaiting` 永卡，执行者的事件流全部停在缓冲里，窗口
+ * 收到的只剩旁路（pushRuns/notice/detached）——「提交中」卡死、回复永不渲染。
+ * ready 前的快照＝空水位（fresh 执行器还没消费任何东西），与 bind 的时序语义一致；
+ * 重绑到运行中的执行器时它已 ready，不走这条例外。
+ * 发送失败（通道拒收）按帧类分计（T1.5）：wake 用 `wake.write-fail`，其余 `send.write-fail`。
+ */
 export function sendToExecutor(executor: Executor, message: ManagerToExecutor): void {
   if (executor.run.ended !== undefined) return
-  if (!executor.run.ready) return
+  if (!executor.run.ready && message.t !== 'snapshot') return
   if (!executor.link.send(message)) {
     executor.diagnostic('warn', message.t === 'collaboration.wake' ? 'wake.write-fail' : 'send.write-fail',
       { gen: executor.gen, session: executor.run.session, kind: message.t })
