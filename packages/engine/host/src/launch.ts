@@ -39,10 +39,16 @@ export type ExecutorSpawn = {
 }
 
 /** 一次发车的交回——取消与完成，外加**管理者侧通道**（命令、bye、协作回执都走它）。 */
+/** 一次发车的交回——取消与完成，外加**管理者侧通道**（命令、bye、协作回执都走它）。 */
 export type ExecutorSpawned = {
   readonly link: Link<ExecutorToManager>
   onExit(listener: (reason: string) => void): void
-  /** 请求收场（进程模式＝SIGTERM；进程内＝取消在途）。 */
+  /**
+   * **请求收场的第一档**（进程模式发 SIGTERM）。
+   *
+   * ⚠️ executor 子进程**有意忽略裸信号**（防幽灵信号打断工作，见 executor-process.ts）——
+   * 对它们这一档是空操作：优雅收场的权威在管理者的 `bye` 帧，最后一档是 `kill()`。
+   */
   cancel(): void
   /**
    * **最后一档**（可选）——宽限过后仍不肯走的执行者，单独强杀。
@@ -125,7 +131,7 @@ export type ProcessLauncherOptions = {
   readonly log?: ((line: string) => void) | undefined
 }
 
-/** 执行者的独立子进程——真并行、故障隔离；SIGTERM 兜底回收。 */
+/** 执行者的独立子进程——真并行、故障隔离；优雅收场经 `bye` 帧，SIGKILL 最后一档兜底。 */
 export function createProcessLauncher(options: ProcessLauncherOptions = {}): ExecutorLauncher {
   const pending = new Map<string, { channel: ReturnType<typeof createDeferredChannel>; cancel: () => void; kill: () => void }>()
 
@@ -197,7 +203,9 @@ export function createProcessLauncher(options: ProcessLauncherOptions = {}): Exe
         link: channel.link,
         onExit(listener) { exitListeners.push(listener) },
         cancel() {
-          pending.delete(request.executionId)
+          // ⚠️ **SIGTERM 对 executor 子进程是空操作**——子进程有意忽略裸信号（防幽灵信号
+          // 打断工作，见 executor-process.ts），优雅收场的权威在管理者的 `bye`，强杀走 kill()。
+          // 这里只是停止编排的第一档，真正起作用的是后两档。
           pending.delete(request.executionId)
           try { child?.kill() } catch { /* 已退——不追 */ }
         },
