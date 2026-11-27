@@ -25,7 +25,8 @@ export function installStopping(ctx: ManagerContext): {
   ctx.runStops = createRunStops({
     now, liveOf: session => ctx.liveOf(session), lastRuns, stopGraceMs: ctx.stopGraceMs, stopKillMs: ctx.stopKillMs,
     deliver: (executor, command) => ctx.deliver(executor, command),
-    reportStop: ctx.reportStop,
+    // reportStop 的挂载在本安装之后——按值绑定会在构造期拿到 undefined（T4 停止链回归根因），延迟转发。
+    reportStop: (id, session, scope, phase, note) => ctx.reportStop(id, session, scope, phase, note),
     changed: (immediate = false) => { ctx.saveRuns(immediate); ctx.pushRuns() },
     log: options.log,
     onSettled(run, note) {
