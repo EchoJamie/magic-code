@@ -538,11 +538,15 @@ export function assemble(options: AssembleOptions): Assembly {
 
       // **run 级准入**（协作成员；普通会话无协作身份，跳过）——beginExecution 一次，
       // 不随每个工具调用重复（T2.2 降频）。准入失败＝这一轮没有开始执行（N14），留账待再试。
-      if (recordsStore.collaboration.agentForSession(active.session) !== undefined && options.collaboration !== undefined) {
+      const agent = recordsStore.collaboration.agentForSession(active.session)
+      if (agent !== undefined && options.collaboration !== undefined) {
         try {
           await options.collaboration(active.session, {
             action: 'beginExecution', operationId: `run:${executionId}:${crypto.randomUUID()}`,
-            at: now(), runId: executionId, kind: 'model', mode: 'work',
+            at: now(), runId: executionId, kind: 'model',
+            // 2026-11-24 准入口径：咨询执行者的执行就是协调形态（答询本身），
+            // 其余成员带 accepted delegation 走 work；purpose 与跳过判据同源读出。
+            mode: agent.purpose === 'consultation' ? 'coordination' : 'work',
           })
         } catch { /* 准入帧失败＝未准入：行留 pending，用户可「立即再试」 */ }
       }

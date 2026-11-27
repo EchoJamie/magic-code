@@ -347,8 +347,10 @@ export function createManagedCollaboration(host: CollaborationHost) {
       const isCoordinator = agent.agentId === collaboration?.coordinatorId
       let suspended = false
       if (!isCoordinator) {
+        // 「已交付待确认」是协调者侧的认收状态（N9 ackTimeout 兜底），不是成员未完成——
+        // 顾问交付即完成份内事（completeConsultation 已置 historical），不在此覆写。
         const unfinishedWork =
-          records.listDelegations(agent.collaborationId).some(d => d.assigneeId === agent.agentId && ['queued', 'clarification', 'accepted', 'delivered'].includes(d.state)) ||
+          records.listDelegations(agent.collaborationId).some(d => d.assigneeId === agent.agentId && ['queued', 'clarification', 'accepted'].includes(d.state)) ||
           records.listExecutions(agent.collaborationId).some(e => e.agentId === agent.agentId && e.state !== 'finished')
         records.setReachability(agent.agentId, unfinishedWork ? 'suspended' : 'historical')
         suspended = unfinishedWork
