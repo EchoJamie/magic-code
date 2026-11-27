@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { alive } from '@magic/host'
 import { connectManager, type ManagerClient } from '@magic/host'
-import { startResidentHost } from './resident-host-fixture.ts'
+import { startResidentHost, debugLogs } from './resident-host-fixture.ts'
 import { createSandbox, startFixture } from './ui/index.ts'
 
 async function waitFor(check: () => boolean) {
@@ -36,7 +36,10 @@ for (const how of ['shutdown', 'signal'] as const) {
           } finally { db.close() }
         } catch { return false }
       })
+      await waitFor(() => host.executorStarts() >= 1) // 执行者子进程的诊断落盘是异步 pump，先等它出现
       expect(host.executorStarts()).toBe(1)
+      // T1 消费流：受理落账→ready wake→dequeue→consume→模型调用，请求晚于 spawn 到达。
+      await waitFor(() => fixture.requests().some((one) => one.path.endsWith('/chat/completions')))
       expect(fixture.requests().filter((one) => one.path.endsWith('/chat/completions'))).toHaveLength(1)
       const pid = host.pid
       const socket = host.discovery.socket
