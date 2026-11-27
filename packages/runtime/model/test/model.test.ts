@@ -590,6 +590,7 @@ function apiError(input: {
   statusCode?: number
   responseBody?: string
   isRetryable?: boolean
+  cause?: unknown
 }): APICallError {
   return new APICallError({
     message: input.message ?? 'request failed',
@@ -598,6 +599,7 @@ function apiError(input: {
     ...(input.statusCode === undefined ? {} : { statusCode: input.statusCode }),
     ...(input.responseBody === undefined ? {} : { responseBody: input.responseBody }),
     ...(input.isRetryable === undefined ? {} : { isRetryable: input.isRetryable }),
+    ...(input.cause === undefined ? {} : { cause: input.cause }),
   })
 }
 
@@ -660,6 +662,18 @@ describe('错误分档', () => {
     expect(message).toBe(`invalid params — ${body}`)
     // 响应体只出现一次（原样拼接会带三遍）
     expect(message.split('unknown model').length - 1).toBe(1)
+  })
+
+  test('cause 链进报错文本——子进程/网络层错误的根因不再丢（T4 e2e 诊断）', () => {
+    const root = new Error('ECONNRESET')
+    const wrapped = apiError({ statusCode: undefined, message: 'fetch failed', cause: root })
+    const message = describeModelError(wrapped)
+    expect(message).toContain('fetch failed')
+    expect(message).toContain('ECONNRESET')
+
+    // 深层 cause（undici 的 SSE 解析错误挂在 cause.cause）同样收。
+    const deep = apiError({ statusCode: undefined, message: 'fetch failed', cause: new Error('parse error', { cause: root }) })
+    expect(describeModelError(deep)).toContain('ECONNRESET')
   })
 
   test('中断判定：AbortError 与 abort 措辞', () => {

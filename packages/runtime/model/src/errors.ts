@@ -80,7 +80,25 @@ function errorTextOf(error: unknown, limit: number): string {
     chunks.push(trimmed)
   }
 
-  if (error instanceof Error) push(error.message)
+  /** cause 链（限深 3）：子进程/网络层错误的根因常挂在 `cause` 上（undici 的 fetch failed→ECONNRESET 那条）——只看 message 会把根因整条丢掉（T4 e2e 诊断）。 */
+  const pushCause = (error: unknown, depth: number): void => {
+    if (depth > 3) return
+    const cause = (error as { readonly cause?: unknown })?.cause
+    if (cause === undefined || cause === null) return
+    if (cause instanceof Error) {
+      push(`${cause.name}: ${cause.message}`)
+      pushCause(cause, depth + 1)
+    } else if (typeof cause === 'string') {
+      push(cause)
+    } else if (cause !== null && typeof cause === 'object') {
+      try { push(JSON.stringify(cause)) } catch { /* 循环引用——跳过 */ }
+    }
+  }
+
+  if (error instanceof Error) {
+    push(error.message)
+    pushCause(error, 0)
+  }
   else if (typeof error === 'string') push(error)
   else if (error !== null && error !== undefined && typeof error !== 'object') push(String(error))
 

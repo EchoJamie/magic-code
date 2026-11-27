@@ -222,6 +222,13 @@ export type RecordsStore = {
     limit: number,
   ): readonly Entry[]
   /**
+   * **会话有无历史条目**（含 `continuation`）——接回/新开的语义分界（T4 裁定：
+   * 装配档位自查用）。engine 受理先行的空会话返回 `false`；压缩过的会话
+   * （只有 continuation）返回 `true`——压缩产物同样是历史。
+   * 同步读（装配期可用）；不创建会话。
+   */
+  hasEntries(session: SessionId): boolean
+  /**
    * **blob 存取**（写权唯一归本域）——**不经会话实例**：blob 引用与会话无关
    * （它是记录域内部键，契约里对消费者不透明）。会话未定时取回正文要用它（读面同例）。
    */
@@ -750,8 +757,12 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   }
 
   /** 在不在库里（见 `RecordsStore.hasSession`）——一行存在即「在」。 */
-  function hasSession(session: SessionId): boolean {
-    return selectSessionExists.get(session) !== null
+  /** `hasEntries` 的读句——含 continuation（T4 裁定：压缩产物同样是历史）。 */
+  const selectAnyEntry = db.query<{ id: number }, [string]>(
+    `SELECT id FROM ${ENTRIES_TABLE} WHERE session = ? LIMIT 1`,
+  )
+
+  function hasSession(session: SessionId): boolean {    return selectSessionExists.get(session) !== null
   }
 
   function setSessionTitle(session: SessionId, title: string, at: Timestamp): void {
@@ -816,6 +827,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     latestSession,
     decisionHistory,
     hasSession,
+    hasEntries: (session: SessionId): boolean => { assertSessionId(session); return selectAnyEntry.get(session) !== undefined },
     isSessionArchived,
     setSessionArchived: (session, archived) => setSessionArchived.immediate(session, archived),
     setSessionTitle,
