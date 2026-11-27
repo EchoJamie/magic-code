@@ -3223,7 +3223,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       send({ type: 'compact.request', session, requestId, ...(focus ? { focus } : {}) })
       return NONE
     }
-    if (text.trim() === '/status' && text.startsWith('/status ') && view.compactions.some(one => one.session === view.sessionId)) {
+    if ((text.trim() === '/status' || text.startsWith('/status ')) && view.compactions.some(one => one.session === view.sessionId)) {
       draft({ ...view, draft: '', refs: [], caret: 0, completion: null })
       showCompactions(); return NONE
     }

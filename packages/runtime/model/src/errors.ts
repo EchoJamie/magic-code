@@ -187,7 +187,9 @@ export function redactSecrets(text: string, secret?: string | undefined): string
 
 /** 归一后的错误消息——已脱敏、已限长，可直接进事件 / 记录 / 屏幕。 */
 export function describeModelError(error: unknown, secret?: string | undefined): string {
-  const raw = errorTextOf(error, MESSAGE_TEXT_LIMIT).trim()
+  // **先脱敏再截断**（P0 修复）：先按上限切片会让恰好跨上限的凭据残片漏过匹配
+  // （完整串匹配不到、通用令牌特征也够不上剩余长度），前缀就原样进了记录 / 事件。
+  const raw = redactSecrets(errorTextOf(error, Number.MAX_SAFE_INTEGER), secret).trim().slice(0, MESSAGE_TEXT_LIMIT)
   const message = raw.length > 0 ? raw : '模型调用失败（未提供错误详情）'
-  return redactSecrets(message, secret)
+  return message
 }
