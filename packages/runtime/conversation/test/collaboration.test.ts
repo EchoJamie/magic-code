@@ -1,8 +1,10 @@
 import { expect, test } from 'bun:test'
+import type { ToolCall } from '@magic/contracts'
 import { buildSystemPrompt } from '../src/prompt/index.ts'
 import { agentLoop } from '../src/agent-loop.ts'
 import { collaborationPrompt, COLLABORATION_HINT } from '../src/collaboration.ts'
 import type { CollaborationBoundary } from '../src/collaboration.ts'
+import { gateToolBatch } from '../src/turn-cycle.ts'
 import { createConversationSession } from '../src/service.ts'
 import { makeLoopRuntime, makeStage, waitUntilIdle } from './support/harness.ts'
 
@@ -10,6 +12,29 @@ function boundary(overrides: Partial<CollaborationBoundary> = {}): Collaboration
   return { consume: async () => false, context: async () => '当前职责：验证。', admit: () => undefined,
     requested: () => undefined, ...overrides }
 }
+
+test('批内中止：已发起的调用补「没跑」结果条目，台账不留无结果的调用（P0 回归）', async () => {
+  const stage = makeStage()
+  const controller = new AbortController()
+  const runtime = makeLoopRuntime(stage, { collaboration: boundary({ consume: async () => { controller.abort(); return false } }) })
+  const calls: ToolCall[] = [
+    { id: 'c1', name: 'exec', args: { command: 'first' } },
+    { id: 'c2', name: 'exec', args: { command: 'second' } },
+  ]
+  // 中止落在两笔之间：第一笔已过闸落条目（begun），第二笔的批内自查撞上中止。
+  const outcome = await gateToolBatch(runtime, calls, controller.signal, [])
+  expect(outcome.aborted).toBe(true)
+  expect(outcome.begun).toHaveLength(1)
+  const kinds = stage.records.entries.map(entry => entry.kind)
+  // 调用与结果成对：不留「有调用无结果」的在途假象
+  expect(kinds.filter(kind => kind === 'tool-call')).toHaveLength(1)
+  expect(kinds.filter(kind => kind === 'tool-result')).toHaveLength(1)
+  expect(stage.records.entries.at(-1)?.payload).toMatchObject({ ok: false, notExecuted: true })
+  // 屏上无在飞可清：tool.call / tool.result 事件都未发出（调用从未到过工具域）
+  expect(stage.sink.byKind('tool.call')).toHaveLength(0)
+  expect(stage.sink.byKind('tool.result')).toHaveLength(0)
+  expect(stage.tools.calls).toHaveLength(0)
+})
 
 test('批次中补充：已发起的调用如实完成，新交代在下一轮开始前重新判断', async () => {
   let fresh = false

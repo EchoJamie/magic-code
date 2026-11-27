@@ -330,7 +330,13 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   function flushCompact(): Promise<void> {
     if (compactFlight !== undefined) return compactFlight
     const operation = compactPending
-    if (operation === undefined || (!operation.signal.aborted && (pending.length > 0 || supplements.length > 0 || (operation.awaitInput && state.running)))) return Promise.resolve()
+    if (operation === undefined) return Promise.resolve()
+    // **「下一件」被委派收束持有的停顿就是边界**（P0 修复）：轮队列停在
+    // waitingForDelegations 上时不会再有条目落账——把「pending 非空」当「还有输入要落」
+    // 会让压缩永远等不到边界，而 startDrainIfIdle / wake 又闸在 compactPending 上，
+    // 双方互相卡死（busy 恒真）。此时放行压缩；队列继续等委派收束。
+    const heldForDelegations = !state.running && waitingForDelegations(pending[0]?.input)
+    if (!operation.signal.aborted && (supplements.length > 0 || (pending.length > 0 && !heldForDelegations) || (operation.awaitInput && state.running))) return Promise.resolve()
     compactFlight = Promise.resolve().then(async () => {
       const base = { requestId: operation.request.requestId, ...(operation.request.focus === undefined ? {} : { focus: operation.request.focus }), accepted: true as const }
       try {

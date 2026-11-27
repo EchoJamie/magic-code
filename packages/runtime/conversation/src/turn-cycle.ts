@@ -248,7 +248,18 @@ export async function gateToolBatch(
   let rejudging = false
   const begun: ToolBatchCall[] = []
   for (const call of calls) {
-    if (signal.aborted) return { begun, aborted: true }
+    if (signal.aborted) {
+      // **中止收口**（P0 修复）：此前迭代已放进 begun 的调用，条目已经落在台账上
+      // （beginToolCall）——就此返回会让它们永远「有调用无结果」（在途语义被中止批量制造）。
+      // 补一条「没跑」的结果条目配平；不发 `tool.result` 事件——`tool.call` 事件从未
+      // 发出，屏上本就没有这几件在飞的东西可清。
+      for (const started of begun) {
+        appendToolResultEntry(entryLogOf(runtime), {
+          ok: false, text: `已停止：${started.call.name} 没有开始执行`, content: { text: `已停止：${started.call.name} 没有开始执行` }, notExecuted: true,
+        })
+      }
+      return { begun, aborted: true }
+    }
     rejudging = (await runtime.collaboration?.consume()) === true || rejudging
     const refusal = runtime.collaboration?.admit(call)
     if (refusal !== undefined || rejudging) {

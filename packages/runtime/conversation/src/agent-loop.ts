@@ -215,13 +215,11 @@ async function runTurn(
         // 模型域的事件**原样转发**——过程流的消费者（渲染 / 记录）按 kind 收窄
         sink.emit(event)
 
-        // 回执欠账的偿还在账务模块里（`onStreamEvent`：判「这次请求真回来了」并报收）。
-        accounting.onStreamEvent(event)
-
         if (event.kind === 'model.delta' && event.data.channel === 'text') text += event.data.text
         if (event.kind === 'model.delta' && event.data.channel === 'thinking') thinking += event.data.text
-        // 用量过账（压缩阈值读数）与回执偿还在账务模块里；`model.error` 是本轮定论信号
-        //（不变式 ④：其后无事件）。
+        // 用量过账（压缩阈值读数）与回执偿还都在账务模块里（`onStreamEvent`：判「这次请求
+        // 真回来了」并报收）；`model.error` 是本轮定论信号（不变式 ④：其后无事件）。
+        // ⚠️ 每条事件只过账一次（P0 修复：此前同一段里调了两次）。
         accounting.onStreamEvent(event)
         if (event.kind === 'model.error') {
           errored = true
