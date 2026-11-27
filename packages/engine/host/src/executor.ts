@@ -390,10 +390,18 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     }, HEARTBEAT_MS)
   }
 
+  /** **圈尾闸 · 进程层**（边界方案 §七 C）：还有没有任何「干活的理由」——在途轮次、
+   * 待办（本地队列或账本）、在答责任、后台命令。全空 ⇒ 排收缩退场；与
+   * `service.drain` 的轮队列层闸是同一判据的两个实例（轮内一拍 / 进程一拍）。 */
+  function workOpen(): boolean {
+    return busy || assembly.hasPendingInput() || assembly.hasPendingLedgerInput() || live.turnOpen
+      || (assembly.background?.running().length ?? 0) > 0
+  }
+
   /** 合并相邻事件后再确认无责任，避免当前调用链尚未派完就释放进程。 */
   function considerShrink(): void {
     if (closing) return
-    if (busy || assembly.hasPendingInput() || assembly.hasPendingLedgerInput() || live.turnOpen || (assembly.background?.running().length ?? 0) > 0) {
+    if (workOpen()) {
       if (shrinkTimer !== undefined) {
         clearTimeout(shrinkTimer)
         shrinkTimer = undefined
@@ -404,7 +412,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
 
     shrinkTimer = setTimeout(() => {
       shrinkTimer = undefined
-      if (closing || busy || assembly.hasPendingInput() || assembly.hasPendingLedgerInput() || live.turnOpen || (assembly.background?.running().length ?? 0) > 0) return
+      if (closing || workOpen()) return
 
       // **持久化状态后释放**（设计 · 收缩）：收尾那两跳里就有「把没落完的落完」
       // ——故它是释放，不是丢下。

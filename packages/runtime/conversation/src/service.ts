@@ -431,6 +431,8 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         pending.unshift(...supplements.splice(0))
         if (pending.length === 0) break
         const first=pending[0]?.input
+        // **圈尾闸 · 轮队列层**（边界方案 §七 C）：待答责任未收束 ⇒ 这条工作周期暂停
+        //（与 executor 的进程层 `workOpen` 同一判据的两个实例——轮内一拍 / 进程一拍）。
         if (waitingForDelegations(first)) break
         const queued = pending.shift()!
         let input = queued.input
