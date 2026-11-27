@@ -107,10 +107,9 @@ export function createModelDomain(deps: ModelDomainDeps): ModelDomain {
   // 会话建立后，模型选择只存于该会话链；开局选择只用于首次构造。
   const modelsOf = (): ModelRegistry | undefined => deps.chain() === undefined ? initialModels : deps.chain()!.models
   if (deps.modelGateway === undefined) {
-    // 历史接回＝会话里真有条目（倒序读 1 条判非空；同步读面——构造是同步的）。
+    // 历史接回＝会话里真有历史条目（hasEntries 含 continuation；同步读面——构造是同步的）。
     // 引擎受理先行的空会话（账行在、条目空）不算接回，走宽松默认档；真接回缺档位仍报错。
-    const resumed = deps.startup !== undefined
-      && recordsStore.serviceFor(deps.startup).readEntriesBack(deps.startup, undefined, 1).length > 0
+    const resumed = deps.startup !== undefined && recordsStore.hasEntries(deps.startup)
     if (resumed && savedAgent === undefined) {
       throw new Error('该工作缺少已保存的模型组合，无法按历史接回——请在 /config · 模型与连接 配置模型档位，/model 切到档位后继续；历史记录已保留')
     }
