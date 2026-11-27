@@ -464,7 +464,15 @@ export function installCommands(ctx: ManagerContext): void {
         ...(picked === undefined ? {} : { switch: picked }),
       })
       if (spawned === undefined) {
-        // 受理已落账（发件箱）——起不了执行者不是受理失败：输入留账上，等它起来消费。
+        // duplicate（旧代活者）不是受理失败：受理的输入由活执行器继续——**立即消费信号**
+        // （拒绝 spawn 的同时直接向活执行器发 wake，不等对账器的 5s 冷却）。
+        const live = ctx.liveOf(accepted.session)
+        if (live !== undefined) {
+          send(live, { t: 'collaboration.wake' })
+          conn.link.send({ t: 'line', text: '执行者已在运行，交代已受理由它继续' })
+          return
+        }
+        // 非 duplicate 的真资源失败（archived/环境不可用等）：输入留账上，对账器兜底。
         conn.link.send({ t: 'line', text: '起不了执行者——这条交代已受理，会在执行者可用后自动继续' })
         return
       }

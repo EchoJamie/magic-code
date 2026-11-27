@@ -60,8 +60,7 @@ export function welcomeNotices<T extends { readonly detail?: string }>(notices: 
 }
 
 /** 纯读命令集——只读观察连接（T1.6）放行这些，其余一律拒。 */
-export const READONLY_COMMANDS = new Set([
-  'session.list', 'session.open', 'session.references', 'history.read', 'plan.read',
+export const READONLY_COMMANDS = new Set([  'session.list', 'session.open', 'session.references', 'history.read', 'plan.read',
   'model.list', 'model.refresh', 'models.search', 'provider.list', 'skills.list',
   'paths.list', 'paths.identify', 'mcp.list', 'knowledge.query', 'knowledge.read',
   'memory.read', 'memory.source', 'collaboration.read', 'compact.query',
