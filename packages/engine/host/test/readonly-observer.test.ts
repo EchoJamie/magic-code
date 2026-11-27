@@ -55,3 +55,24 @@ test('第二读者只读：明示占用方、标记只读；写者离开后写�
   expect(executor.writerConn).toBe(returning.id)
   expect(returning.readonlyObserver).toBeUndefined()
 })
+
+test('只读观察者断开：不解除同目标其它观察者的保护（P0 回归——写位仍在写者手里）', () => {
+  const connections = createClientConnections(() => {})
+  const executor = fakeExecutor(2, 's-2')
+  const writer = clientOf(connections, 'tui-a')
+  connections.bind(writer, executor)
+  const readerA = clientOf(connections, 'tui-b')
+  connections.bind(readerA, executor)
+  const readerB = clientOf(connections, 'tui-c')
+  connections.bind(readerB, executor)
+  expect(executor.writerConn).toBe(writer.id)
+  expect(readerA.readonlyObserver).toBe(true)
+  expect(readerB.readonlyObserver).toBe(true)
+
+  // **其中一个观察者走了**：写位没动，另一个观察者的保护原样留着——
+  // 此前 releaseTarget 无条件清同目标全部连接的标记，剩下的「只读浏览」窗口
+  // 能发出写命令，与仍在场的写者构成双写。
+  connections.dropClient(readerA.id)
+  expect(executor.writerConn).toBe(writer.id)
+  expect(readerB.readonlyObserver).toBe(true)
+})

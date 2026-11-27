@@ -47,9 +47,14 @@ export function createClientConnections(changed: () => void, log?: (line: string
 
   function releaseTarget(conn: ConnectionState): void {
     // 写者离开时释放执行器写位（后来者 bind 接管为写者）。
-    if (conn.target !== undefined && conn.target.writerConn === conn.id) conn.target.writerConn = undefined
-    if (conn.target !== undefined) for (const other of clients.values()) {
-      if (other.target === conn.target && other.readonlyObserver === true) other.readonlyObserver = undefined
+    if (conn.target !== undefined && conn.target.writerConn === conn.id) {
+      conn.target.writerConn = undefined
+      // **观察保护只随写位一起解除**（P0 修复）：写位还在别人手里时，一个只读观察者
+      // 断开不得解除同目标其它连接的保护——否则剩下的「只读浏览」窗口能发出写命令，
+      // 与仍在场的写者构成双写。
+      for (const other of clients.values()) {
+        if (other.target === conn.target && other.readonlyObserver === true) other.readonlyObserver = undefined
+      }
     }
     conn.readonlyObserver = undefined
     conn.target = undefined
