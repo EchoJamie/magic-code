@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { AgentModelConfig, AgentRoleConfig, CollaborationReply, ModelInfoSnapshot } from '@magic/contracts'
+import type { AgentModelConfig, AgentRoleConfig, CollaborationReply, CollaborationRequest, ModelInfoSnapshot } from '@magic/contracts'
 import { createRecordsStore } from '@magic/data'
 import { assemble } from '@magic/assembly'
 import { resolveManagedModel } from '@magic/host'
@@ -61,10 +61,43 @@ function setup(rolePatch: Partial<AgentRoleConfig> = {}, image?: boolean) {
   const collaboration = store.collaboration.openCollaboration(coordinator.agentId, { operationId: 'open', origin, at: 3 })
   const { agent, delegation } = store.collaboration.spawn(coordinator.agentId, { operationId: 'spawn', sessionId: 'member', name: '成员', role: 'reader', responsibility: 'PERSISTED_RESPONSIBILITY', model: { choice: 'cantrip', provider: 'mm', model: 'member-model', protocol: 'chat-completions', endpoint: providers.mm.baseURL, reasoning: { mode: 'default' } }, body: [{ kind: 'text', text: '按职责审查' }], scope: '只读工作', source: origin, authorization: [origin], at: 4 })
   store.collaboration.respondToDelegation(agent.agentId, { operationId: 'accept', delegationId: delegation.delegationId, response: 'accept', at: 5 })
+  // 协作通道的替身——模拟 engine 的 **registry 段**（T1.1 后这些账本写经帧；engine
+  // 处理器就是调同一份 store 方法，见 actions/collaboration.ts 与 lifecycle.ts 的 dequeue）；
+  // 模型可见的协作操作仍拒（本用例不发送协作请求）。
+  const registryStub = (session: string) => async (_from: string, request: CollaborationRequest): Promise<CollaborationReply> => {
+    const records = store.collaboration
+    const actor = records.agentForSession(session)
+    if (actor === undefined) return { ok: false, reason: '成员身份未登记' }
+    if (request.action === 'consumeInbox') return { ok: true, value: records.consumeInbox(actor.agentId, request.at, request.limit) }
+    if (request.action === 'markIncluded') {
+      records.markIncluded(actor.agentId, request.messageIds, request.at)
+      return { ok: true, value: { included: request.messageIds.length } }
+    }
+    if (request.action === 'beginExecution') return { ok: true, value: records.beginExecution(actor.agentId, {
+      operationId: request.operationId, at: request.at,
+      ...(request.delegationId === undefined ? {} : { delegationId: request.delegationId }),
+      runId: request.runId, kind: request.kind, ...(request.mode === undefined ? {} : { mode: request.mode }),
+    }) }
+    if (request.action === 'finishExecution') { records.finishExecution(request.execution, request.reason); return { ok: true, value: { finished: request.execution } } }
+    if (request.action === 'publishConstraint') return { ok: true, value: records.publishConstraint(actor.agentId, request) }
+    if (request.action === 'registerIdentity') {
+      if (request.session !== actor.sessionId) return { ok: false, reason: '执行身份与连接不符，未登记' }
+      return { ok: true, value: { agentId: actor.agentId, name: actor.name } }
+    }
+    if (request.action === 'dequeue') {
+      const inputs = store.serviceFor(session).inputs
+      const dequeued = request.refs.filter((ref: string) => {
+        const revision = inputs.get(ref)?.revision
+        return revision !== undefined && inputs.dequeue(ref, revision)
+      })
+      return { ok: true, value: { dequeued } }
+    }
+    return { ok: false, reason: '本用例不发送协作请求' }
+  }
   const open = (session = 'member', coordinate = true, collaborationChanged?: () => void) => assemble({
     cwd: changed, session, magic, config: loadConfig({ path: configPath, magic }),
     collaborationChanged,
-    ...(coordinate ? { collaboration: async (): Promise<CollaborationReply> => ({ ok: false, reason: '本用例不发送协作请求' }) } : {}),
+    ...(coordinate ? { collaboration: registryStub(session) } : {}),
   })
   return { root, magic, workspace, changed, dataDir, guide, skillDir, seen, store, agent, delegation, coordinator, collaboration, config, configPath, providers, open,
     usage(value: Record<string, unknown> | undefined) { usage = value },
