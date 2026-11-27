@@ -55,6 +55,17 @@ export function createManagedCollaboration(host: CollaborationHost) {
   })
 
   const completing = new Set<string>()
+  /** **接管/重启成员时撤下进程失败的逃逸口**（P27 读面与账本对齐）：该成员的
+   * collab-fail 项在新一代开工那一刻已由接管者接手，不再需要入口关注。 */
+  function clearCollabFail(agent: AgentIdentity): void {
+    const work = records.collaborationForSession(agent.sessionId)
+    const originSession = work?.originSessionId
+    if (originSession === undefined) return
+    const stale = host.store.attention
+      .list({ sessions: [originSession] })
+      .filter(one => one.id.startsWith('collab-fail:') && one.fact.includes(agent.name))
+    if (stale.length > 0) host.store.attention.markRead(stale.map(one => one.id))
+  }
   /** 入口结束自动认收（N9）：coordinator 名下 delivered 未 received 的委派代收，标「自动认收」。 */
   function autoReceiveDeliveries(collaborationId: import('@magic/contracts').CollaborationId): void {
     const work = records.getCollaboration(collaborationId)
@@ -261,6 +272,8 @@ export function createManagedCollaboration(host: CollaborationHost) {
           // 不再要求「先明确继续」的独立步骤；归档的拦截在更上游（isSessionArchived）保留。
           const shared = command.shared === true
           const receiver = shared ? records.getAgent(collaboration.coordinatorId)! : target ?? records.getAgent(collaboration.coordinatorId)!
+          // **直接打字即接管**（2026-11-24 裁定）：新一代开工，成员此前的进程失败逃逸口撤下。
+          clearCollabFail(receiver)
           await host.start(receiver)
           host.input(receiver.sessionId, command.input, shared)
           break
@@ -330,17 +343,33 @@ export function createManagedCollaboration(host: CollaborationHost) {
       // 未 finished 的 execution。有 ⇒ 挂起待核实（「未完成/丢失」的事实源）；无 ⇒ 历史化。
       // ⚠️ 只适用于**协作成员**：coordinator 是入口自己，退出是正常收束（新一代接管），
       // reachability 保持 active，不影响后续准入。
-      const isCoordinator = agent.agentId === records.getCollaboration(agent.collaborationId)?.coordinatorId
+      const collaboration = records.getCollaboration(agent.collaborationId)
+      const isCoordinator = agent.agentId === collaboration?.coordinatorId
+      let suspended = false
       if (!isCoordinator) {
         const unfinishedWork =
           records.listDelegations(agent.collaborationId).some(d => d.assigneeId === agent.agentId && ['queued', 'clarification', 'accepted', 'delivered'].includes(d.state)) ||
           records.listExecutions(agent.collaborationId).some(e => e.agentId === agent.agentId && e.state !== 'finished')
         records.setReachability(agent.agentId, unfinishedWork ? 'suspended' : 'historical')
+        suspended = unfinishedWork
       }
       for (const execution of records.listExecutions(agent.collaborationId)) {
         if (execution.agentId === agent.agentId && execution.runId === runId && execution.state !== 'finished') records.finishExecution(execution.operationId, reason)
       }
       changed()
+      // **进程死亡最需要入口知情的路径**（T4 缺口补齐 · P27 同款通道）：suspended 分支
+      // 向发起会话写 attention + notify——对比成员轮次失败的对称推送（lifecycle.ts）。
+      // ⚠️ **不自动唤醒入口模型**（成员失败≠工作停止，自动模型调用越 P17 边界）——
+      // 入口 agent 在下一轮边界从账上读到成员结局，自行决定重派或接管。
+      if (suspended) {
+        const originSession = collaboration?.originSessionId ?? session
+        const fact = `成员 ${agent.name} 未完成：${reason}`
+        host.store.attention.put({
+          id: `collab-fail:${runId}`, session: originSession, kind: 'needs-you',
+          fact, at: host.now(), unread: true, delivered: false,
+        })
+        host.notify?.(originSession, fact)
+      }
       if (!isCoordinator && agent.purpose === 'consultation') await completeConsultation(session, reason)
     },
   }
