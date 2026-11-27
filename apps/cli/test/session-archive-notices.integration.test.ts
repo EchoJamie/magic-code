@@ -46,8 +46,6 @@ async function fixture(deps: { pendingRefs?: () => readonly string[] } = {}) {
             const row = records.inputs.get(ref)
             if (row !== undefined) records.inputs.consume(ref, row.revision, { kind: 'user', content: { text: row.input.text }, at: Date.now() })
           }
-          const consumed = (message.reply as { readonly value?: readonly { readonly messageId: string }[] }).value ?? []
-          if (consumed.length > 0) agentLink.send({ t: 'collaboration.request', requestId: `u123-include-${message.requestId}`, request: { action: 'markIncluded', operationId: `op:include-${message.requestId}`, messageIds: consumed.map(item => item.messageId), at: Date.now() } })
         }
         if (message.t === 'bye') for (const end of endings) end(message.why)
       })

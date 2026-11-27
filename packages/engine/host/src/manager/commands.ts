@@ -6,7 +6,7 @@ import type {
   Wire,
 } from '@magic/contracts'
 import { loadConfig, setPrefs } from '@magic/state'
-import { ARCHIVED_NOTE, backgroundOf, controlLink, createWorkEnvironment, linkOf, memoryWorkspace, query as observe, readMemory } from '@magic/host'
+import { ARCHIVED_NOTE, backgroundOf, controlLink, createWorkEnvironment, linkOf, memoryWorkspace, query as observe, readMemory, refresh } from '@magic/host'
 import { bindSessionReferences } from '@magic/conversation'
 import { installInputCommands } from './commands-input.ts'
 import type { Socket } from 'bun'
@@ -468,6 +468,12 @@ export function installCommands(ctx: ManagerContext): void {
         // （拒绝 spawn 的同时直接向活执行器发 wake，不等对账器的 5s 冷却）。
         const live = ctx.liveOf(accepted.session)
         if (live !== undefined) {
+          // 与 deliver 的 input.submit 支同责：新输入推进停止代次（旧菜单不得误停新一轮），
+          // 在途格与呈现同步——wake 只是信号，代次推进在受理侧完成。
+          live.run.busy = true
+          refresh(live.run, now())
+          ctx.stopGenerations.set(live.run, ctx.nextStopGeneration++)
+          if (live.run.session !== null) ctx.clearTurnNotice(live.run.session)
           send(live, { t: 'collaboration.wake' })
           conn.link.send({ t: 'line', text: '执行者已在运行，交代已受理由它继续' })
           return
