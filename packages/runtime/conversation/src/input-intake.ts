@@ -30,7 +30,9 @@ export async function prepareInput(
   // **executing 也进**（T1.1b/T2.1 dequeue 流）：本执行者刚出队的行在此落账消费
   // （inputs.consume 接 pending/executing 两源，executing→consumed 归执行者）。
   if (input?.ref !== undefined && stored?.state !== 'pending' && stored?.state !== 'executing') return undefined
-  if (stored !== undefined) input = stored.input
+  // **队列合并**（一期）：带 mergedRefs 的输入，正文以调用方拼接的合并稿为准
+  // （账本行的 body 仍是各自的原稿，行随 attach 指向同一条合并条目）。
+  if (stored !== undefined) input = input?.mergedRefs === undefined ? stored.input : { ...stored.input, text: input.text, mergedRefs: input.mergedRefs }
 
 
   // **此刻发得出去吗**（U60）——拦在**头一件**上（见 `LoopRuntime.submitRefusal`：
@@ -103,7 +105,11 @@ export async function prepareInput(
           ? prepareInput(runtime, latest.input, accepted, signal) : undefined
       }
       acceptedEntry = entryId
-      runtime.sink.emit(runtime.stamper.stamp('message.user', { entry: entryId }))
+      runtime.sink.emit(runtime.stamper.stamp('message.user', {
+        entry: entryId,
+        // **队列合并**：这次并入消费了哪些输入行（含合并进来的后续行）——外壳据它把整组排队条上屏。
+        ...(input.mergedRefs === undefined && input.ref === undefined ? {} : { refs: [input.ref, ...(input.mergedRefs ?? [])].filter((ref): ref is string => ref !== undefined) }),
+      }))
       if(input.ref!==undefined)runtime.sink.emit(runtime.stamper.stamp('input.pending',{inputs:pendingViews(runtime.records.inputs.list())}))
       // **共同约束的发布要真等**（P0 修复）：`userInput` 经帧的写现在返回 Promise——
       // 失败在这里上抛，走 refuse（回执 ok:false）与 error 事件。输入此刻已被消费

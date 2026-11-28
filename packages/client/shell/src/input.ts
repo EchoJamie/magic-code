@@ -26,6 +26,8 @@ export type ShellKey =
   | { readonly kind: 'ctrl+n' }
   | { readonly kind: 'pickerDetailTop'; readonly top: number }
   | { readonly kind: 'alt+enter' }
+  /** `option+上箭头`——把排队中的输入整组撤回，合并成一条回到输入框（一期）。 */
+  | { readonly kind: 'alt+up' }
   | { readonly kind: 'up'; readonly columns?: number }
   | { readonly kind: 'down'; readonly columns?: number }
 
@@ -70,6 +72,7 @@ export function toShellKeys(
   // 认键之前先剥（只剥行首那几条，见 `stripFocusReports`），后面的分支一个都不用改。
   input = stripFocusReports(input)
   if (key.return === true && key.meta === true) return [{kind:'alt+enter'}]
+  if (key.upArrow === true && key.meta === true) return [{kind:'alt+up'}]
   if (key.ctrl === true && input === 'p') return [{ kind: 'ctrl+p' }]
   if (key.ctrl === true && input === 'n') return [{ kind: 'ctrl+n' }]
   if (key.ctrl === true && input === 'c') return [{ kind: 'ctrl+c' }]

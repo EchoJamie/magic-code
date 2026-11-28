@@ -63,7 +63,7 @@ describe('组件规格 · 行的标记与颜色', () => {
     const stage = live()
     stage.type('看看这个工作区里有什么')
     stage.press({ kind: 'enter' })
-
+    stage.include()
     const frame = await stage.screen()
     const row = frame.rowOf('› 看看这个工作区里有什么')
     const cells = frame.cellsOf(row)
@@ -278,7 +278,7 @@ describe('标记与悬挂缩进（原型只画了单行，这条补上）', () =
     const stage = live()
     stage.type('乙'.repeat(140))
     stage.press({ kind: 'enter' })
-
+    stage.include()
     const frame = await stage.screen({ columns: 200, rows: 40 })
     const head = frame.rowOf('› 乙')
     const tail = frame.textAt(head + 1)
@@ -300,7 +300,7 @@ describe('标记与悬挂缩进（原型只画了单行，这条补上）', () =
     const stage = live()
     stage.type('丙'.repeat(140))
     stage.press({ kind: 'enter' })
-
+    stage.include()
     const frame = await stage.screen({ columns: 200, rows: 40 })
     const tail = frame.cellsOf(frame.rowOf('› 丙') + 1)
     const body = tail.filter((cell) => cell.text.trim() !== '')
@@ -347,9 +347,11 @@ describe('密度（记录区不靠空行分层）', () => {
     const stage = live()
     stage.type('第一句')
     stage.press({ kind: 'enter' })
+    stage.include()
     stage.feed([event('model.delta', { channel: 'text', text: '答一' }), event('turn.end', { reason: 'settled' })])
     stage.type('第二句')
     stage.press({ kind: 'enter' })
+    stage.include()
     stage.feed([event('model.delta', { channel: 'text', text: '答二' }), event('turn.end', { reason: 'settled' })])
 
     const frame = await stage.screen()
@@ -384,6 +386,7 @@ describe('密度（记录区不靠空行分层）', () => {
     const stage = live()
     stage.type('改个文件')
     stage.press({ kind: 'enter' })
+    stage.include()
     stage.feed([
       event('turn.start', {}),
       // ⚠️ **空助手行真会出现**（模型只发工具调用、不吐正文的那一轮）——它一行都不占，
@@ -427,6 +430,7 @@ describe('密度（记录区不靠空行分层）', () => {
     const stage = live()
     stage.type('跑一下')
     stage.press({ kind: 'enter' })
+    stage.include()
     stage.feed([
       event('turn.start', {}),
       event('model.delta', { channel: 'text', text: '   ' }), // 只有空白
@@ -461,6 +465,7 @@ describe('记录区的三类行（后两类不重建）', () => {
     // 攒一屏「三类行」都在的现场：会话内容（重建得来）＋ 命令输出（`/help`）＋ 回执（`/model` 换成了）
     stage.type('/help ')
     stage.press({ kind: 'enter' })
+    stage.include()
     stage.feed([event('model.switched', { choice: 'cantrip', ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
 
     const before = await stage.screen()

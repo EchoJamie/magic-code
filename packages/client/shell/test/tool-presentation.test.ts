@@ -307,6 +307,7 @@ describe('差距 4 · 输入框——`shift+回车` 换行 · 多行草稿 · `�
     stage.press({ kind: 'newline' })
     stage.type('第二行')
     stage.press({ kind: 'enter' })
+    stage.include()
 
     const frame = await stage.screen(WIDE)
     const texts = frame.record.map((line) => line.text)
@@ -320,6 +321,7 @@ describe('差距 4 · 输入框——`shift+回车` 换行 · 多行草稿 · `�
     const stage = live()
     stage.type('第一句')
     stage.press({ kind: 'enter' })
+    stage.include()
     stage.feed([event('turn.end', { reason: 'settled' })])
 
     stage.press({ kind: 'up' })

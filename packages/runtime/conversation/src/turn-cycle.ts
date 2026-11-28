@@ -163,6 +163,8 @@ export async function prepareModelContext(
   accounting.newPass()
   // **协作消费与准入**——这一轮让不让进，由账面事实答（消费可能带回新交代/约束）。
   await runtime.collaboration?.consume()
+  // **打断插入式的并入点**（一期 · 唯一）：工具结果之后、下一请求装配之前。
+  await runtime.consumeInserts?.()
   if (runtime.collaboration?.admit() !== undefined) return { kind: 'aborted' }
 
   let included: readonly number[] = []
@@ -210,7 +212,9 @@ export async function afterModelError(
 /** 无工具调用的轮收束：协作消费可能带回新交代，续不续由账面回答（原判据原样）。 */
 export async function settleContinuation(runtime: LoopRuntime): Promise<boolean> {
   const changed = await runtime.collaboration?.consume()
-  return changed === true && runtime.collaboration?.admit() === undefined
+  // 收束前还有插入的话——并入并续跑（插入式的最后一个并入点）。
+  const inserted = await runtime.consumeInserts?.()
+  return (changed === true || inserted === true) && runtime.collaboration?.admit() === undefined
 }
 
 /** 轮尾继续条件的一翼：协作准入当前是否放行（未拒 ＝ true）。 */

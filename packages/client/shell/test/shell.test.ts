@@ -19,9 +19,17 @@ function live(options: Omit<ShellOptions, 'magicBase'> = {}) {
   const spy = createSpyTransport()
   const shell = createShell(spy.transport, { magicBase: '/test/.magic', ...options })
 
+  let included = 500
   return {
     shell,
     spy,
+    /** **并入队列条**（一期）：把排队输入按新契约上屏（模拟内核 message.user）。 */
+    include() {
+      const queued = shell.getView().queued
+      if (queued.length === 0) return
+      included += 1
+      spy.emit(event('message.user', { entry: included, refs: queued.map(one => one.ref) }))
+    },
     /** 敲一串字符。 */
     type(text: string) {
       for (const char of text) shell.key({ kind: 'char', char })
@@ -61,7 +69,7 @@ const ASK_SKILLS: Command = { type: 'skills.list' }
 // ══ 交代 ═════════════════════════════════════════════════════════════
 
 describe('交代（输入 → input.submit）', () => {
-  test('打字落进草稿；回车发出并本地回显', () => {
+  test('打字落进草稿；回车进队列条，并入那一刻才上屏', () => {
     const app = live()
 
     app.type('看下目录')
@@ -70,8 +78,15 @@ describe('交代（输入 → input.submit）', () => {
     app.press(ENTER)
     // `ref` ＝ 提交的配对键（U33）：`input.settled` 按它认回这份草稿（失败时原样还回来）
     expect(app.commands()).toEqual([{ type: 'input.submit', text: '看下目录', purpose: 'current', ref: expect.any(String) }])
-    expect(app.rows().at(-1)).toMatchObject({ kind: 'user', text: '看下目录' })
+    // **并入才显示**（一期）：提交只进队列条，记录区还没有这一行
+    expect(app.view().queued.map(one => one.text)).toEqual(['看下目录'])
+    expect(app.rows().some(row => row.kind === 'user')).toBe(false)
     expect(app.view().draft).toBe('')
+
+    app.include()
+    // 并入那一刻整组上屏，队列摘除
+    expect(app.rows().at(-1)).toMatchObject({ kind: 'user', text: '看下目录', echoed: false })
+    expect(app.view().queued).toEqual([])
   })
 
   test('空白不发命令、不清屏', () => {
@@ -179,6 +194,7 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     app.press(ENTER)
 
     expect(app.commands()).toEqual([ASK_SKILLS, { type: 'input.submit', text: '/nope', ref: expect.any(String), purpose: 'current' }])
+    app.include()
     expect(app.rows().at(-1)).toMatchObject({ kind: 'user', text: '/nope' })
   })
   test('目录命令明确路由到各自读侧，不将已注册命令作为模型输入', () => {

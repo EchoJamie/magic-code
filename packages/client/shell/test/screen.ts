@@ -25,6 +25,7 @@
 import chalk from 'chalk'
 import { createElement as h } from 'react'
 import type { Command, KernelEvent, RunRow, RunSnapshot, SessionId, StatusLineConfig, StopScope } from '@magic/contracts'
+import { event } from './events.ts'
 import { bannerOf } from '../src/banner.ts'
 import { AppView } from '../src/components/app.ts'
 import { screenFrame } from '../src/screen.ts'
@@ -361,6 +362,8 @@ export type StageOptions = {
 export type Stage = {
   readonly shell: Shell
   readonly spy: SpyTransport
+  /** **并入排队条**（一期）：模拟内核 message.user，把排队输入整组上屏。 */
+  include(): void
   /** 敲一串字符（逐字——与真按键同形）。 */
   type(text: string): void
   press(key: ShellKey): ShellEffect
@@ -419,6 +422,7 @@ export function createStage(options: StageOptions = {}): Stage {
   })
   let now: number | null = null
   let pulse: number | null = null
+  let entry = 100
 
   return {
     shell,
@@ -427,6 +431,13 @@ export function createStage(options: StageOptions = {}): Stage {
       for (const char of text) shell.key({ kind: 'char', char })
     },
     press: (key) => shell.key(key),
+    /** **并入队列条**（一期）：把排队中的输入按新契约并入上屏（模拟内核 message.user）。 */
+    include: () => {
+      const queued = shell.getView().queued
+      if (queued.length === 0) return
+      entry += 1
+      spy.emit(event('message.user', { entry, refs: queued.map(one => one.ref) }))
+    },
     feed: (events) => {
       for (const item of events) spy.emit(item)
     },

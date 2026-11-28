@@ -14,8 +14,8 @@ test('下一件等待真实委派结束，保留当前消费意图，结束事�
   try {
     f.shell.key({kind:'paste',text:'先分出受控前项'});f.shell.key({kind:'enter'})
     await f.wait('前项真实委派及根回合完成',()=>f.member()!==undefined&&f.manager.runs().find(run=>run.session===f.session())?.state==='idle'&&f.requests().length===2)
-    f.shell.key({kind:'paste',text:'U114_NEXT_AFTER_DELEGATION'})
-    f.shell.key({kind:'alt+enter'});f.pick('next');f.shell.key({kind:'enter'})
+    // 目的位（下一件）经命令直接落账——外壳的 option+回车现在走「另一种提交方式」，不再弹选择器
+    f.client.send({ type: 'input.submit', text: 'U114_NEXT_AFTER_DELEGATION', purpose: 'next' })
     await f.wait('下一件已可靠接收',()=>f.store.serviceFor(f.session()!).inputs.list().some(one=>one.input.text==='U114_NEXT_AFTER_DELEGATION'&&one.state==='pending'))
     await Bun.sleep(650)
     expect(f.requests().some(call=>requestText(call).includes('U114_NEXT_AFTER_DELEGATION'))).toBe(false)
@@ -38,7 +38,7 @@ test('真实 socket 延迟提交与未确认断线；重传同身份只消费一
     await Bun.sleep(250)
     expect(f.calls).toHaveLength(0)
     expect(await f.store.listSessions()).toEqual([])
-    expect(f.shell.getView().rows.some(row=>row.kind==='user'&&row.inputState==='提交中')).toBe(true)
+    expect(f.shell.getView().queued.some(one=>one.text.includes('U114_DELAYED_WIRE'))).toBe(true)
     const command=held.shift()!
     send(command);send(command)
     await f.wait('真实请求与实际带入回执',()=>f.events.some(event=>event.kind==='input.settled'&&event.data.stage==='included'))
@@ -49,7 +49,7 @@ test('真实 socket 延迟提交与未确认断线；重传同身份只消费一
     f.shell.key({kind:'paste',text:'U114_UNCONFIRMED_WIRE'});f.shell.key({kind:'enter'})
     f.client.close()
     await f.wait('真实连接关闭反馈',()=>f.shell.getView().draft==='U114_UNCONFIRMED_WIRE')
-    expect([...f.shell.getView().settled,...f.shell.getView().rows].some(row=>row.kind==='user'&&row.inputState==='未确认接收（连接已断开）')).toBe(true)
+    expect(f.shell.getView().queued.some(one=>one.text.includes('U114_UNCONFIRMED_WIRE')&&one.ack!==true)).toBe(false)
     expect(f.store.serviceFor(f.session()!).inputs.list().map(row=>row.input.text)).toEqual(['U114_DELAYED_WIRE'])
   } finally {await f.close()}
 },30000)

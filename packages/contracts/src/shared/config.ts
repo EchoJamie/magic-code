@@ -279,6 +279,12 @@ export type MagicConfig = {
   readonly turnDuration?: TurnDurationMode
   readonly statusLine?: StatusLineConfig
   /**
+   * **输入提交的缺省方式**（一期）——`queue`（队列按序：运行中的新话排队，工作收束后按序
+   * 处理）或 `insert`（打断插入：在下一个请求边界并入，已派发的工具照常跑完）。
+   * **回车走这里配的缺省，option+回车走另一种**。键缺省 ＝ `queue`。
+   */
+  readonly inputMode?: InputMode
+  /**
    * **界面动效**（U112）——见 `MotionConfig`。**键缺省＝按常态（有动效）**。
    */
   readonly motion?: MotionConfig
@@ -389,6 +395,9 @@ export function expandHome(raw: string, home: string): string {
 
 /** TUI 一轮执行耗时的显示口径。 */
 export type TurnDurationMode = 'elapsed' | 'active'
+
+/** 输入提交的缺省方式（一期）：`queue` 队列按序 · `insert` 打断插入。 */
+export type InputMode = 'queue' | 'insert'
 
 /** 交付待确认超时的缺省值（N9）——24h，可经 `MagicConfig.ackTimeoutMs` 配置。 */
 export const ACK_TIMEOUT_MS_DEFAULT = 24 * 60 * 60 * 1000

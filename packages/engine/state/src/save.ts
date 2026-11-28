@@ -321,7 +321,7 @@ export async function setPrefs(input: {
   readonly validate?: (raw: Record<string, unknown>) => void
   readonly request: PrefsSetRequest
 }): Promise<SaveOutcome> {
-  const { statusLine, reducedMotion, turnDuration, voice } = input.request
+  const { statusLine, reducedMotion, turnDuration, voice, inputMode } = input.request
 
   return editConfigFile({
     path: input.path,
@@ -342,6 +342,9 @@ export async function setPrefs(input: {
       // 整段因此空了就**把这一段摘掉**（同上：不留空壳）。
       if (turnDuration === 'active') next['turnDuration'] = turnDuration
       else if (turnDuration === 'elapsed') delete next['turnDuration']
+      // 输入提交的缺省方式（一期）：`queue` 是缺省，不写进配置（同 motion 的「没配过」口径）
+      if (inputMode === 'insert') next['inputMode'] = inputMode
+      else if (inputMode === 'queue') delete next['inputMode']
       if (reducedMotion !== undefined) {
         if (reducedMotion) next['motion'] = { reduced: true }
         else delete next['motion']

@@ -390,7 +390,8 @@ export type EventDataOf = {
     readonly continues?: true
   }
   // message——内容事件：正文归条目 / blob，事件只记「发生 + 引用」
-  'message.user': { readonly entry: RecordId }
+  // `refs`——这次并入消费了哪些输入行（队列合并时多于一条；外壳据它把排队条整组上屏）。
+  'message.user': { readonly entry: RecordId; readonly refs?: readonly string[] }
   'message.assistant': { readonly entry: RecordId }
   // model——调用级
   'model.call.start': {
@@ -1050,6 +1051,8 @@ export type EventDataOf = {
     readonly reducedMotion?: boolean
     /** 实验性 · 语音输入（`MagicConfig.experimental.voice`）——缺省＝关（D75）。 */
     readonly voice?: boolean
+    /** 输入提交的缺省方式（`MagicConfig.inputMode`）——缺省＝队列按序（一期）。 */
+    readonly inputMode?: import('../shared/config.ts').InputMode
     /** 一句话说明——只在有事要说时给（没写成的缘由 / 写成了哪几格）。 */
     readonly note?: string
   }

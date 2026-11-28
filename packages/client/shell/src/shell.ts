@@ -242,6 +242,11 @@ export type ShellOptions = {
   /** **sudo 密码组件**（U129）——请求与答复都走 UI→Engine 的瞬时通道。 */
   readonly sudo?: SudoFeed | undefined
   /**
+   * **输入提交的缺省方式**（一期）：`queue`（缺省）＝运行中的新话排队；
+   * `insert`＝下一个请求边界并入。此后随 `prefs.state` 更新。
+   */
+  readonly inputMode?: import('@magic/contracts').InputMode | undefined
+  /**
    * **语音输入**（U135）——由装配注入（本机能力在 `@magic/client` 那一侧）。
    * 不给＝这台机器上不提供语音入口（键位照旧，只是没人接）。
    */
@@ -657,6 +662,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   let exitWait: SessionId | null = null
 
   let waitsForSession: 'exit' | 'stop' | 'background' | null = null
+
+  /**
+   * **输入提交的缺省方式**（一期）：`queue`（缺省）＝运行中的新话排队；
+   * `insert`＝下一个请求边界并入。回车走它，option+回车走另一种；随 `prefs.state` 更新。
+   */
+  let inputMode: import('@magic/contracts').InputMode = options.inputMode ?? 'queue'
 
   /**
    * **技能名问过没有**（每个壳一次）——打 `/` 那一下问一遍（见 `askSkills`）。
@@ -1088,6 +1099,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         voiceEnabled: event.data.voice === true,
         turnDuration: event.data.turnDuration ?? 'elapsed',
       })
+      inputMode = event.data.inputMode ?? 'queue'
       if (held === 'statusline') openStatusLinePicker(picked(view)?.value === undefined ? 0 : view.dock.kind === 'picker' ? view.dock.picker.selected : 0)
       if (held === 'config') refreshConfigPicker()
       if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
@@ -1206,7 +1218,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       acceptBatch(event.data.ref, event.data.ok)
     }
     if (event.kind === 'input.settled' && event.data.stage !== 'accepted') {
-      settleDraft(event.data.ref, !event.data.ok && event.data.keepDraft !== false)
+      // **排队条里的失败由归约处理**（合并回输入框）；只有非排队路径（草稿未清的那类）
+      // 还走按 lastSubmit 的还稿。
+      // 排队条里的失败由归约合并回输入框（keepDraft=false 不还）；这里只按 keepDraft=false
+      // 清掉配对（ok:true 的受理也清——执行者退出时才不会把已受理的稿再还一遍）。
+      const wasQueued = (prior ?? view).queued.some(one => one.ref === event.data.ref)
+      if (wasQueued) settleDraft(event.data.ref, false)
+      else settleDraft(event.data.ref, !event.data.ok && event.data.keepDraft !== false)
     }
 
     if (event.kind === 'input.settled' && event.data.ok && event.session !== '') {
@@ -2139,7 +2157,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     commit(openPicker(view,{source:'input-pending',title:'输入受理记录',selected:Math.max(0,rows.findIndex(row=>row.value===focus)),rows,hint:'Enter 查看详情 · Esc 返回'}))
   }
 
-  const sendInput = (text: string, refs: readonly DraftRef[]): ShellEffect => {
+  const sendInput = (text: string, refs: readonly DraftRef[], insert?: boolean): ShellEffect => {
     if (!connected) { commit(appendReceipt(view, 'Engine 未连接，草稿未发送。')); return NONE }
     /**
      * 一条消息装不下时**不能静默丢**：发送端会拒发（连接保持），但用户会以为
@@ -2168,9 +2186,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // 每次明确提交都记一次，召回与取消不另记。
     rememberInput(text, refs, ref)
 
-    const echoed = view.inputMember === undefined ? appendEcho(cleared,text,userImages(refs)) : cleared
-    draft({...echoed,rows:echoed.rows.map((row,index)=>row.kind==='user'&&index===echoed.rows.length-1?{...row,inputRef:ref,inputState:'提交中'}:row)})
-    const input = { text, ref, purpose, ...(refs.length === 0 ? {} : { refs: wire(refs) }), ...(view.modelChoice === null ? {} : { model: view.modelChoice }) }
+    // **并入才显示**（一期）：提交不再回显——话进队列条（正文本身，贴输入框上沿），
+    // 真正并入会话记录（message.user）那一刻才上屏，后面跟模型答复。
+    const queuedView: ShellView = { ...cleared, queued: [...view.queued, { ref, text, ...(refs.length === 0 ? {} : { refs }), ...(userImages(refs).length === 0 ? {} : { images: userImages(refs) }) }] }
+    draft(queuedView)
+    const input = { text, ref, purpose, ...(insert === true ? { insert: true as const } : {}), ...(refs.length === 0 ? {} : { refs: wire(refs) }), ...(view.modelChoice === null ? {} : { model: view.modelChoice }) }
     // 子会话里输入只发给这一条子会话；入口会话默认只给自己（不再广播给成员）。
     const sub = currentMember(view)
     send(view.collaboration?.collaboration === undefined ? { type: 'input.submit', ...input }
@@ -2737,11 +2757,36 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         if (view.dock.kind === 'input') recallHistory(input.kind === 'ctrl+p' ? -1 : 1)
         return NONE
 
+      // **option+回车 ＝ 按另一种方式提交**（一期）：配置是队列按序时，这里是打断插入
+      // （下一请求边界并入，已派发工具不拦截）；配置是插入时，这里走队列。不再弹选择器。
       case 'alt+enter':
-        if(view.dock.kind!=='input')return NONE
-        layers=[...layers,layerNow()]
-        commit(openPicker(view,{source:'input-purpose',title:'本条输入用途',selected:view.inputPurpose==='next'?1:0,rows:[collaborationRow('current','当前补充','当前工具结束、下一工具前带入'),collaborationRow('next','下一件','前项工具、委派及待答结束后开始'),collaborationRow('pending','待处理输入','查看、编辑、撤回或明确继续')],hint:'选择用途不发送 · Esc 返回'}))
+        if (view.dock.kind !== 'input') return NONE
+        return submit(true)
+
+      /**
+       * **option+上箭头**（一期）：把队列条里的话**整组撤回**——多条合并成一条回到
+       * 输入框（含各自的引用，位置随合并后的正文重排），账本行 withdraw 原稿保留。
+       */
+      case 'alt+up': {
+        if (view.dock.kind !== 'input' || view.queued.length === 0) return NONE
+        const text = view.queued.map(one => one.text).join('\n\n')
+        const offset = view.draft.length === 0 ? 0 : view.draft.length + 2
+        const restoredRefs = view.queued.flatMap(one => (one.refs ?? []).map(ref => ({ ...ref, start: ref.start + offset, end: ref.end + offset })))
+        for (const item of view.queued) {
+          const row = view.pendingInputs.find(one => one.ref === item.ref)
+          if (row !== undefined && (row.state === 'pending' || row.state === 'executing')) {
+            send({ type: 'input.manage', action: 'withdraw', ref: item.ref, revision: row.revision })
+          }
+        }
+        commit(withCompletion({
+          ...view,
+          queued: [],
+          draft: view.draft === '' ? text : `${view.draft}\n\n${text}`,
+          caret: view.draft === '' ? text.length : view.caret,
+          refs: [...view.refs, ...restoredRefs],
+        }))
         return NONE
+      }
 
       case 'ctrl+o':
         return OPEN_SCREEN
@@ -2947,9 +2992,15 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   }
 
   /** 回车——接管 / 选择器 / 输入三种归处。 */
-  const submit = (): ShellEffect => {
+  /**
+   * 提交（一期 · 双模式）：`enter` 走配置的缺省方式（`inputMode`，缺省队列按序），
+   * `option+回车` 走另一种。`insert` 的消费点唯一（下一请求边界），已派发工具不拦截。
+   */
+  const submit = (viaOption?: boolean): ShellEffect => {
     // **启动中不收**（技术方案 · 装配视图第 5 步：以 `boot` 完成为界）——草稿留着
     if (!ready) return bootRefusal()
+    // 双模式（一期）：回车＝配置的缺省方式；option+回车＝另一种。
+    const insert = viaOption === true ? inputMode !== 'insert' : inputMode === 'insert'
     if (view.archived && view.dock.kind === 'input') { commit(noteResult(view, '会话已归档，请明确恢复后继续')); return NONE }
     // 本地小输入开着 ⇒ 回车是**把它交出去**（不是发交代——那一路归 `input.submit`）
     if (view.dock.kind === 'prompt') { prompt.submit(); return NONE }
@@ -3241,7 +3292,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
       if (!COMMANDS.some((command) => command.name === word)) {
 
-        if (refStartingAt(placed, 0) !== undefined) return sendInput(text, placed)
+        if (refStartingAt(placed, 0) !== undefined) return sendInput(text, placed, insert)
 
         const hit = resolveSkill(word.slice(1), view.skills?.skills ?? [])
 
@@ -3295,10 +3346,15 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         const batch = { history, through: clearedSequence }
         const input={text,refs:wire(placed),local:true as const,ref}
         if (connected) send(view.inputMember===undefined?{type:'input.submit',...input}:{type:'collaboration.input',member:view.inputMember,input})
+        // **slash 的展示规矩**（一期）：回车后要弹交互窗的，命令行**不落**展示区；
+        // 纯展示类的照旧连命令行一起落。判据就是这一趟跑完的结果接管了输入区没有。
+        const echoKey = `user.echo:${view.echoes}`
         const echoed = settle(appendEcho(view, text, userImages(placed)))
         const { next, commands, leaving } = runSlash(echoed, text)
-        const failed=!leaving&&commands.length===0&&([...next.settled,...next.rows].at(-1)?.kind==='receipt'||next.flash!==null&&next.flash!==view.flash)
-        draft(failed ? {...next,draft:text,refs:placed,caret:view.caret} : next)
+        const interactive = next.dock.kind === 'picker' || next.dock.kind === 'prompt'
+        const slashed = interactive ? { ...next, settled: next.settled.filter(row => row.key !== echoKey) } : next
+        const failed=!leaving&&commands.length===0&&([...slashed.settled,...slashed.rows].at(-1)?.kind==='receipt'||slashed.flash!==null&&slashed.flash!==view.flash)
+        draft(failed ? {...slashed,draft:text,refs:placed,caret:view.caret} : slashed)
         if (!failed) {
           const replyOf: Partial<Record<Command['type'], KernelEvent['kind']>> = {
             'session.new': 'session.state', 'session.rename': 'session.managed', 'session.list': 'session.state',
@@ -3316,7 +3372,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       }
     }
 
-    return sendInput(text, placed)
+    return sendInput(text, placed, insert)
   }
 
   const pickCompletion = (): void => {

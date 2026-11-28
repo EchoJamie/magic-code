@@ -139,8 +139,22 @@ export function createConnectionControl(host: ConnectionHost): {
     const unconfirmed = new Set([...view.settled, ...view.rows].filter(row => row.kind === 'user' && row.inputState === '提交中').map(row => row.kind === 'user' ? row.inputRef : undefined))
     const submittedRef = host.lastSubmitRef()
     if (submittedRef !== null && unconfirmed.has(submittedRef)) host.settleDraft(submittedRef, true)
-    // 草稿恢复落在当前视图上——回执行标注要基于**恢复之后**的那一份，别把稿子抹回去。
+    // **排队条里未受理的整组回输入框**（一期）：执行者不在了，没被 engine 收下的话不能丢。
+    // 已受理的留在队列条——原稿在账上，恢复后继续。
     view = host.getView()
+    const unacked = view.queued.filter(one => one.ack !== true)
+    if (unacked.length > 0) {
+      const text = unacked.map(one => one.text).join('\n\n')
+      const offset = view.draft.length === 0 ? 0 : view.draft.length + 2
+      const restoredRefs = unacked.flatMap(one => (one.refs ?? []).map(ref => ({ ...ref, start: ref.start + offset, end: ref.end + offset })))
+      view = {
+        ...view,
+        queued: view.queued.filter(one => one.ack === true),
+        draft: view.draft === '' ? text : `${view.draft}\n\n${text}`,
+        caret: view.draft === '' ? text.length : view.caret,
+        refs: [...view.refs, ...restoredRefs],
+      }
+    }
     const mark = (row: LogRow) => row.kind === 'user' && unconfirmed.has(row.inputRef) ? { ...row, inputState: '未确认接收（连接已断开）' } : row
     clearResume()
     const waiting = host.takeExitWait()

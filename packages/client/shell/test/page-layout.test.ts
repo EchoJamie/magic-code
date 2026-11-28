@@ -129,7 +129,10 @@ describe('之一 · `/clear`（开一条新的）⇒ 那一页印字标', () => 
     const strays = frame.record
       .map((line) => line.text.replace(/\s+$/u, ''))
       .filter((text) => text.trim() !== '' && !art.has(text))
-    expect(strays).toEqual(['› 先交代一句', '› /clear'])
+    // 队列按序（一期）：提交的那句在**队列条**里（交互区），不在记录区；/clear 的清屏
+    // 只剩它的命令行（那一跳不是交互窗也不是纯展示——执行的事实留一行）。
+    expect(strays).toEqual(['› /clear'])
+    expect(stage.shell.getView().queued.map(one => one.text)).toEqual(['先交代一句'])
   })
 })
 

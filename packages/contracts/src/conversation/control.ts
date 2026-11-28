@@ -88,6 +88,18 @@ export type UserInput = {
   readonly purpose?: InputPurpose
   readonly local?: true
   /**
+   * **打断插入式提交**（option+回车）——模型运行中，这条话在**下一个请求边界**
+   * （工具结果之后、下一请求之前）并入会话；已派发的工具照常跑完，不拦截。
+   * 缺省（普通回车）＝队列按序：当前工作收束后按序处理。
+   */
+  readonly insert?: true
+  /**
+   * **队列合并的随行行**（消费侧内部传递，一期）——处理时并入这条消息的后续
+   * 排队行的 ref；`message.user` 事件按它把整组合并的输入行告知外壳。
+   * **不落账本语义**：只随合并后的那条输入走到消费点。
+   */
+  readonly mergedRefs?: readonly string[]
+  /**
    * **共同补充**（协作边界 · T2.1）——engine 受理 shared 补充时随行落账，消费侧据此
    * 走「补充发布」语义。**shared 位持久在台账行上**，不依赖唤醒帧传参：对账补发与
    * ready 补发的 `collaboration.wake` 帧不带 shared，没有这一位就会把同一份补充
@@ -524,6 +536,8 @@ export type PrefsSet = { readonly type: 'prefs.set' } & PrefsSetRequest
 export type PrefsSetRequest = {
   readonly statusLine?: StatusLineConfig
   readonly turnDuration?: import('../shared/config.ts').TurnDurationMode
+  /** 输入提交的缺省方式（一期）：`queue` 队列按序（缺省）· `insert` 打断插入。 */
+  readonly inputMode?: import('../shared/config.ts').InputMode
   readonly reducedMotion?: boolean
   /** 实验性 · 语音输入开关（`MagicConfig.experimental.voice` · D75）。 */
   readonly voice?: boolean

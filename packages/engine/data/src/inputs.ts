@@ -113,6 +113,16 @@ export function createInputRecords(
         return id
       }).immediate()
     },
+    /** 并入既有条目（队列合并）：行转 consumed 指向已存在的条目，不另落条目；`turn` 由调用方给。 */
+    attach(ref, revision, entry, turn) {
+      return db.transaction(() => {
+        const row = get(ref)
+        if ((row?.state !== 'executing' && row?.state !== 'pending') || row.revision !== revision) return false
+        db.query("UPDATE inputs SET state='consumed',entry=?,turn=?,revision=revision+1,failed_from=NULL WHERE session=? AND ref=? AND state IN ('pending','executing')")
+          .run(entry, turn, session, ref)
+        return true
+      }).immediate()
+    },
     hold(ref, reason) {
       db.query("UPDATE inputs SET reason=? WHERE session=? AND ref=? AND state='pending'").run(reason ?? null, session, ref)
     },

@@ -28,7 +28,8 @@ test('同批立即受理与独立写入、定向种子、自行取证、幂等�
   try {
     f.shell.key({ kind: 'paste', text: '查启动失败原因。无关历史唯一串-NOT-FOR-ADVISOR-915' }); f.shell.key({ kind: 'enter' })
     await f.wait('同批独立动作与消息投递', () => existsSync(join(f.workspace, 'independent.txt')) && f.store.collaboration.listMessages(f.collaboration()!.coordinatorId).some(one => !one.withdrawn))
-    expect(f.requests('descendant-model')).toHaveLength(1)
+    // 并行负载下顾问的模型调用晚一拍——与文件内其余判据同一姿势，等待而非裸断言
+    await f.wait('顾问模型请求在途', () => f.requests('descendant-model').length === 1)
     expect(f.delegation()?.state).toBe('accepted')
     const first = f.requests('descendant-model')[0]!
     expect(requestText(first)).not.toContain('NOT-FOR-ADVISOR-915')

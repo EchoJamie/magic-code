@@ -48,6 +48,8 @@ export type RunTuiOptions = {
    */
   readonly statusLine?: ShellOptions['statusLine']
   readonly turnDuration?: 'elapsed' | 'active' | undefined
+  /** 输入提交的缺省方式（一期）：`queue`（缺省）· `insert`。此后随 `prefs.state` 走。 */
+  readonly inputMode?: import('@magic/contracts').InputMode | undefined
   readonly reducedMotion?: boolean | undefined
   readonly contextWindow?: number | null | undefined
   /**
@@ -158,6 +160,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     statusLine: options.statusLine,
     reducedMotion: options.reducedMotion,
     turnDuration: options.turnDuration,
+    inputMode: options.inputMode,
     contextWindow: options.contextWindow ?? null,
     modelChoice: options.modelChoice,
     workspaceRoots: options.workspaceRoots,

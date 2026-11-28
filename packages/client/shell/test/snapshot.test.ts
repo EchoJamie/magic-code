@@ -166,9 +166,17 @@ function live() {
   const spy = createSpyTransport()
   const shell = createShell(spy.transport, { magicBase: '/test/.magic' })
 
+  let included = 900
   return {
     shell,
     spy,
+    /** **并入排队条**（一期）：模拟内核 message.user，把排队输入整组上屏。 */
+    include: () => {
+      const queued = shell.getView().queued
+      if (queued.length === 0) return
+      included += 1
+      spy.emit(event('message.user', { entry: included, refs: queued.map(one => one.ref) }))
+    },
     feed: (events: readonly KernelEvent[]) => {
       for (const item of events) spy.emit(item)
     },
@@ -222,6 +230,7 @@ function historyShown(app: ReturnType<typeof live>): void {
   ])
   app.type('看看这个工作区里有什么')
   app.key(ENTER)
+  app.include()
   app.feed([
     event('turn.start', {}),
     event('model.delta', { channel: 'text', text: '我先列一下。' }),
@@ -305,6 +314,7 @@ describe('场景 3 · 工作中（流式）', () => {
     ])
     app.type('把 src/utils/date.ts 的时区处理改成本地时区')
     app.key(ENTER)
+    app.include()
     app.feed([
       event('model.delta', { channel: 'text', text: '先读一遍，看清它现在怎么算的——' }),
       event('tool.call', { name: 'read', args: { path: 'src/utils/date.ts' } }, { id: 71 }),
@@ -331,6 +341,7 @@ describe('场景 9 · `/resume`（交互配置型）', () => {
     app.feed([state(SESSION, [{ id: SESSION, title: '记录查询优化' }])])
     app.type('/resume ')
     app.key(ENTER)
+    app.include()
     app.feed([
       state(SESSION, [
         { id: SESSION, title: '记录查询优化' },
@@ -399,6 +410,7 @@ describe('场景 11 · `/help`（纯输出型）', () => {
     app.feed([event('model.switched', { choice: 'cantrip', ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' })])
     app.type('/help ')
     app.key(ENTER)
+    app.include()
 
     const frame = app.screen()
     expect(frame).toContain('使用帮助')
@@ -566,6 +578,7 @@ describe('规格细节（渲染层）', () => {
     app.feed([state(SESSION, [{ id: SESSION, title: '甲的事' }])])
     app.type('跑一下')
     app.key(ENTER)
+    app.include()
     app.feed([event('turn.start', {}), event('tool.call', { name: 'ls', args: { path: '.' } }, { id: 71 })])
 
     const lines = logLines(app.shell.getView().rows, { columns: 100, expanded: false })
@@ -649,6 +662,7 @@ describe('密度（原型 · 密度节）', () => {
     app.feed([state(SESSION, [{ id: SESSION, title: '甲的事' }])])
     app.type('跑一下')
     app.key(ENTER)
+    app.include()
     app.feed([
       event('turn.start', {}),
       event('model.delta', { channel: 'text', text: '好。' }),
@@ -911,9 +925,11 @@ describe('D18 / D19 / D20（缺陷轮 VI）', () => {
     app.feed([state(SESSION, [{ id: SESSION, title: '甲' }])])
     app.type('甲')
     app.key(ENTER)
+    app.include()
     app.feed([event('model.delta', { channel: 'text', text: '嗯' })])
     app.type('乙')
     app.key(ENTER)
+    app.include()
 
     const lines = app.screen().split('\n')
 
@@ -945,6 +961,7 @@ describe('D11 护栏（内联渲染的重复）', () => {
     app.feed([state(SESSION, [{ id: SESSION, title: '甲的事' }])])
     app.type('看看有什么')
     app.key(ENTER)
+    app.include()
     app.feed([
       event('turn.start', {}),
       event('model.delta', { channel: 'text', text: '列一下。' }),
@@ -1053,6 +1070,7 @@ describe('D13 · 首行不吞换行（正文以 `\\n\\n` 开头那一形）', ()
     app.feed([state(SESSION, [{ id: SESSION, title: '甲的事' }])])
     app.type('只回四个字')
     app.key(ENTER)
+    app.include()
     app.feed([
       event('turn.start', {}),
       event('model.delta', { channel: 'text', text: '\n\n甲乙丙丁' }),

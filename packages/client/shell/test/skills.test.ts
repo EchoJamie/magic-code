@@ -350,10 +350,10 @@ describe('`/<技能名>` 直达', () => {
       refs: [{ kind: 'skill', at: 0, marker: '/pdf', name: 'pdf', source: '/ws/project/pdf' }],
       purpose: 'current', ref: expect.any(String),
     })
-    // 草稿清空、无残留引用、本地回显的是**交代本身**（原样，一字不剥）
+    // 草稿清空、无残留引用、话在队列条里（并入那一刻才上屏）
     expect(stage.shell.getView().draft).toBe('')
     expect(stage.shell.getView().refs).toEqual([])
-    expect(stage.shell.getView().rows.at(-1)).toMatchObject({ kind: 'user', text: '/pdf 帮我看看' })
+    expect(stage.shell.getView().queued.map(one => one.text)).toEqual(['/pdf 帮我看看'])
   })
 
   /**
@@ -526,7 +526,7 @@ describe('提交与失败保稿', () => {
     ])
   })
 
-  test('两条失败各认各的：只有**最后**那一条还认得回草稿', () => {
+  test('两条失败各认各的：各自摘条、原稿空着才放回', () => {
     const stage = createStage()
     stage.type('第一条')
     stage.press(ENTER)
@@ -535,11 +535,14 @@ describe('提交与失败保稿', () => {
 
     stage.feed([event('input.settled', { ref: submitted(stage)[0]!.ref!, ok: false, reason: '第一条没成' })])
 
-    // 第二条已经交出去了，草稿是空的——第一条那份不往回搬（`ref` 对不上就不是这一次）
-    expect(stage.shell.getView().draft).toBe('')
+    // 队列条里的失败合并回输入框（草稿空着才放——不覆盖后来编辑的新稿）
+    expect(stage.shell.getView().draft).toBe('第一条')
+    expect(stage.shell.getView().queued.map(one => one.text)).toEqual(['第二条'])
 
     stage.feed([event('input.settled', { ref: submitted(stage)[1]!.ref!, ok: false, reason: '第二条没成' })])
-    expect(stage.shell.getView().draft).toBe('第二条')
+    // 草稿已有第一条——第二条不覆盖（原稿留在账本失败行上，可重试）
+    expect(stage.shell.getView().draft).toBe('第一条')
+    expect(stage.shell.getView().queued).toEqual([])
   })
 
   test('停止清队的那一条（排队没轮到）照样按原 ref 还稿', () => {

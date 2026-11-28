@@ -101,30 +101,45 @@ test('同宽缓存与不同宽字素折行守住真实列宽',()=>{
   for(const line of lines)expect(displayWidth(line.segments.map(s=>s.text).join(''))).toBeLessThanOrEqual(columns)
  }
 })
-test('用途选择和取消不发，下一件仅一次提交后回默认',()=>{
- const s=createStage();s.type('工作稿');s.press({kind:'alt+enter'});s.press({kind:'down'});s.press(enter)
- expect(s.shell.getView().inputPurpose).toBe('next');expect(s.commands().filter(c=>c.type==='input.submit')).toHaveLength(0)
- s.press({kind:'alt+enter'});s.press({kind:'up'});s.press({kind:'escape'})
- expect(s.shell.getView().draft).toBe('工作稿');expect(s.shell.getView().inputPurpose).toBe('next')
- s.press(enter);expect(s.commands()).toContainEqual(expect.objectContaining({type:'input.submit',text:'工作稿',purpose:'next'}))
- expect(s.shell.getView().inputPurpose).toBe('current')
+test('双模式提交：回车＝缺省（队列），option+回车＝另一种（插入）',()=>{
+ const s=createStage();s.type('工作稿')
+ s.press(enter);expect(s.commands()).toContainEqual(expect.objectContaining({type:'input.submit',text:'工作稿'}))
+ expect(s.shell.getView().queued.map(one=>one.text)).toEqual(['工作稿'])
+ s.type('纠正一下')
+ s.press({kind:'alt+enter'});expect(s.commands()).toContainEqual(expect.objectContaining({type:'input.submit',text:'纠正一下',insert:true}))
+ s.type('再排一条');s.press(enter);expect(s.commands().filter(c=>c.type==='input.submit').at(-1)).toEqual(expect.objectContaining({type:'input.submit',text:'再排一条'}))
+ // 插入式的也先在队列条里——并入了才移进记录区
+ expect(s.shell.getView().queued.map(one=>one.text)).toEqual(['工作稿','纠正一下','再排一条'])
+})
+
+test('option+上箭头整组撤回：多条合并成一条回输入框，账本行撤回',()=>{
+ const s=createStage();s.type('第一条');s.press(enter)
+ s.type('第二条');s.press(enter)
+ expect(s.shell.getView().queued.map(one=>one.text)).toEqual(['第一条','第二条'])
+ // 账本行回来（受理回执后的事件）——撤回要按行上的 revision 走
+ const refs=s.shell.getView().queued.map(one=>one.ref)
+ s.feed([event('input.pending',{inputs:refs.map((ref,index)=>({ref,input:{text:`第${['一','二'][index]}条`,ref},purpose:'current' as const,at:0,state:'pending' as const,revision:0}))})])
+ s.press({kind:'alt+up'})
+ expect(s.shell.getView().queued).toEqual([])
+ expect(s.shell.getView().draft).toBe('第一条\n\n第二条')
+ expect(s.commands().filter(c=>c.type==='input.manage'&&c.action==='withdraw')).toHaveLength(2)
 })
 
 test('延迟受理与拒绝如实还稿，已受理也保留配对身份且不盖后来编辑',async()=>{
  const s=createStage();s.type('delayed');s.press(enter)
  const submit=s.commands().find(c=>c.type==='input.submit'&&c.local!==true)
  if(submit?.type!=='input.submit')throw Error('没有提交')
- expect(s.shell.getView().rows.find(r=>r.kind==='user')?.inputState).toBe('提交中')
+ expect(s.shell.getView().queued.map(one=>one.text)).toEqual(['delayed'])
  expect(s.shell.getView().draft).toBe('')
  s.feed([event('input.settled',{ref:submit.ref,ok:true,stage:'accepted'})])
- expect(s.shell.getView().rows.find(r=>r.kind==='user')?.inputState).toBe('待带入')
+ expect(s.shell.getView().queued.map(one=>one.text)).toEqual(['delayed'])
  s.feed([event('input.settled',{ref:submit.ref,ok:false,reason:'受控拒绝'})])
- expect(s.shell.getView().draft).toBe('delayed')
+ expect(s.shell.getView().draft).toBe('delayed');expect(s.shell.getView().queued).toEqual([])
  const rejected=await s.screen({columns:100,rows:40})
  // 失败回执只进记录区（瞬时回执），不在输入区报错。
  expect([...s.shell.getView().settled,...s.shell.getView().rows].some(r=>r.kind==='receipt'&&r.text.includes('没送出：受控拒绝'))).toBe(true)
  expect(rejected.has('失败：受控拒绝')).toBe(false)
- expect(rejected.has('提交中：')).toBe(false)
+ expect(rejected.has('提交中：')).toBe(false);expect(rejected.has('待带入：')).toBe(false)
  s.press(enter);const second=s.commands().filter(c=>c.type==='input.submit').at(-1)
  if(second?.type!=='input.submit')throw Error('没有第二次提交')
  s.type('new draft')

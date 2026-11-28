@@ -75,6 +75,7 @@ describe('④ 记录区最前面 · 启动印一次', () => {
     stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲' }] })])
     stage.type('跑一下')
     stage.press({ kind: 'enter' })
+    stage.include()
     stage.feed([
       event('turn.start', {}),
       event('model.delta', { channel: 'text', text: '好。' }),
@@ -344,6 +345,7 @@ describe('⑩ 字标**自成一块**——前后各一行留白', () => {
     const stage = createStage()
     stage.type('第一句')
     stage.press({ kind: 'enter' })
+    stage.include()
     stage.feed([
       event('turn.start', {}),
       event('model.delta', { channel: 'text', text: '答一' }),

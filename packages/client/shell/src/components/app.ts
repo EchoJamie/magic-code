@@ -607,12 +607,13 @@ function showsExitArmed(view: ShellView): boolean {
   return view.exitArmed
 }
 
-/** 左下交互区的内容（四种用法）。 */
+/**
+ * **队列条**（一期）——输入框正上方、两条横线之外：显示**排队中消息的正文本身**
+ * （按提交序，无任何状态词）。并入（message.user）那一刻整组移进记录区、条目摘除；
+ * 撤回（option+上箭头）合并回输入框。
+ */
 function inputNotices(view:ShellView,columns:number):readonly string[]{
-  const known=new Set(view.pendingInputs.map(one=>one.ref))
-  const sending=[...view.settled,...view.rows].filter(row=>row.kind==='user'&&row.inputRef!==undefined&&!known.has(row.inputRef)&&row.inputState!==undefined).map(row=>row.kind==='user'?`${view.status.state==='lost'&&row.inputState==='提交中'?'受理未确认':row.inputState}：${row.text}`:'')
-  const pending=view.pendingInputs.filter(one=>one.state==='pending'||one.state==='consumed').map(one=>`${one.reason??(one.purpose==='next'?'下一件排队中':one.state==='consumed'?'待请求带入':'待带入')}：${one.input.text}`)
-  return [...sending,...pending].map(line=>clip(line,columns))
+  return view.queued.map(one=>clip(one.text,columns))
 }
 
 /** 状态那一格此刻显示什么：录音／转写**顶替状态词**（U135）。 */

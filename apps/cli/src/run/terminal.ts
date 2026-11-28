@@ -98,7 +98,7 @@ export async function terminalOptions(inputs: TerminalInputs): Promise<RunTuiOpt
     copyText: writeClipboardText,
     transport: terminalSettings(clientTransport(client), inputs.magic, workspaceOf(loaded, cwd), inputs.switch),
     statusLine: loaded.config.statusLine,
-    turnDuration: loaded.config.turnDuration ?? 'elapsed', reducedMotion: loaded.config.motion?.reduced === true,
+    turnDuration: loaded.config.turnDuration ?? 'elapsed', inputMode: loaded.config.inputMode ?? 'queue', reducedMotion: loaded.config.motion?.reduced === true,
     // 实验性 · 语音输入（D75）——**缺省关**；`/config` 里那一按改的是配置文件，此后这一格随它走
     voiceEnabled: loaded.config.experimental?.voice === true,
     detached: (listener) => client.onDetached(listener),

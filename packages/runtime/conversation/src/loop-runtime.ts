@@ -71,6 +71,12 @@ export type LoopRuntime = {
    */
   readonly compact?: Compactor | undefined
   /**
+   * **打断插入式的消费点**（一期）——option+回车提交的话在此并入会话：
+   * 每趟请求的装配前调用（工具结果之后、下一请求之前），**工具批内绝不调用**。
+   * 返回是否有话并入了（收束判定据此续跑）。
+   */
+  consumeInserts?: (() => Promise<boolean>) | undefined
+  /**
    * 当前模型的输入预算——压缩闭环与装配兜底共用这一读数（D74）。
    * 不给＝不核对预算：压缩只压一次，装配照旧全量（旧行为，供只验循环的用例）。
    */

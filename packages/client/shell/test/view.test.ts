@@ -423,16 +423,21 @@ describe('屏上痕迹（不落库 · 不重建）', () => {
 
 // ══ 补：回显配平 · 陌生引用 · 错误分档 · 折叠与收拢 ═══════════════════
 
-describe('回显与陌生引用', () => {
-  test('`message.user` 配平本地回显——把 echoed 落回 false', () => {
-    const echoed = appendEcho(createView(), '看下目录')
-    expect(rowAt(echoed, 0)).toMatchObject({ kind: 'user', echoed: true })
+describe('队列条与并入上屏', () => {
+  test('`message.user`——排队条整组上屏：合并成一条记录行，条目从队列摘除', () => {
+    const queued = { ...createView(), queued: [
+      { ref: 'a', text: '看下目录' },
+      { ref: 'b', text: '再看配置' },
+    ] }
 
-    const paired = reduce(echoed, event('message.user', { entry: 7 }))
-    expect(rowAt(paired, 0)).toMatchObject({ echoed: false })
+    const paired = reduce(queued, event('message.user', { entry: 7, refs: ['a', 'b'] }))
+    const userRows = paired.rows.filter(row => row.kind === 'user')
+    expect(userRows).toHaveLength(1)
+    expect(userRows[0]).toMatchObject({ kind: 'user', text: '看下目录\n\n再看配置', entry: 7, inputRef: 'a' })
+    expect(paired.queued).toEqual([])
   })
 
-  test('没有回显可配（重建场景）——**不编一行出来**', () => {
+  test('没有排队条可配（重建场景）——**不编一行出来**', () => {
     const view = reduce(createView(), event('message.user', { entry: 7 }))
 
     expect(onScreen(view)).toEqual([])

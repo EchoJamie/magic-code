@@ -24,6 +24,8 @@ export type QueueBundle = {
   readonly state: { readonly closed: boolean; readonly running: boolean }
   readonly pending: QueueItem[]
   readonly supplements: SupplementItem[]
+  /** **打断插入式**的队列（option+回车）：只在下一请求边界消费，工具批内不碰。 */
+  readonly inserts: SupplementItem[]
   /** 压缩的用量计数（受理非 notice 输入时抬一格）。 */
   readonly onVersionBump: () => void
   /** 空闲即排空（压缩挂起时不启动——判定归 service）。 */
@@ -55,7 +57,11 @@ export function acceptInput(bundle: QueueBundle, input: UserInput, shared: boole
     // 落条目原子）在落账时发生。单活执行者前提下，executing 行只属于这一代。
     if (row.input.notice !== true) bundle.onVersionBump()
     deps.onInput?.(row.input)
-    if (state.running && row.purpose === 'current') bundle.supplements.push({ input: row.input, shared, done })
+    // **三条队列**（一期）：运行中且显式插入（option+回车）→ 插入队列（下一请求边界并入）；
+    // 运行中的协作补充（shared）→ 补充队列（模型/工具边界消费）；其余一律**按序排队**——
+    // 当前工作收束后 FIFO 处理（队列按序式是缺省行为）。
+    if (state.running && shared === true) bundle.supplements.push({ input: row.input, shared, done })
+    else if (state.running && row.input.insert === true) bundle.inserts.push({ input: row.input, shared, done })
     else bundle.pending.push({ input: row.input, shared, done })
     bundle.startDrainIfIdle()
   } catch (error) {

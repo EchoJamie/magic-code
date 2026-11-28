@@ -121,6 +121,7 @@ describe('思考自成一块', () => {
     const stage = live()
     stage.type('看看工作区')
     stage.press({ kind: 'enter' })
+    stage.include()
     stage.feed([
       event('model.delta', { channel: 'thinking', text: '先想一下。' }),
       event('model.delta', { channel: 'text', text: '想好了。' }),
@@ -144,6 +145,7 @@ describe('思考自成一块', () => {
     const stage = live()
     stage.type('看看工作区')
     stage.press({ kind: 'enter' })
+    stage.include()
     stage.feed([event('model.delta', { channel: 'text', text: '想好了。' })])
 
     const frame = await stage.screen()
@@ -156,6 +158,7 @@ describe('思考自成一块', () => {
     const stage = live()
     stage.type('看看工作区')
     stage.press({ kind: 'enter' })
+    stage.include()
     stage.feed([
       event('model.delta', { channel: 'thinking', text: '第一行\n第二行' }),
       event('model.delta', { channel: 'text', text: '好。' }),
@@ -183,6 +186,7 @@ describe('思考自成一块', () => {
     const stage = live()
     stage.type('看看工作区')
     stage.press({ kind: 'enter' })
+    stage.include()
     stage.feed([
       event('model.delta', { channel: 'text', text: '先看。' }),
       event('model.delta', { channel: 'thinking', text: '再看一眼。' }),

@@ -86,6 +86,7 @@ export type LogRow =
       readonly key: string
       readonly text: string
       readonly inputRef?: string
+      readonly entry?: RecordId
       readonly inputState?: string
       readonly echoed: boolean
 
@@ -645,6 +646,12 @@ export type ShellView = {
   readonly sudo?: SudoPrompt | null
   readonly round: RoundTiming | null
   readonly pendingInputs: readonly StoredInput[]
+  /**
+   * **排队中的输入**（一期 · 队列条）——已受理、还没并入会话的消息，**按提交序**。
+   * 展示的是**正文本身**（贴在输入框正上方，无状态词）；并入（message.user）那一刻
+   * 整组上屏进记录区、从队列里摘掉。撤回（option+上箭头）与失败也在这里摘。
+   */
+  readonly queued: readonly QueuedInputView[]
   readonly inputPurpose: InputPurpose
   readonly collaboration?: CollaborationView
   readonly background?: import('@magic/contracts').BackgroundView
@@ -791,7 +798,7 @@ export function createView(input: CreateViewInput = {}): ShellView {
       hint: HINT_IDLE,
     },
     dock: { kind: 'input' },
-    pendingInputs: [], inputPurpose:'current',
+    pendingInputs: [], queued: [], inputPurpose:'current',
     draft: '',
     caret: 0,
     refs: [],
@@ -873,8 +880,8 @@ export function reduce(
 
     case 'message.user':
 
-      return reduceUserEntry({ ...view, taskEntry: event.data.entry,
-        sessionId: view.sessionId ?? (event.session || null) })
+      return promoteQueued({ ...view, taskEntry: event.data.entry,
+        sessionId: view.sessionId ?? (event.session || null) }, event.data.entry, event.data.refs)
     case 'message.assistant':
       return { ...view, rows: view.rows.map(row => row.kind === 'assistant' && row.entry === undefined
         ? { ...row, entry: event.data.entry } : row) }
@@ -1001,11 +1008,24 @@ export function reduce(
 
     case 'input.pending':
       return event.data.note === undefined ? {...view,pendingInputs:event.data.inputs} : appendReceipt({...view,pendingInputs:event.data.inputs},event.data.note)
-    case 'input.settled':
-      { const inputState = event.data.ok ? (event.data.stage === 'included' ? undefined : view.pendingInputs.find(one=>one.ref===event.data.ref)?.purpose==='next'?'下一件排队中':'待带入') : undefined
-        if(event.data.ref!==undefined){const update=(row:LogRow)=>row.kind==='user'&&row.inputRef===event.data.ref?{...row,inputState}:row;view={...view,rows:view.rows.map(update),settled:view.settled.map(update)}} }
+    case 'input.settled': {
+      // **排队条的生命周期**（一期）：ok:true 打受理标记（断连时不还稿——原稿已在账上，
+      // 恢复后继续）；失败／被拦下就地摘除，正文合并回输入框（keepDraft=false 的那种——
+      // 下一步要敲命令——不还稿；草稿非空也不还——不覆盖后来编辑的新稿）。
+      const item = event.data.ref === undefined ? undefined : view.queued.find(one => one.ref === event.data.ref)
+      if (item !== undefined) {
+        if (event.data.ok) {
+          view = { ...view, queued: view.queued.map(one => one.ref === event.data.ref ? { ...one, ack: true as const } : one) }
+        } else {
+          view = { ...view, queued: view.queued.filter(one => one.ref !== event.data.ref) }
+          if (event.data.keepDraft !== false && view.draft === '') {
+            const text = item.text
+            view = { ...view, draft: text, caret: text.length, refs: [...view.refs, ...(item.refs ?? []).map(ref => ({ ...ref })) ] }
+          }
+        }
+      }
       return event.data.ok ? view : appendReceipt(view, `没送出：${event.data.reason ?? '未说缘由'}`)
-
+    }
     case 'exec.background.done':
       return appendReceipt(view, backgroundDoneText(event.data))
 
@@ -1328,14 +1348,28 @@ function reduceSessionState(view: ShellView, data: SessionStateData, turn: PageT
 }
 
 /**
- * `message.user`——配平本地回显（`entry` 是条目引用；屏上已有回显那一行，不必再用它）。
- * 配不上（重建 / 恢复场景）**不编一行出来**——重建走 `rebuild`，不靠这条事件。
+ * `message.user`——**排队条整组上屏**（一期）：并入那一刻，队列条里被这次消费的
+ * 输入条（按事件 `refs` 认，合并时多于一条）移出队列、按序合并为**一条**记录行，
+ * 后面跟的就是模型答复——展示顺序与请求事实一致。
+ * 配不上（重建 / 恢复场景）**不编一行**——重建走 `rebuild`，不靠这条事件。
  */
-function reduceUserEntry(view: ShellView): ShellView {
-  const target = view.rows.findIndex((row) => row.kind === 'user' && row.echoed)
-  if (target === -1) return view
+function promoteQueued(view: ShellView, entry: RecordId, refs?: readonly string[]): ShellView {
+  const wanted: ReadonlySet<string> = refs === undefined ? new Set<string>() : new Set(refs)
+  const taken = (wanted.size === 0 ? view.queued.slice(0, 1) : view.queued.filter(one => wanted.has(one.ref)))
+  if (taken.length === 0) return view
 
-  return replaceAt(view, target, (row) => (row.kind === 'user' ? { ...row, echoed: false } : row))
+  const rest = view.queued.filter(one => !taken.includes(one))
+  const row: LogRow = {
+    kind: 'user', key: `user.${entry}`,
+    text: taken.map(one => one.text).join('\n\n'),
+    inputRef: taken[0]!.ref,
+    entry,
+    echoed: false,
+    ...(taken.some(one => one.images !== undefined && one.images.length > 0)
+      ? { images: taken.flatMap(one => one.images ?? []) }
+      : {}),
+  }
+  return { ...view, queued: rest, rows: [...view.rows, row] }
 }
 
 /** 本轮的行 → 定局（`Static` 写一次即入 scrollback）。 */
@@ -1382,6 +1416,17 @@ export function withBanner(view: ShellView): ShellView {
 }
 
 /** 本地回显一次用户输入（提交时立即显示——事件里没有正文）。 */
+export type QueuedInputView = {
+  /** 受理配对键——`input.settled` 按它认回失败，`message.user.refs` 按它整组上屏。 */
+  readonly ref: string
+  readonly text: string
+  /** 已受理（engine 落账确认）——断连时已受理的不还稿（原稿在账上，恢复后继续）。 */
+  readonly ack?: true
+  /** 随条提交的引用（撤回时按原位放回输入框）——账本行上另有 wire 形。 */
+  readonly refs?: readonly import('./components/inline.ts').DraftRef[]
+  readonly images?: readonly UserImage[]
+}
+
 export function appendEcho(view: ShellView, text: string, images: readonly UserImage[] = []): ShellView {
   // key 用**单调计数**而不是 `rows.length`——后者在收束清空之后会**撞回同一个数**
   // （同一个列表里两个同 key ⇒ React 说「子节点可能重复或丢失」）。见 `ShellView.echoes`。

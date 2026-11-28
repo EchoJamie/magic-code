@@ -103,6 +103,13 @@ export interface InputRecords {
   dequeue(ref: string, revision: number): boolean
   /** executing → consumed（executor；与落条目同一事务，写 `turn`）。 */
   consume(ref: string, revision: number, entry: NewEntry): RecordId | undefined
+  /**
+   * **并入既有条目**（队列合并 · 一期）：行转 consumed 指向**已存在**的条目，
+   * 不再另落条目——排队中的多条纯文本并入为一条消息时，后续行用它指向同一条。
+   * 迁移判据与 `consume` 同（pending/executing ＋ revision）；`turn` 由调用方给
+   * （与那次消费同一轮）。
+   */
+  attach(ref: string, revision: number, entry: RecordId, turn: TurnId | null): boolean
   hold(ref: string, reason: string | undefined): void
   /** pending/executing → failed；`failedFrom` 记失败前状态（G3/M4）。 */
   fail(ref: string, reason: string): void

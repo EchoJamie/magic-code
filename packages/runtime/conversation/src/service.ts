@@ -51,7 +51,7 @@ import type { LoopRuntime } from './loop-runtime.ts'
 import type { CollaborationBoundary } from './collaboration.ts'
 import { agentLoop } from './agent-loop.ts'
 import { messageOf, prepareInput } from './input-intake.ts'
-import { acceptInput, manageInput } from './input-ledger.ts'
+import { acceptInput, manageInput, type QueueItem } from './input-ledger.ts'
 import { createCompactor } from './compact.ts'
 import { DEFAULT_CONTEXT_POLICY } from './policy.ts'
 import type { ContextPolicy } from './policy.ts'
@@ -256,6 +256,8 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   const pending: {input:UserInput|undefined;shared:boolean;done?:()=>void}[] = []
   // 在模型/工具边界读取补充，避免将 user 条目插入在途 tool-call/result 中间。
   const supplements: { input: UserInput; shared: boolean; done: () => void }[] = []
+  /** **打断插入式**的队列（option+回车）：只在下一请求边界（工具结果之后、下一请求之前）并入。 */
+  const inserts: { input: UserInput; shared: boolean; done: () => void }[] = []
   const collaboration: CollaborationBoundary = {
     context: () => Promise.resolve(undefined),
     requested: () => {},
@@ -367,7 +369,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
   /** 输入受理的依赖束——账本操作（input-ledger.ts）经它拿队列状态与触发排空。 */
   const bundle = {
-    deps, sink, stamper, state, pending, supplements,
+    deps, sink, stamper, state, pending, supplements, inserts,
     onVersionBump: () => { inputVersion++ },
     startDrainIfIdle: () => { if (!state.running && compactPending === undefined) startDrain() },
   }
@@ -395,12 +397,41 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     submitRefusal: deps.submitRefusal,
     background: deps.background,
     collaboration,
+    consumeInserts,
+  }
+
+  /**
+   * **可并入合并的排队交代**（一期）：纯文本、无材料、无插入位、非协作位——
+   * 多条这样的排队项在处理时换行合并为一条消息。
+   */
+  function mergeableTextOf(input: UserInput): boolean {
+    return input.insert !== true && input.notice === undefined && input.background === undefined
+      && input.purpose !== 'next' && input.text.trim() !== ''
+      && (input.refs === undefined || input.refs.length === 0)
+      && (input.skills === undefined || input.skills.length === 0)
+  }
+
+  /**
+   * **打断插入式的消费**（一期 · 唯一消费点）：把插入队列里的话逐条并入会话。
+   * 只在 prepareModelContext（工具结果之后、下一请求装配之前）与收束判定处被调，
+   * 工具批内（gateToolBatch）绝不调用——已派发的工具不拦截、不被打断。
+   */
+  async function consumeInserts(): Promise<boolean> {
+    let changed = false
+    for (const next of inserts.splice(0)) {
+      try {
+        const prepared = await prepareInput(runtime, next.input, entry => deps.collaboration?.userInput?.(entry, next.shared), state.current?.signal)
+        changed ||= prepared !== undefined
+      } finally { next.done() }
+    }
+    return changed
   }
 
   /** 停止只撤销本次消费意图；未消费正文和停点继续由记录域保存。 */
   function holdQueued(): void {
     const stopped = pending.splice(0)
     for (const next of supplements.splice(0)) { stopped.push({input:next.input,shared:next.shared}); next.done() }
+    for (const next of inserts.splice(0)) { stopped.push({input:next.input,shared:next.shared}); next.done() }
     if (stopped.length === 0) return
 
     for (const {input,done} of stopped) {
@@ -452,14 +483,39 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         }
         if (input === undefined && !(await collaboration?.consume())) continue
 
+        // **队列合并**（一期）：紧随其后的排队纯文本交代并入这一条——一次交代处理一批，
+        // 省交互轮次。带材料／插入位／协作位的条目不并，各自按序处理。
+        const mergedExtras: { item: QueueItem; ref: string; revision: number }[] = []
+        if (input !== undefined && mergeableTextOf(input)) {
+          for (;;) {
+            const next = pending[0]
+            if (next === undefined || next.shared || next.input === undefined || !mergeableTextOf(next.input)) break
+            const row = next.input.ref === undefined ? undefined : deps.records.inputs.get(next.input.ref)
+            if (row === undefined || (row.state !== 'pending' && row.state !== 'executing')) break
+            pending.shift()
+            mergedExtras.push({ item: next, ref: row.ref, revision: row.revision })
+            input = { ...input, text: `${input.text}\n\n${next.input.text}`, mergedRefs: [...(input.mergedRefs ?? []), row.ref] }
+          }
+        }
+
         const outcome = await agentLoop(runtime, input, controller.signal, async entry => {
           try {
-            await deps.collaboration?.userInput?.(entry,queued.shared)
-            // **首条真实交代落账**——条件成立就后台起一次 AI 标题（fire-and-forget，
-            // 不阻塞轮次；notice 输入不算用户开场白，见 `session-title.ts`）
-            if (titles !== undefined && input !== undefined && input.notice !== true) titles.onUserEntry(input.text)
-          } finally { queued.done?.() }
+            // 合并进来的后续行指向同一条条目（账本上不再重复落条目），排队条随之清空。
+            for (const extra of mergedExtras) {
+              const ok = deps.records.inputs.attach(extra.ref, extra.revision, entry, runtime.turn ?? null)
+              if (ok) extra.item.done?.()
+            }
+            if (mergedExtras.length > 0) sink.emit(stamper.stamp('input.pending', { inputs: pendingViews(deps.records.inputs.list()) }))
+            try {
+              await deps.collaboration?.userInput?.(entry,queued.shared)
+              // **首条真实交代落账**——条件成立就后台起一次 AI 标题（fire-and-forget，
+              // 不阻塞轮次；notice 输入不算用户开场白，见 `session-title.ts`）
+              if (titles !== undefined && input !== undefined && input.notice !== true) titles.onUserEntry(input.text)
+            } finally { queued.done?.() }
+          } finally { for (const extra of mergedExtras) extra.item.done?.() }
         })
+        // 合并的后续行回到队首（这一条没跑成，它们按序各自再试）
+        if (outcome !== 'settled' && mergedExtras.length > 0) pending.unshift(...mergedExtras.map(extra => extra.item))
         queued.done?.()
         if (compactPending?.awaitInput) compactPending.awaitInput = false
         // **这一条没跑**（显式选定的技能取不到，U33）——停下的是**它**，不是这一队：
