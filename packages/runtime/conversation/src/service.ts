@@ -552,7 +552,9 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   function wake(): void {
     if (state.closed || deps.collaboration === undefined || pending.some(one=>one.input===undefined) || state.current?.signal.aborted===true) return
     if (!state.running && waitingForDelegations(pending[0]?.input)) return
-    pending.unshift({input:undefined,shared:false})
+    // **哨兵排到队尾**（U114）：排在已排队的真实输入之后——收件箱消费是背景推进，
+    // 插队首会让对账器每秒补插的哨兵把排队的交代永远压在第二位（饿死，U114 复现实锤）。
+    pending.push({input:undefined,shared:false})
     if (!state.running && compactPending === undefined) startDrain()
   }
   function waitingForDelegations(input:UserInput|undefined):boolean {

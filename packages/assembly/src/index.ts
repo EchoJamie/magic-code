@@ -592,25 +592,15 @@ export function assemble(options: AssembleOptions): Assembly {
         ? refs.filter(ref => pending.find(row => row.ref === ref)?.purpose !== 'next')
         : refs
 
-      // **dequeue 请求**——无协作 client 的单机形态退化为本地 dequeue（engine 与执行者
-      // 同体，写权语义不跨进程）；有 client 走帧（engine 唯一写者，纯事务）。
-      let dequeued: ReadonlySet<string>
-      if (options.collaboration === undefined) {
-        const sessionRecords = active.records
-        dequeued = new Set(eligibleRefs.filter(ref => {
-          const revision = sessionRecords.inputs.get(ref)?.revision
-          return revision !== undefined && sessionRecords.inputs.dequeue(ref, revision)
-        }))
-      } else {
-        const reply = await options.collaboration(active.session, {
-          action: 'dequeue', operationId: `dequeue:${executionId}:${crypto.randomUUID()}`, refs: eligibleRefs, at: now(),
-        }).catch(() => undefined)
-        const value = reply?.ok === true ? reply.value as { dequeued?: readonly string[] } : undefined
-        dequeued = new Set(value?.dequeued ?? [])
-      }
-
+      // **出队收敛到消费点**（U114 撤回修复）：这里不再请求 dequeue——排队中的行保持
+      // 账本 pending，因为 pending 是「撤回」与 UI「待带入」视图的事实依据。此前信号
+      // 一到就把行 dequeue 成 executing，而撤回只允许撤 pending（N18）——排队行的可撤
+      // 资格在受理后即刻关闭，UI 却仍显示待带入、撤回仍可点，用户看到的撤回全是假的。
+      // 消费时的出队并入 consume 事务（prepareInput 的 consume 接 pending 直通）；撤回
+      // 与消费的竞态由账本 SQL 原子判负——withdrawn 的行 dequeue/consume 都不命中，
+      // drain 取件查账本即跳过（该检查现成）。
       for (const row of pending) {
-        if (!dequeued.has(row.ref)) continue
+        if (!eligibleRefs.includes(row.ref)) continue
         // **shared 位随信号走 ＋ 台账行持久位兜底**（边界方案 §四#1 · P0 修复）：shared
         // 信号消费的行按补充入队——除进入本会话自己的轮外，还要经协作边界把同一份条目
         // 发布给成员。信号帧会丢（对账补发 / ready 补发的 wake 不带 shared），故判定
