@@ -433,6 +433,115 @@ export const DEEPSEEK_VENDOR: VendorAdapter = {
 }
 
 /**
+ * GLM（智谱 BigModel / Z.ai，官方文档 2026-11 现行）：
+ * - 列表 `GET /models`（OpenAI `data[].id` 形状；**通用端点**已核实，Coding 套餐端点
+ *   未核实——失败如实报错，不冒充空列表）；
+ * - 思考在独立字段 `reasoning_content` 返回，`max_tokens` 是思考＋回答**总预算**
+ *   （与 Magic 的输出额度同口径，无需改写）。
+ *
+ * 官方三条接入线（国内外两站对称）：
+ * - 通用 API（按量）：`/api/paas/v4`（OpenAI 兼容）；
+ * - Anthropic 兼容：`/api/anthropic`（通用与 Coding 套餐**共用同一地址**）；
+ * - GLM Coding 套餐：专属端点 `/api/coding/paas/v4`（Chat Completions）、
+ *   `/api/v1`（Responses，Codex 用）。
+ *
+ * ⚠️ **套餐 key 与通用 key 不通用**（官方未声明互通边界）——故区域按「站点 × 端点」
+ * 列全，用户按手里的 key 选区域；适配不在区域之间猜、不迁移凭据。
+ */
+export const GLM_VENDOR: VendorAdapter = {
+  id: 'glm',
+  label: 'GLM',
+  separatesReasoning: true,
+  // 官方提示只记录已经核实的映射（提示不是闸门——不在表里的型号仍可按显式协议或
+  // 固定优先级兜底尝试）：
+  // - Chat Completions：thinking 文档（2026-11-22 现行）点名的支持思考型号全列；
+  // - Messages：Claude 兼容文档与套餐切换指南点名的型号（示例为 glm-5.3 / 5.2[1m] / 4.7 / 5.4[1m]）；
+  // - Responses：套餐 Codex 端点（/api/v1）文档只点名 glm-5.4。
+  protocols: PROTOCOLS.map(p => ({
+    ...p,
+    models: p.id === 'responses'
+      ? ['glm-5.4']
+      : p.id === 'messages'
+      ? ['glm-5.4', 'glm-5.3', 'glm-5.2', 'glm-4.7']
+      : ['glm-5.4', 'glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx', 'glm-5.2', 'glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-4.7', 'glm-4.6', 'glm-4.5'],
+  })),
+  regions: [
+    { id: 'cn', label: '中国大陆', baseURL: 'https://open.bigmodel.cn/api/paas/v4' },
+    { id: 'cn-coding', label: '中国大陆 · Coding 套餐', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4' },
+    { id: 'global', label: '国际（Z.ai）', baseURL: 'https://api.z.ai/api/paas/v4' },
+    { id: 'global-coding', label: '国际（Z.ai） · Coding 套餐', baseURL: 'https://api.z.ai/api/coding/paas/v4' },
+  ],
+
+  /**
+   * 同一站点的三条协议线共用 `/api` 前缀：Messages 在 `/api/anthropic`，Responses 在
+   * `/api/v1`——从区域基址改写路径（与 MiniMax/DeepSeek 的 `/anthropic` 改写同一手法）。
+   * 显式写了 `baseURL` 就原样用（高级地址由用户负责完整路径，不改写）。
+   */
+  baseURLOf(config, protocol = config.protocol ?? 'chat-completions') {
+    const base = resolveBaseURL(this.regions, config)
+    if (config.baseURL !== undefined || base === undefined || protocol === 'chat-completions') return base
+    return base.replace(/\/api\/(coding\/)?paas\/v4$/, protocol === 'messages' ? '/api/anthropic' : '/api/v1')
+  },
+
+  async listModels(ctx) {
+    const body = await getJson(ctx, '/models')
+    return collectPages(() => Promise.resolve({ models: toModelsOf(body) }))
+  },
+
+  /**
+   * 思考设置 → 原生参数（官方 thinking 文档 2026-11-22 现行）。
+   *
+   * - `default` ⇒ **什么都不发**（GLM 默认思考开启、模型自动判断深浅）；
+   * - `off` ⇒ `thinking.type = 'disabled'`（Responses 无该字段，走 effort `none`——
+   *   与 DeepSeek 同一处理）。⚠️ **GLM-5.3 系（5.3 / 5.3-FLASH / 5.3-FLASHX）强制思考，
+   *   `disabled` 直接报错** ⇒ 报缺口；
+   * - `level` ⇒ `reasoning_effort`（仅 GLM-5.2 及以上）。GLM-5.3 系只认 low / high / max
+   *   （其余档位通用 API 明文报错）；GLM-5.2 及以上其余型号接受五档（服务端自行映射：
+   *   low/medium→high、xhigh→max）。Coding 套餐端点对全部档位宽松映射，这里按**通用 API
+   *   的严格口径**校验——少放行的那几档（如 5.3 系的 medium）在套餐端点其实可用，
+   *   但适配不按区域换一套规则（reasoningOf 看不到区域），宁可保守不冒被拒风险；
+   * - `budget` ⇒ **报缺口**：官方没有思考 token 预算参数（Anthropic 兼容端点的
+   *   `budget_tokens` 未在智谱官方文档声明），不拿协议惯例去凑。
+   */
+  reasoningOf(setting, model, protocol = 'chat-completions'): { readonly params: Record<string, JSONValue> } | { readonly gap: string } | undefined {
+    if (setting.mode === 'default') return undefined
+
+    const name = model.toLowerCase()
+    // GLM-5.3 系强制思考（官方 thinking 文档明文：disabled 会报错，请保持开启并调 effort）
+    const forced = name.startsWith('glm-5.3')
+    // reasoning_effort 仅 GLM-5.2 及以上支持（官方明文）；认不出代次 ⇒ 不猜（报缺口）
+    const version = /glm-(\d+)(?:\.(\d+))?/.exec(name)
+    const supportsEffort = version !== null && (() => {
+      const major = Number(version[1]), minor = Number(version[2] ?? 0)
+      return major > 5 || (major === 5 && minor >= 2)
+    })()
+
+    switch (setting.mode) {
+      case 'off':
+        if (forced) return { gap: `GLM-5.3 系模型「${model}」不支持关闭思考——请用思考档位调浅（low）` }
+        return { params: protocol === 'responses' ? { reasoningEffort: 'none' } : { thinking: { type: 'disabled' } } }
+
+      case 'level': {
+        if (!supportsEffort) return { gap: `GLM 模型「${model}」不支持思考档位（reasoning_effort 仅 GLM-5.2 及以上——更早的型号只有开 / 关）` }
+        // GLM-5.3 系只认三档（其余输入通用 API 直接报错）；5.2 及以上五档都收（服务端映射）
+        const levels = forced ? ['low', 'high', 'max'] : ['low', 'medium', 'high', 'xhigh', 'max']
+        if (!levels.includes(setting.level)) return { gap: `GLM 模型「${model}」的思考档位只有 ${levels.join(' / ')}——不认识「${setting.level}」` }
+        return {
+          params: protocol === 'messages'
+            ? { thinking: { type: 'enabled' }, effort: setting.level }
+            : protocol === 'responses'
+            ? { reasoningEffort: setting.level }
+            : { thinking: { type: 'enabled' }, reasoningEffort: setting.level },
+        }
+      }
+
+      case 'budget':
+        return { gap: 'GLM 官方没有思考预算（token）参数——只能选档位或用它的默认' }
+    }
+  },
+}
+
+/**
  * 该走哪个基址——**明确写了 `baseURL` 就用它**（「高级地址只在明确需要时编辑」），
  * 否则按区域取官方地址；**认不出返回 `undefined`**（调用方报错，不猜）。
  */
@@ -449,7 +558,8 @@ function resolveBaseURL(
 // —— 注册表 ——
 
 /**
- * 已注册的官方适配——**首批只这两家**（设计：「首批只注册这两家的官方接入」）。
+ * 已注册的官方适配——MiniMax · DeepSeek · GLM（设计：「首批只注册这两家的官方接入」，
+ * GLM 为用户要求新增的第三家）。
  *
  * `undefined` ＝**认不出**：调用方据 `config.vendor` 有没有值分别走官方 / 兼容两条路；
  * 有值却认不出时**如实报错**（不悄悄当成兼容接入——那会拿官方域名去走旧协议）。
@@ -457,6 +567,7 @@ function resolveBaseURL(
 const ADAPTERS: Readonly<Record<string, VendorAdapter>> = {
   minimax: MINIMAX_VENDOR,
   deepseek: DEEPSEEK_VENDOR,
+  glm: GLM_VENDOR,
 }
 
 /** 查适配——只认自有键（条目名是用户给的字符串，见 `capacity.ts` 的 `ownOf` 注）。 */

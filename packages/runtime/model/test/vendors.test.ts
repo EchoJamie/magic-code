@@ -11,6 +11,7 @@ import type { FetchLike } from '../src/index.ts'
 import type { ModelInfo } from '@magic/contracts'
 import {
   DEEPSEEK_VENDOR,
+  GLM_VENDOR,
   MINIMAX_VENDOR,
   collectPages,
   listModelsOfProtocol,
@@ -233,7 +234,7 @@ describe('按官方接口的已知差异', () => {
 
   test('认不出的供应商 / 区域**不猜地址**', () => {
     expect(vendorOf('nope')).toBeUndefined()
-    expect(vendorIds()).toEqual(['minimax', 'deepseek'])
+    expect(vendorIds()).toEqual(['minimax', 'deepseek', 'glm'])
 
     // 区域认不出 ⇒ 不给地址（调用方报错，不回落一个「大概率是它」的域名）
     expect(MINIMAX_VENDOR.baseURLOf({ region: 'mars' })).toBeUndefined()
@@ -249,11 +250,11 @@ describe('按官方接口的已知差异', () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe('供应商读面', () => {
-  test('列已注册的两家：名字 ＋ 官方区域（**从适配现取**，不是另一张表）', () => {
+  test('列已注册的几家：名字 ＋ 官方区域（**从适配现取**，不是另一张表）', () => {
     const vendors = vendorCatalog()
 
-    expect(vendors.map((one) => one.vendor)).toEqual(['minimax', 'deepseek'])
-    expect(vendors.map((one) => one.label)).toEqual(['MiniMax', 'DeepSeek'])
+    expect(vendors.map((one) => one.vendor)).toEqual(['minimax', 'deepseek', 'glm'])
+    expect(vendors.map((one) => one.label)).toEqual(['MiniMax', 'DeepSeek', 'GLM'])
 
     // 每一家至少一个区域，且**第一项就是缺省**——与 `baseURLOf` 同源（同一份 `regions`）
     for (const one of vendors) {
@@ -344,8 +345,127 @@ describe('思考设置映射', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════
-// 六 · 协议自带列表（自定义 / 尚未注册的供应商走这一条）
+// 五之二 · GLM（智谱）：区域 × 协议的端点改写 ＋ 按型号代次的思考映射
 // ═══════════════════════════════════════════════════════════════════════
+
+describe('GLM：端点解析', () => {
+  // 四个官方区域：站（国内 / 国际 Z.ai）× 端点（通用 / Coding 套餐）——第一项是缺省
+  test('缺省＝中国大陆通用端点；区域列全两条接入线', () => {
+    expect(GLM_VENDOR.baseURLOf({})).toBe('https://open.bigmodel.cn/api/paas/v4')
+    expect(GLM_VENDOR.baseURLOf({ region: 'cn-coding' })).toBe('https://open.bigmodel.cn/api/coding/paas/v4')
+    expect(GLM_VENDOR.baseURLOf({ region: 'global' })).toBe('https://api.z.ai/api/paas/v4')
+    expect(GLM_VENDOR.baseURLOf({ region: 'global-coding' })).toBe('https://api.z.ai/api/coding/paas/v4')
+    expect(GLM_VENDOR.baseURLOf({ region: 'mars' })).toBeUndefined()
+  })
+
+  test('Messages / Responses 改写到同站的协议线；显式地址不改写', () => {
+    // Anthropic 兼容端点通用与套餐共用同一地址
+    expect(GLM_VENDOR.baseURLOf({}, 'messages')).toBe('https://open.bigmodel.cn/api/anthropic')
+    expect(GLM_VENDOR.baseURLOf({ region: 'cn-coding' }, 'messages')).toBe('https://open.bigmodel.cn/api/anthropic')
+    expect(GLM_VENDOR.baseURLOf({ region: 'global' }, 'messages')).toBe('https://api.z.ai/api/anthropic')
+    // Responses（Coding 套餐 Codex 端点）
+    expect(GLM_VENDOR.baseURLOf({ region: 'cn-coding' }, 'responses')).toBe('https://open.bigmodel.cn/api/v1')
+    expect(GLM_VENDOR.baseURLOf({ region: 'global-coding' }, 'responses')).toBe('https://api.z.ai/api/v1')
+    // Chat Completions 原样
+    expect(GLM_VENDOR.baseURLOf({ region: 'global-coding' }, 'chat-completions')).toBe('https://api.z.ai/api/coding/paas/v4')
+    // 显式写了地址 ⇒ 原样用（完整路径由用户负责）
+    expect(GLM_VENDOR.baseURLOf({ baseURL: 'https://my-proxy.example/glm' }, 'messages')).toBe('https://my-proxy.example/glm')
+  })
+
+  test('resolveModelSource：显式协议照用，缺省按固定优先级兜底', () => {
+    expect(resolveModelSource({ vendor: 'glm' }, 'glm-5.4'))
+      .toEqual({ protocol: 'responses', endpoint: 'https://open.bigmodel.cn/api/v1' })
+    // 5.3 没有 Responses 提示 ⇒ 兜底到 Messages？——5.3 在 Messages 提示里，取 Messages
+    expect(resolveModelSource({ vendor: 'glm' }, 'glm-5.3'))
+      .toEqual({ protocol: 'messages', endpoint: 'https://open.bigmodel.cn/api/anthropic' })
+    // 型号不在任何提示里 ⇒ 固定优先级（Responses → Messages → Chat Completions）
+    expect(resolveModelSource({ vendor: 'glm' }, '尚未公布的型号'))
+      .toEqual({ protocol: 'responses', endpoint: 'https://open.bigmodel.cn/api/v1' })
+  })
+
+  test('列表：`GET {base}/models`（Bearer），归一 `data[]`；认证随协议走 `x-api-key` 的部分由调用方定', async () => {
+    const { fetch, seen } = capturing(listBody('glm-5.3', 'glm-5.2'))
+
+    const models = await GLM_VENDOR.listModels(ctxOf(fetch, 'https://open.bigmodel.cn/api/paas/v4'))
+
+    expect(models.map((one) => one.id)).toEqual(['glm-5.3', 'glm-5.2'])
+    expect(seen[0]?.url).toBe('https://open.bigmodel.cn/api/paas/v4/models')
+    expect(seen[0]?.authorization).toBe('Bearer sk-not-a-real-key')
+  })
+})
+
+describe('GLM：官方协议支持提示', () => {
+  test('Responses 只含 glm-5.4；Messages / Chat Completions 覆盖已核实型号', () => {
+    expect(GLM_VENDOR.protocols.find(one => one.id === 'responses')?.models).toEqual(['glm-5.4'])
+    expect(GLM_VENDOR.protocols.find(one => one.id === 'messages')?.models)
+      .toEqual(expect.arrayContaining(['glm-5.4', 'glm-5.3', 'glm-5.2', 'glm-4.7']))
+    expect(GLM_VENDOR.protocols.find(one => one.id === 'chat-completions')?.models)
+      .toEqual(expect.arrayContaining(['glm-5.3', 'glm-5.3-flash', 'glm-5.2', 'glm-4.7']))
+  })
+})
+
+describe('GLM：思考设置映射（按型号代次，没依据不发假参数）', () => {
+  test('默认什么都不发（GLM 默认思考开启、模型自动判断）', () => {
+    expect(GLM_VENDOR.reasoningOf({ mode: 'default' }, 'glm-5.3')).toBeUndefined()
+  })
+
+  test('明确关闭 ⇒ `thinking.type = disabled`；GLM-5.3 系强制思考 ⇒ 报缺口', () => {
+    expect(GLM_VENDOR.reasoningOf({ mode: 'off' }, 'glm-5.2')).toEqual({ params: { thinking: { type: 'disabled' } } })
+    expect(GLM_VENDOR.reasoningOf({ mode: 'off' }, 'glm-4.7')).toEqual({ params: { thinking: { type: 'disabled' } } })
+
+    const gap = GLM_VENDOR.reasoningOf({ mode: 'off' }, 'glm-5.3')
+    expect(gap !== undefined && 'gap' in gap && gap.gap).toMatch(/不支持关闭思考/)
+    const flash = GLM_VENDOR.reasoningOf({ mode: 'off' }, 'glm-5.3-flash')
+    expect(flash !== undefined && 'gap' in flash && flash.gap).toMatch(/不支持关闭思考/)
+  })
+
+  test('档位 ⇒ `reasoning_effort`：5.3 系只认 low / high / max，5.2 及以上五档', () => {
+    expect(GLM_VENDOR.reasoningOf({ mode: 'level', level: 'max' }, 'glm-5.3'))
+      .toEqual({ params: { thinking: { type: 'enabled' }, reasoningEffort: 'max' } })
+    for (const level of ['low', 'high', 'max']) {
+      expect(GLM_VENDOR.reasoningOf({ mode: 'level', level }, 'glm-5.3')).toEqual({
+        params: { thinking: { type: 'enabled' }, reasoningEffort: level },
+      })
+    }
+    // 5.3 系的 medium / xhigh：通用 API 明文报错 ⇒ 缺口（套餐端点虽宽松映射，适配不按区域换规则）
+    const medium = GLM_VENDOR.reasoningOf({ mode: 'level', level: 'medium' }, 'glm-5.3')
+    expect(medium !== undefined && 'gap' in medium && medium.gap).toMatch(/low \/ high \/ max/)
+
+    // 5.2 及以上：五档全放行（服务端自行映射 low/medium→high、xhigh→max）
+    for (const level of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      expect(GLM_VENDOR.reasoningOf({ mode: 'level', level }, 'glm-5.2'))
+        .toEqual({ params: { thinking: { type: 'enabled' }, reasoningEffort: level } })
+    }
+    expect(GLM_VENDOR.reasoningOf({ mode: 'level', level: 'xhigh' }, 'glm-5.4'))
+      .toEqual({ params: { thinking: { type: 'enabled' }, reasoningEffort: 'xhigh' } })
+  })
+
+  test('5.2 之前的型号没有档位；认不出的型号不猜 ⇒ 都报缺口', () => {
+    for (const model of ['glm-4.7', 'glm-5.1', 'glm-5', 'glm-5-turbo']) {
+      const gap = GLM_VENDOR.reasoningOf({ mode: 'level', level: 'high' }, model)
+      expect(gap !== undefined && 'gap' in gap && gap.gap).toMatch(/reasoning_effort 仅 GLM-5\.2 及以上/)
+    }
+    const unknown = GLM_VENDOR.reasoningOf({ mode: 'level', level: 'high' }, 'glm-air')
+    expect(unknown !== undefined && 'gap' in unknown && unknown.gap).toMatch(/不支持思考档位/)
+  })
+
+  test('各协议的参数形态：Messages 走 effort，Responses 走 reasoningEffort，Chat 平铺', () => {
+    expect(GLM_VENDOR.reasoningOf({ mode: 'level', level: 'high' }, 'glm-5.3', 'messages'))
+      .toEqual({ params: { thinking: { type: 'enabled' }, effort: 'high' } })
+    expect(GLM_VENDOR.reasoningOf({ mode: 'level', level: 'high' }, 'glm-5.3', 'responses'))
+      .toEqual({ params: { reasoningEffort: 'high' } })
+    // Responses 没有思考开关字段：off 走 effort `none`（与 DeepSeek 同一处理）
+    expect(GLM_VENDOR.reasoningOf({ mode: 'off' }, 'glm-5.2', 'responses'))
+      .toEqual({ params: { reasoningEffort: 'none' } })
+  })
+
+  test('预算 ⇒ 报缺口（官方没有思考 token 预算参数）', () => {
+    const gap = GLM_VENDOR.reasoningOf({ mode: 'budget', budgetTokens: 4096 }, 'glm-5.4')
+    expect(gap !== undefined && 'gap' in gap && gap.gap).toMatch(/没有思考预算/)
+  })
+})
+
+
 
 /** 一次请求的现场：地址 ＋ 全部请求头（认证位置、协议版本头都在这上面看）。 */
 type ProtocolSeen = { readonly url: string; readonly headers: Headers }
