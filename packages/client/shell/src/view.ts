@@ -1596,6 +1596,7 @@ function rebuildRows(
       rows.push({
         kind: 'user',
         key: `rb:u:${entry.id}`,
+        entry: entry.id,
         text,
         echoed: false,
 
@@ -1669,6 +1670,66 @@ export function applyResume(view: ShellView, snapshot: RunSnapshot): ShellView {
     next = patchStatus(next, { model: snapshot.model, window: snapshot.window ?? null })
   }
 
+  return next
+}
+
+/**
+ * 把重建/接回窗口期间已经落到 `rows` 的实时增量按到达序合回视图：
+ * 避免 `rebuild`（`rows: []`）把未落库的流式首块、工具行或接回后的增量抹掉。
+ */
+export function mergeLiveRows(view: ShellView, liveRows: readonly LogRow[]): ShellView {
+  if (liveRows.length === 0) return view
+  let next = view
+  for (const row of liveRows) {
+    if (row.kind === 'assistant') {
+      const last = next.rows[next.rows.length - 1]
+      if (last?.kind === 'assistant' && last.entry === undefined) {
+        const text = row.text !== '' && last.text.endsWith(row.text) ? last.text : `${last.text}${row.text}`
+        next = replaceLast(next, {
+          ...last,
+          text,
+          ...(row.entry === undefined ? {} : { entry: row.entry }),
+        })
+      } else {
+        next = appendRow(next, row)
+      }
+      continue
+    }
+    if (row.kind === 'thinking') {
+      const last = next.rows[next.rows.length - 1]
+      if (last?.kind === 'thinking') {
+        const text = row.text !== '' && last.text.endsWith(row.text) ? last.text : `${last.text}${row.text}`
+        next = replaceLast(next, {
+          ...last,
+          text,
+          startedAt: last.startedAt ?? row.startedAt,
+          lastAt: row.lastAt ?? last.lastAt,
+          flowing: row.flowing,
+        })
+      } else {
+        next = appendRow(next, row)
+      }
+      continue
+    }
+    if (row.kind === 'tool') {
+      const existing = next.rows.findIndex(one =>
+        one.kind === 'tool' && (
+          (row.call !== null && one.call === row.call)
+          || (one.name === row.name && one.argsText === row.argsText && one.state === 'running')
+        ),
+      )
+      if (existing !== -1) {
+        next = patchTool(next, existing, () => row)
+      } else {
+        next = appendRow(next, row)
+      }
+      continue
+    }
+    const duplicated = next.rows.some(one => one.key === row.key)
+      || next.settled.some(one => one.key === row.key)
+      || (row.kind === 'user' && row.entry !== undefined && [...next.settled, ...next.rows].some(one => one.kind === 'user' && one.entry === row.entry))
+    if (!duplicated) next = appendRow(next, row)
+  }
   return next
 }
 

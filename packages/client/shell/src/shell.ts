@@ -1024,7 +1024,17 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
     if(lastSubmit?.local===true && (('ok' in event.data&&event.data.ok===false)||(event.kind==='session.state'&&event.data.note!==undefined)))settleDraft(lastSubmit.ref,true)
 
-    if(event.kind==='input.pending'){const target=view.inputMember===undefined?view.sessionId:view.collaboration?.members.find(one=>one.agent.agentId===view.inputMember)?.agent.sessionId;if(target!=null&&event.session!==target)return;commit({...view,pendingInputs:event.data.inputs});if(view.dock.kind==='picker'&&view.dock.picker.source==='input-pending')openPendingInputs();if(event.data.note!==undefined)commit(appendReceipt(view,event.data.note));return}
+    if(event.kind==='input.pending'){
+      const target=view.inputMember===undefined?view.sessionId:view.collaboration?.members.find(one=>one.agent.agentId===view.inputMember)?.agent.sessionId
+      if(target!=null&&event.session!==target)return
+      const shown=new Set([...view.settled,...view.rows].filter((row):row is Extract<import('./view.ts').LogRow,{kind:'user'}>=>row.kind==='user'&&row.entry!==undefined).map(row=>row.entry!))
+      const doneRefs=new Set(event.data.inputs.filter(one=>one.entry!==undefined&&shown.has(one.entry)).map(one=>one.ref))
+      const queued=doneRefs.size===0?view.queued:view.queued.filter(one=>!doneRefs.has(one.ref))
+      commit({...view,pendingInputs:event.data.inputs,queued})
+      if(view.dock.kind==='picker'&&view.dock.picker.source==='input-pending')openPendingInputs()
+      if(event.data.note!==undefined)commit(appendReceipt(view,event.data.note))
+      return
+    }
     if (event.kind === 'background.state') {
       if (view.sessionId !== null && event.session !== view.sessionId) return
       const picker = view.dock.kind === 'picker' ? view.dock.picker : undefined
@@ -1139,11 +1149,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
           && (prior.collaboration.originSession === event.data.active
             || prior.collaboration.members.some(one => one.agent.sessionId === event.data.active))
         inputContexts.clear()
+        const createdFromBlank=before===null&&turn===null&&((lastSubmit!==null&&lastSubmit.local!==true)||view.queued.length>0||view.rows.length>0)
         const saved=workContexts.get(event.data.active||null)??(before===null&&(lastSubmit!==null||turn===null)?workContexts.get(null):undefined)
         if(saved!==undefined)for(const [member,context] of saved.members)inputContexts.set(member,context)
         history=saved?.current.history??[];historyAt=saved?.current.historyAt??-1;browsing=saved?.current.browsing??null;lastSubmit=saved?.current.lastSubmit??null
         commit({...view,background:undefined,collaboration:sameCollaboration ? prior.collaboration : undefined,messages:undefined,inputMember:saved?.member,inputPurpose:saved?.purpose??'current',draft:saved?.current.draft??'',refs:saved?.current.refs??[],caret:saved?.current.caret??0,escapes:(view.escapes??[]).filter(one => one.session !== event.data.active)})
-        if (event.data.active !== '') readHistory(event.data.active)
+        if (event.data.active !== '' && !createdFromBlank) readHistory(event.data.active)
       }
       if (waiting === 'session') {
         waiting = null

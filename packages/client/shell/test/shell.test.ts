@@ -731,6 +731,63 @@ describe('重建（`session.history` 分块）', () => {
 
     expect(app.commands()).toContainEqual({ type: 'history.read', session: 's2' })
   })
+
+  test('空白页首输建会话：不再发多余 history.read，不丢失首轮流式文本', () => {
+    const app = live()
+    app.type('你好')
+    app.press(ENTER)
+    const submit = app.commands().find(cmd => cmd.type === 'input.submit') as { type: 'input.submit'; ref: string }
+    expect(submit).toBeDefined()
+
+    app.spy.emit(state1('s-new'))
+    expect(app.commands().some(cmd => cmd.type === 'history.read')).toBe(false)
+
+    app.spy.emit(event('message.user', { entry: 1, refs: [submit.ref] }, { session: 's-new' }))
+    app.spy.emit(event('model.delta', { channel: 'text', text: '收到，' }, { session: 's-new', id: 2 }))
+    app.spy.emit(event('model.delta', { channel: 'text', text: '我在。' }, { session: 's-new', id: 3 }))
+
+    expect(app.shell.getView().queued).toEqual([])
+    expect(app.rows().find(row => row.kind === 'assistant')).toMatchObject({ text: '收到，我在。' })
+  })
+
+  test('流式期间收到 session.history 仍保留在途增量，并按已入库条目清理 queued', () => {
+    const app = live()
+    app.type('你好')
+    app.press(ENTER)
+    const submit = app.commands().find(cmd => cmd.type === 'input.submit') as { type: 'input.submit'; ref: string }
+
+    app.spy.emit(state1('s1'))
+    app.spy.emit(event('input.pending', {
+      inputs: [{ ref: submit.ref, purpose: 'current', input: { text: '你好', ref: submit.ref }, state: 'consumed', entry: 1, turn: 1, at: 1, revision: 2 }],
+    }, { session: 's1' }))
+    app.spy.emit(event('model.delta', { channel: 'text', text: '收到，' }, { session: 's1', id: 10 }))
+
+    app.spy.emit(event('session.history', { session: 's1', entries: [entry(1, '你好')], done: true }, { session: 's1' }))
+    app.spy.emit(event('model.delta', { channel: 'text', text: '我在。' }, { session: 's1', id: 11 }))
+
+    expect(app.shell.getView().queued).toEqual([])
+    expect(app.rows().find(row => row.kind === 'assistant')).toMatchObject({ text: '收到，我在。' })
+  })
+
+  test('resumed 快照与水位后增量在 session.history 收尾时按序合并不丢前段', () => {
+    let resumeHandler: ((gen: number, snapshot: import('@magic/contracts').RunSnapshot) => void) | undefined
+    const app = live({
+      resumed: { subscribe(listener) { resumeHandler = listener; return () => { resumeHandler = undefined } } },
+    })
+
+    app.spy.emit(state1('s1'))
+    resumeHandler?.(1, {
+      watermark: 5,
+      turnOpen: true,
+      text: '收到',
+      tools: [],
+      thinking: '',
+    } as import('@magic/contracts').RunSnapshot)
+    app.spy.emit(event('model.delta', { channel: 'text', text: '，我在。' }, { session: 's1', id: 6 }))
+    app.spy.emit(event('session.history', { session: 's1', entries: [entry(1, '你好')], done: true }, { session: 's1' }))
+
+    expect(app.rows().find(row => row.kind === 'assistant')).toMatchObject({ text: '收到，我在。' })
+  })
 })
 
 function state1(active: string) {

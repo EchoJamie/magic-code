@@ -184,6 +184,9 @@ export function installLifecycle(ctx: ManagerContext): void {
         return
       case 'ready': {
         executor.run.ready = true
+        // 先完成接回快照握手（watermark 停在开跑前），再放行 ready 前排队命令与 wake 消费；
+        // 否则首轮的 message.user 与首块 model.delta 会先于快照落入 watermark 之前被缓冲过滤丢弃。
+        connections.retrySnapshot(executor)
         // ready 位先落（sendToExecutor 的闸门按它放行）——control.ready 的补发队列才能真发出去。
         control.ready(executor)
         // 起来那一刻「正在起执行者」这件事就完了（那一格由 `actionOf` 之外的一处写，
@@ -194,8 +197,6 @@ export function installLifecycle(ctx: ManagerContext): void {
         // T1.2：ready 后补发消费信号（queued 缓冲已删）——账本为真源，执行者从账上捞待办。
         executor.lastWakeAt = now()
         send(executor, { t: 'collaboration.wake' })
-        // T4 回归根因：bind 时（ready 前）的快照握手被链路拒发——ready 这一刻链路可用，重发。
-        connections.retrySnapshot(executor)
         ctx.saveRuns()
         ctx.pushRuns()
         return

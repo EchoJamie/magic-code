@@ -18,6 +18,7 @@ import {
   applyResume,
   appendReceipt,
   finishExecution,
+  mergeLiveRows,
   patchStatus,
   withRunFacts,
   HINT_IDLE,
@@ -87,7 +88,10 @@ export function createConnectionControl(host: ConnectionHost): {
     pendingResume = null
     const view = host.getView()
     const held = view
-    const resumed = applyResume(view, snapshot)
+    const base = view.rows.length > 0 ? { ...view, rows: [] } : view
+    const resumed = view.rows.length > 0
+      ? mergeLiveRows(applyResume(base, snapshot), view.rows)
+      : applyResume(view, snapshot)
     host.commit({ ...resumed, dock: held.dock, draft: held.draft, refs: held.refs, caret: held.caret, stashed: held.stashed, status: resumed.status })
   }
 

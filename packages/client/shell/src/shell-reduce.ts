@@ -10,7 +10,7 @@
  * 故工厂把它露出来（`isRebuilding`），由外壳接进连接管理。
  */
 import type { Command, Entry, KernelEvent } from '@magic/contracts'
-import { patchStatus, rebuild, reduce, type ShellView } from './view.ts'
+import { mergeLiveRows, patchStatus, rebuild, reduce, type LogRow, type ShellView } from './view.ts'
 
 /**
  * **输入历史的一条**——**整份草稿**：正文 ＋ 它里面的引用（位置与身份）。
@@ -84,10 +84,33 @@ export function createHistoryAccumulator(host: HistoryHost): {
     }
     let current = view
     for (const event of data.compactions ?? []) current = reduce(current, event)
-    const unconfirmed = [...current.settled, ...current.rows].filter(row => row.kind === 'user' && row.inputState !== undefined && !current.pendingInputs.some(input => input.ref === row.inputRef && input.entry !== undefined))
+    const entryIds = new Set(rebuildEntries.map(entry => entry.id))
+    const consumedRefs = new Set(
+      current.pendingInputs.filter(input => input.entry !== undefined && entryIds.has(input.entry)).map(input => input.ref),
+    )
+    const unconfirmedSettled = current.settled.filter(
+      row => row.kind === 'user' && row.inputState !== undefined && !current.pendingInputs.some(input => input.ref === row.inputRef && input.entry !== undefined),
+    )
     const rebuilt = rebuild(current, rebuildEntries, {
       ...(data.timing === undefined ? {} : { timing: data.timing }),
       ...(data.messages === undefined ? {} : { messages: data.messages }),
+    })
+    const settledAfterLastUser = (() => {
+      const idx = rebuilt.settled.findLastIndex(row => row.kind === 'user')
+      return idx === -1 ? rebuilt.settled : rebuilt.settled.slice(idx + 1)
+    })()
+    const liveRows: LogRow[] = current.sessionId !== data.session ? [] : current.rows.filter((row) => {
+      if (row.kind === 'user') {
+        return (row.inputState !== undefined && !current.pendingInputs.some(input => input.ref === row.inputRef && input.entry !== undefined))
+          || (row.entry !== undefined && !entryIds.has(row.entry))
+      }
+      if (row.kind === 'assistant') return row.entry === undefined || !entryIds.has(row.entry)
+      if (row.kind === 'thinking') return true
+      if (row.kind === 'tool') {
+        if (row.state === 'running') return true
+        return !settledAfterLastUser.some(one => one.kind === 'tool' && one.argsText === row.argsText && one.state === row.state)
+      }
+      return !rebuilt.settled.some(one => one.key === row.key)
     })
     /**
      * **接回这条会话的用量读数**（`session.history.usage`，末块给）——状态行 ④ 放回离开那一刻
@@ -103,9 +126,10 @@ export function createHistoryAccumulator(host: HistoryHost): {
       ...(data.usage.inputTokens === undefined ? {} : { usage: data.usage.inputTokens }),
       ...(data.usage.contextWindow === undefined ? {} : { window: data.usage.contextWindow }),
     })
+    const queued = consumedRefs.size === 0 ? withUsage.queued : withUsage.queued.filter(one => !consumedRefs.has(one.ref))
     host.commit({
       ...withUsage,
-      rows: [...withUsage.rows, ...unconfirmed],
+      queued,
       ...(data.truncated === true ? { flash: '记录过长，已显示部分内容' } : {}),
     })
     rebuildFor = null
@@ -116,6 +140,8 @@ export function createHistoryAccumulator(host: HistoryHost): {
     host.send({ type: 'plan.read', requestId: crypto.randomUUID(), session: data.session })
 
     host.drawResumed()
+    const trailing = [...unconfirmedSettled, ...liveRows]
+    if (trailing.length > 0) host.commit(mergeLiveRows(host.getView(), trailing))
   }
 
   return { accumulate, isRebuilding: () => rebuildFor !== null }
