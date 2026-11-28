@@ -280,7 +280,18 @@ export function assemble(options: AssembleOptions): Assembly {
       loaded, recordsStore, workspace, sudoAuth: options.sudoAuth, sink, now,
       signal, network, executionId, backgroundRuns,
       sandbox, projectRules, skills, materials, mcpTools,
-      setTitle: options.aiTitle === true ? (session, title, at) => recordsStore.setSessionTitle(session, title, at) : undefined,
+      setTitle: options.aiTitle === true
+        ? (session, title, at) => {
+          recordsStore.setSessionTitle(session, title, at)
+          // **写入成功 → 广播目录**——AI 标题旁路写库全程不产生事件（`session-title.ts`
+          // 护栏 2），外壳状态行 ② 与终端页签的名字要这条才跟得上，否则运行中的界面
+          // 永远停在「首条交代摘要」兜底（2026-11-28 排查）。
+          // `conversation` 在本工厂**之后**才构造——但写入发生在标题生成完成时
+          // （实例已开张、装配早已跑完），此刻它必已就位；写库若抛，广播不启，
+          // attempt 那头的失败降级照旧。
+          void conversation.announceTitleWritten()
+        }
+        : undefined,
       model: {
         create: (selection, stamper) => {
           const current = modelDomain.modelsOf()

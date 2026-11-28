@@ -34,6 +34,8 @@
  *   身份由 agent 名与委派 scope 承载，标题无可见价值（docs/会话标题方案.md §3.6，2026-11-25 定）；
  * - **写入落点**——装配把 `recordsStore.setSessionTitle` 接成 `ConversationDeps.setTitle`
  *   （`AssembleOptions.aiTitle` 门 → `agent-assembly/session.ts` 透传 → 生产入口 `executor.ts`）；
+ *   **写入成功后广播一次目录**（装配闭包 → `sessions.ts` 的 `announceTitleWritten` 发一条
+ *   `session.state`）——外壳状态行 ② 与页签的名字从这条事件来，没有它运行中的界面停在兜底值；
  * - **展示**——`packages/client/shell/src/session-title-tab.ts`（OSC 0 页签同步，
  *   `ShellOptions.sessionTitleTab`）；
  * - **兜底与改名**——`sessions.ts` 的 `summarize` / `readSessionCatalog`（现算摘要与

@@ -88,4 +88,36 @@ describe('AI 标题 · 装配接线', () => {
       stage.dispose()
     }
   })
+
+  test('aiTitle: true——标题落库后广播一次目录（外壳状态行 ② 与页签从这条事件拿到新名字）', async () => {
+    const stage = makeStage()
+    try {
+      const assembly = stage.assemble({
+        turns: [{ text: '修复移动端登录按钮' }, { text: '修复移动端登录按钮' }],
+        aiTitle: true,
+      })
+      const shell = attachShell(assembly.shell, { timeoutMs: 10_000 })
+      // 广播发生在落库后（异步读目录再发）——等它的事件要在 dispose **之前**挂上
+      const broadcast = shell.until(
+        (event) => event.kind === 'session.state'
+          && event.data.sessions.some((row) => row.title === '修复移动端登录按钮'),
+      )
+      try {
+        await shell.submit('帮我看一下移动端登录页为什么点登录没反应')
+        const event = await broadcast
+        // 落库时目录里这条会话的标题已换成 AI 值，事件活跃位指向它——
+        // 兜底摘要（首条交代截断）与 AI 标题不同文，这里命中的只能是广播那次
+        if (event.kind !== 'session.state') throw new Error('等来的应是 session.state')
+        const row = event.data.sessions.find((one) => one.title === '修复移动端登录按钮')
+        if (row === undefined) throw new Error('广播的目录里应有带 AI 标题的那条')
+        expect(event.data.active).toBe(row.id)
+      } finally {
+        shell.dispose()
+      }
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
 })

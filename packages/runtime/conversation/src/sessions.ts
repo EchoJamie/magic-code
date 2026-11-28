@@ -164,6 +164,13 @@ export type SessionHost = Omit<ConversationService, 'rebuild'> & {
    */
   readHistory(session?: SessionId): Promise<void>
   /**
+   * **标题写入后的目录广播**——AI 标题在实例旁路写库、全程不产生事件（`session-title.ts`
+   * 护栏 2），装配在**写入成功后**经这一口把目录推出去：发一条 `session.state`
+   * （目录 ＋ 活跃位，无 note）。外壳状态行 ② 与终端页签的名字都从这条事件拿——
+   * 没有它，标题落库后运行中的界面永远停在「首条交代摘要」兜底（2026-11-28 排查）。
+   */
+  announceTitleWritten(): Promise<void>
+  /**
    * **当前计划**（`plan.read` 的落点）——全文推 `plan.changed`（**不落库**），
    * 零裁剪。`session` 不给＝当下这条。
    */
@@ -266,6 +273,26 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
         ...(attempt.note === undefined ? {} : { note: attempt.note }),
       }),
     )
+  }
+
+  /**
+   * **标题写入后的目录广播**（接口注见 `SessionHost.announceTitleWritten`）——
+   * 装配在 AI 标题写入成功后调（写入闭包：`recordsStore.setSessionTitle` → 这里）。
+   * 与 `announce` 同款，只是没有 note 可带。
+   *
+   * 两个不硬来的分支：
+   * - **没有活跃会话＝没有可报的活跃位与信封**——不发。切走之后才写完的那一份，
+   *   随下一次会话命令的目录一并到达，目录本身不缺它；
+   * - **目录读不出来**——广播缺席，不炸也不硬造：下一次会话命令（/resume 等）
+   *   的目录自然纠正。旁路收尾的失败不值得一条 error 事件。
+   */
+  async function announceTitleWritten(): Promise<void> {
+    if (active === undefined) return
+    try {
+      await announce({ session: active.session })
+    } catch {
+      // 目录读不出来——广播缺席（见上）
+    }
   }
 
   async function run(command: SessionCommand): Promise<void> {
@@ -456,6 +483,8 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
     exportImage,
 
     listSessions: () => catalog(),
+
+    announceTitleWritten,
 
     async newSession(): Promise<SessionId> {
       const attempt = fresh()

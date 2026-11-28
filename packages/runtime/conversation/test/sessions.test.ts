@@ -167,6 +167,8 @@ type Bench = {
   instanceOf(session: SessionId): FakeInstance | undefined
   /** 最后一次 `session.state` 的载荷。 */
   lastState(): EventDataOf['session.state'] | undefined
+  /** 旁路写库（不产生任何事件）——模拟 AI 标题的落库（生产里装配的 `setTitle` 同款）。 */
+  setTitle(session: SessionId, title: string, at: Timestamp): void
 }
 
 function makeBench(options: {
@@ -203,6 +205,7 @@ function makeBench(options: {
     },
     instanceOf: (session) => instances.filter((instance) => instance.session === session).at(-1),
     lastState: () => sink.byKind('session.state').at(-1)?.data,
+    setTitle: ledger.setTitle,
   }
 }
 
@@ -416,6 +419,40 @@ describe('改名（session.rename）', () => {
 
     expect(bench.host.active()).toBe(A)
     expect(bench.lastState()?.sessions.map((row) => row.title)).toEqual(['甲的事', '给乙改的'])
+  })
+})
+
+describe('标题写入的目录广播（announceTitleWritten——AI 标题写入成功后装配调）', () => {
+  test('有活跃会话：广播一条 session.state——活跃位照报，目录带刚写入的标题，不带 note', async () => {
+    const bench = makeBench({ session: A, rows: [{ id: A, at: T0, first: '甲的事' }] })
+    const before = bench.sink.byKind('session.state').length
+
+    // 旁路落库（不产生事件——生产里 `recordsStore.setSessionTitle` 同款）……
+    bench.setTitle(A, 'AI 起的标题', T0 + 5)
+    // ……写完经广播口把目录推出去（外壳状态行 ② 与页签从这条事件拿到新名字）
+    await bench.host.announceTitleWritten()
+
+    expect(bench.sink.byKind('session.state')).toHaveLength(before + 1)
+    expect(bench.lastState()?.active).toBe(A)
+    expect(bench.lastState()?.note).toBeUndefined()
+    expect(bench.lastState()?.sessions.find((row) => row.id === A)?.title).toBe('AI 起的标题')
+  })
+
+  test('没有活跃会话：没有可报的活跃位与信封——不发', async () => {
+    const sink = makeFauxSink()
+    const ledger = makeLedger([{ id: B, at: T0, first: '别人的事' }])
+    const host = createConversationService({
+      open: () => { throw new Error('不该开张') },
+      records: ledger.records,
+      setTitle: ledger.setTitle,
+      sink,
+      now: () => T0,
+    })
+    expect(host.active()).toBeUndefined()
+
+    await host.announceTitleWritten()
+
+    expect(sink.byKind('session.state')).toHaveLength(0)
   })
 })
 
