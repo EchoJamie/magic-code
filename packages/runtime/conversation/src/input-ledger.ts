@@ -43,6 +43,10 @@ export function acceptInput(bundle: QueueBundle, input: UserInput, shared: boole
   if (state.closed) { done(); return }
   const durable = { ...input, ref: input.ref ?? crypto.randomUUID() }
   try {
+    // **入队按 ref 去重**（U114 撤回修复）：账本行保持 pending 期间，对账器每次敲门都会
+    // 把同一行重新 submit——账本受理幂等（ON CONFLICT 不动行），但内存队列会每秒堆积一份、
+    // 回执帧每秒重发一遍。排队中的同 ref 只保留队列里那一份（在 pending 帧发出前拦下）。
+    if (bundle.pending.some(one => one.input?.ref === durable.ref)) { done(); return }
     const existing = deps.records.inputs.get(durable.ref)
     const row = deps.records.inputs.accept(durable, (deps.now ?? Date.now)())
     sink.emit(stamper.stamp('input.settled', row.state === 'failed' || row.state === 'withdrawn'
