@@ -23,6 +23,21 @@ import type {
 import { entryKnowledgeReferences } from './knowledge-material.ts'
 import { estimateTokens } from './brief.ts'
 import { preparationReserve } from './organize.ts'
+import {
+  EXEMPT_PRUNE_TOOLS,
+  PRUNE_MIN_TOOL_CHARS,
+  computePruneAdvance,
+  prunedToolPlaceholder,
+} from './prune.ts'
+
+export const COMPACTION_HANDOFF_PREFIX = '【较早历史的压缩交接'
+
+/** 真实用户交代（排除内核通知、本地局部回显以及旧版伪装成 user 的交接材料）。 */
+export function isRealUserEntry(entry: Entry): boolean {
+  if (entry.kind !== 'user') return false
+  const payload = entry.payload as { readonly notice?: unknown; readonly handoff?: unknown; readonly local?: unknown } | undefined
+  return payload?.notice !== true && payload?.handoff !== true && payload?.local !== true
+}
 
 /**
  * 引用表里**文本那几支**（技能 / 文件 / 目录）——`inlineOf` 的入参面（U37）。
@@ -31,6 +46,13 @@ import { preparationReserve } from './organize.ts'
  * （字节放不进 `string`）。走错路 tsc 当场报，不必等运行期去发现「有一张图被当成了空文本」。
  */
 export type TextRefEntry = Exclude<InputRefEntry, { kind: 'image' }>
+
+export type BudgetPressure = {
+  readonly estimated: number
+  readonly room: number
+  readonly budget: number
+  readonly action: 'degraded' | 'overflow'
+}
 
 export type AssembleContextInput = {
   readonly knowledge?: import('@magic/contracts').KnowledgeRecords
@@ -47,6 +69,11 @@ export type AssembleContextInput = {
    * 超了先折叠较早的工具结果，再裁最早的完整交互；仍超就拒绝发送，不把超限交给供应商。
    */
   readonly budget?: number | undefined
+  readonly onBudgetPressure?: (pressure: BudgetPressure) => void
+  /** 是否启用一级批量工具输出微压缩（默认开启）。 */
+  readonly prune?: boolean | undefined
+  /** 仅用于同前缀压缩准备：提供预算水位用于对齐微压缩，但不执行 fitBudget 裁段。 */
+  readonly pruneRoom?: number | undefined
   /**
    * 本次成功装配实际展开的协作消息。只报告，不写“已带入”事实；宿主在实际请求发出时
    * 对照已消费收件标记。包括发出消息；撤回、压出窗口且已带入的消息不在其中。
@@ -68,10 +95,19 @@ export async function assembleContext(
   // 接续简报随系统材料重注：它只说明旧段留下了什么、下一步从哪继续；原文仍可回查。
   const coverage = input.records.coverage.read()
   let brief = ''
+  let compactionText: string | undefined
+  let retainedUserIds: readonly RecordId[] = []
   if (coverage.summary !== null) {
     for await (const entry of input.records.readEntries(input.session, { from: coverage.summary, to: coverage.summary })) {
-      if (entry.kind === 'summary' && entry.payload !== undefined && 'brief' in entry.payload && entry.payload.brief === true) {
-        brief = await rawTextOf(entry.content, input.records)
+      if (entry.kind === 'summary' && entry.payload !== undefined) {
+        if ('format' in entry.payload && entry.payload.format === 'compaction-v2') {
+          compactionText = await rawTextOf(entry.content, input.records)
+          if ('retainedUsers' in entry.payload && Array.isArray(entry.payload.retainedUsers)) {
+            retainedUserIds = entry.payload.retainedUsers
+          }
+        } else if ('brief' in entry.payload && entry.payload.brief === true) {
+          brief = await rawTextOf(entry.content, input.records)
+        }
       }
     }
   }
@@ -92,8 +128,9 @@ export async function assembleContext(
   const users: RecordId[] = []
   /** 压缩交接材料——它不是用户说的，装配完摆到最前（新上下文的第一句）。 */
   let handoff: string | undefined
-  /** 工具结果消息与来源条目的对应——装配兜底折叠时要写出「原文在哪」。 */
+  /** 工具结果消息与来源条目的对应——一级微压缩与装配兜底折叠共用。 */
   const toolMeta: { index: number; entryId: RecordId; chars: number }[] = []
+  const toolItems: { index: number; entryId: RecordId; toolName: string; ok: boolean; chars: number; tokens: number; inLatestRound: boolean }[] = []
 
   // 按记录位置展开成员材料；工具往返作为整体处理，穿插材料在该整体之后进入。
   const projected: MessageId[] = []
@@ -123,6 +160,7 @@ export async function assembleContext(
   }
 
   const entries = all.filter(entry => entry.kind !== 'agent-message')
+  const lastAssistantIndex = entries.findLastIndex(entry => entry.kind === 'assistant')
   let index = 0
   while (index < entries.length) {
     const entry = entries[index]
@@ -216,7 +254,17 @@ export async function assembleContext(
           ok: hit.result.ok,
           output: content.text,
         })
-        toolMeta.push({ index: messages.length + toolMessages.length, entryId: hit.entry.id, chars: content.text.length })
+        const toolIndex = messages.length + toolMessages.length
+        toolMeta.push({ index: toolIndex, entryId: hit.entry.id, chars: content.text.length })
+        toolItems.push({
+          index: toolIndex,
+          entryId: hit.entry.id,
+          toolName: item.call.name,
+          ok: hit.result.ok,
+          chars: content.text.length,
+          tokens: estimateTokens(content.text) + estimateTokens(item.call.name),
+          inLatestRound: index === lastAssistantIndex,
+        })
         provided(entryKnowledgeReferences(hit.entry))
       }
 
@@ -239,11 +287,50 @@ export async function assembleContext(
   }
 
   await appendMaterialsThrough(Infinity)
-  if (handoff !== undefined) messages.splice(1, 0, { role: 'user', content: handoff })
+  if (compactionText !== undefined) {
+    const compactionPrefix: ModelMessage[] = [
+      { role: 'user', content: `${COMPACTION_HANDOFF_PREFIX}（覆盖至会话#${coverage.coveredThrough}）】\n${compactionText}` },
+    ]
+    for (const uid of retainedUserIds) {
+      for await (const entry of input.records.readEntries(input.session, { from: uid, to: uid })) {
+        if (entry.id !== uid || !isRealUserEntry(entry)) continue
+        const text = await rawTextOf(entry.content, input.records)
+        const payload = entry.payload
+        provided(entryKnowledgeReferences(entry))
+        compactionPrefix.push({ role: 'user', content: await userBodyOf(text, refsPayloadOf(payload), userPayloadOf(payload), input.records) })
+      }
+    }
+    messages.splice(1, 0, ...compactionPrefix)
+    for (const meta of toolMeta) meta.index += compactionPrefix.length
+    for (const item of toolItems) item.index += compactionPrefix.length
+  } else if (handoff !== undefined) {
+    messages.splice(1, 0, { role: 'user', content: handoff })
+    for (const meta of toolMeta) meta.index += 1
+    for (const item of toolItems) item.index += 1
+  }
+  const pruneRoom = input.pruneRoom ?? (input.budget === undefined ? undefined : Math.max(0, input.budget - preparationReserve(input.budget)))
+  let prunedThrough = input.records.coverage.readPrunedThrough?.() ?? null
+  if (input.prune !== false && pruneRoom !== undefined) {
+    const next = computePruneAdvance(toolItems, prunedThrough, pruneRoom)
+    if (next !== undefined) {
+      input.records.coverage.advancePrunedThrough?.(next)
+      prunedThrough = next
+    }
+  }
+  if (input.prune !== false && prunedThrough !== null) {
+    for (const item of toolItems) {
+      if (item.entryId > prunedThrough || !item.ok || item.chars <= PRUNE_MIN_TOOL_CHARS || EXEMPT_PRUNE_TOOLS.has(item.toolName)) continue
+      const existing = messages[item.index]
+      if (existing?.role !== 'tool') continue
+      messages[item.index] = { ...existing, output: prunedToolPlaceholder(item.toolName, item.chars, item.entryId) }
+      const meta = toolMeta.find(one => one.entryId === item.entryId)
+      if (meta !== undefined) meta.chars = 0
+    }
+  }
   input.onIncluded?.(projected)
   input.onUserEntries?.(users)
   input.onKnowledge?.([...supplied.values()])
-  return fitBudget(messages, input.budget, toolMeta)
+  return fitBudget(messages, input.budget, toolMeta, input.onBudgetPressure)
 }
 
 /**
@@ -257,13 +344,15 @@ function fitBudget(
   messages: readonly ModelMessage[],
   budget: number | undefined,
   toolMeta: readonly { index: number; entryId: RecordId; chars: number }[],
+  onBudgetPressure?: (pressure: BudgetPressure) => void,
 ): readonly ModelMessage[] {
   if (budget === undefined) return messages
   // 工具定义与本轮新增不在这份消息里，留一份与压缩同一口径的余量。
   const room = Math.max(0, budget - preparationReserve(budget))
   let kept: ModelMessage[] = [...messages]
   const total = () => kept.reduce((sum, message) => sum + messageTokens(message), 0)
-  if (total() <= room) return kept
+  const initial = total()
+  if (initial <= room) return kept
 
   const byIndex = new Map(toolMeta.map(meta => [meta.index, meta]))
   for (let index = 1; index < kept.length && total() > room; index++) {
@@ -273,10 +362,14 @@ function fitBudget(
     if (meta === undefined || meta.chars <= FOLD_TOOL_RESULT_CHARS) continue
     kept[index] = { ...message, output: `【较早工具结果已折叠 · ${meta.chars} 字符 · 会话记录#${meta.entryId}】` }
   }
-  if (total() <= room) return kept
+  if (total() <= room) {
+    onBudgetPressure?.({ estimated: initial, room, budget, action: 'degraded' })
+    return kept
+  }
 
   const starts: number[] = []
   for (let index = 1; index < kept.length; index++) if (kept[index]!.role === 'user') starts.push(index)
+  const systemBase = kept[0]?.role === 'system' ? kept[0].content : undefined
   let dropped = 0
   while (starts.length > 1 && total() > room) {
     const from = starts.shift()!
@@ -284,20 +377,23 @@ function fitBudget(
     kept = [...kept.slice(0, from), ...kept.slice(to)]
     dropped += 1
     for (let index = 0; index < starts.length; index++) starts[index] = starts[index]! - (to - from)
+    if (systemBase !== undefined) {
+      kept[0] = { role: 'system', content: `${systemBase}\n\n【上下文预算】较早的 ${dropped} 段交互已从本次请求裁出（原文仍在会话记录里，可用 source_read 回取）。` }
+    }
   }
-  const system = kept[0]
-  if (dropped > 0 && system !== undefined && system.role === 'system') {
-    kept[0] = { role: 'system', content: `${system.content}\n\n【上下文预算】较早的 ${dropped} 段交互已从本次请求裁出（原文仍在会话记录里，可用 history_read 回取）。` }
+  if (total() <= room) {
+    onBudgetPressure?.({ estimated: initial, room, budget, action: 'degraded' })
+    return kept
   }
-  if (total() <= room) return kept
 
-  throw new Error(`本次请求约 ${total()} tokens，折叠旧工具结果、裁掉较早交互后仍超出输入预算 ${budget}；先用 /compact 压缩或换用更大的模型`)
+  onBudgetPressure?.({ estimated: initial, room, budget, action: 'overflow' })
+  throw new Error(`本次请求约 ${total()} tokens，折叠旧工具结果、裁掉较早交互后仍超出输入预算 ${room}（模型窗口输入上限 ${budget}，已预留 ${budget - room}）；先用 /compact 压缩或换用更大的模型`)
 }
 
 /** 折叠阈值：超过这个字符数的成功工具结果，遇到预算不足时优先折叠（与简报材料同一量级）。 */
 const FOLD_TOOL_RESULT_CHARS = 8_000
 
-function messageTokens(message: ModelMessage): number {
+export function messageTokens(message: ModelMessage): number {
   if (message.role === 'tool') return estimateTokens(message.output) + estimateTokens(message.name)
   if (message.role === 'assistant') {
     let sum = estimateTokens(message.content)

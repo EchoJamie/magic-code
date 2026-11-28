@@ -65,6 +65,8 @@ export function createExecutorControl(onStartupTimeout: (executor: Executor) => 
   /** ready 闸门前送达会被丢弃的换模请求——按代排队，ready 时刻补发（P1 修复：此前既不排队
    * 也无超时，配置悬到 retire 才落定；常规路径 startMember 先等 ready，缺口只在竞态窗口）。 */
   const pendingConfigures = new Map<number, { requestId: string; model: AgentModelConfig }[]>()
+  const tidies = new Map<string, { executor: Executor; resolve: (state: import('@magic/contracts').EventDataOf['memory.tidy.state']) => void; reject: (error: Error) => void }>()
+  const pendingTidies = new Map<number, { request: { requestId: string; focus?: string }; signal: AbortSignal }[]>()
   const configurationWaiters = new Map<string, { executor: Executor; resolve: () => void; reject: (error: Error) => void }>()
   const readyWaiters = new Map<number, { resolve: () => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>()
   const executorSettings = new WeakMap<Executor, readonly McpCatalogRow[]>()
@@ -78,6 +80,14 @@ export function createExecutorControl(onStartupTimeout: (executor: Executor) => 
       for (const item of queuedCompacts) {
         const pending = compactions.get(item.request.requestId)
         if (pending?.executor === executor) { compactions.delete(item.request.requestId); pending.reject(new Error(`${note}，本次压缩中断`)) }
+      }
+    }
+    const queuedTidies = pendingTidies.get(executor.gen)
+    if (queuedTidies !== undefined) {
+      pendingTidies.delete(executor.gen)
+      for (const item of queuedTidies) {
+        const pending = tidies.get(item.request.requestId)
+        if (pending?.executor === executor) { tidies.delete(item.request.requestId); pending.reject(new Error(`${note}，本次笔记整理中断`)) }
       }
     }
     pendingConfigures.delete(executor.gen)
@@ -160,6 +170,24 @@ export function createExecutorControl(onStartupTimeout: (executor: Executor) => 
       if (operation?.executor !== executor) return
       compactions.delete(requestId); operation.resolve(state)
     },
+    tidyMemory(executor: Executor, request: { requestId: string; focus?: string }, signal: AbortSignal): Promise<import('@magic/contracts').EventDataOf['memory.tidy.state']> {
+      signal.throwIfAborted()
+      return new Promise((resolve, reject) => {
+        tidies.set(request.requestId, { executor, resolve, reject })
+        if (!executor.run.ready) {
+          const queue = pendingTidies.get(executor.gen) ?? []
+          queue.push({ request, signal })
+          pendingTidies.set(executor.gen, queue)
+          return
+        }
+        sendToExecutor(executor, { t: 'memory.tidy', request })
+      })
+    },
+    tidyResult(executor: Executor, requestId: string, state: import('@magic/contracts').EventDataOf['memory.tidy.state']): void {
+      const operation = tidies.get(requestId)
+      if (operation?.executor !== executor) return
+      tidies.delete(requestId); operation.resolve(state)
+    },
     waitUntilReady,
     settings: settingsToExecutor,
     servers: (executor: Executor) => executorSettings.get(executor),
@@ -206,6 +234,14 @@ export function createExecutorControl(onStartupTimeout: (executor: Executor) => 
         pendingConfigures.delete(executor.gen)
         for (const item of queuedConfigures) sendToExecutor(executor, { t: 'collaboration.configure', requestId: item.requestId, model: item.model })
       }
+      const queuedTidies = pendingTidies.get(executor.gen)
+      if (queuedTidies !== undefined) {
+        pendingTidies.delete(executor.gen)
+        for (const item of queuedTidies) {
+          if (item.signal.aborted) continue
+          sendToExecutor(executor, { t: 'memory.tidy', request: item.request })
+        }
+      }
     },
     synced(executor: Executor, message: Extract<ExecutorToManager, { t: 'settings.synced' }>): void {
       executorSettings.set(executor, message.mcp)
@@ -217,6 +253,9 @@ export function createExecutorControl(onStartupTimeout: (executor: Executor) => 
     },
     exited(executor: Executor): void {
       for (const [id, operation] of compactions) if (operation.executor === executor) { compactions.delete(id); operation.reject(new Error('执行实例已结束，本次压缩中断')) }
+      for (const [id, operation] of tidies) if (operation.executor === executor) { tidies.delete(id); operation.reject(new Error('执行实例已结束，本次笔记整理中断')) }
+      pendingCompacts.delete(executor.gen)
+      pendingTidies.delete(executor.gen)
       for (const [request, pending] of settingsReplies) if (pending.executor === executor) {
         settingsReplies.delete(request)
         pending.reject(new Error('执行者已退出，设置受理未确认；请重新读取'))

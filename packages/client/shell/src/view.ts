@@ -1046,6 +1046,7 @@ export function reduce(
     case 'session.references':
     case 'memory.state':
     case 'memory.source':
+    case 'memory.tidy.state':
     case 'knowledge.state':
     case 'knowledge.forgotten': return view
     case 'compact.state': {

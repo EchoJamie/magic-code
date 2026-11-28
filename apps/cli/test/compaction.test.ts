@@ -33,8 +33,8 @@ test('39KB协作正文与27未决点经过真实工作循环：一次简报、�
   const main: ModelRequest[] = [], preparations: ModelRequest[] = []
   let app!: Assembly, replies = 0
   app = stage.assemble({ session: 'origin', context: { compactAtTokens: 100, nearTokens: 0 }, modelGateway: stamper => ({ stream(request, options) {
-    const system = request.messages[0]
-    const auxiliary = system?.role === 'system' && typeof system.content === 'string' && system.content.startsWith('你是这次交接的记录者')
+    const last = request.messages.at(-1)
+    const auxiliary = last?.role === 'user' && typeof last.content === 'string' && last.content.startsWith('【系统交接整理指令')
     if (auxiliary) {
       preparations.push(request)
       return createFauxGateway({ stamper, turns: [{ text: brief }] }).stream(request, options)
@@ -49,14 +49,14 @@ test('39KB协作正文与27未决点经过真实工作循环：一次简报、�
     expect(textOf(main[0]!)).toContain(body)
     expect(textOf(main.at(-1)!)).toContain('第八件事')
 
-    // 一次压缩只发一次简报请求；简报直接进请求，不读历史、不带工具。
+    // 一次压缩走同前缀内联请求（保留 tools 命中缓存，且不会执行工具）。
     expect(preparations.length).toBeGreaterThanOrEqual(2)
-    for (const request of preparations) expect(request.tools).toBeUndefined()
+    for (const request of preparations) expect(request.tools?.length).toBeGreaterThan(0)
     expect(preparations.some(request => textOf(request).includes('未决点 27'))).toBe(true)
 
-    // 下一次主请求的第一句用户输入就是交接材料；原文仍可回查。
+    // 下一次主请求的第一句用户消息就是交接材料；原文仍可回查。
     expect(main.some(request => request.messages.some(message => message.role === 'user'
-      && typeof message.content === 'string' && message.content.startsWith('## 目标与阶段\n始终只读检查')))).toBe(true)
+      && typeof message.content === 'string' && message.content.includes('## 目标与阶段\n始终只读检查')))).toBe(true)
     const reader = createMaterialReader({ records: app.records.serviceFor('origin'), session: 'origin' })
     let restored = ''; let offset = 0
     for (;;) { const page = await reader({ ...source, offset, limit: 8000 }); restored += page.text; if (page.next === undefined) break; offset = page.next }
@@ -68,10 +68,10 @@ test('39KB协作正文与27未决点经过真实工作循环：一次简报、�
     const db = readDatabase(app.paths.database)
     try {
       expect(db.entries.filter(entry => entry.kind === 'summary')).toHaveLength(2)
-      // 交接材料落成 user 条目（新上下文的第一句），摘要条目只是覆盖记账。
-      expect(db.entries.filter(entry => entry.kind === 'user' && entry.content_text?.includes('未决点 27')).length).toBeGreaterThan(0)
-      // 八条用户交代 ＋ 两条交接材料（新上下文的第一句用户输入）
-      expect(db.entries.filter(entry => entry.kind === 'user')).toHaveLength(11)
+      // 交接材料原子保存在 summary 条目中，不再伪装 user 条目。
+      expect(db.entries.filter(entry => entry.kind === 'summary' && entry.content_text?.includes('未决点 27')).length).toBeGreaterThan(0)
+      // 只有真实的用户交代（1 预置 + 8 轮提交），不再混入假 handoff 用户条目
+      expect(db.entries.filter(entry => entry.kind === 'user')).toHaveLength(9)
       expect(app.records.serviceFor(app.session!).coverage.read().summary).toBe(db.entries.filter(entry => entry.kind === 'summary').at(-1)!.id)
     } finally { db.close() }
     expect(eventsOfKind(shell.events, 'turn.end').every(event => event.data.reason === 'settled')).toBe(true)

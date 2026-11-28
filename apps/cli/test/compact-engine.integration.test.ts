@@ -87,8 +87,8 @@ test('空闲会话主动压缩：断开继续，重连同请求不重放，摘�
     expect(manager.executors()).toEqual([{ session, gen: starts[0]! }])
     expect(records.coverage.read().summary).toBeNull()
     expect(chats()).toHaveLength(1)
-    expect(JSON.stringify(chats()[0]!.body['messages'])).toContain('你是这次交接的记录者')
-    expect(chats()[0]!.tools).toBe(0)
+    expect(JSON.stringify(chats()[0]!.body['messages'])).toContain('【系统交接整理指令')
+    expect(chats()[0]!.tools).toBeGreaterThan(0)
 
     client.close(); client = undefined
     await waitFor('客户端断开', () => manager!.clients() === 0)
@@ -109,14 +109,13 @@ test('空闲会话主动压缩：断开继续，重连同请求不重放，摘�
     expect(memory.summary).toBe(completed.summary)
     expect(memory.coveredThrough).toBe(summary.payload.coveredThrough)
     expect(memory.coveredThrough).toBeGreaterThan(0)
-    // 交接材料落成一条 user 条目（新上下文的第一句），摘要条目只做覆盖记账。
-    const handoff = entries.find(entry => entry.kind === 'user' && entry.payload !== undefined && 'handoff' in entry.payload)
-    if (handoff === undefined || handoff.content === undefined || !('text' in handoff.content)) throw new Error('交接材料没有落成用户条目')
-    expect(handoff.content.text).toContain(`${session}#${originalIds[3]}`)
+    // 交接材料原子存在 summary 条目中，不再额外落假 user.handoff 条目。
+    expect(summary.content.text).toContain(`${session}#${originalIds[3]}`)
+    expect(summary.payload).toMatchObject({ format: 'compaction-v2' })
     expect(memory.coveredThrough).not.toBeNull()
-    expect(handoff.id).toBeGreaterThan(memory.coveredThrough!)
-    expect(completed.notesSaved).toBe(true)
-    expect(entries.filter(entry => entry.kind !== 'summary' && entry.id !== handoff.id).map(entry => entry.id)).toEqual(originalIds)
+    expect(entries.some(entry => entry.kind === 'user' && entry.payload !== undefined && 'handoff' in entry.payload)).toBe(false)
+    expect(completed.notesSaved).toBeUndefined()
+    expect(entries.filter(entry => entry.kind !== 'summary').map(entry => entry.id)).toEqual(originalIds)
     expect((await states()).map(event => event.data.state)).toEqual(['pending', 'running', 'completed'])
     await waitFor('执行责任正常释放', () => manager!.executors().length === 0 && manager!.runs().every(run => !run.holds) && exits.length === 1)
     expect(exits).toEqual([{ gen: starts[0]!, reason: '执行实例已释放' }])

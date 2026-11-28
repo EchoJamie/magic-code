@@ -134,6 +134,9 @@ export function assertEntryShape(entry: NewEntry): void {
   if (entry.kind === 'summary' && entry.payload !== undefined) {
     const p = entry.payload
     if (!('coveredThrough' in p) || !Number.isSafeInteger(p.coveredThrough) || !Number.isSafeInteger(p.from) || !Array.isArray(p.sources)) throw new Error('摘要覆盖载荷无效')
+    if ('retainedUsers' in p && p.retainedUsers !== undefined && (!Array.isArray(p.retainedUsers) || !p.retainedUsers.every(id => Number.isSafeInteger(id) && id > 0))) {
+      throw new Error('摘要保留用户输入引用无效')
+    }
     return
   }
   if (entry.payload !== undefined) {

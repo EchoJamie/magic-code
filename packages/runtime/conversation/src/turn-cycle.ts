@@ -10,7 +10,7 @@
  */
 import type { ModelErrorTier, RecordId, ToolCall } from '@magic/contracts'
 import { pendingViews } from '@magic/contracts'
-import { assembleContext, rawTextOf } from './context.ts'
+import { assembleContext, rawTextOf, type BudgetPressure } from './context.ts'
 import { collaborationPrompt } from './collaboration.ts'
 import { KNOWLEDGE_MATERIAL_TOOLS, knowledgeOutputReferences } from './knowledge-material.ts'
 import { appendToolCallEntry, appendToolResultEntry } from './entries.ts'
@@ -23,11 +23,11 @@ import type { ToolOutcome } from './entries.ts'
 
 // ══ 提示词材料链（边界方案 §七 B3）═══════════════════════════════════
 
-async function withRules(runtime: LoopRuntime, signal: AbortSignal): Promise<string> {
+async function withRules(runtime: LoopRuntime, signal?: AbortSignal): Promise<string> {
   return (await runtime.rules?.promptFor(runtime.systemPrompt, signal)) ?? runtime.systemPrompt
 }
 
-async function withSkills(runtime: LoopRuntime, base: string, signal: AbortSignal): Promise<string> {
+async function withSkills(runtime: LoopRuntime, base: string, signal?: AbortSignal): Promise<string> {
   return (await runtime.skills?.promptFor(base, signal)) ?? base
 }
 
@@ -143,6 +143,28 @@ export async function beforeTurn(runtime: LoopRuntime, signal: AbortSignal): Pro
 }
 
 /**
+ * 构造单轮业务系统提示词——同时供同前缀内联压缩复用，保证系统前缀字节级一致（Prompt Cache 命中）。
+ * 次序＝环境块 → 规约块 → 技能目录块 → 后台命令块 → 协作提示 → 当前计划。
+ */
+export async function buildTurnSystemPrompt(
+  runtime: LoopRuntime,
+  signal?: AbortSignal,
+  onKnowledge?: (refs: readonly import('@magic/contracts').KnowledgeReference[]) => void,
+): Promise<string> {
+  return withPlan(
+    runtime,
+    await collaborationPrompt(
+      withBackground(
+        runtime,
+        await withSkills(runtime, await withRules(runtime, signal), signal),
+      ),
+      runtime.collaboration,
+      refs => onKnowledge?.(refs),
+    ),
+  )
+}
+
+/**
  * 调用前预处理管道（每趟模型调用一次，超限重发也走它）：协作消费 → 准入 →
  * 材料链 → 上下文装配。**返回三种走法**：
  * - `ready`：请求可发（messages 就绪；回执范围已登记）；
@@ -160,36 +182,44 @@ export async function prepareModelContext(
   | { kind: 'aborted' }
   | { kind: 'error'; readonly reason: string }
 > {
-  accounting.newPass()
-  // **协作消费与准入**——这一轮让不让进，由账面事实答（消费可能带回新交代/约束）。
-  await runtime.collaboration?.consume()
-  // **打断插入式的并入点**（一期 · 唯一）：工具结果之后、下一请求装配之前。
-  await runtime.consumeInserts?.()
-  if (runtime.collaboration?.admit() !== undefined) return { kind: 'aborted' }
+  let compactedForBudget = false
+  for (;;) {
+    accounting.newPass()
+    // **协作消费与准入**——这一轮让不让进，由账面事实答（消费可能带回新交代/约束）。
+    await runtime.collaboration?.consume()
+    // **打断插入式的并入点**（一期 · 唯一）：工具结果之后、下一请求装配之前。
+    await runtime.consumeInserts?.()
+    if (runtime.collaboration?.admit() !== undefined) return { kind: 'aborted' }
 
-  let included: readonly number[] = []
-  let userEntries: readonly RecordId[] = []
-  const assembly = await assembleContext({
-    knowledge: runtime.knowledge,
-    onKnowledge: refs => accounting.provide(refs),
-    // 装配兜底：压缩没做成时，请求也不能以超限的形式发出去（D74）。
-    budget: runtime.capacity?.().inputBudget,
-    latestInput: runtime.records.inputs.list().filter(row => row.entry !== undefined && row.entry >= inputFrom
-      && !row.input.notice && (row.state === 'consumed' || row.state === 'included')).at(-1)?.input.text ?? initialInput,
-    records: runtime.records,
-    onIncluded: ids => { included = ids },
-    onUserEntries: ids => { userEntries = ids },
-    session: runtime.session,
-    // **项目规约 ＋ 技能目录 ＋ 后台命令**在装配这一步接上（U32 · U33 · U89）——
-    // 都现取现接：改过的、跑完的，下一趟就是新的。次序＝环境块 → 规约块 → 技能目录块
-    // → 后台命令块；规约那一趟还顺带记账「这一趟送出去哪几版」（预查据它判「拦不拦」）。
-    systemPrompt: withPlan(runtime, await collaborationPrompt(withBackground(runtime, (await withSkills(runtime, (await withRules(runtime, signal)), signal))), runtime.collaboration, refs => accounting.provide(refs))),
-  }).then(messages => ({ ok: true as const, messages }), (error: unknown) => ({ ok: false as const, reason: error instanceof Error ? error.message : String(error) }))
+    let included: readonly number[] = []
+    let userEntries: readonly RecordId[] = []
+    let pressure: BudgetPressure | undefined
+    const assembly = await assembleContext({
+      knowledge: runtime.knowledge,
+      onKnowledge: refs => accounting.provide(refs),
+      // 装配兜底：压缩没做成时，请求也不能以超限的形式发出去（D74）。
+      budget: runtime.capacity?.().inputBudget,
+      onBudgetPressure: info => { pressure = info },
+      latestInput: runtime.records.inputs.list().filter(row => row.entry !== undefined && row.entry >= inputFrom
+        && !row.input.notice && (row.state === 'consumed' || row.state === 'included')).at(-1)?.input.text ?? initialInput,
+      records: runtime.records,
+      onIncluded: ids => { included = ids },
+      onUserEntries: ids => { userEntries = ids },
+      session: runtime.session,
+      systemPrompt: await buildTurnSystemPrompt(runtime, signal, refs => accounting.provide(refs)),
+    }).then(messages => ({ ok: true as const, messages }), (error: unknown) => ({ ok: false as const, reason: error instanceof Error ? error.message : String(error) }))
 
-  if (!assembly.ok) return { kind: 'error', reason: assembly.reason }
-  if (signal.aborted || runtime.collaboration?.admit() !== undefined) return { kind: 'aborted' }
-  accounting.registerResponseScope(included, userEntries)
-  return { kind: 'ready', messages: assembly.messages, included }
+    if (signal.aborted || runtime.collaboration?.admit() !== undefined) return { kind: 'aborted' }
+    if (pressure !== undefined && !compactedForBudget && runtime.compact !== undefined) {
+      compactedForBudget = true
+      const outcome = await runtime.compact.run({ trigger: pressure.action === 'overflow' ? 'context-limit' : 'threshold', signal })
+      if (signal.aborted) return { kind: 'aborted' }
+      if (outcome.ok) continue
+    }
+    if (!assembly.ok) return { kind: 'error', reason: assembly.reason }
+    accounting.registerResponseScope(included, userEntries)
+    return { kind: 'ready', messages: assembly.messages, included }
+  }
 }
 
 /** 超限处置（B2 的第二条触发路径）——`context-limit` 压一次、本轮重发（只给一次机会）。 */

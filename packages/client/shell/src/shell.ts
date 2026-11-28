@@ -943,6 +943,22 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     if (event.kind === 'paths.catalog' && view.dock.kind === 'picker' && view.dock.picker.source === 'paths' && event.data.query !== view.dock.picker.filter) return
     if (memory.receive(event)) return
+    if (event.kind === 'memory.tidy.state') {
+      if (view.sessionId !== event.session) return
+      if (event.data.state === 'running') {
+        commit({ ...view, flash: '正在整理工作笔记 MEMORY.md…' })
+        return
+      }
+      const cleared = { ...view, flash: null }
+      if (event.data.state === 'completed') {
+        commit(noteResult(cleared, '已整理工作笔记 MEMORY.md'))
+      } else if (event.data.state === 'no-material') {
+        commit(noteResult(cleared, event.data.reason ?? '当前会话尚无工作笔记或记录可整理'))
+      } else {
+        commit(noteResult(cleared, `整理工作笔记失败：${event.data.reason ?? '未知原因'}`))
+      }
+      return
+    }
     if (event.kind === 'compact.state') {
       const pending = compactDrafts.get(event.data.requestId)
       if (pending?.session === event.session && (event.data.accepted === true || ['pending', 'running', 'completed'].includes(event.data.state))) {
@@ -3280,10 +3296,23 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
 
     if (text.startsWith('/memory ') || text.trim() === '/memory') {
-      if (text.trim() !== '/memory') { commit(noteResult(view, '用法：/memory ')); return NONE }
-      rememberInput(text, placed)
-      draft({ ...view, draft: '', caret: 0, refs: [], completion: null })
-      memory.open(); return NONE
+      const trimmed = text.trim()
+      if (trimmed === '/memory') {
+        rememberInput(text, placed)
+        draft({ ...view, draft: '', caret: 0, refs: [], completion: null })
+        memory.open(); return NONE
+      }
+      if (trimmed === '/memory tidy' || trimmed.startsWith('/memory tidy ')) {
+        if (view.sessionId === null) { commit(noteResult(view, '还没有会话可整理笔记；未建立新会话。')); return NONE }
+        if (!connected) { commit(noteResult(view, '连接已断开；请重连后再执行 /memory tidy。')); return NONE }
+        const focus = trimmed.slice('/memory tidy'.length).trim()
+        rememberInput(text, placed)
+        draft({ ...view, draft: '', caret: 0, refs: [], completion: null })
+        commit({ ...view, flash: '正在整理工作笔记 MEMORY.md…' })
+        send({ type: 'memory.tidy', requestId: crypto.randomUUID(), session: view.sessionId, ...(focus ? { focus } : {}) })
+        return NONE
+      }
+      commit(noteResult(view, '用法：/memory 或 /memory tidy [重点]')); return NONE
     }
 
 

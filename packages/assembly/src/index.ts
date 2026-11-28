@@ -126,6 +126,7 @@ export type McpServerView = {
 
 export type Assembly = {
   compact(session: string, request: { requestId: string; focus?: string }, signal: AbortSignal, started: () => void): Promise<import('@magic/contracts').CompactState>
+  tidyMemory(session: string, request: { requestId: string; focus?: string }, signal: AbortSignal): Promise<EventDataOf['memory.tidy.state']>
   refreshSettings(): void
   reconnectMcp(server: string): Promise<string>
   /** 当前执行实例仍有明确输入消费意图；遗留持久输入不算自动继续授权。 */
@@ -536,6 +537,11 @@ export function assemble(options: AssembleOptions): Assembly {
       const target = chains.get(session)
       if (target === undefined) return Promise.resolve({ requestId: request.requestId, state: 'failed', reason: '目标会话未装配，未执行压缩' })
       return target.service.compact(request, signal, started)
+    },
+    tidyMemory: (session, request, signal) => {
+      const target = chains.get(session)
+      if (target === undefined) return Promise.resolve({ requestId: request.requestId, ...(request.focus === undefined ? {} : { focus: request.focus }), state: 'failed', reason: '目标会话未装配，未整理笔记' })
+      return target.service.tidyMemory(request, signal)
     },
     hasPendingInput: () => [...chains.values()].some(one => one.service.busy()),
     hasPendingLedgerInput: () => [...chains.values()].some(one => one.records.inputs.list().some(row => row.state === 'pending')),

@@ -464,6 +464,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   }
 
   const compactControllers = new Map<string, AbortController>()
+  const tidyControllers = new Map<string, AbortController>()
 
   /**
    * **消费信号的串行链**（P0 修复）——`consumeLedgerInputs` 是异步多步（准入 → 出队 →
@@ -510,6 +511,21 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
         return
       }
       case 'compact.cancel': compactControllers.get(message.requestId)?.abort(); return
+      case 'memory.tidy': {
+        if (tidyControllers.has(message.request.requestId)) return
+        const session = assembly.session
+        if (closing || session === undefined) {
+          link.send({ t: 'memory.tidy.result', requestId: message.request.requestId, state: { requestId: message.request.requestId, ...(message.request.focus === undefined ? {} : { focus: message.request.focus }), state: 'failed', reason: '执行实例已关闭或没有会话' } })
+          return
+        }
+        const controller = new AbortController()
+        tidyControllers.set(message.request.requestId, controller)
+        trackOperation(assembly.tidyMemory(session, message.request, controller.signal).then(
+          state => link.send({ t: 'memory.tidy.result', requestId: message.request.requestId, state }),
+          error => link.send({ t: 'memory.tidy.result', requestId: message.request.requestId, state: { requestId: message.request.requestId, ...(message.request.focus === undefined ? {} : { focus: message.request.focus }), state: 'failed', reason: String(error) } }),
+        ).finally(() => { tidyControllers.delete(message.request.requestId); considerShrink() }))
+        return
+      }
 
       case 'settings.inspect':
         link.send({ t: 'settings.synced', request: message.request, mcp: assembly.mcpServers() }); return

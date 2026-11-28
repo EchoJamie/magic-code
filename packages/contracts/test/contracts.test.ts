@@ -604,6 +604,7 @@ describe('事件契约', () => {
       'session.references',
       'memory.state',
       'memory.source',
+      'memory.tidy.state',
       'knowledge.state',
       'knowledge.forgotten',
       // U62：认出选定那一条的答复同列——**同一条判据的第七处**（内容就在盘上，不在库里），

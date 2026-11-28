@@ -147,6 +147,7 @@ export type EventKind =
   | 'session.references'
   | 'memory.state'
   | 'memory.source'
+  | 'memory.tidy.state'
   | 'knowledge.state'
   | 'knowledge.forgotten'
   | 'compact.state'
@@ -420,7 +421,7 @@ export type EventDataOf = {
     readonly inputBudget?: number
   }
   'model.call.end': EmptyPayload
-  'memory.model': { readonly purpose: 'organize' | 'compact' | 'knowledge'; readonly model?: string; readonly provider?: string; readonly durationMs: number; readonly usage?: import('../ports.ts').ModelUsage; readonly ok: boolean }
+  'memory.model': { readonly purpose: 'organize' | 'compact' | 'knowledge' | 'memory-tidy'; readonly model?: string; readonly provider?: string; readonly durationMs: number; readonly usage?: import('../ports.ts').ModelUsage; readonly finishReason?: import('../ports.ts').ModelFinishReason; readonly ok: boolean }
   'model.usage': {
     /** 宿主在本次请求开始时绑定的委派；缺省表示当时没有已接受的委派。 */
     readonly delegationId?: DelegationId
@@ -879,6 +880,13 @@ export type EventDataOf = {
     readonly error?: string
   }
   'memory.source': { readonly requestId: string; readonly session?: SessionId; readonly page?: import('./memory.ts').MaterialPage; readonly error?: string }
+  'memory.tidy.state': {
+    readonly requestId: string
+    readonly state: 'running' | 'completed' | 'failed' | 'no-material'
+    readonly path?: string
+    readonly focus?: string
+    readonly reason?: string
+  }
   'knowledge.state': { readonly requestId: string; readonly session?: SessionId; readonly workspace: readonly string[]; readonly page?: import('./knowledge.ts').KnowledgePage; readonly item?: import('./knowledge.ts').Knowledge; readonly error?: string }
   'knowledge.forgotten': { readonly requestId: string; readonly session?: SessionId; readonly result?: import('./knowledge.ts').KnowledgeForgetResult; readonly error?: string }
   'compact.state': import('./control.ts').CompactState
@@ -1157,6 +1165,7 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   'session.references',
   'memory.state',
   'memory.source',
+  'memory.tidy.state',
   'knowledge.state',
   'knowledge.forgotten',
   // 选定那一条的认出结果同列的理由（U62）：与 `paths.catalog` 同一条——它是**读出来的**

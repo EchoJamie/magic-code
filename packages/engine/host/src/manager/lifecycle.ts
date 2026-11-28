@@ -122,6 +122,7 @@ export function installLifecycle(ctx: ManagerContext): void {
     switch (message.t) {
       case 'compact.started': control.compactStarted(executor, message.requestId); return
       case 'compact.result': control.compactResult(executor, message.requestId, message.state); return
+      case 'memory.tidy.result': control.tidyResult(executor, message.requestId, message.state); return
       case 'collaboration.request': {
         const session = executor.run.session
         if (session === null) { send(executor, { t: 'collaboration.reply', requestId: message.requestId, reply: { ok: false, reason: '执行身份尚未绑定' } }); return }

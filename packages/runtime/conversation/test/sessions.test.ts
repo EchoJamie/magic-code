@@ -136,6 +136,7 @@ function makeInstance(session: SessionId): FakeInstance {
     },
     service: {
       compact: async request => ({ requestId: request.requestId, state: 'no-material' }),
+      tidyMemory: async request => ({ requestId: request.requestId, state: 'no-material' }),
       manage: () => {},
       wake: () => undefined,
       supplement: async () => undefined,

@@ -69,6 +69,7 @@ export function createControlHub(onError?: (error: unknown) => void): ControlHub
     switch (command.type) {
       case 'session.references':
       case 'memory.read':
+      case 'memory.tidy':
       case 'memory.source':
       case 'knowledge.query':
       case 'knowledge.read':

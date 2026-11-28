@@ -168,6 +168,7 @@ describe('判据 3 · 不落库清单', () => {
       'mcp.catalog',
       'memory.source',
       'memory.state',
+      'memory.tidy.state',
       'model.catalog',
       'model.delta',
       'model.retry',

@@ -197,3 +197,25 @@ test('笔记读取失败和缺失保留旧内容，迟到主题响应不覆盖�
   expect(picker(stage).detail).toContain('正文 👩🏽‍💻 é')
   expect(picker(stage).detail).not.toContain('迟到主题')
 })
+
+test('/memory tidy 触发独立笔记整理命令并呈现完成、空态与失败回执', () => {
+  const stage = createStage()
+  stage.feed([event('session.state', { active: 'tidy-session', sessions: [{ id: 'tidy-session', at: 1, archived: false }] })])
+  stage.type('/memory tidy 已完成第一阶段，精简排查细节')
+  stage.press(enter)
+
+  const cmd = last(stage, 'memory.tidy')
+  expect(cmd).toMatchObject({ type: 'memory.tidy', session: 'tidy-session', focus: '已完成第一阶段，精简排查细节' })
+  expect(stage.shell.getView().draft).toBe('')
+  expect(stage.shell.getView().flash).toBe('正在整理工作笔记 MEMORY.md…')
+
+  stage.feed([event('memory.tidy.state', { requestId: cmd.requestId, state: 'completed', path: 'MEMORY.md' }, { session: 'tidy-session' })])
+  expect(stage.shell.getView().flash).toBeNull()
+  expect(stage.shell.getView().settled.at(-1)).toMatchObject({ kind: 'receipt', text: '已整理工作笔记 MEMORY.md' })
+
+  stage.feed([event('memory.tidy.state', { requestId: 'r2', state: 'no-material', reason: '当前会话尚无工作笔记或记录可整理' }, { session: 'tidy-session' })])
+  expect(stage.shell.getView().settled.at(-1)).toMatchObject({ kind: 'receipt', text: '当前会话尚无工作笔记或记录可整理' })
+
+  stage.feed([event('memory.tidy.state', { requestId: 'r3', state: 'failed', reason: '模型不可用' }, { session: 'tidy-session' })])
+  expect(stage.shell.getView().settled.at(-1)).toMatchObject({ kind: 'receipt', text: '整理工作笔记失败：模型不可用' })
+})

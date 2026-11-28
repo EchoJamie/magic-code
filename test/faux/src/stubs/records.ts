@@ -93,19 +93,27 @@ export function makeFauxRecords(options: FauxRecordsOptions = {}): FauxRecords {
   }
 
   const pendingInputs = new Map<string, StoredInput>()
+  let prunedThrough: RecordId | null = null
   return {
     coverage: {
       read() {
-        const summary = entries.findLast(entry => entry.kind === 'summary' && entry.payload !== undefined && 'coveredThrough' in entry.payload && entry.payload.notesSaved === true)
+        const summary = entries.findLast(entry => entry.kind === 'summary' && entry.payload !== undefined && 'coveredThrough' in entry.payload && (('notesSaved' in entry.payload && entry.payload.notesSaved === true) || ('format' in entry.payload && entry.payload.format === 'compaction-v2')))
         return { summary: summary?.id ?? null, coveredThrough: summary?.payload && 'coveredThrough' in summary.payload ? summary.payload.coveredThrough : null }
       },
+      readPrunedThrough: () => prunedThrough,
+      advancePrunedThrough(through) {
+        if (Number.isSafeInteger(through) && through > (prunedThrough ?? 0)) prunedThrough = through
+      },
       publish(input) {
+        const v2 = input.format === 'compaction-v2'
+        if (!v2 && !input.notesSaved) throw new Error('笔记尚未保存，未提交覆盖')
+        if (v2 && (!input.text || input.text.trim() === '')) throw new Error('压缩交接正文为空，未提交覆盖')
         const current = this.read()
         if (current.summary !== input.previousSummary) throw new Error('coverage conflict')
         const id = next++
-        entries.push({ id, kind: 'summary', at: input.at, content: { text: input.text ?? '接续材料已保存于本会话工作笔记' }, payload: {
-          from: input.from, coveredThrough: input.through, previousSummary: input.previousSummary, notesSaved: true, brief: input.text !== undefined, sources: [],
-        } })
+        entries.push({ id, kind: 'summary', at: input.at, content: { text: input.text ?? '接续材料已保存于本会话工作笔记' }, payload: v2
+          ? { from: input.from, coveredThrough: input.through, previousSummary: input.previousSummary, format: 'compaction-v2', ...(input.retainedUsers?.length ? { retainedUsers: [...input.retainedUsers] } : {}), sources: [] }
+          : { from: input.from, coveredThrough: input.through, previousSummary: input.previousSummary, notesSaved: true, brief: input.text !== undefined, sources: [] } })
         return id
       },
     },

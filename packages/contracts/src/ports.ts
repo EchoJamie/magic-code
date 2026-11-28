@@ -131,7 +131,7 @@ export interface ModelGateway {
 
   stream(
     req: ModelRequest,
-    opts: { signal?: AbortSignal; reasoning?: ReasoningSetting },
+    opts: { signal?: AbortSignal; reasoning?: ReasoningSetting; maxOutputTokens?: number },
   ): ModelStream
 }
 

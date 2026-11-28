@@ -23,7 +23,10 @@ const configuredModels = {
 } satisfies NonNullable<MagicConfig['models']>
 const defaults: AgentModelConfig = { protocol: 'chat-completions', endpoint: providers.main.baseURL, choice: 'arcane', provider: 'main', model: 'deepseek-flash', reasoning: { mode: 'level', level: 'high' } }
 
-const isPreparation = (body: Record<string, any>): boolean => body.messages?.[0]?.content?.startsWith('你是这次交接的记录者') === true
+const isPreparation = (body: Record<string, any>): boolean => {
+  const last = Array.isArray(body.messages) ? body.messages.at(-1) : undefined
+  return last?.role === 'user' && typeof last.content === 'string' && last.content.startsWith('【系统交接整理指令')
+}
 
 function endpoint(options: { failure?: 'server' | 'auth' | 'network' | 'empty' | 'incomplete' | 'cancel'; mainLimit?: boolean } = {}) {
   const seen: { url: string; body: Record<string, any> }[] = []
@@ -146,7 +149,7 @@ describe('统一模型配置与执行选择', () => {
     } finally { shell.dispose(); assembly.close(); stage.dispose() }
   })
 
-  test('当前模型接续简报：单次无工具调用，不切换 Cantrip', async () => {
+  test('当前模型接续简报：同前缀内联调用，不切换 Cantrip', async () => {
     const wire = endpoint()
     const stage = makeStage({ config: { providers, models: configuredModels } })
     const assembly = stage.assemble({ modelGateway: undefined, modelFetch: wire.fetch,
@@ -156,14 +159,17 @@ describe('统一模型配置与执行选择', () => {
       await shell.submit('保留这项约束')
       await shell.submit('继续这项工作')
       const calls = wire.seen.filter(one => isPreparation(one.body))
+      const mainCall = wire.seen.find(one => !isPreparation(one.body))
       expect(calls.length).toBeGreaterThan(0)
-      expect(calls.every(one => one.body.tools === undefined)).toBe(true)
+      expect(calls[0]!.body.tools).toEqual(mainCall?.body.tools)
       expect(wire.seen.every(one => one.url === 'https://aux.example/v1/chat/completions' && one.body.model === 'deepseek-flash')).toBe(true)
       const database = readDatabase(assembly.paths.database)
       try {
-        // 两条用户交代 ＋ 一条交接材料（新上下文的第一句用户输入）
-        expect(database.entries.filter(one => one.kind === 'user')).toHaveLength(3)
-        expect(database.entries.filter(one => one.kind === 'summary').length).toBeGreaterThan(0)
+        // 两条真实用户交代；交接材料原子存进 summary (compaction-v2)，不再写入伪装 handoff user 条目
+        expect(database.entries.filter(one => one.kind === 'user')).toHaveLength(2)
+        const summaries = database.entries.filter(one => one.kind === 'summary')
+        expect(summaries.length).toBeGreaterThan(0)
+        expect(JSON.parse(summaries.at(-1)!.payload!)).toMatchObject({ format: 'compaction-v2' })
         expect(database.entries.some(one => one.kind === 'continuation')).toBe(false)
       } finally { database.close() }
       expect(eventsOfKind(shell.events, 'context.compacted').length).toBeGreaterThan(0)

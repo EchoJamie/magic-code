@@ -6,6 +6,8 @@ export type MemorySource = { readonly session: SessionId; readonly entry: Record
 export type SummaryPayload = {
   readonly coveredThrough: RecordId
   readonly from: RecordId
+  readonly format?: 'compaction-v2'
+  readonly retainedUsers?: readonly RecordId[]
   /** 新接续覆盖的提交标记；旧摘要不代表笔记已保存。 */
   readonly notesSaved?: boolean
   /** 本条摘要正文是接续简报；旧摘要不参与重注。 */

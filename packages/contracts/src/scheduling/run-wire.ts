@@ -205,6 +205,7 @@ export type ManagerToClient =
 export type ExecutorToManager =
   | { readonly t: 'compact.started'; readonly requestId: string }
   | { readonly t: 'compact.result'; readonly requestId: string; readonly state: import('../conversation/control.ts').CompactState }
+  | { readonly t: 'memory.tidy.result'; readonly requestId: string; readonly state: import('../conversation/events.ts').EventDataOf['memory.tidy.state'] }
   | { readonly t: 'settings.synced'; readonly request: string; readonly note?: string; readonly error?: string; readonly mcp: readonly McpCatalogRow[] }
   | { readonly t: 'collaboration.request'; readonly requestId: string; readonly request: CollaborationRequest }
   | { readonly t: 'collaboration.changed' }
@@ -290,6 +291,7 @@ export type ExecutorToManager =
 export type ManagerToExecutor =
   | { readonly t: 'compact'; readonly request: { readonly requestId: string; readonly focus?: string } }
   | { readonly t: 'compact.cancel'; readonly requestId: string }
+  | { readonly t: 'memory.tidy'; readonly request: { readonly requestId: string; readonly focus?: string } }
   | { readonly t: 'settings.inspect'; readonly request: string }
   | { readonly t: 'diagnostics.sync'; readonly request: string; readonly value: Diagnostics }
   | { readonly t: 'settings.sync'; readonly request: string }

@@ -1,5 +1,5 @@
 import { pendingViews } from '@magic/contracts'
-import type { InputManage, CompactState } from '@magic/contracts'
+import type { EventDataOf, InputManage, CompactState } from '@magic/contracts'
 /**
  * **一条会话的实例**（`ConversationSession`）——`ConversationService` 的**单会话那一半**。
  *
@@ -50,9 +50,12 @@ import type {
 import type { LoopRuntime } from './loop-runtime.ts'
 import type { CollaborationBoundary } from './collaboration.ts'
 import { agentLoop } from './agent-loop.ts'
+import { assembleContext } from './context.ts'
 import { messageOf, prepareInput } from './input-intake.ts'
 import { acceptInput, manageInput, type QueueItem } from './input-ledger.ts'
 import { createCompactor } from './compact.ts'
+import { tidyWorkingMemory } from './memory-tidy.ts'
+import { preparationReserve } from './organize.ts'
 import { DEFAULT_CONTEXT_POLICY } from './policy.ts'
 import type { ContextPolicy } from './policy.ts'
 import { buildSystemPrompt } from './prompt/index.ts'
@@ -61,6 +64,7 @@ import { createRefDelivery } from './refs.ts'
 import { createRulesDelivery } from './rules.ts'
 import { createSkillsDelivery } from './skills.ts'
 import { createSessionTitleService } from './session-title.ts'
+import { buildTurnSystemPrompt } from './turn-cycle.ts'
 
 /**
  * 装配期构造入参——一切「谁来实现」的选择由装配根给出（本域不知道背后是谁：
@@ -69,7 +73,6 @@ import { createSessionTitleService } from './session-title.ts'
 export type ConversationDeps = {
   readonly knowledge?: import('@magic/contracts').KnowledgeRecords
   readonly notes?: import('@magic/contracts').WorkingNotes
-  readonly noteTools?: (notes: import('@magic/contracts').WorkingNotes) => ToolRuntime
   readonly capacity?: () => import('./organize.ts').PreparationCapacity
   readonly onInput?: (input: UserInput) => void
   readonly collaboration?: CollaborationBoundary | undefined
@@ -198,6 +201,8 @@ export type SubmitRefusal = {
 export type ConversationSession = {
   /** 同一压缩链；忙时等待完整交互边界，空闲时不启动业务循环。 */
   compact(request: { requestId: string; focus?: string }, signal: AbortSignal, started: () => void): Promise<CompactState>
+  /** 显式整理精简工作笔记 MEMORY.md；不修改上下文覆盖边界。 */
+  tidyMemory(request: { requestId: string; focus?: string }, signal: AbortSignal): Promise<EventDataOf['memory.tidy.state']>
   /** 收件唤起，不伪造用户消息。 */
   wake(): void
   supplement(input: UserInput, shared: boolean): Promise<void>
@@ -277,12 +282,23 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   }
 
   // 压缩用量与准备状态随会话实例持有。
-  let inputVersion = 0
   const compactor = createCompactor({
     records: deps.records, session: deps.session, gateway: deps.continuationGateway ?? deps.gateway,
-    ...(deps.notes ? { notes: deps.notes } : {}), ...(deps.noteTools ? { noteTools: deps.noteTools } : {}),
-    ...(deps.capacity ? { capacity: deps.capacity } : {}), inputVersion: () => inputVersion,
-    sink, stamper, now: deps.now ?? Date.now, ...(policy.nearTokens === undefined ? {} : { nearTokens: policy.nearTokens }),
+    ...(deps.capacity ? { capacity: deps.capacity } : {}),
+    preparePrefix: async (signal) => {
+      const systemPrompt = await buildTurnSystemPrompt(runtime, signal)
+      const budget = deps.capacity?.().inputBudget
+      const pruneRoom = budget === undefined ? undefined : Math.max(0, budget - preparationReserve(budget))
+      const messages = await assembleContext({
+        knowledge: runtime.knowledge,
+        records: deps.records,
+        session: deps.session,
+        systemPrompt,
+        pruneRoom,
+      })
+      return { messages, tools: runtime.tools.definitions() }
+    },
+    sink, stamper, now: deps.now ?? Date.now, ...(policy.nearTokens === undefined ? {} : { keepTailTokens: policy.nearTokens }),
     compactAtFraction: policy.compactAtFraction, compactAtTokens: policy.compactAtTokens,
   })
 
@@ -326,7 +342,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
   let compactPending: {
     request: { requestId: string; focus?: string }; controller: AbortController
-    signal: AbortSignal; started: () => void; finish: (state: CompactState) => void; notesSaved: boolean; awaitInput: boolean
+    signal: AbortSignal; started: () => void; finish: (state: CompactState) => void
   } | undefined
   let compactFlight: Promise<void> | undefined
   function flushCompact(): Promise<void> {
@@ -338,28 +354,22 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     // 会让压缩永远等不到边界，而 startDrainIfIdle / wake 又闸在 compactPending 上，
     // 双方互相卡死（busy 恒真）。此时放行压缩；队列继续等委派收束。
     const heldForDelegations = !state.running && waitingForDelegations(pending[0]?.input)
-    if (!operation.signal.aborted && (supplements.length > 0 || (pending.length > 0 && !heldForDelegations) || (operation.awaitInput && state.running))) return Promise.resolve()
+    if (!operation.signal.aborted && (supplements.length > 0 || inserts.length > 0 || (pending.length > 0 && !heldForDelegations))) return Promise.resolve()
     compactFlight = Promise.resolve().then(async () => {
       const base = { requestId: operation.request.requestId, ...(operation.request.focus === undefined ? {} : { focus: operation.request.focus }), accepted: true as const }
       try {
         operation.signal.throwIfAborted()
         operation.started()
         operation.started = () => {}
-        for (;;) {
-          const outcome = await compactor.run({ trigger: 'threshold', signal: operation.signal, compact: operation.request })
-          operation.notesSaved ||= outcome.notesSaved
-          if (!outcome.ok && outcome.kind === 'changed' && !operation.signal.aborted) {
-            if (pending.length > 0 || supplements.length > 0) { operation.awaitInput = true; return }
-            continue
-          }
-          operation.finish(outcome.ok ? { ...base, state: 'completed', summary: outcome.summary, notesSaved: operation.notesSaved } : {
-            ...base, state: outcome.kind === 'canceled' ? 'cancelled' : outcome.kind === 'no-material' ? 'no-material' : 'failed', reason: outcome.reason, notesSaved: operation.notesSaved,
-          })
-          if (compactPending === operation) compactPending = undefined
-          break
-        }
-      } catch (error) { operation.finish({ ...base, state: operation.signal.aborted ? 'cancelled' : 'failed', reason: messageOf(error), notesSaved: operation.notesSaved }); if (compactPending === operation) compactPending = undefined }
-      finally {
+        const outcome = await compactor.run({ trigger: 'threshold', signal: operation.signal, compact: operation.request })
+        operation.finish(outcome.ok ? { ...base, state: 'completed', summary: outcome.summary } : {
+          ...base, state: outcome.kind === 'canceled' ? 'cancelled' : outcome.kind === 'no-material' ? 'no-material' : 'failed', reason: outcome.reason,
+        })
+        if (compactPending === operation) compactPending = undefined
+      } catch (error) {
+        operation.finish({ ...base, state: operation.signal.aborted ? 'cancelled' : 'failed', reason: messageOf(error) })
+        if (compactPending === operation) compactPending = undefined
+      } finally {
         compactFlight = undefined
         if (!state.closed && !state.running && pending.length > 0) startDrain()
       }
@@ -370,14 +380,13 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   /** 输入受理的依赖束——账本操作（input-ledger.ts）经它拿队列状态与触发排空。 */
   const bundle = {
     deps, sink, stamper, state, pending, supplements, inserts,
-    onVersionBump: () => { inputVersion++ },
     startDrainIfIdle: () => { if (!state.running && compactPending === undefined) startDrain() },
   }
 
   const runtime: LoopRuntime = {
     knowledge: deps.knowledge,
     session: deps.session,
-    systemPrompt: buildSystemPrompt(deps.prompt, deps.purpose, deps.consultationAvailable) + (deps.notes ? `\n\n自身工作笔记目录：${deps.notes.directory}。进入新上下文或恢复工作时，通过 read/ls 读取实际笔记（通常 MEMORY.md），通过 plan_read 取得独立计划。此目录只供自身笔记文件工具使用，不扩大业务权限或 exec 范围；没有笔记时使用原始记录，不强制建文件。` : ''),
+    systemPrompt: buildSystemPrompt(deps.prompt, deps.purpose, deps.consultationAvailable) + (deps.notes ? `\n\n自身工作笔记目录：${deps.notes.directory}。它是本次长会话的持久化工作记忆（不会被上下文压缩覆盖），进入新上下文或恢复工作时通过 read/ls 读取 MEMORY.md，通过 plan_read 取得独立计划；阶段完成后可将旧细节精简为结论。此目录只供自身笔记文件工具使用，不扩大业务权限或 exec 范围；没有笔记时使用原始记录，不强制建文件。` : ''),
     gateway: deps.gateway,
     tools: deps.tools,
     records: deps.records,
@@ -517,7 +526,6 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         // 合并的后续行回到队首（这一条没跑成，它们按序各自再试）
         if (outcome !== 'settled' && mergedExtras.length > 0) pending.unshift(...mergedExtras.map(extra => extra.item))
         queued.done?.()
-        if (compactPending?.awaitInput) compactPending.awaitInput = false
         // **这一条没跑**（显式选定的技能取不到，U33）——停下的是**它**，不是这一队：
         // 后面那几条没做错任何事，清掉＝静默吞了用户的交代（见 `InputOutcome` 的注）
         if (outcome === 'rejected') continue
@@ -570,10 +578,23 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         const controller = new AbortController()
         const combined = AbortSignal.any([signal, controller.signal, ...(state.current === undefined ? [] : [state.current.signal])])
         const onAbort = () => { if (compactFlight === undefined) void flushCompact() }
-        compactPending = { request, controller, signal: combined, started, notesSaved: false, awaitInput: false, finish: state => { combined.removeEventListener('abort', onAbort); resolve(state) } }
+        compactPending = { request, controller, signal: combined, started, finish: state => { combined.removeEventListener('abort', onAbort); resolve(state) } }
         combined.addEventListener('abort', onAbort, { once: true })
         if (!state.running || combined.aborted) void flushCompact()
       })
+    },
+    tidyMemory(request, signal) {
+      if (state.closed) return Promise.resolve({ requestId: request.requestId, state: 'failed', reason: '执行实例已关闭' })
+      return tidyWorkingMemory({
+        records: deps.records,
+        session: deps.session,
+        gateway: deps.continuationGateway ?? deps.gateway,
+        notes: deps.notes,
+        capacity: deps.capacity,
+        sink,
+        stamper,
+        now: deps.now ?? Date.now,
+      }, { requestId: request.requestId, focus: request.focus, signal })
     },
     supplement(input, shared) {
       return new Promise(resolve => acceptInput(bundle, input, shared, resolve))

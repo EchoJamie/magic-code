@@ -26,8 +26,6 @@ export type QueueBundle = {
   readonly supplements: SupplementItem[]
   /** **打断插入式**的队列（option+回车）：只在下一请求边界消费，工具批内不碰。 */
   readonly inserts: SupplementItem[]
-  /** 压缩的用量计数（受理非 notice 输入时抬一格）。 */
-  readonly onVersionBump: () => void
   /** 空闲即排空（压缩挂起时不启动——判定归 service）。 */
   readonly startDrainIfIdle: () => void
 }
@@ -55,7 +53,6 @@ export function acceptInput(bundle: QueueBundle, input: UserInput, shared: boole
     // ⚠️ **executing 也放行**（T2.1 dequeue 流）：那是本执行者刚出队的行——准入与 dequeue
     // 在信号点完成（见 assembly 的 `consumeLedgerInputs`），消费动作（inputs.consume 与
     // 落条目原子）在落账时发生。单活执行者前提下，executing 行只属于这一代。
-    if (row.input.notice !== true) bundle.onVersionBump()
     deps.onInput?.(row.input)
     // **三条队列**（一期）：运行中且显式插入（option+回车）→ 插入队列（下一请求边界并入）；
     // 运行中的协作补充（shared）→ 补充队列（模型/工具边界消费）；其余一律**按序排队**——

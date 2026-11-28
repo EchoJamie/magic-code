@@ -202,6 +202,7 @@ export type SessionList = { readonly type: 'session.list'; readonly archived?: b
 /** 引用目录只列来源，不选择或启动会话；查询与分页回执独立于当前输入目标。 */
 export type SessionReferenceList = { readonly type: 'session.references'; readonly requestId: string; readonly query: string; readonly offset?: number }
 export type MemoryRead = { readonly type: 'memory.read'; readonly requestId: string; readonly session?: SessionId } & import('./notes.ts').NoteReadQuery
+export type MemoryTidy = { readonly type: 'memory.tidy'; readonly requestId: string; readonly session: SessionId; readonly focus?: string }
 export type MemorySourceRead = {
   readonly type: 'memory.source'; readonly requestId: string
   readonly session?: SessionId
@@ -552,6 +553,7 @@ export type Command = import('./background.ts').BackgroundCommandRequest
   | SessionCommand
   | SessionReferenceList
   | MemoryRead
+  | MemoryTidy
   | MemorySourceRead
   | KnowledgeCommand
   | CompactCommand

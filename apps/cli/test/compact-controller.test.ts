@@ -25,7 +25,11 @@ function fixture() {
   const f = notesFixture({ near: 1, gateway(base) {
     const main = held(base), preparation = held(base)
     gates.main = main; gates.preparation = preparation
-    return { stream(request, options) { return ((request.messages[0]?.role === 'system' && typeof request.messages[0].content === 'string' && request.messages[0].content.startsWith('你是这次交接的记录者')) ? preparation : main).gateway.stream(request, options) } }
+    return { stream(request, options) {
+      const last = request.messages.at(-1)
+      const isCompact = last?.role === 'user' && typeof last.content === 'string' && last.content.startsWith('【系统交接整理指令')
+      return (isCompact ? preparation : main).gateway.stream(request, options)
+    } }
   } })
   const published: KernelEvent[] = []
   const controller = createCompactController({ store: f.store, now: Date.now, publish: event => published.push(event) })

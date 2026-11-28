@@ -63,6 +63,7 @@ export function commandSubjectOf(command: Command): string {
   switch (command.type) {
     case 'session.references':
     case 'memory.read':
+    case 'memory.tidy':
     case 'memory.source':
     case 'knowledge.query':
     case 'knowledge.read':

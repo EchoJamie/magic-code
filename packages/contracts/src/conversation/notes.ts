@@ -66,13 +66,17 @@ export interface WorkingNotes {
 export type ContextCoverage = { readonly summary: number | null; readonly coveredThrough: number | null }
 export interface CoverageRecords {
   read(): ContextCoverage
+  readPrunedThrough?(): number | null
+  advancePrunedThrough?(through: number): void
   publish(input: {
     readonly previousSummary: number | null
     readonly from: number
     readonly through: number
     readonly at: number
     readonly compact?: { readonly requestId: string; readonly focus?: string }
-    readonly notesSaved: boolean
+    readonly notesSaved?: boolean
+    readonly format?: 'compaction-v2'
+    readonly retainedUsers?: readonly number[]
     /** 本次压缩生成的接续简报；缺省保留旧摘要文本。 */
     readonly text?: string
   }): number

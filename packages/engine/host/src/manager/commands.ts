@@ -254,6 +254,33 @@ export function installCommands(ctx: ManagerContext): void {
       if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: request.session, kind: 'compact.state', data: state } })
       return
     }
+    if (command.type === 'memory.tidy') {
+      const base = { requestId: command.requestId, ...(command.focus === undefined ? {} : { focus: command.focus }) }
+      const sendTidy = (state: import('@magic/contracts').EventDataOf['memory.tidy.state']) => {
+        if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: command.session, kind: 'memory.tidy.state', data: state } })
+      }
+      if (!store.hasSession(command.session)) { sendTidy({ ...base, state: 'no-material', reason: '没有可整理笔记的会话；未建立新会话' }); return }
+      if (store.isSessionArchived(command.session)) { sendTidy({ ...base, state: 'failed', reason: '会话已归档，请先明确恢复后再整理笔记' }); return }
+      const release = sessions.admit(workRoot(command.session))
+      try {
+        if (ctx.stopped) throw new Error('Engine 正在停止')
+        const workspace = await memoryWorkspace(store, command.session, [])
+        const previous = lastRuns.get(command.session)
+        let executor = ctx.liveOf(command.session)
+        if (executor?.run.stopping || executor === undefined && previous !== undefined && (previous.ended === undefined || previous.reclaimPending || previous.reclaimNote !== undefined)) {
+          throw new Error('上一代工作责任尚未核销，未整理笔记')
+        }
+        executor ??= ctx.spawn({ session: command.session, explicit: true, cwd: workspace[0] ?? conn.cwd, environment: conn.environment })
+        if (executor === undefined) throw new Error('无法取得整理笔记执行责任')
+        for (const watcher of clients.values()) if (watcher.selectedSession === command.session && watcher.target !== executor) connections.bind(watcher, executor)
+        sendTidy({ ...base, state: 'running' })
+        const state = await control.tidyMemory(executor, base, new AbortController().signal)
+        sendTidy(state)
+      } catch (error) {
+        sendTidy({ ...base, state: 'failed', reason: error instanceof Error ? error.message : String(error) })
+      } finally { release() }
+      return
+    }
     if (command.type === 'background.list' || command.type === 'background.stop') { ctx.backgroundCommand(conn, command); return }
     if (command.type === 'session.archive' || command.type === 'session.restore' || command.type === 'session.rename') {
       const result = manageSession({ session: command.session, action: command.type === 'session.archive' ? 'archive' : command.type === 'session.restore' ? 'restore' : 'rename', ...('title' in command ? { title: command.title } : {}) })
